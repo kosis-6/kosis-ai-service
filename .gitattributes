@@ -1,0 +1,2 @@
+# Windows/Mac 간 줄바꿈 차이로 컨테이너 안에서 깨지지 않도록 LF로 통일
+* text=auto eol=lf

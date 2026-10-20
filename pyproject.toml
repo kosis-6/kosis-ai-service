@@ -1,0 +1,27 @@
+[project]
+name = "kosis-ai-service"
+version = "0.1.0"
+description = "KOSIS 국가통계포털 데이터를 AI로 검색·분석하는 서비스"
+requires-python = "==3.12.15"
+dependencies = [
+    "fastapi>=0.151.0",
+    "httpx>=0.28.1",
+    "pydantic-settings>=2.16.1",
+    "uvicorn[standard]>=0.54.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.17.1",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
