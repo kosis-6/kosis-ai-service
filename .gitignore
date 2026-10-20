@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+
+# 가상환경
+.venv/
+venv/
+env/
+
+# 빌드 / 패키징
+build/
+dist/
+*.egg-info/
+
+# 테스트 / 린트 / 타입체크 캐시
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# 환경변수 (비밀값)
+.env
+.env.*
+
+# 로그
+*.log
+logs/
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+desktop.ini
+
+# IDE
+.idea/
+.vscode/
+*.swp
