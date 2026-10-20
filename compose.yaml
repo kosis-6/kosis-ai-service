@@ -1,0 +1,14 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # Windows 바인드 마운트에서는 파일 변경 이벤트가 전달되지 않아 폴링으로 감지
+      WATCHFILES_FORCE_POLLING: "true"
+    volumes:
+      - .:/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
