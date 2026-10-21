@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     kosis_api_key: str = ""
     kosis_base_url: str = "https://kosis.kr/openapi"
 
+    database_url: str = "postgresql+psycopg://kosis@localhost:5432/kosis"
+
 
 @lru_cache
 def get_settings() -> Settings:
