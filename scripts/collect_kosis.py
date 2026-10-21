@@ -1,16 +1,3 @@
-"""KOSIS 통계표를 받아 긴 형태(값 하나당 한 줄) CSV로 저장한다.
-
-사용법 (프로젝트 최상위 폴더에서):
-    uv run python -m scripts.collect_kosis 101 DT_1MR2060      # 표 하나
-    uv run python -m scripts.collect_kosis --list scripts/tables.csv  # 목록 전체
-    (--dry-run: 수치는 받지 않고 요청 계획만 출력)
-
-결과:
-    data/raw/<표ID>/          API 원본 응답 (JSON)
-    data/processed/<표ID>.csv  정제된 데이터셋
-    data/processed/<표ID>.meta.json  표 이름, 분류 이름, 수록기간
-"""
-
 import argparse
 import asyncio
 import csv
@@ -168,7 +155,12 @@ def to_rows(records: list[dict[str, Any]], meta: dict[str, Any]) -> list[dict[st
 
 
 async def collect(
-    client: KosisClient, org_id: str, tbl_id: str, prd_se: str, dry_run: bool = False
+    client: KosisClient,
+    org_id: str,
+    tbl_id: str,
+    prd_se: str,
+    dry_run: bool = False,
+    save_raw: bool = False,
 ) -> None:
     meta = await fetch_meta(client, org_id, tbl_id)
     start, end, n_periods = pick_period(meta["periods"], prd_se)
@@ -182,7 +174,8 @@ async def collect(
         return
 
     raw_dir = RAW_DIR / tbl_id
-    raw_dir.mkdir(parents=True, exist_ok=True)
+    if save_raw:
+        raw_dir.mkdir(parents=True, exist_ok=True)
     records = []
     for i, params in enumerate(requests, start=1):
         query = {
@@ -195,7 +188,8 @@ async def collect(
             **params,
         }
         data = await call(client, "/Param/statisticsParameterData.do", query)
-        (raw_dir / f"{i:04d}.json").write_text(json.dumps(data, ensure_ascii=False))
+        if save_raw:
+            (raw_dir / f"{i:04d}.json").write_text(json.dumps(data, ensure_ascii=False))
         records.extend(data)
         print(f"  [{i}/{len(requests)}] {params['itmId']} {len(data)}건")
 
@@ -224,12 +218,14 @@ async def collect(
     print(f"저장: {out} ({len(rows)}행), {meta_path}")
 
 
-async def collect_all(targets: list[tuple[str, str]], prd_se: str, dry_run: bool) -> None:
+async def collect_all(
+    targets: list[tuple[str, str]], prd_se: str, dry_run: bool, save_raw: bool
+) -> None:
     client = KosisClient()
     failed = []
     for org_id, tbl_id in targets:
         try:
-            await collect(client, org_id, tbl_id, prd_se, dry_run)
+            await collect(client, org_id, tbl_id, prd_se, dry_run, save_raw)
         except (KosisError, httpx.HTTPError) as e:
             # 한 표가 실패해도 나머지는 계속 받음
             print(f"{tbl_id} 실패: {e}")
@@ -244,6 +240,7 @@ def main() -> None:
     parser.add_argument("--list", type=Path, help="org_id, tbl_id 열이 있는 CSV 파일")
     parser.add_argument("--prd-se", default="Y", help="수록주기 Y/H/Q/M (기본 Y)")
     parser.add_argument("--dry-run", action="store_true", help="요청 계획만 출력")
+    parser.add_argument("--save-raw", action="store_true", help="API 원본 응답도 저장 (용량 큼)")
     args = parser.parse_args()
 
     if args.list:
@@ -253,7 +250,7 @@ def main() -> None:
         targets = [(args.org_id, args.tbl_id)]
     else:
         parser.error("org_id와 tbl_id를 주거나 --list를 지정하세요.")
-    asyncio.run(collect_all(targets, args.prd_se, args.dry_run))
+    asyncio.run(collect_all(targets, args.prd_se, args.dry_run, args.save_raw))
 
 
 if __name__ == "__main__":

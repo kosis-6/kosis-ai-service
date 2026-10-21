@@ -129,7 +129,7 @@ python -m scripts.collect_kosis --list scripts/tables.csv --dry-run
 | --- | --- |
 | `data/processed/<표ID>.csv` | 수집한 데이터 (값 하나당 한 줄) |
 | `data/processed/<표ID>.meta.json` | 표 이름, 분류 이름, 항목 목록, 수록 기간 |
-| `data/raw/<표ID>/` | API 원본 응답 |
+| `data/raw/<표ID>/` | API 원본 응답 (`--save-raw`를 붙였을 때만 저장, 용량이 커서 기본은 저장 안 함) |
 
 CSV 주요 열:
 
