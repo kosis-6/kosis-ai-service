@@ -50,16 +50,22 @@ cd kosis-ai-service
 프로젝트 최상위 폴더에 `.env` 파일을 직접 만들고 아래 내용을 입력합니다.
 
 ```
-KOSIS_API_KEY=팀장(이정제)에게_전달받은_키
+KOSIS_API_KEY=내가_발급받은_KOSIS_인증키
 POSTGRES_PASSWORD=내가_정한_DB_비밀번호
 ```
 
 | 변수 | 필수 | 기본값 | 설명 |
 | --- | --- | --- | --- |
-| `KOSIS_API_KEY` | O | (없음) | KOSIS OpenAPI 인증키 |
+| `KOSIS_API_KEY` | O | (없음) | KOSIS OpenAPI 인증키 (각자 발급하고 공유하지 않음) |
 | `POSTGRES_PASSWORD` | O | (없음) | 내 PC에 생성되는 DB 비밀번호 (각자 정하고 공유하지 않음) |
 | `APP_NAME` | | `kosis-ai-service` | 앱 이름 |
 | `DEBUG` | | `false` | 디버그 모드 |
+
+**KOSIS 인증키 발급 방법**
+
+1. [KOSIS 공유서비스](https://kosis.kr/openapi/)에 회원가입 후 로그인합니다.
+2. 상단 메뉴의 **활용신청**에서 인증키를 신청합니다. (무료)
+3. 발급된 인증키를 복사해 `.env`의 `KOSIS_API_KEY`에 넣습니다.
 
 > - `.env`는 **절대 커밋하지 않습니다.** (`.gitignore`에 등록되어 있음)
 > - 새 환경변수를 추가하면 위 표에 이름과 설명을 추가하고, 실제 값은 팀원에게 직접 공유해 주세요.
@@ -81,6 +87,69 @@ POSTGRES_PASSWORD=내가_정한_DB_비밀번호
 VS Code 터미널도 컨테이너 안에서 열리므로 `pytest` 등 명령어를 바로 실행할 수 있습니다.
 코드를 수정하면 서버가 자동으로 재시작됩니다.
 
+## 데이터 수집
+
+KOSIS OpenAPI로 통계표 수치를 받아 `data/` 폴더에 저장합니다.
+**데이터 파일은 GitHub에 올리지 않습니다.** (`.gitignore`에 등록되어 있음) 각자 아래 명령어로 받습니다.
+
+### 받을 표 목록
+
+[`scripts/tables.csv`](scripts/tables.csv)에 주제별로 정리되어 있습니다. 표를 추가하려면 이 파일에 한 줄을 추가합니다.
+
+| 열 | 설명 | 예시 |
+| --- | --- | --- |
+| `org_id` | 기관 ID | `101` (국가데이터처) |
+| `tbl_id` | 통계표 ID | `DT_1B81A21` |
+| `topic` | 주제 | 출산 |
+| `tbl_nm` | 표 이름 (참고용) | 시도/합계출산율 모의 연령별 출산율 |
+
+> 표 ID와 기관 ID는 KOSIS 통계표 화면 주소의 `tblId=`, `orgId=` 값에서 확인할 수 있습니다.
+
+### 실행 방법
+
+컨테이너 터미널에서 실행합니다.
+
+```bash
+# 목록 전체 받기 (약 10분)
+python -m scripts.collect_kosis --list scripts/tables.csv
+
+# 표 하나만 받기
+python -m scripts.collect_kosis 101 DT_1B81A21
+
+# 실제로 받지 않고 요청 계획만 확인
+python -m scripts.collect_kosis --list scripts/tables.csv --dry-run
+```
+
+- KOSIS는 1회 요청에 40,000셀까지만 주기 때문에, 큰 표는 자동으로 나눠서 요청합니다.
+- 분당 호출 제한이 있어 요청 사이에 1초씩 쉽니다.
+
+### 결과 파일
+
+| 경로 | 내용 |
+| --- | --- |
+| `data/processed/<표ID>.csv` | 수집한 데이터 (값 하나당 한 줄) |
+| `data/processed/<표ID>.meta.json` | 표 이름, 분류 이름, 항목 목록, 수록 기간 |
+| `data/raw/<표ID>/` | API 원본 응답 (`--save-raw`를 붙였을 때만 저장, 용량이 커서 기본은 저장 안 함) |
+
+CSV 주요 열:
+
+| 열 | 설명 | 예시 |
+| --- | --- | --- |
+| `period` | 시점 | `2025` |
+| `item_nm` | 항목 | 합계출산율 |
+| `c1_nm`, `c2_nm` ... | 분류값 (표마다 의미가 다름, `meta.json`의 `classes` 참고) | 서울특별시 |
+| `c1_level` | 분류 단계 (1 = 전국·시도, 2 = 시군구 등) | `1` |
+| `c1_path` | 상위 분류까지 이어 붙인 경로 | 서울특별시 > 종로구 |
+| `value` | 수치 (숫자가 아니면 비어 있음) | `0.632` |
+| `value_flag` | 숫자 대신 온 통계부호 (`-` 해당 없음, `X` 비밀보호 등) | `X` |
+| `unit` | 단위 | 명 |
+| `last_changed` | KOSIS 최종 수정일 | `2026-08-12` |
+
+> **주의: 아직 정제 전 데이터입니다.**
+> - 전국·시도·시군구 행과 "계"·세부 행이 함께 들어 있어, 조건 없이 더하면 **중복 집계**됩니다.
+> - `value_flag`가 있는 칸은 0이 아니라 **결측**으로 다룹니다.
+> - 표마다 기준(예: 주민등록인구는 외국인 제외)이 다르므로 답변에 출처를 함께 표시합니다.
+
 ## 프로젝트 구조
 
 ```
@@ -96,6 +165,10 @@ kosis-ai-service/
 │   │       └── health.py
 │   └── services/            # 비즈니스 로직 (KOSIS 호출, AI 처리 등)
 │       └── kosis_client.py
+├── scripts/
+│   ├── collect_kosis.py     # KOSIS 통계표 수집
+│   └── tables.csv           # 수집할 통계표 목록
+├── data/                    # 수집한 데이터 (각자 생성, 커밋 X)
 ├── tests/                   # pytest 테스트
 ├── docker/postgres/init.sql # DB 최초 생성 시 확장(pgvector, pg_trgm) 설치
 ├── .devcontainer/           # VS Code 컨테이너 개발 환경 설정
