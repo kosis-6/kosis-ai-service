@@ -9,7 +9,7 @@ services:
     environment:
       # Windows 바인드 마운트에서는 파일 변경 이벤트가 전달되지 않아 폴링으로 감지
       WATCHFILES_FORCE_POLLING: "true"
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-kosis}:${POSTGRES_PASSWORD:-kosis}@db:5432/${POSTGRES_DB:-kosis}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-kosis}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-kosis}
     volumes:
       - .:/app
     depends_on:
@@ -21,11 +21,11 @@ services:
     image: pgvector/pgvector:0.8.7-pg17
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-kosis}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-kosis}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?.env에 POSTGRES_PASSWORD를 설정하세요}
       POSTGRES_DB: ${POSTGRES_DB:-kosis}
     ports:
-      # 로컬에 이미 PostgreSQL이 5432를 쓰고 있으면 .env에서 POSTGRES_HOST_PORT를 바꿔서 사용
-      - "${POSTGRES_HOST_PORT:-5432}:5432"
+      # 내 PC에서만 접속 가능. 이미 5432를 쓰고 있으면 .env에서 POSTGRES_HOST_PORT 변경
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       # DB 최초 생성 시 한 번만 실행 (확장 설치)

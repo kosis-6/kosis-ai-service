@@ -16,10 +16,9 @@
 
 | 이름 | 역할 |
 | --- | --- |
-| 문현욱 | AI 엔지니어링 |
+| 이정제 (팀장)| ML옵스 및 AI 엔지니어링|
 | 윤지연 | 평가 엔지니어링 |
 | 고은성 | 데이터 엔지니어링 |
-| 이정제 (팀장)| ML옵스 및 각 파트 지원|
 
 ## 기술 스택
 
@@ -52,17 +51,15 @@ cd kosis-ai-service
 
 ```
 KOSIS_API_KEY=팀장(이정제)에게_전달받은_키
+POSTGRES_PASSWORD=내가_정한_DB_비밀번호
 ```
 
 | 변수 | 필수 | 기본값 | 설명 |
 | --- | --- | --- | --- |
 | `KOSIS_API_KEY` | O | (없음) | KOSIS OpenAPI 인증키 |
+| `POSTGRES_PASSWORD` | O | (없음) | 내 PC에 생성되는 DB 비밀번호 (각자 정하고 공유하지 않음) |
 | `APP_NAME` | | `kosis-ai-service` | 앱 이름 |
 | `DEBUG` | | `false` | 디버그 모드 |
-| `POSTGRES_USER` | | `kosis` | DB 사용자 |
-| `POSTGRES_PASSWORD` | | `kosis` | DB 비밀번호 |
-| `POSTGRES_DB` | | `kosis` | DB 이름 |
-| `POSTGRES_HOST_PORT` | | `5432` | 내 PC에서 DB에 접속할 포트 (이미 5432를 쓰고 있으면 변경) |
 
 > - `.env`는 **절대 커밋하지 않습니다.** (`.gitignore`에 등록되어 있음)
 > - 새 환경변수를 추가하면 위 표에 이름과 설명을 추가하고, 실제 값은 팀원에게 직접 공유해 주세요.
