@@ -51,12 +51,14 @@ cd kosis-ai-service
 
 ```
 KOSIS_API_KEY=내가_발급받은_KOSIS_인증키
+HCX_API_KEY=팀장(이정제)에게_전달받은_키
 POSTGRES_PASSWORD=내가_정한_DB_비밀번호
 ```
 
 | 변수 | 필수 | 기본값 | 설명 |
 | --- | --- | --- | --- |
 | `KOSIS_API_KEY` | O | (없음) | KOSIS OpenAPI 인증키 (각자 발급하고 공유하지 않음) |
+| `HCX_API_KEY` | O | (없음) | HyperCLOVA X (CLOVA Studio) API 키 (팀장에게 전달받음) |
 | `POSTGRES_PASSWORD` | O | (없음) | 내 PC에 생성되는 DB 비밀번호 (각자 정하고 공유하지 않음) |
 | `APP_NAME` | | `kosis-ai-service` | 앱 이름 |
 | `DEBUG` | | `false` | 디버그 모드 |
