@@ -12,6 +12,8 @@ services:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-kosis}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-kosis}
     volumes:
       - .:/app
+      # 호스트(macOS/Windows)의 .venv가 컨테이너에서 깨진 인터프리터로 잡히지 않도록 가림
+      - /app/.venv
     depends_on:
       db:
         condition: service_healthy
