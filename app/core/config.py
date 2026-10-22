@@ -12,6 +12,9 @@ class Settings(BaseSettings):
     kosis_api_key: str = ""
     kosis_base_url: str = "https://kosis.kr/openapi"
 
+    hcx_api_key: str = ""
+    hcx_base_url: str = "https://clovastudio.stream.ntruss.com"
+
     database_url: str = "postgresql+psycopg://kosis@localhost:5432/kosis"
 
 
