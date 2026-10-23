@@ -168,7 +168,7 @@ config/catalog_notes.toml ──(catalog.py)──▶ 설명 테이블: indicato
 
 ### 5-1. 계산 지표 (`computed`, 4개): 질문할 때마다 `population`에서 계산
 
-`pipeline/indicators.py`의 `INDICATORS`와 `_components`.
+`app/services/indicators.py`의 `INDICATORS`와 `_components`.
 
 | 지표 | 계산식 | 단위 | 차이 단위 |
 |---|---|---|---|
@@ -180,7 +180,7 @@ config/catalog_notes.toml ──(catalog.py)──▶ 설명 테이블: indicato
 - 65세 이상에는 `100세 이상` 묶음이 포함된다 (`age >= 65`).
 - 결과는 소수 둘째 자리에서 반올림한다.
 - 수록 기간(2008~2025) 밖 연도는 장래추계 표 `DT_1BPB002`(중위 추계)의 같은 지표로 안내한다.
-- **현재 질의응답(`qa.py`)이 답하는 지표는 이 4개뿐이다.**
+- **현재 질의응답(`app/services/qa.py`)이 답하는 지표는 이 4개뿐이다.**
 
 ### 5-2. 조회 지표 (`lookup`, 14개): KOSIS가 계산해 둔 값을 `facts`에서 꺼냄
 

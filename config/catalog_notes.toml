@@ -270,7 +270,7 @@ verified = true
 
 # ---------------------------------------------------------------------------
 # 지표 사전
-#   method = "computed" : src/indicators.py 함수로 계산 (population 표 사용)
+#   method = "computed" : app/services/indicators.py 함수로 계산 (population 표 사용)
 #   method = "lookup"   : facts 표에서 값을 그대로 조회. filters = 고정할 분류 코드
 #   level  : 그 표로 답할 수 있는 지역 수준
 # ---------------------------------------------------------------------------

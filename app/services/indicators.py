@@ -17,16 +17,15 @@ LLM이 숫자를 직접 계산하지 않도록, 질문 유형별 계산을 함�
   out_of_range        수록 기간 밖 연도 → 추계가 있으면 suggestion에 담음 (답변 불가 사례 1)
   region_not_in_year  그 연도에 없던 지역 (예: 2025년 전남광주통합특별시)
 
-실행(예시 질문 데모): python pipeline/indicators.py   (가상환경 활성화 후, README 참고)
+실행(예시 질문 데모): python -m app.services.indicators
 """
+
 import json
 import re
-from pathlib import Path
 
-import duckdb
-
-ROOT = Path(__file__).resolve().parent.parent
-DB_PATH = ROOT / "data" / "processed" / "kosis.duckdb"
+from app.core.duckdb import CatalogException
+from app.core.duckdb import rows as _rows
+from app.services import analysis
 
 POP_TABLE = "DT_1B04006"
 POP_SOURCE = "국가데이터처 (구 통계청), 행정구역(시군구)별/1세별 주민등록인구 (DT_1B04006)"
@@ -42,22 +41,30 @@ DEFAULT_SCENARIO = "중위 추계"
 #   index : 지수      → 차이·변화는 포인트
 INDICATORS = {
     "총인구": {
-        "unit": "명", "kind": "count", "formula": "주민등록 총인구",
+        "unit": "명",
+        "kind": "count",
+        "formula": "주민등록 총인구",
         "calc": lambda c: c["total"],
         "projection_c3": "10",
     },
     "고령인구 비율": {
-        "unit": "%", "kind": "ratio", "formula": "65세 이상 인구 ÷ 총인구 × 100",
+        "unit": "%",
+        "kind": "ratio",
+        "formula": "65세 이상 인구 ÷ 총인구 × 100",
         "calc": lambda c: _div(c["old"], c["total"]),
         "projection_c3": "33",
     },
     "유소년인구 비율": {
-        "unit": "%", "kind": "ratio", "formula": "0~14세 인구 ÷ 총인구 × 100",
+        "unit": "%",
+        "kind": "ratio",
+        "formula": "0~14세 인구 ÷ 총인구 × 100",
         "calc": lambda c: _div(c["young"], c["total"]),
         "projection_c3": "31",
     },
     "노령화지수": {
-        "unit": "유소년인구 100명당 명", "kind": "index", "formula": "65세 이상 인구 ÷ 0~14세 인구 × 100",
+        "unit": "유소년인구 100명당 명",
+        "kind": "index",
+        "formula": "65세 이상 인구 ÷ 0~14세 인구 × 100",
         "calc": lambda c: _div(c["old"], c["young"]),
         "projection_c3": "50",
     },
@@ -66,24 +73,8 @@ INDICATORS = {
 DIFF_UNIT = {"count": "명", "ratio": "%p", "index": "포인트"}
 SEXES = ("계", "남", "여")
 
-_CON = None
-
 
 # ---- 내부 도우미 ----------------------------------------------------------------
-
-def _con():
-    global _CON
-    if _CON is None:
-        if not DB_PATH.exists():
-            raise SystemExit("먼저 pipeline/run_all.py를 실행하세요.")
-        _CON = duckdb.connect(str(DB_PATH), read_only=True)
-    return _CON
-
-
-def _rows(sql, params=()):
-    cur = _con().execute(sql, list(params))
-    cols = [d[0] for d in cur.description]
-    return [dict(zip(cols, r)) for r in cur.fetchall()]
 
 
 def _norm(text):
@@ -119,8 +110,14 @@ def _get_indicator(indicator):
 
 
 def _base(name, ind, status="ok", **extra):
-    out = {"status": status, "indicator": name, "unit": ind["unit"], "formula": ind["formula"],
-           "source": POP_SOURCE, "basis": POP_BASIS}
+    out = {
+        "status": status,
+        "indicator": name,
+        "unit": ind["unit"],
+        "formula": ind["formula"],
+        "source": POP_SOURCE,
+        "basis": POP_BASIS,
+    }
     out.update(extra)
     return out
 
@@ -128,7 +125,7 @@ def _base(name, ind, status="ok", **extra):
 def _display(reg):
     if reg["kind"] in ("전국", "시도") or not reg.get("sido_name"):
         return reg["region_name"]
-    return f'{reg["sido_name"]} {reg["region_name"]}'
+    return f"{reg['sido_name']} {reg['region_name']}"
 
 
 def _change_notes(region_code, y0=None, y1=None):
@@ -149,7 +146,7 @@ def _change_notes(region_code, y0=None, y1=None):
         else:
             hit = False
         if hit:
-            notes.append(f'{ch["year"]}년: {ch["description"]}')
+            notes.append(f"{ch['year']}년: {ch['description']}")
     return notes
 
 
@@ -157,31 +154,35 @@ def _catalog_rows(sql, params=()):
     """catalog.py가 만든 테이블 조회. catalog.py를 아직 안 돌렸으면 빈 목록"""
     try:
         return _rows(sql, params)
-    except duckdb.CatalogException:
+    except CatalogException:
         return []
 
 
 def _series_break_notes(y0, y1):
     """주민등록인구 통계 기준이 바뀐 해 중 y0 < 연도 <= y1 (그 해 변화에 기준 변경 효과가 섞임)"""
-    rows = _catalog_rows("""
+    rows = _catalog_rows(
+        """
         select year, description from series_breaks
         where tbl_id = ? and year > ? and year <= ? order by year
-    """, [POP_TABLE, y0, y1])
-    return [f'{r["year"]}년: {r["description"]}' for r in rows]
+    """,
+        [POP_TABLE, y0, y1],
+    )
+    return [f"{r['year']}년: {r['description']}" for r in rows]
 
 
 def _out_of_range_reason(lo, hi):
     reason = f"수집된 주민등록인구 자료는 {lo}~{hi}년(연간)만 있습니다."
     rows = _catalog_rows("select latest_available from table_notes where tbl_id = ?", [POP_TABLE])
     if rows and rows[0]["latest_available"]:
-        reason += f' KOSIS 원표에는 {rows[0]["latest_available"]}까지 자료가 있습니다.'
+        reason += f" KOSIS 원표에는 {rows[0]['latest_available']}까지 자료가 있습니다."
     return reason
 
 
 def _components(codes, y0, y1, sex):
     """연도·지역별 총인구, 0~14세, 65세 이상 (100세 이상 포함)"""
     marks = ", ".join("?" for _ in codes)
-    rows = _rows(f"""
+    rows = _rows(
+        f"""
         select year, region_code,
                sum(population) filter (where age is null)          as total,
                sum(population) filter (where age between 0 and 14) as young,
@@ -190,7 +191,9 @@ def _components(codes, y0, y1, sex):
         where sex = ? and year between ? and ? and region_code in ({marks})
         group by year, region_code
         order by region_code, year
-    """, [sex, y0, y1, *codes])
+    """,
+        [sex, y0, y1, *codes],
+    )
     return {(r["year"], r["region_code"]): r for r in rows}
 
 
@@ -198,9 +201,14 @@ def _check(name, ind, reg, y0, y1):
     """수록 기간·지역 유효 기간 확인. 문제가 있으면 안내용 dict, 없으면 None"""
     lo, hi = _data_years()
     if y0 < lo or y1 > hi:
-        out = _base(name, ind, "out_of_range", region=_display(reg),
-                    reason=_out_of_range_reason(lo, hi),
-                    available_years=[lo, hi])
+        out = _base(
+            name,
+            ind,
+            "out_of_range",
+            region=_display(reg),
+            reason=_out_of_range_reason(lo, hi),
+            available_years=[lo, hi],
+        )
         if y1 > hi and reg["kind"] in ("전국", "시도"):
             proj = projection(name, reg["region_code"], y1)
             if proj["status"] == "ok":
@@ -214,9 +222,14 @@ def _check(name, ind, reg, y0, y1):
             period = f"{vf}년부터"
         else:
             period = f"{vt}년까지"
-        return _base(name, ind, "region_not_in_year", region=_display(reg),
-                     reason=f'{_display(reg)}은(는) {period} 있는 지역입니다.',
-                     notes=_change_notes(reg["region_code"]))
+        return _base(
+            name,
+            ind,
+            "region_not_in_year",
+            region=_display(reg),
+            reason=f"{_display(reg)}은(는) {period} 있는 지역입니다.",
+            notes=_change_notes(reg["region_code"]),
+        )
     return None
 
 
@@ -224,8 +237,12 @@ def _prepare(indicator, region_names, year=None):
     """지표·지역 해석. (지표 이름, 지표 정의, 지역 목록, 오류 dict)"""
     name, ind = _get_indicator(indicator)
     if name is None:
-        return None, None, None, {"status": "unknown_indicator", "indicator": indicator,
-                                  "supported": list(INDICATORS)}
+        return (
+            None,
+            None,
+            None,
+            {"status": "unknown_indicator", "indicator": indicator, "supported": list(INDICATORS)},
+        )
     regions = []
     for rn in region_names:
         reg = resolve_region(rn, year)
@@ -236,6 +253,7 @@ def _prepare(indicator, region_names, year=None):
 
 
 # ---- 공개 함수 ------------------------------------------------------------------
+
 
 def resolve_region(name, year=None):
     """지역 이름·별칭·코드 → 지역 정보
@@ -260,20 +278,31 @@ def resolve_region(name, year=None):
         sido = resolve_region(parts[0])
         if sido["status"] == "ok" and sido["kind"] == "시도":
             rest = _norm("".join(parts[1:]))
-            found = _rows(sql.format(extra="and r.sido_code = ?"), [rest, rest, sido["region_code"]])
+            found = _rows(
+                sql.format(extra="and r.sido_code = ?"), [rest, rest, sido["region_code"]]
+            )
 
     if len(found) > 1 and year is not None:
-        found = [r for r in found
-                 if (r["valid_from"] is None or year >= r["valid_from"])
-                 and (r["valid_to"] is None or year <= r["valid_to"])] or found
+        found = [
+            r
+            for r in found
+            if (r["valid_from"] is None or year >= r["valid_from"])
+            and (r["valid_to"] is None or year <= r["valid_to"])
+        ] or found
 
     if not found:
-        return {"status": "unknown_region", "region": name,
-                "reason": f"'{name}'에 해당하는 지역을 찾지 못했습니다."}
+        return {
+            "status": "unknown_region",
+            "region": name,
+            "reason": f"'{name}'에 해당하는 지역을 찾지 못했습니다.",
+        }
     if len(found) > 1:
-        return {"status": "ambiguous_region", "region": name,
-                "reason": f"'{name}'에 해당하는 지역이 여러 곳입니다. 어느 지역인지 확인이 필요합니다.",
-                "candidates": [_display(r) for r in found]}
+        return {
+            "status": "ambiguous_region",
+            "region": name,
+            "reason": f"'{name}'에 해당하는 지역이 여러 곳입니다. 어느 지역인지 확인이 필요합니다.",
+            "candidates": [_display(r) for r in found],
+        }
     return {"status": "ok", **found[0], "display": _display(found[0])}
 
 
@@ -283,7 +312,7 @@ def value(indicator, region, year, sex="계"):
     if err:
         return err
     reg = regs[0]
-    if (bad := _check(name, ind, reg, year, year)):
+    if bad := _check(name, ind, reg, year, year):
         return bad
     comp = _components([reg["region_code"]], year, year, sex).get((year, reg["region_code"]))
     v = ind["calc"](comp) if comp else None
@@ -296,21 +325,35 @@ def trend(indicator, region, start_year, end_year, sex="계"):
     if err:
         return err
     reg = regs[0]
-    if (bad := _check(name, ind, reg, start_year, end_year)):
+    if bad := _check(name, ind, reg, start_year, end_year):
         return bad
     comps = _components([reg["region_code"]], start_year, end_year, sex)
-    series = [{"year": y, "value": _round(ind["calc"](c), ind["kind"])}
-              for (y, _), c in sorted(comps.items())]
+    series = [
+        {"year": y, "value": _round(ind["calc"](c), ind["kind"])}
+        for (y, _), c in sorted(comps.items())
+    ]
     first, last = series[0]["value"], series[-1]["value"]
-    change = {"from_year": series[0]["year"], "to_year": series[-1]["year"],
-              "diff": _round(last - first, ind["kind"]) if ind["kind"] == "count" else round(last - first, 2),
-              "diff_unit": DIFF_UNIT[ind["kind"]]}
+    change = {
+        "from_year": series[0]["year"],
+        "to_year": series[-1]["year"],
+        "diff": _round(last - first, ind["kind"])
+        if ind["kind"] == "count"
+        else round(last - first, 2),
+        "diff_unit": DIFF_UNIT[ind["kind"]],
+    }
     if ind["kind"] == "count":
-        change["rate"] = round((last - first) / first * 100, 2)
+        change["rate"] = round(analysis.growth_rate(first, last), 2)
         change["rate_unit"] = "%"
-    return _base(name, ind, region=reg["display"], sex=sex, series=series, change=change,
-                 notes=_change_notes(reg["region_code"], start_year, end_year)
-                       + _series_break_notes(start_year, end_year))
+    return _base(
+        name,
+        ind,
+        region=reg["display"],
+        sex=sex,
+        series=series,
+        change=change,
+        notes=_change_notes(reg["region_code"], start_year, end_year)
+        + _series_break_notes(start_year, end_year),
+    )
 
 
 def compare(indicator, regions, year, sex="계"):
@@ -319,33 +362,50 @@ def compare(indicator, regions, year, sex="계"):
     if err:
         return err
     for reg in regs:
-        if (bad := _check(name, ind, reg, year, year)):
+        if bad := _check(name, ind, reg, year, year):
             return bad
     comps = _components([r["region_code"] for r in regs], year, year, sex)
     values = []
     for reg in regs:
         comp = comps.get((year, reg["region_code"]))
-        values.append({"region": reg["display"],
-                       "value": _round(ind["calc"](comp), ind["kind"]) if comp else None})
+        values.append(
+            {
+                "region": reg["display"],
+                "value": _round(ind["calc"](comp), ind["kind"]) if comp else None,
+            }
+        )
     values.sort(key=lambda x: (x["value"] is None, -(x["value"] or 0)))
     valid = [x for x in values if x["value"] is not None]
     gap = valid[0]["value"] - valid[-1]["value"] if len(valid) >= 2 else None
-    return _base(name, ind, year=year, sex=sex, values=values,
-                 highest=valid[0]["region"] if valid else None,
-                 lowest=valid[-1]["region"] if valid else None,
-                 gap=_round(gap, ind["kind"]) if ind["kind"] == "count" else (round(gap, 2) if gap is not None else None),
-                 gap_unit=DIFF_UNIT[ind["kind"]])
+    return _base(
+        name,
+        ind,
+        year=year,
+        sex=sex,
+        values=values,
+        highest=valid[0]["region"] if valid else None,
+        lowest=valid[-1]["region"] if valid else None,
+        gap=_round(gap, ind["kind"])
+        if ind["kind"] == "count"
+        else (round(gap, 2) if gap is not None else None),
+        gap_unit=DIFF_UNIT[ind["kind"]],
+    )
 
 
 def rank(indicator, year, level="시도", sido=None, top=None, ascending=False, sex="계"):
     """순위: 시도 전체 또는 시군구(기초자치단체) 전체 순위. sido를 주면 그 시도 안의 시군구만"""
     name, ind = _get_indicator(indicator)
     if name is None:
-        return {"status": "unknown_indicator", "indicator": indicator, "supported": list(INDICATORS)}
+        return {
+            "status": "unknown_indicator",
+            "indicator": indicator,
+            "supported": list(INDICATORS),
+        }
     lo, hi = _data_years()
     if not lo <= year <= hi:
-        return _base(name, ind, "out_of_range", reason=_out_of_range_reason(lo, hi),
-                     available_years=[lo, hi])
+        return _base(
+            name, ind, "out_of_range", reason=_out_of_range_reason(lo, hi), available_years=[lo, hi]
+        )
 
     where, params = ("r.kind = '시도'", []) if level == "시도" else ("r.is_basic", [])
     if sido:
@@ -354,11 +414,14 @@ def rank(indicator, year, level="시도", sido=None, top=None, ascending=False, 
             return {**s, "indicator": name}
         where += " and r.sido_code = ?"
         params.append(s["region_code"])
-    regs = _rows(f"""
+    regs = _rows(
+        f"""
         select distinct r.region_code, r.region_name, r.kind, r.sido_name
         from regions r join population p on p.region_code = r.region_code and p.year = ?
         where {where}
-    """, [year, *params])
+    """,
+        [year, *params],
+    )
     comps = _components([r["region_code"] for r in regs], year, year, sex)
     items = []
     for reg in regs:
@@ -369,63 +432,104 @@ def rank(indicator, year, level="시도", sido=None, top=None, ascending=False, 
     items.sort(key=lambda x: x["value"], reverse=not ascending)
     for i, it in enumerate(items, 1):
         it["rank"] = i
-    return _base(name, ind, year=year, sex=sex, level=level, order="낮은 순" if ascending else "높은 순",
-                 total_regions=len(items), ranking=items[:top] if top else items)
+    return _base(
+        name,
+        ind,
+        year=year,
+        sex=sex,
+        level=level,
+        order="낮은 순" if ascending else "높은 순",
+        total_regions=len(items),
+        ranking=items[:top] if top else items,
+    )
 
 
 def projection(indicator, region, year, scenario=DEFAULT_SCENARIO):
     """장래인구추계 값 (전국·시도만). 실적(주민등록)과 기준이 달라 직접 이어 비교하지 않는다."""
     name, ind = _get_indicator(indicator)
     if name is None:
-        return {"status": "unknown_indicator", "indicator": indicator, "supported": list(INDICATORS)}
+        return {
+            "status": "unknown_indicator",
+            "indicator": indicator,
+            "supported": list(INDICATORS),
+        }
     reg = resolve_region(region, year)
     if reg["status"] != "ok":
         return {**reg, "indicator": name}
-    rows = _rows("""
+    rows = _rows(
+        """
         select year, value, unit, is_projection from facts
-        where tbl_id = ? and region_code = ? and c3_id = ? and year = ? and scenario = ? and not is_missing
-    """, [PROJ_TABLE, reg["region_code"], ind["projection_c3"], year, scenario])
+        where tbl_id = ? and region_code = ? and c3_id = ? and year = ? and scenario = ?
+              and not is_missing
+    """,
+        [PROJ_TABLE, reg["region_code"], ind["projection_c3"], year, scenario],
+    )
     if not rows:
-        return {"status": "out_of_range", "indicator": name, "region": reg["display"],
-                "reason": f"{reg['display']} {year}년 장래인구추계({scenario}) 값이 없습니다."}
+        return {
+            "status": "out_of_range",
+            "indicator": name,
+            "region": reg["display"],
+            "reason": f"{reg['display']} {year}년 장래인구추계({scenario}) 값이 없습니다.",
+        }
     r = rows[0]
-    notes = ["실제 통계가 아닌 추계값입니다.",
-             "주민등록인구와 기준(시점, 외국인 포함 여부)이 달라 실적과 직접 이어서 비교하지 않습니다."]
+    notes = [
+        "실제 통계가 아닌 추계값입니다.",
+        "주민등록인구와 기준(시점, 외국인 포함 여부)이 달라 실적과 직접 이어서 비교하지 않습니다.",
+    ]
     # 추계표의 지역별 주의사항 (예: 대구는 군위군 미포함)
-    notes += [n["description"] for n in _catalog_rows("""
+    notes += [
+        n["description"]
+        for n in _catalog_rows(
+            """
         select description from region_notes
         where tbl_id = ? and region_code = ? and (year is null or year = ?)
-    """, [PROJ_TABLE, reg["region_code"], year])]
+    """,
+            [PROJ_TABLE, reg["region_code"], year],
+        )
+    ]
     # 그 연도에는 없어진 지역 (예: 2030년 광주광역시 → 전남광주통합특별시로 통합)
     if reg.get("valid_to") is not None and year > reg["valid_to"]:
-        notes.append(f'{reg["display"]}은(는) {reg["valid_to"]}년 이후 행정구역이 바뀌었습니다. '
-                     "추계값은 2022년 기준 추계 당시의 행정구역 기준입니다.")
+        notes.append(
+            f"{reg['display']}은(는) {reg['valid_to']}년 이후 행정구역이 바뀌었습니다. "
+            "추계값은 2022년 기준 추계 당시의 행정구역 기준입니다."
+        )
         notes += _change_notes(reg["region_code"])
-    return {"status": "ok", "indicator": name, "region": reg["display"], "year": year,
-            "value": r["value"], "unit": r["unit"], "is_projection": r["is_projection"],
-            "scenario": scenario, "source": PROJ_SOURCE, "basis": PROJ_BASIS, "notes": notes}
+    return {
+        "status": "ok",
+        "indicator": name,
+        "region": reg["display"],
+        "year": year,
+        "value": r["value"],
+        "unit": r["unit"],
+        "is_projection": r["is_projection"],
+        "scenario": scenario,
+        "source": PROJ_SOURCE,
+        "basis": PROJ_BASIS,
+        "notes": notes,
+    }
 
 
 # ---- 데모: 계획서 예시 질문 --------------------------------------------------------
 
 if __name__ == "__main__":
     demos = [
-        ("2025년 서울과 부산 중 고령인구 비율이 높은 지역은?",
-         lambda: compare("고령인구 비율", ["서울", "부산"], 2025)),
-        ("최근 5년간 부산 고령화율 변화는?",
-         lambda: trend("고령화율", "부산", 2020, 2025)),
-        ("2025년 고령인구 비율이 가장 높은 시도 3곳은?",
-         lambda: rank("고령인구 비율", 2025, top=3)),
-        ("2015~2025년 대구 인구 증감률은?",
-         lambda: trend("총인구", "대구", 2015, 2025)),
-        ("2030년 서울 고령인구 비율은? (수록 기간 밖)",
-         lambda: value("고령인구 비율", "서울", 2030)),
-        ("2025년 전남광주 인구는? (출범 전)",
-         lambda: value("인구", "전남광주", 2025)),
-        ("중구 인구는? (같은 이름 여럿)",
-         lambda: value("인구", "중구", 2025)),
-        ("서울 중구 노령화지수는?",
-         lambda: value("노령화지수", "서울 중구", 2025)),
+        (
+            "2025년 서울과 부산 중 고령인구 비율이 높은 지역은?",
+            lambda: compare("고령인구 비율", ["서울", "부산"], 2025),
+        ),
+        ("최근 5년간 부산 고령화율 변화는?", lambda: trend("고령화율", "부산", 2020, 2025)),
+        (
+            "2025년 고령인구 비율이 가장 높은 시도 3곳은?",
+            lambda: rank("고령인구 비율", 2025, top=3),
+        ),
+        ("2015~2025년 대구 인구 증감률은?", lambda: trend("총인구", "대구", 2015, 2025)),
+        (
+            "2030년 서울 고령인구 비율은? (수록 기간 밖)",
+            lambda: value("고령인구 비율", "서울", 2030),
+        ),
+        ("2025년 전남광주 인구는? (출범 전)", lambda: value("인구", "전남광주", 2025)),
+        ("중구 인구는? (같은 이름 여럿)", lambda: value("인구", "중구", 2025)),
+        ("서울 중구 노령화지수는?", lambda: value("노령화지수", "서울 중구", 2025)),
     ]
     for question, fn in demos:
         print(f"\n### {question}")

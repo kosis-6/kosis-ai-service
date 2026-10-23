@@ -13,6 +13,7 @@
 
 실행: python pipeline/preprocess.py   (가상환경 활성화 후, README 참고. 보통은 run_all.py로 실행)
 """
+
 import json
 import re
 from pathlib import Path
@@ -56,7 +57,13 @@ AGE_UNIT = {
 }
 
 # KOSIS 결측 기호 (답변 불가 사례 5: 결측 안내용)
-MISSING_REASONS = {"-": "해당 자료 없음", "*": "비밀보호 (5 미만)", "x": "비밀보호", "X": "비밀보호", "…": "미상"}
+MISSING_REASONS = {
+    "-": "해당 자료 없음",
+    "*": "비밀보호 (5 미만)",
+    "x": "비밀보호",
+    "X": "비밀보호",
+    "…": "미상",
+}
 # 수집 과정에서 결측 기호가 빠진 표의 기본 결측 사유 (통계표 주석 기준)
 TABLE_MISSING_REASON = {"DT_1MR2060": "비밀보호 (개인정보 보호를 위해 5 미만 값 비공개)"}
 
@@ -125,19 +132,29 @@ REGION_CHANGES = [
     (2024, "경기 부천시 일반구(원미·소사·오정) 재설치", "41192,41194,41196"),
     (2026, "경기 화성시 일반구 신설 (2026-02-01)", "41590"),
     (2026, "광주광역시와 전라남도가 전남광주통합특별시로 통합 (2026-07-01 출범)", "29,46,12"),
-    (2026, "인천 행정구역 개편 (2026-07-01): 중구·동구 → 제물포구·영종구, 서구 → 서해구·검단구", "28110,28140,28260"),
+    (
+        2026,
+        "인천 행정구역 개편 (2026-07-01): 중구·동구 → 제물포구·영종구, 서구 → 서해구·검단구",
+        "28110,28140,28260",
+    ),
 ]
 
 # 연간(연말 기준) 통계에서 마지막 해. 이후 연도에는 연결하지 않는다.
-# 2026년 연간 통계는 연말 기준 행정구역(전남광주통합특별시, 인천 개편 후 구)으로 집계됨 (국내인구이동통계 주석)
+# 2026년 연간 통계는 연말 기준 행정구역(전남광주통합특별시, 인천 개편 후 구)으로 집계됨
+# (국내인구이동통계 주석)
 REGION_LAST_YEAR = {
-    "29": 2025, "46": 2025,                      # 광주광역시, 전라남도
-    "28110": 2025, "28114": 2025, "28118": 2025,  # 인천 중구 (영종·용유 출장소 포함)
-    "28140": 2025,                                # 인천 동구
-    "28260": 2025, "28265": 2025,                 # 인천 서구 (검단 출장소 포함)
+    "29": 2025,
+    "46": 2025,  # 광주광역시, 전라남도
+    "28110": 2025,
+    "28114": 2025,
+    "28118": 2025,  # 인천 중구 (영종·용유 출장소 포함)
+    "28140": 2025,  # 인천 동구
+    "28260": 2025,
+    "28265": 2025,  # 인천 서구 (검단 출장소 포함)
 }
 
-# 기준 표(2008~2025 주민등록)에는 없지만 이후 출범한 지역. 유효 기간이 시작 전이면 자료에 연결하지 않는다.
+# 기준 표(2008~2025 주민등록)에는 없지만 이후 출범한 지역.
+# 유효 기간이 시작 전이면 자료에 연결하지 않는다.
 NEW_REGIONS = [
     # (코드, 이름, 종류, 유효 시작 연도)
     ("12", "전남광주통합특별시", "시도", 2026),
@@ -146,7 +163,11 @@ NEW_REGIONS = [
 # 출범 전 기간이 0으로 채워진 자리값 → 결측으로 처리 (0을 실제 값으로 답하지 않도록)
 # 코드: (원본 지역 이름, 출범 연도, 결측 사유)
 PLACEHOLDER_REGIONS = {
-    "12": ("전남광주통합특별시", 2026, "통합특별시 출범(2026-07-01) 전 기간의 자리값으로 실제 자료 아님"),
+    "12": (
+        "전남광주통합특별시",
+        2026,
+        "통합특별시 출범(2026-07-01) 전 기간의 자리값으로 실제 자료 아님",
+    ),
 }
 
 
@@ -176,19 +197,21 @@ def build_catalog(con):
     for path in sorted(RAW_DIR.glob("*.meta.json")):
         meta = json.loads(path.read_text(encoding="utf-8"))
         tbl_id = meta["tbl_id"]
-        rows.append({
-            "tbl_id": tbl_id,
-            "tbl_nm": meta["tbl_nm"],
-            "org_id": meta["org_id"],
-            "org_nm": ORG_NAMES.get(meta["org_id"]),
-            "start_year": int(meta["start"]),
-            "end_year": int(meta["end"]),
-            "is_projection_table": tbl_id in PROJECTION_TABLES,
-            "age_unit": AGE_UNIT.get(tbl_id),
-            "items": json.dumps(meta["items"], ensure_ascii=False),
-            "classes": json.dumps(meta["classes"], ensure_ascii=False),
-            "rows": meta["rows"],
-        })
+        rows.append(
+            {
+                "tbl_id": tbl_id,
+                "tbl_nm": meta["tbl_nm"],
+                "org_id": meta["org_id"],
+                "org_nm": ORG_NAMES.get(meta["org_id"]),
+                "start_year": int(meta["start"]),
+                "end_year": int(meta["end"]),
+                "is_projection_table": tbl_id in PROJECTION_TABLES,
+                "age_unit": AGE_UNIT.get(tbl_id),
+                "items": json.dumps(meta["items"], ensure_ascii=False),
+                "classes": json.dumps(meta["classes"], ensure_ascii=False),
+                "rows": meta["rows"],
+            }
+        )
     con.register("catalog_df", pd.DataFrame(rows))
     con.sql("create table catalog as select * from catalog_df")
     con.unregister("catalog_df")
@@ -202,7 +225,7 @@ def load_raw(con):
         select * from read_csv({files!r}, union_by_name = true, all_varchar = true)
     """)
     label_sql = " ".join(f"when '{t}' then {col}" for t, col in LABEL_COLUMN.items())
-    con.sql(f"alter table raw add column label varchar")
+    con.sql("alter table raw add column label varchar")
     con.sql(f"update raw set label = case tbl_id {label_sql} else item_nm end")
 
 
@@ -217,7 +240,8 @@ def build_regions(con):
     """
     con.sql("""
         create temp table r0 as
-        select c1_id as region_code, any_value(c1_nm) as region_name, any_value(c1_level)::int as lvl,
+        select c1_id as region_code, any_value(c1_nm) as region_name,
+               any_value(c1_level)::int as lvl,
                min(period)::int as first_year, max(period)::int as last_year
         from raw where tbl_id = 'DT_1B04006'
         group by c1_id
@@ -249,23 +273,29 @@ def build_regions(con):
         update regions set path = case when sido_name is null then region_name
                                        else sido_name || ' > ' || region_name end;
     """)
-    # 유효 기간: 기준 표 수록 기간(2008~2025)의 처음/끝까지 있던 지역은 그 이전/이후도 유효(NULL)로 본다.
+    # 유효 기간: 기준 표 수록 기간(2008~2025)의 처음/끝까지 있던 지역은
+    # 그 이전/이후도 유효(NULL)로 본다.
     # 예) 서울특별시 valid_from=NULL → 1970년 자료도 연결, 군위군(대구) valid_from=2023
     con.sql("""
         alter table regions add column valid_from int;
         alter table regions add column valid_to int;
         update regions set
-            valid_from = case when first_year = (select min(first_year) from regions) then null else first_year end,
-            valid_to   = case when last_year  = (select max(last_year)  from regions) then null else last_year  end;
+            valid_from = case when first_year = (select min(first_year) from regions)
+                              then null else first_year end,
+            valid_to   = case when last_year  = (select max(last_year)  from regions)
+                              then null else last_year  end;
     """)
     for code, last in REGION_LAST_YEAR.items():
         con.execute("update regions set valid_to = ? where region_code = ?", [last, code])
     # 기준 표 이후 출범한 지역 추가 (자료가 없으니 first_year/last_year는 비워 둔다)
     for code, name, kind, valid_from in NEW_REGIONS:
-        con.execute("""
+        con.execute(
+            """
             insert into regions (region_code, region_name, kind, is_basic, path, valid_from)
             values (?, ?, ?, false, ?, ?)
-        """, [code, name, kind, name, valid_from])
+        """,
+            [code, name, kind, name, valid_from],
+        )
 
     alias_rows = [(a, code) for code, names in SIDO_ALIASES.items() for a in names]
     alias_rows += con.sql("select region_name, region_code from regions").fetchall()
@@ -273,7 +303,9 @@ def build_regions(con):
     con.sql("create table region_aliases as select distinct alias, region_code from alias_df")
     con.unregister("alias_df")
 
-    con.register("chg_df", pd.DataFrame(REGION_CHANGES, columns=["year", "description", "region_codes"]))
+    con.register(
+        "chg_df", pd.DataFrame(REGION_CHANGES, columns=["year", "description", "region_codes"])
+    )
     con.sql("create table region_changes as select * from chg_df")
     con.unregister("chg_df")
 
@@ -303,11 +335,17 @@ def build_region_map(con):
     src = con.sql(" union all ".join(parts)).df()
 
     regions = con.sql("select region_code, region_name, kind, path from regions").df()
-    name_by_code = {c: _norm(n) for c, n in zip(regions.region_code, regions.region_name)}
+    name_by_code = {
+        c: _norm(n) for c, n in zip(regions.region_code, regions.region_name, strict=True)
+    }
     codes_by_path = {}
-    for code, path in zip(regions.region_code, regions.path):
+    for code, path in zip(regions.region_code, regions.path, strict=True):
         codes_by_path.setdefault(_norm(path), []).append(code)
-    sido_by_name = {_norm(n): c for c, n, k in zip(regions.region_code, regions.region_name, regions.kind) if k == "시도"}
+    sido_by_name = {
+        _norm(n): c
+        for c, n, k in zip(regions.region_code, regions.region_name, regions.kind, strict=True)
+        if k == "시도"
+    }
 
     def candidates(row):
         name = _norm(row.src_name)
@@ -315,7 +353,9 @@ def build_region_map(con):
             return ["00"], "total"
         if row.org_id == "101" and name_by_code.get(row.src_code) == name:
             return [row.src_code], "code"
-        parts = [_norm(OLD_SIDO_NAMES.get(p.strip(), p.strip())) for p in (row.src_path or "").split(">")]
+        parts = [
+            _norm(OLD_SIDO_NAMES.get(p.strip(), p.strip())) for p in (row.src_path or "").split(">")
+        ]
         parts = [p for p in parts if p and p not in TOTAL_NAMES]
         if len(parts) >= 2:
             key = PATH_FIXES.get(f"{parts[0]}>{parts[-1]}", f"{parts[0]}>{parts[-1]}")
@@ -338,12 +378,26 @@ def build_region_map(con):
     rows = []
     for row in src.itertuples():
         codes, method = candidates(row)
-        base = {"tbl_id": row.tbl_id, "src_code": row.src_code, "src_name": row.src_name, "src_path": row.src_path}
+        base = {
+            "tbl_id": row.tbl_id,
+            "src_code": row.src_code,
+            "src_name": row.src_name,
+            "src_path": row.src_path,
+        }
         if codes:
-            rows += [{**base, "region_code": c, "match_method": method, "unmatched_reason": None} for c in codes]
+            rows += [
+                {**base, "region_code": c, "match_method": method, "unmatched_reason": None}
+                for c in codes
+            ]
         else:
-            rows.append({**base, "region_code": None, "match_method": None,
-                         "unmatched_reason": unmatched_reason(row.src_name)})
+            rows.append(
+                {
+                    **base,
+                    "region_code": None,
+                    "match_method": None,
+                    "unmatched_reason": unmatched_reason(row.src_name),
+                }
+            )
 
     con.register("map_df", pd.DataFrame(rows))
     con.sql("""
@@ -358,7 +412,9 @@ def build_facts(con):
     """2. 모든 표를 하나의 세로형 facts 테이블로 (지역 코드·단위·결측·추계 정리)"""
     keys = con.sql("select distinct tbl_id, item_id, label, unit from raw").df()
     keys["clean_unit"] = [
-        resolve_unit(r.tbl_id, r.item_id, r.label or "", r.unit if isinstance(r.unit, str) else None)
+        resolve_unit(
+            r.tbl_id, r.item_id, r.label or "", r.unit if isinstance(r.unit, str) else None
+        )
         for r in keys.itertuples()
     ]
     con.register("unit_df", keys)
@@ -374,10 +430,15 @@ def build_facts(con):
     src_code = f"case r.tbl_id {region_sql} else r.c1_id end"
     src_name = f"case r.tbl_id {region_nm_sql} else r.c1_nm end"
     # 출범 전 자리값이면 사유 문자열, 아니면 NULL
-    placeholder_reason = "case " + " ".join(
-        f"when {src_code} = '{code}' and {src_name} = '{name}' and r.period::int < {year} then '{reason}'"
-        for code, (name, year, reason) in PLACEHOLDER_REGIONS.items()
-    ) + " end"
+    placeholder_reason = (
+        "case "
+        + " ".join(
+            f"when {src_code} = '{code}' and {src_name} = '{name}' "
+            f"and r.period::int < {year} then '{reason}'"
+            for code, (name, year, reason) in PLACEHOLDER_REGIONS.items()
+        )
+        + " end"
+    )
 
     missing_sql = " ".join(f"when '{k}' then '{v}'" for k, v in MISSING_REASONS.items())
     table_missing_sql = " ".join(f"when '{t}' then '{v}'" for t, v in TABLE_MISSING_REASON.items())
@@ -399,8 +460,10 @@ def build_facts(con):
                              then coalesce(case r.value_flag {missing_sql} end,
                                            case r.tbl_id {table_missing_sql} end,
                                            '값 없음') end) as missing_reason,
-               case when r.tbl_id in ({proj_list}) then trim(split_part(r.c1_nm, '(', 1)) end as scenario,
-               r.tbl_id in ({proj_list}) and r.period::int > {PROJECTION_BASE_YEAR} as is_projection,
+               case when r.tbl_id in ({proj_list})
+                    then trim(split_part(r.c1_nm, '(', 1)) end as scenario,
+               r.tbl_id in ({proj_list})
+                   and r.period::int > {PROJECTION_BASE_YEAR} as is_projection,
                try_cast(r.last_changed as date) as last_changed
         from raw r
         left join unit_df u
@@ -436,31 +499,54 @@ def build_population(con):
 
 def print_summary(con):
     print("\n[테이블 행 수]")
-    for t in ["catalog", "regions", "region_aliases", "region_changes", "region_code_map", "facts", "population"]:
+    for t in [
+        "catalog",
+        "regions",
+        "region_aliases",
+        "region_changes",
+        "region_code_map",
+        "facts",
+        "population",
+    ]:
         print(f"  {t:16s} {con.sql(f'select count(*) from {t}').fetchall()[0][0]:>10,}")
 
     print("\n[지역 종류]")
-    print(con.sql("select kind, count(*) n from regions group by 1 order by 1").df().to_string(index=False))
+    print(
+        con.sql("select kind, count(*) n from regions group by 1 order by 1")
+        .df()
+        .to_string(index=False)
+    )
 
     print("\n[지역 연결 방식] (원본 지역 코드 기준)")
-    print(con.sql("""
+    print(
+        con.sql("""
         select coalesce(match_method, '연결 안 함') as method, count(*) as n
         from region_code_map group by 1 order by 2 desc
-    """).df().to_string(index=False))
+    """)
+        .df()
+        .to_string(index=False)
+    )
 
     print("\n[연결하지 않은 지역 사유]")
-    print(con.sql("""
+    print(
+        con.sql("""
         select unmatched_reason, count(*) as n, string_agg(distinct tbl_id, ', ') as tables
         from region_code_map where region_code is null group by 1 order by 2 desc
-    """).df().to_string(index=False))
+    """)
+        .df()
+        .to_string(index=False)
+    )
 
     print("\n[지역 연결 검증] 모두 0이어야 정상")
     checks = {
         "코드는 연결됐지만 이름이 다른 행": """
             select count(*) from region_code_map m join regions r using (region_code)
             where m.match_method = 'code'
-              and regexp_replace(m.src_name, '\\s', '', 'g') <> regexp_replace(r.region_name, '\\s', '', 'g')""",
-        "연결 과정에서 늘어난/줄어든 행 수": "select (select count(*) from facts) - (select count(*) from raw)",
+              and regexp_replace(m.src_name, '\\s', '', 'g')
+                  <> regexp_replace(r.region_name, '\\s', '', 'g')""",
+        "연결 과정에서 늘어난/줄어든 행 수": (
+            "select (select count(*) from facts) - (select count(*) from raw)"
+        ),
         "같은 표·연도·지역에 원본 코드가 2개 이상 (합산 시 중복)": """
             select count(*) from (
                 select tbl_id, year, region_code, c1_id, c2_id, c3_id, item_id
@@ -476,18 +562,29 @@ def print_summary(con):
         print(f"  {title}: {con.sql(sql).fetchall()[0][0]}")
 
     print("\n[단위가 정해지지 않은 지표]")
-    print(con.sql("""
+    print(
+        con.sql("""
         select distinct tbl_id, item_id, label from facts where unit is null order by 1, 2
-    """).df().to_string(index=False) or "  없음")
+    """)
+        .df()
+        .to_string(index=False)
+        or "  없음"
+    )
 
     print("\n[결측] (표별)")
-    print(con.sql("""
+    print(
+        con.sql("""
         select tbl_id, count(*) filter (where is_missing) as missing,
                string_agg(distinct missing_reason, ', ') as reasons
         from facts group by 1 having missing > 0 order by 1
-    """).df().to_string(index=False))
+    """)
+        .df()
+        .to_string(index=False)
+    )
 
-    bad = con.sql("select count(*) from facts where not is_missing and value is null").fetchall()[0][0]
+    bad = con.sql("select count(*) from facts where not is_missing and value is null").fetchall()[
+        0
+    ][0]
     print(f"\n[숫자 변환 실패] {bad}건")
 
 
@@ -498,11 +595,17 @@ def main():
     OUT_PATH.unlink(missing_ok=True)
 
     con = duckdb.connect(str(OUT_PATH))
-    print("1/5 catalog");    build_catalog(con)
-    print("2/5 raw 읽기");   load_raw(con)
-    print("3/5 regions");    build_regions(con); build_region_map(con)
-    print("4/5 facts");      build_facts(con)
-    print("5/5 population"); build_population(con)
+    print("1/5 catalog")
+    build_catalog(con)
+    print("2/5 raw 읽기")
+    load_raw(con)
+    print("3/5 regions")
+    build_regions(con)
+    build_region_map(con)
+    print("4/5 facts")
+    build_facts(con)
+    print("5/5 population")
+    build_population(con)
     print_summary(con)
     con.close()
     print(f"\n완료: {OUT_PATH.relative_to(ROOT)}")

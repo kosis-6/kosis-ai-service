@@ -1,7 +1,8 @@
 """팀 공유용 전처리 자료 묶기 → dist/kosis_share_YYYYMMDD.zip
 
 담는 것
-  kosis.duckdb           전처리 + 카탈로그 결과 DB (이것만 있으면 indicators.py 등을 바로 쓸 수 있음)
+  kosis.duckdb           전처리 + 카탈로그 결과 DB
+                         (이것만 있으면 app/services/indicators.py 등을 바로 쓸 수 있음)
   preview/*.csv          엑셀로 열어볼 미리보기
   catalog_notes.toml     통계표 설명서 (DB에 들어간 설명의 원본)
   DATA_README.md         자료 설명 (이 스크립트가 DB 내용을 보고 생성)
@@ -9,6 +10,7 @@
 API 키(.env)나 원본 CSV는 담지 않는다.
 실행: python pipeline/run_all.py --share   (검증까지 통과한 뒤 묶기)
 """
+
 import zipfile
 from datetime import date
 from pathlib import Path
@@ -43,7 +45,8 @@ def build_readme(con):
     counts = {t: con.sql(f"select count(*) from {t}").fetchall()[0][0] for t in TABLE_DESCRIPTIONS}
     lo, hi = con.sql("select min(year), max(year) from population").fetchall()[0]
     n_tables, n_verified = con.sql(
-        "select count(*), count(*) filter (where verified) from table_notes").fetchall()[0]
+        "select count(*), count(*) filter (where verified) from table_notes"
+    ).fetchall()[0]
     rows = "\n".join(f"| `{t}` | {counts[t]:,} | {d} |" for t, d in TABLE_DESCRIPTIONS.items())
     return f"""# KOSIS 인구통계 전처리 자료
 
@@ -55,7 +58,7 @@ def build_readme(con):
 
 | 파일 | 내용 |
 |---|---|
-| `kosis.duckdb` | 전처리 결과 DB. 프로젝트의 `data/processed/`에 넣으면 `pipeline/indicators.py`를 바로 쓸 수 있음 |
+| `kosis.duckdb` | 전처리 결과 DB. `data/processed/`에 넣으면 서비스 코드에서 바로 사용 |
 | `preview/*.csv` | 엑셀로 열어볼 미리보기 (큰 표는 일부만) |
 | `catalog_notes.toml` | 통계표 설명서 원본 |
 
@@ -69,11 +72,10 @@ con = duckdb.connect("data/processed/kosis.duckdb", read_only=True)
 con.sql("select * from population where region_code = '11' and year = 2025 and age is null").show()
 ```
 
-지표 계산 함수:
+지표 계산 함수 (프로젝트 루트에서):
 
 ```python
-import sys; sys.path.insert(0, "pipeline")
-import indicators
+from app.services import indicators
 indicators.compare("고령인구 비율", ["서울", "부산"], 2025)
 ```
 
