@@ -203,7 +203,6 @@ dependencies = [
     { name = "pgvector" },
     { name = "psycopg", extra = ["binary"] },
     { name = "pydantic-settings" },
-    { name = "python-dotenv" },
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -223,7 +222,6 @@ requires-dist = [
     { name = "pgvector", specifier = ">=0.5.1" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.3.6" },
     { name = "pydantic-settings", specifier = ">=2.16.1" },
-    { name = "python-dotenv", specifier = "==1.2.4" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.1.5" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.54.0" },
 ]

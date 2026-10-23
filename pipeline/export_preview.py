@@ -6,6 +6,7 @@
 
 실행: python pipeline/export_preview.py   (가상환경 활성화 후, README 참고)
 """
+
 from pathlib import Path
 
 import duckdb
@@ -23,7 +24,9 @@ QUERIES = {
     # 표마다 최근 연도 일부 + 결측 예시
     "facts_sample": """
         select * from (
-            select *, row_number() over (partition by tbl_id order by year desc, c1_id, c2_id, c3_id) as rn
+            select *, row_number() over (
+                partition by tbl_id order by year desc, c1_id, c2_id, c3_id
+            ) as rn
             from facts where not is_missing
         ) where rn <= 200
         union all
