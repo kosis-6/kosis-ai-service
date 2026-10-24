@@ -20,6 +20,7 @@ API: POST /ask
 
 import json
 import re
+from datetime import date
 
 from starlette.concurrency import run_in_threadpool
 
@@ -57,9 +58,68 @@ async def understand(question):
     text = await _chat(question, system)
     m = re.search(r"\{.*\}", text, re.S)  # 코드 블록(```json)으로 감싸 오는 경우 대비
     try:
-        return json.loads(m.group(0))
+        parsed = json.loads(m.group(0))
     except (AttributeError, json.JSONDecodeError):
         return {"type": "parse_error", "raw": text}
+    return await run_in_threadpool(correct, question, parsed)
+
+
+# ---- 질문 해석 보정: LLM 해석을 질문 원문과 대조해 바로잡는다 ------------------------------
+
+GENDER_WORDS = {"여": re.compile(r"여성|여자"), "남": re.compile(r"남성|남자")}
+# 긴 표현부터 찾는다 ("재작년" 안에 "작년"이 있음)
+RELATIVE_YEARS = [("재작년", -2), ("지난해", -1), ("작년", -1), ("올해", 0), ("금년", 0)]
+AGE_BAND = re.compile(r"\d+(대|세)")
+NO_REGION_TYPES = {"rank", "other", "parse_error"}
+
+
+def correct(question, parsed, today=None):
+    """같은 질문도 실행마다 HCX 해석이 달라서, 질문 원문에서 확실히 알 수 있는 것은 코드가 맞춘다.
+
+    - 지표: 질문에 지표 이름·별칭이 하나만 있으면 그 지표
+      (예: "고령화율"을 노령화지수로 해석한 경우)
+    - 성별: "여성/여자", "남성/남자" 중 하나만 있으면 그 성별
+    - 지역: "전국"이 있는데 지역이 비었으면 전국
+    - 연도: "작년", "올해" 같은 상대 표현은 오늘 날짜 기준
+    고친 내용은 parsed["corrections"]에 남긴다.
+    """
+    today = today or date.today()
+    kind = parsed.get("type")
+    fixes = []
+
+    def fix(key, value, reason):
+        fixes.append(f"{key}: {parsed.get(key)!r} → {value!r} ({reason})")
+        parsed[key] = value
+
+    if kind not in ("other", "parse_error"):
+        spans = indicators.find_in_text(question)
+        names = {name for *_, name in spans}
+        # 지표 표현 말고 "20대", "65세" 같은 연령 조건이 더 있으면 지원 지표와 뜻이 달라서 맡긴다
+        rest = indicators._norm(question)
+        for start, end, _ in sorted(spans, reverse=True):
+            rest = rest[:start] + " " + rest[end:]
+        if len(names) == 1 and not AGE_BAND.search(rest):
+            name = names.pop()
+            if indicators.canonical_name(parsed.get("indicator") or "") != name:
+                fix("indicator", name, "질문의 지표 표현")
+
+    genders = [sex for sex, pattern in GENDER_WORDS.items() if pattern.search(question)]
+    if len(genders) == 1 and parsed.get("sex") in (None, "", "계"):
+        fix("sex", genders[0], "질문의 성별 표현")
+
+    if "전국" in question and not parsed.get("regions") and kind not in NO_REGION_TYPES:
+        fix("regions", ["전국"], "질문의 '전국'")
+
+    for word, offset in RELATIVE_YEARS:
+        if word in question:
+            year = today.year + offset
+            if kind not in ("trend", "other", "parse_error") and parsed.get("year") != year:
+                fix("year", year, f"'{word}' = {today.year}년 기준")
+            break
+
+    if fixes:
+        parsed["corrections"] = fixes
+    return parsed
 
 
 def compute(q):
