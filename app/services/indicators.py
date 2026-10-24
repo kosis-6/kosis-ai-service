@@ -96,17 +96,47 @@ def _data_years():
     return r["lo"], r["hi"]
 
 
-def _get_indicator(indicator):
-    """지표 이름·별칭 → (지표 이름, 정의). 별칭은 카탈로그 지표 사전에서 읽고, 공백은 무시한다."""
-    key = _norm(indicator)
+def _alias_map():
+    """지표 이름 → 별칭 목록 (계산·조회 지표 모두). catalog.py를 안 돌렸으면 계산 지표 이름만"""
     aliases = {name: [] for name in INDICATORS}
-    for r in _catalog_rows("select name, aliases from indicator_dict where method = 'computed'"):
-        if r["name"] in aliases:
-            aliases[r["name"]] = json.loads(r["aliases"])
-    for name, names in aliases.items():
+    for r in _catalog_rows("select name, aliases from indicator_dict"):
+        aliases[r["name"]] = json.loads(r["aliases"])
+    return aliases
+
+
+def canonical_name(indicator):
+    """지표 이름·별칭 → 지표 사전의 이름 (조회 지표 포함). 모르면 None"""
+    key = _norm(indicator)
+    for name, names in _alias_map().items():
         if key in {_norm(n) for n in [name, *names]}:
-            return name, INDICATORS[name]
+            return name
+    return None
+
+
+def _get_indicator(indicator):
+    """지표 이름·별칭 → (지표 이름, 정의). 계산 지표만, 공백은 무시한다."""
+    name = canonical_name(indicator)
+    if name in INDICATORS:
+        return name, INDICATORS[name]
     return None, None
+
+
+def find_in_text(text):
+    """문장에 들어 있는 지표 이름·별칭 → [(시작, 끝, 지표 이름)] (공백을 뺀 문장 기준 위치)
+
+    짧은 별칭이 더 긴 별칭 안에 있으면 긴 쪽만 남긴다.
+    예) "고령인구비율" 안의 "인구"(총인구), "인구순유입"(순이동) 안의 "인구"는 세지 않는다.
+    """
+    s = _norm(text)
+    spans = []
+    for name, names in _alias_map().items():
+        for n in {_norm(x) for x in [name, *names]}:
+            spans += [(m.start(), m.end(), name) for m in re.finditer(re.escape(n), s)]
+    return [
+        a
+        for a in spans
+        if not any(b[0] <= a[0] and a[1] <= b[1] and b[1] - b[0] > a[1] - a[0] for b in spans)
+    ]
 
 
 def _base(name, ind, status="ok", **extra):
