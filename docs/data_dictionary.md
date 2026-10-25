@@ -2,7 +2,7 @@
 
 KOSIS 원본 통계표 20개를 전처리해 만든 DB(`data/processed/kosis.duckdb`)의 구성과 사용법.
 
-- 원본: `data/raw/kosis_zip/processed/*.csv` (+ 표마다 `.meta.json`)
+- 원본: `data/raw/kosis_zip/processed/*.csv` (+ 표마다 `.meta.json`). `--source collect`로 실행하면 수집기 출력 `data/processed/*.csv` (zip 안의 CSV와 같은 파일)
 - 결과: `data/processed/kosis.duckdb` (DuckDB 파일 하나, 테이블 15개)
 - 만드는 코드: `pipeline/run_all.py` → `preprocess.py` → `catalog.py` → `validate.py`
 - `data/`는 git에 올리지 않는다. 받는 방법은 팀 공유 zip(`dist/`) 또는 원본 zip을 `data/kosis_processed.zip`에 두고 `python pipeline/run_all.py`
@@ -90,7 +90,7 @@ config/catalog_notes.toml ──(catalog.py)──▶ 설명 테이블: indicato
 | | `region_aliases` | 342 | 지역 별칭 → 코드 ("부산", "부산시" → `26`) |
 | | `region_changes` | 14 | 행정구역 변경 이력 |
 | | `region_code_map` | 2,584 | 표별 원래 지역 코드 → 기준 코드 대응표 |
-| **표 설명** | `catalog` | 20 | 표 목록, 수록 기간, 추계표 여부, 연령 단위 |
+| **표 설명** | `catalog` | 20 | 표 목록, 수록 기간, 추계표 여부, 연령 단위, 수집 시각(`collected_at`) |
 | | `table_notes` | 20 | 표별 조사 이름, 기준 시점, 대상 범위, 주의사항 |
 | | `table_groups` | 7 | 비교 그룹 (주민등록 / 장래추계 / 인구동향 ...) |
 | | `compatible_groups` | 1 | 그룹이 달라도 비교해도 되는 조합 |
