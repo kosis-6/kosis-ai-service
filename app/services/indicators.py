@@ -7,6 +7,7 @@ LLM이 숫자를 직접 계산하지 않도록, 질문 유형별 계산을 함�
   trend(지표, 지역, 시작, 끝)        추이 분석   "최근 5년 부산 고령인구 비율 변화는?" (증감률 포함)
   compare(지표, [지역...], 연도)     지역 비교   "서울과 부산 중 어디가 높아?"
   rank(지표, 연도, 수준)             순위        "고령인구 비율이 가장 높은 시도는?"
+  composition(지역, 연도, 기준)      구성비      "2025년 서울 인구의 연령대별 구성비는?"
   projection(지표, 지역, 연도)       장래추계    수록 기간 이후 연도 안내용
 
 결과의 status
@@ -16,6 +17,7 @@ LLM이 숫자를 직접 계산하지 않도록, 질문 유형별 계산을 함�
   ambiguous_region    같은 이름의 지역이 여럿 (예: 중구) → candidates로 되묻기
   out_of_range        수록 기간 밖 연도 → 추계가 있으면 suggestion에 담음 (답변 불가 사례 1)
   region_not_in_year  그 연도에 없던 지역 (예: 2025년 전남광주통합특별시)
+  missing_data        수록 기간 안이지만 그 지역·연도 값이 비어 있음
 
 실행(예시 질문 데모): python -m app.services.indicators
 """
@@ -34,6 +36,7 @@ PROJ_SOURCE = "국가데이터처 (구 통계청), 장래인구추계 시도편 
 PROJ_BASIS = "2022년 기준 장래인구추계, 각 연도 7월 1일 기준 (외국인 포함)"
 PROJ_TABLE = "DT_1BPB002"
 DEFAULT_SCENARIO = "중위 추계"
+KOSIS_URL = "https://kosis.kr/statHtml/statHtml.do?orgId={org_id}&tblId={tbl_id}"
 
 # kind에 따라 차이·변화의 단위가 달라진다
 #   count : 사람 수   → 차이는 명, 변화는 증감률(%)
@@ -67,6 +70,8 @@ INDICATORS = {
         "formula": "65세 이상 인구 ÷ 0~14세 인구 × 100",
         "calc": lambda c: _div(c["old"], c["young"]),
         "projection_c3": "50",
+        # 답변 문장에서 값의 뜻을 풀어 쓸 때 사용 (qa.summary)
+        "meaning": "유소년인구(0~14세) 100명당 65세 이상 인구가 {value}명",
     },
 }
 # 지표의 다른 이름(별칭)은 config/catalog_notes.toml의 지표 사전에서 읽는다 (_get_indicator)
@@ -139,6 +144,12 @@ def find_in_text(text):
     ]
 
 
+def kosis_url(tbl_id):
+    """KOSIS 통계표 화면 주소. 기관 ID는 수집 메타데이터(catalog 테이블)에서 읽는다"""
+    rows = _rows("select org_id from catalog where tbl_id = ?", [tbl_id])
+    return KOSIS_URL.format(org_id=rows[0]["org_id"], tbl_id=tbl_id) if rows else None
+
+
 def _base(name, ind, status="ok", **extra):
     out = {
         "status": status,
@@ -147,6 +158,8 @@ def _base(name, ind, status="ok", **extra):
         "formula": ind["formula"],
         "source": POP_SOURCE,
         "basis": POP_BASIS,
+        "tbl_id": POP_TABLE,
+        "url": kosis_url(POP_TABLE),
     }
     out.update(extra)
     return out
@@ -209,13 +222,14 @@ def _out_of_range_reason(lo, hi):
 
 
 def _components(codes, y0, y1, sex):
-    """연도·지역별 총인구, 0~14세, 65세 이상 (100세 이상 포함)"""
+    """연도·지역별 총인구, 0~14세, 15~64세, 65세 이상 (100세 이상 포함)"""
     marks = ", ".join("?" for _ in codes)
     rows = _rows(
         f"""
         select year, region_code,
                sum(population) filter (where age is null)          as total,
                sum(population) filter (where age between 0 and 14) as young,
+               sum(population) filter (where age between 15 and 64) as working,
                sum(population) filter (where age >= 65)            as old
         from population
         where sex = ? and year between ? and ? and region_code in ({marks})
@@ -422,6 +436,60 @@ def compare(indicator, regions, year, sex="계"):
     )
 
 
+AGE_GROUPS = [
+    ("young", "유소년인구(0~14세)"),
+    ("working", "생산연령인구(15~64세)"),
+    ("old", "고령인구(65세 이상)"),
+]
+COMPOSITION = {
+    "unit": "%",
+    "formula": "항목별 인구 ÷ 총인구 × 100",
+}
+
+
+def composition(region, year, by="age", sex="계"):
+    """구성비: 한 지역·한 연도 인구의 연령대별(by="age") 또는 성별(by="sex") 비중"""
+    name, ind, regs, err = _prepare("총인구", [region], year)
+    if err:
+        return err
+    reg = regs[0]
+    if bad := _check(name, ind, reg, year, year):
+        return bad
+    code = reg["region_code"]
+    if by == "sex":
+        sex = "계"  # 성별 구성은 남녀 전체가 대상
+        counts = {
+            f"{s}자": (_components([code], year, year, s).get((year, code)) or {}).get("total")
+            for s in ("남", "여")
+        }
+    else:
+        comp = _components([code], year, year, sex).get((year, code)) or {}
+        counts = {label: comp.get(key) for key, label in AGE_GROUPS}
+    total = (_components([code], year, year, sex).get((year, code)) or {}).get("total")
+    if not total or None in counts.values():
+        return _base(
+            "인구 구성",
+            COMPOSITION,
+            "missing_data",
+            region=reg["display"],
+            reason=f"{reg['display']} {year}년 인구 자료가 없습니다.",
+        )
+    shares = analysis.composition(counts, total)  # 분모는 '계' 값 (연령 미상 등이 있어도 맞게)
+    return _base(
+        "인구 구성",
+        COMPOSITION,
+        region=reg["display"],
+        year=year,
+        sex=sex,
+        by=by,
+        total=int(total),
+        parts=[
+            {"label": label, "count": int(n), "share": round(shares[label], 2)}
+            for label, n in counts.items()
+        ],
+    )
+
+
 def rank(indicator, year, level="시도", sido=None, top=None, ascending=False, sex="계"):
     """순위: 시도 전체 또는 시군구(기초자치단체) 전체 순위. sido를 주면 그 시도 안의 시군구만"""
     name, ind = _get_indicator(indicator)
@@ -535,6 +603,8 @@ def projection(indicator, region, year, scenario=DEFAULT_SCENARIO):
         "scenario": scenario,
         "source": PROJ_SOURCE,
         "basis": PROJ_BASIS,
+        "tbl_id": PROJ_TABLE,
+        "url": kosis_url(PROJ_TABLE),
         "notes": notes,
     }
 

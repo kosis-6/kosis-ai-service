@@ -47,6 +47,17 @@ def test_indicator_phrase_with_change_word() -> None:
     assert p["indicator"] == "총인구"
 
 
+def test_generic_population_word_keeps_llm_indicator() -> None:
+    # "인구"만 별칭으로 잡혀도, HCX가 고른 다른 지원 지표를 총인구로 바꾸지 않는다
+    p = qa.correct(
+        "부산 인구에서 고령층이 차지하는 비중은?",
+        parsed(indicator="고령인구 비율", regions=["부산"]),
+        TODAY,
+    )
+    assert p["indicator"] == "고령인구 비율"
+    assert "corrections" not in p
+
+
 def test_female_elderly_ratio() -> None:
     p = qa.correct(
         "작년 부산 여성 노인 비율은?",

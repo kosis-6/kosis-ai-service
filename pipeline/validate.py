@@ -10,6 +10,7 @@
 실행: python pipeline/validate.py   (가상환경 활성화 후, README 참고)
 """
 
+import os
 import sys
 from pathlib import Path
 
@@ -17,7 +18,7 @@ import duckdb
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parent.parent
-DB_PATH = ROOT / "data" / "processed" / "kosis.duckdb"
+DB_PATH = ROOT / os.environ.get("DUCKDB_PATH", "data/processed/kosis.duckdb")
 
 # 비율·소수 값을 비교할 때 허용 오차 (발표값 반올림 차이)
 TOLERANCE = 0.01

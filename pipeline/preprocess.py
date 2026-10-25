@@ -1,7 +1,7 @@
 """KOSIS 수집 CSV → 정제된 DuckDB 생성
 
-입력: data/raw/kosis_zip/processed/*.csv, *.meta.json
-출력: data/processed/kosis.duckdb
+입력: data/raw/kosis_zip/processed/*.csv, *.meta.json  (환경변수 KOSIS_RAW_DIR로 변경)
+출력: data/processed/kosis.duckdb  (환경변수 DUCKDB_PATH로 변경)
 
 만들어지는 테이블
   catalog         통계표 목록 (수록 기간, 분류, 추계표 여부)
@@ -15,6 +15,7 @@
 """
 
 import json
+import os
 import re
 from pathlib import Path
 
@@ -22,8 +23,9 @@ import duckdb
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parent.parent
-RAW_DIR = ROOT / "data" / "raw" / "kosis_zip" / "processed"
-OUT_PATH = ROOT / "data" / "processed" / "kosis.duckdb"
+# run_all.py가 수집 결과 폴더·임시 DB 경로를 넘길 때 환경변수를 쓴다 (절대 경로면 그대로)
+RAW_DIR = ROOT / os.environ.get("KOSIS_RAW_DIR", "data/raw/kosis_zip/processed")
+OUT_PATH = ROOT / os.environ.get("DUCKDB_PATH", "data/processed/kosis.duckdb")
 
 ORG_NAMES = {"101": "국가데이터처 (구 통계청)", "110": "행정안전부"}
 
@@ -210,10 +212,15 @@ def build_catalog(con):
                 "items": json.dumps(meta["items"], ensure_ascii=False),
                 "classes": json.dumps(meta["classes"], ensure_ascii=False),
                 "rows": meta["rows"],
+                # 수집기가 기록한 수집 시각. 예전 수집 결과에는 없어서 비어 있다
+                "collected_at": meta.get("collected_at"),
             }
         )
     con.register("catalog_df", pd.DataFrame(rows))
-    con.sql("create table catalog as select * from catalog_df")
+    con.sql(
+        "create table catalog as "
+        "select * replace (cast(collected_at as timestamp) as collected_at) from catalog_df"
+    )
     con.unregister("catalog_df")
 
 

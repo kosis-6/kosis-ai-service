@@ -2,16 +2,14 @@
 
   1. 질문 이해        LLM이 질문을 JSON(질문 유형, 지표, 지역, 연도)으로 바꾼다
   2~4. 판단·조회·계산  코드(indicators.py)가 계산하고, status로 답변 가능 여부를 알려준다
-  5. 답변 생성        LLM은 숫자 없는 설명 문장만 쓰고,
-                      숫자·목록·출처·주의사항은 코드가 계산 결과에서 그대로 만든다 (render)
+  5. 답변 생성        코드가 질문 유형별 템플릿에 계산 결과를 채워 문장을 만들고 (summary),
+                      숫자 목록·주의사항·출처를 붙인다 (render)
 
-LLM은 숫자를 쓰지 않는다. 답변의 숫자는 모두 코드가 계산 결과에서 옮긴다.
-LLM 문장에 계산 결과에 없는 숫자가 섞이면 한 번 다시 쓰게 하고,
-그래도 섞이면 문장을 빼고 수치만 보여준다.
-지원하지 않는 지표 안내는 LLM 없이 코드가 고정 문장으로 쓴다.
+LLM은 1단계(질문 해석)에만 쓴다. 답변 문장은 템플릿이라 숫자·지표 정의가 틀릴 수 없고,
+질문 하나에 HCX를 한 번만 부른다.
+답변할 수 없는 질문은 status(답변 불가 사유)별로 정해진 안내 문장을 쓴다.
 
-LLM을 부르는 함수(understand, explain, write_text, ask)는 async,
-나머지는 DB·계산만 하는 일반 함수다.
+LLM을 부르는 함수(understand, ask)는 async, 나머지는 DB·계산만 하는 일반 함수다.
 
 API: POST /ask
 실행: python -m scripts.ask --question "2025년 서울과 부산 고령인구 비율 비교"
@@ -24,7 +22,7 @@ from datetime import date
 
 from starlette.concurrency import run_in_threadpool
 
-from app.prompts.qa import ANSWER_SYSTEM, PARSE_SYSTEM, POLICY_PATH, RETRY_EXTRA
+from app.prompts.qa import PARSE_SYSTEM
 from app.services import analysis, indicators
 from app.services.hcx_client import HcxClient
 
@@ -100,7 +98,10 @@ def correct(question, parsed, today=None):
             rest = rest[:start] + " " + rest[end:]
         if len(names) == 1 and not AGE_BAND.search(rest):
             name = names.pop()
-            if indicators.canonical_name(parsed.get("indicator") or "") != name:
+            current = indicators.canonical_name(parsed.get("indicator") or "")
+            # "인구"는 거의 모든 질문에 있어서, HCX가 다른 지표를 골랐으면 총인구로 바꾸지 않는다
+            # (예: "부산 인구에서 고령층이 차지하는 비중" → 고령인구 비율)
+            if current != name and not (name == "총인구" and current is not None):
                 fix("indicator", name, "질문의 지표 표현")
 
     genders = [sex for sex, pattern in GENDER_WORDS.items() if pattern.search(question)]
@@ -147,6 +148,15 @@ def compute(q):
     if causal:  # 답변 불가 사례 4: 인과 판단 없이 수치 변화만 제시
         kind = "trend" if regions else "rank"
 
+    if kind == "composition":  # 구성비는 지표가 아니라 총인구를 나눠 보므로 지표 확인을 건너뜀
+        if not regions:
+            return {"status": "missing_region", "reason": "어느 지역인지 질문에 없습니다."}
+        by = "sex" if q.get("by") == "sex" else "age"
+        try:
+            return indicators.composition(regions[0], year, by, sex)
+        except Exception as e:
+            return {"status": "error", "reason": f"계산 중 오류가 났습니다: {e}"}
+
     if indicators._get_indicator(ind)[0] is None:  # 지역보다 지표를 먼저 확인
         return {
             "status": "unknown_indicator",
@@ -182,7 +192,9 @@ def compute(q):
     if result.get("series"):
         _add_yearly_change(result)
     if causal:
-        result["causal_question"] = "원인·정책 효과는 판단하지 않고 수치 변화만 제시합니다."
+        result["causal_question"] = (
+            "원인이나 정책 효과는 통계 수치만으로 판단할 수 없어 수치 변화만 보여드립니다."
+        )
     return result
 
 
@@ -198,7 +210,184 @@ def _add_yearly_change(result):
             cur["rate_from_prev"] = round(analysis.growth_rate(prev["value"], cur["value"]), 2)
 
 
-# ---- 숫자 부분: 코드가 계산 결과에서 그대로 만든다 -----------------------------------
+# ---- 답변 문장: 질문 유형별 템플릿에 계산 결과를 채운다 ----------------------------------
+
+SEX_WORDS = {"남": "남성 ", "여": "여성 "}
+
+# 답변 불가 사유(status)별 안내. reason이 있으면 그 뒤에 붙인다
+REFUSAL_GUIDE = {
+    "parse_error": "",
+    "not_supported_question": "아래 지원 지표로 지역·연도를 넣어 질문해 주세요.",
+    "missing_region": "지역을 넣어 다시 질문해 주세요.",
+    "unknown_region": "시도나 시군구 이름으로 다시 질문해 주세요.",
+    "ambiguous_region": "아래 후보 중 하나로 다시 질문해 주세요.",
+    "out_of_range": "수록 기간 안의 연도로 다시 질문해 주세요.",
+    "region_not_in_year": "그 지역이 있던 연도로 다시 질문해 주세요.",
+    "missing_data": "다른 연도나 지역으로 질문해 주세요.",
+    "error": "",
+}
+
+
+def _josa(word, pair):
+    """받침이 있으면 pair[0], 없으면 pair[1]을 붙인다. pair 예: "은는", "이가" """
+    last = word[-1] if word else ""
+    if "가" <= last <= "힣":
+        return word + (pair[0] if (ord(last) - ord("가")) % 28 else pair[1])
+    return f"{word}{pair[0]}({pair[1]})"
+
+
+def _val(v, unit):
+    """문장 속 값. 설명형 단위(예: "유소년인구 100명당 명")는 뜻풀이 문장으로 따로 쓰므로 뺀다"""
+    if v is None:
+        return "자료 없음"
+    if isinstance(v, float) and v.is_integer():
+        v = int(v)
+    return f"{v:,}" if " " in unit else f"{v:,}{unit}"
+
+
+def _meaning(name, v):
+    """값의 뜻풀이 문장 (노령화지수처럼 단위만으로 뜻을 알기 어려운 지표)"""
+    meaning = indicators.INDICATORS.get(name, {}).get("meaning")
+    if not meaning or v is None:
+        return ""
+    return f" {meaning.format(value=_val(v, ''))}이라는 뜻입니다."
+
+
+def _subject(r):
+    """성별을 붙인 지표 이름 (예: 여성 고령인구 비율)"""
+    return SEX_WORDS.get(r.get("sex"), "") + r.get("indicator", "")
+
+
+def _value_text(r):
+    name, unit = _subject(r), r.get("unit", "")
+    if r["value"] is None:
+        return f"{r['year']}년 {r['region']}의 {_josa(name, '은는')} 자료가 없습니다."
+    return (
+        f"{r['year']}년 {r['region']}의 {_josa(name, '은는')} {_val(r['value'], unit)}입니다."
+        + _meaning(r["indicator"], r["value"])
+    )
+
+
+def _projection_text(r):
+    return (
+        f"{r['year']}년 {r['region']}의 {r['indicator']} 장래인구추계({r['scenario']}) 값은 "
+        f"{_val(r['value'], r.get('unit', ''))}입니다. 실제 통계가 아닌 추계값입니다."
+    )
+
+
+def _trend_text(r):
+    name, unit, c = _subject(r), r.get("unit", ""), r["change"]
+    first, last = r["series"][0]["value"], r["series"][-1]["value"]
+    text = (
+        f"{r['region']}의 {_josa(name, '은는')} {c['from_year']}년 {_val(first, unit)}, "
+        f"{c['to_year']}년 {_val(last, unit)}입니다. "
+    )
+    if c["diff"] == 0:
+        return text + f"{c['from_year']}년과 같습니다."
+    direction = "증가" if c["diff"] > 0 else "감소"
+    text += f"{c['from_year']}년 대비 {_val(abs(c['diff']), c['diff_unit'])} {direction}했습니다"
+    if "rate" in c:
+        text += f"(증감률 {c['rate']:+}{c['rate_unit']})"
+    text += "."
+    yearly = {
+        "증가" if s["diff_from_prev"] > 0 else "감소" if s["diff_from_prev"] < 0 else "같음"
+        for s in r["series"]
+        if "diff_from_prev" in s
+    }
+    if len(r["series"]) > 2 and yearly == {direction}:
+        text += f" 이 기간 동안 매년 {direction}했습니다."
+    return text
+
+
+def _compare_text(r):
+    name, unit = _subject(r), r.get("unit", "")
+    valid = [v for v in r["values"] if v["value"] is not None]
+    if len(valid) < 2:
+        return f"{r['year']}년 {name} 값이 있는 지역이 둘 이상이 아니어서 비교할 수 없습니다."
+    high, low = valid[0], valid[-1]
+    if r["gap"] == 0:
+        return (
+            f"{r['year']}년 {_josa(name, '은는')} {_josa(high['region'], '과와')} "
+            f"{_josa(low['region'], '이가')} 같습니다."
+        )
+    gap = _val(r["gap"], r["gap_unit"])
+    if len(valid) == 2:
+        return (
+            f"{r['year']}년 {_josa(name, '은는')} {_josa(high['region'], '이가')} "
+            f"{low['region']}보다 {gap} 높습니다"
+            f"({high['region']} {_val(high['value'], unit)}, "
+            f"{low['region']} {_val(low['value'], unit)})."
+        )
+    return (
+        f"{r['year']}년 {_josa(name, '이가')} 가장 높은 지역은 "
+        f"{high['region']}({_val(high['value'], unit)}), 가장 낮은 지역은 "
+        f"{low['region']}({_val(low['value'], unit)})이며, 차이는 {gap}입니다."
+    )
+
+
+def _rank_text(r):
+    name, unit = _subject(r), r.get("unit", "")
+    items = r["ranking"]
+    if not items:
+        return f"{r['year']}년 {name} 순위를 매길 자료가 없습니다."
+    order = "낮은" if r["order"] == "낮은 순" else "높은"
+    head = f"{r['year']}년 {_josa(name, '이가')} 가장 {order} {r['level']}"
+    listed = ", ".join(f"{x['region']}({_val(x['value'], unit)})" for x in items)
+    if 1 < len(items) < r["total_regions"]:  # "3곳" 처럼 개수를 물은 경우
+        return f"{head} {len(items)}곳은 {listed}입니다."
+    top = items[0]
+    return f"{_josa(head, '은는')} {top['region']}({_val(top['value'], unit)})입니다."
+
+
+def _composition_text(r):
+    by = "성별" if r["by"] == "sex" else "연령대별"
+    whom = SEX_WORDS.get(r.get("sex"), "")
+    listed = ", ".join(f"{p['label']} {p['share']}%" for p in r["parts"])
+    biggest = max(r["parts"], key=lambda p: p["share"])
+    return (
+        f"{r['year']}년 {r['region']} {whom}인구 {r['total']:,}명의 {by} 구성은 {listed}입니다. "
+        f"가장 큰 비중은 {biggest['label']}입니다."
+    )
+
+
+def _refusal_text(r):
+    status = r.get("status")
+    if status == "unknown_indicator":
+        return (
+            f"'{r.get('indicator')}'은(는) 아직 지원하지 않는 지표입니다. "
+            "아래 지원 지표로 다시 질문해 주세요."
+        )
+    parts = [r.get("reason") or "답변할 수 없는 질문입니다.", REFUSAL_GUIDE.get(status, "")]
+    return " ".join(p for p in parts if p)
+
+
+def summary(r):
+    """계산 결과 → 답변 문장 (LLM을 거치지 않는다)"""
+    status = r.get("status")
+    if status == "ok":
+        if "scenario" in r:
+            text = _projection_text(r)
+        elif "series" in r:
+            text = _trend_text(r)
+        elif "values" in r:
+            text = _compare_text(r)
+        elif "ranking" in r:
+            text = _rank_text(r)
+        elif "parts" in r:
+            text = _composition_text(r)
+        else:
+            text = _value_text(r)
+        if r.get("causal_question"):
+            text = f"{r['causal_question']} {text}"
+        return text
+    if status == "out_of_range" and r.get("suggestion", {}).get("status") == "ok":
+        return f"{r['reason']} 대신 장래인구추계 값을 보여드립니다. " + _projection_text(
+            r["suggestion"]
+        )
+    return _refusal_text(r)
+
+
+# ---- 숫자 목록: 코드가 계산 결과에서 그대로 만든다 -----------------------------------
 
 
 def _num(v, unit):
@@ -215,14 +404,9 @@ def _signed(v, unit):
 
 
 def _body(r):
-    """status가 ok인 계산 결과 → 숫자 줄 목록"""
+    """status가 ok인 계산 결과 → 숫자 줄 목록. 값 하나짜리(조회·추계)는 문장에 있어 비운다"""
     unit = r.get("unit", "")
     name = r.get("indicator", "")
-    if "scenario" in r:  # 장래추계
-        return [
-            f"- {r['region']} {r['year']}년 {name} (장래인구추계 {r['scenario']}, 실제 통계 아님): "
-            f"{_num(r['value'], unit)}"
-        ]
     if "series" in r:  # 추이
         lines = [f"{r['region']} {name} ({r['sex']})"]
         for s in r["series"]:
@@ -254,19 +438,28 @@ def _body(r):
         ]
         lines += [f"{x['rank']}. {x['region']}: {_num(x['value'], unit)}" for x in r["ranking"]]
         return lines
-    return [f"- {r['region']} {r['year']}년 {name} ({r['sex']}): {_num(r['value'], unit)}"]
+    if "parts" in r:  # 구성비
+        lines = [f"{r['region']} {r['year']}년 인구 구성 ({r['sex']}, 전체 {r['total']:,}명)"]
+        lines += [f"- {p['label']}: {p['count']:,}명 ({p['share']}%)" for p in r["parts"]]
+        return lines
+    return []
+
+
+def _source_result(result):
+    """출처를 보여줄 계산 결과 (수록 기간 밖이라 추계값을 대신 보여주면 추계 결과)"""
+    suggestion = result.get("suggestion", {})
+    if result.get("status") == "out_of_range" and suggestion.get("status") == "ok":
+        return suggestion
+    return result
 
 
 def render(result):
     """계산 결과 → 답변 아래에 붙일 숫자·목록·출처·주의사항 (LLM을 거치지 않는다)"""
     status = result.get("status")
-    src = result
+    src = _source_result(result)
     lines = []
     if status == "ok":
         lines = _body(result)
-    elif status == "out_of_range" and result.get("suggestion", {}).get("status") == "ok":
-        src = result["suggestion"]
-        lines = _body(src)
     elif status == "ambiguous_region":
         lines = [f"- {c}" for c in result.get("candidates", [])]
     elif status in ("unknown_indicator", "not_supported_question"):
@@ -275,169 +468,39 @@ def render(result):
     notes = list(src.get("notes") or [])
     if src.get("formula"):
         notes.insert(0, f"계산식: {src['formula']}")
-    if result.get("causal_question"):
-        notes.append(result["causal_question"])
     lines += [f"※ {n}" for n in notes]
     if src.get("source"):
         lines.append(f"출처: {src['source']} ({src['basis']})")
+    if src.get("url"):
+        lines.append(f"통계표: {src['url']}")
     return "\n".join(lines)
 
 
-def _guide(result):
-    """status별 답변 지침.
-
-    프롬프트 규칙만으로는 LLM이 자주 빠뜨려서 계산 결과에 맞춰 코드가 정한다
-    """
-    status = result.get("status")
-    if status == "ok":
-        if result.get("causal_question"):
-            return (
-                "원인이나 정책 효과는 통계 수치만으로 판단할 수 없다고 먼저 밝히고, "
-                "아래 수치 변화가 늘었는지 줄었는지만 숫자 없이 말하세요."
-            )
-        return (
-            "질문에 대한 결론(어느 쪽이 높은지, 늘었는지 줄었는지 등)을 "
-            "숫자 없이 한두 문장으로 말하세요."
-        )
-    if status == "out_of_range":
-        g = f"먼저 수록 기간 밖이라고 알리세요: {result.get('reason')}"
-        if result.get("suggestion", {}).get("status") == "ok":
-            g += (
-                " 그리고 장래인구추계 값을 아래에 함께 보여준다고 알리되,"
-                " 실제 통계가 아닌 추계값이라고 밝히세요."
-                " 추계값은 아래에 따로 표시되므로 예시나 가정(A%, B% 등)을 들지 마세요."
-            )
-        return g
-    if status == "unknown_indicator":
-        return (
-            f"'{result.get('indicator')}'은(는) 지원하지 않는 지표라고 알리세요. "
-            "값을 추정하지 마세요."
-        )
-    if status == "ambiguous_region":
-        return f"{result.get('reason')} 아래 후보 중 어느 지역인지 물어보세요."
-    return f"답변할 수 없는 이유를 안내하세요: {result.get('reason')}"
-
-
-def _direction(diff):
-    return "증가" if diff > 0 else "감소" if diff < 0 else "변화 없음"
-
-
-def facts_for_llm(result):
-    """LLM에 넘길 정보. 값·차이·비율은 빼고 지역·기간·방향(증가/감소)·순서만 남긴다"""
-    f = {
-        k: result[k]
-        for k in (
-            "status",
-            "indicator",
-            "formula",
-            "region",
-            "year",
-            "sex",
-            "reason",
-            "candidates",
-            "highest",
-            "lowest",
-            "causal_question",
-        )
-        if k in result
-    }
-    if "series" in result:
-        c = result["change"]
-        f["period"] = f"{c['from_year']}~{c['to_year']}년"
-        f["overall"] = _direction(c["diff"])
-        yearly = {
-            _direction(s["diff_from_prev"]) for s in result["series"] if "diff_from_prev" in s
+def sources(result):
+    """답변에 쓴 통계표 목록 [{"name", "basis", "tbl_id", "url"}]"""
+    src = _source_result(result)
+    if not src.get("source"):
+        return []
+    return [
+        {
+            "name": src["source"],
+            "basis": src["basis"],
+            "tbl_id": src.get("tbl_id"),
+            "url": src.get("url"),
         }
-        f["yearly"] = f"매년 {yearly.pop()}" if len(yearly) == 1 else "해마다 다름"
-    if "values" in result:
-        f["order_high_to_low"] = [v["region"] for v in result["values"]]
-    if "ranking" in result:
-        f["level"], f["order"] = result["level"], result["order"]
-        f["ranking"] = [x["region"] for x in result["ranking"]]
-    if result.get("suggestion", {}).get("status") == "ok":
-        f["projection_available"] = True
-    if "supported" in result:
-        f["supported_listed_below"] = True
-    return f
-
-
-def _fixed_text(result):
-    """LLM 없이 코드가 쓰는 설명 문장.
-    지원하지 않는 지표는 LLM이 다른 기능을 지어내 제안해서 고정 문장으로 안내한다"""
-    if result.get("status") == "unknown_indicator":
-        return (
-            f"'{result.get('indicator')}'은(는) 아직 지원하지 않는 지표입니다. "
-            "아래 지원 지표로 다시 질문해 주세요."
-        )
-    return None
-
-
-async def explain(question, result, extra=""):
-    """5단계: LLM이 숫자 없는 설명 문장을 쓴다. 숫자는 보여주지 않는다"""
-    system = ANSWER_SYSTEM.replace("{POLICY}", POLICY_PATH.read_text(encoding="utf-8"))
-    facts = json.dumps(facts_for_llm(result), ensure_ascii=False, indent=2, default=str)
-    prompt = f"[질문]\n{question}\n\n[분석 결과]\n{facts}\n\n[답변 지침]\n{_guide(result)}{extra}"
-    return await _chat(prompt, system)
-
-
-async def write_text(question, result):
-    """설명 문장을 만들고 숫자 확인까지 마친다. (문장, 버린 문장의 근거 없는 숫자 목록)을 돌려준다
-
-    숫자 확인에 걸리면 한 번 다시 쓰게 하고, 그래도 걸리면 문장을 버리고 코드 출력만 남긴다.
-    확인을 마친 뒤에 보여줘야 하므로 스트리밍하지 않는다.
-    """
-    fixed = _fixed_text(result)
-    if fixed is not None:
-        return fixed, []
-    text = await explain(question, result)
-    if not check_numbers(text, question, result):
-        return text, []
-    text = await explain(question, result, extra=RETRY_EXTRA)
-    bad = check_numbers(text, question, result)
-    return ("", bad) if bad else (text, [])
-
-
-NUMBER = re.compile(r"\d[\d,]*(?:\.\d+)?")
-
-
-def check_numbers(text, question, result):
-    """LLM 문장 속 숫자가 질문이나 LLM에 넘긴 정보에 있는지 확인.
-
-    어디에도 없는 숫자 목록을 돌려준다
-    """
-    result = facts_for_llm(result)
-    allowed = set()
-
-    def collect(v):
-        if isinstance(v, bool):
-            return
-        if isinstance(v, (int, float)):
-            allowed.add(abs(float(v)))
-        elif isinstance(v, str):
-            allowed.update(float(n.replace(",", "")) for n in NUMBER.findall(v))
-        elif isinstance(v, dict):
-            for x in v.values():
-                collect(x)
-        elif isinstance(v, list):
-            for x in v:
-                collect(x)
-
-    collect(result)
-    collect(question)
-    return [n for n in NUMBER.findall(text) if float(n.replace(",", "")) not in allowed]
+    ]
 
 
 async def ask(question):
-    """질문 하나를 끝까지 처리. {"parsed", "result", "answer", "dropped_numbers"}를 반환한다.
-    dropped_numbers: 다시 써도 근거 없는 숫자가 남아 설명 문장을 뺐을 때 그 숫자들"""
+    """질문 하나를 끝까지 처리. {"status", "answer", "parsed", "result", "sources"}를 반환한다.
+    status: ok 또는 답변 불가 사유 (indicators.py 결과의 status)"""
     parsed = await understand(question)
     # DuckDB 조회는 동기 함수라 이벤트 루프를 막지 않도록 스레드에서 실행
     result = await run_in_threadpool(compute, parsed)
-    text, dropped = await write_text(question, result)
-    block = render(result)
     return {
+        "status": result.get("status"),
+        "answer": f"{summary(result)}\n\n{render(result)}".strip(),
         "parsed": parsed,
         "result": result,
-        "answer": f"{text}\n\n{block}".strip(),
-        "dropped_numbers": dropped,
+        "sources": sources(result),
     }

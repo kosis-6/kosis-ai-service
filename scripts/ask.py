@@ -18,20 +18,11 @@ async def run(question: str, debug: bool) -> None:
         print(json.dumps(parsed, ensure_ascii=False, indent=2))
         print("\n[2~4. 계산 결과]")
         print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
-        print("\n[5. 답변]")
-    text, dropped = await qa.write_text(question, result)
-    if text:
-        print(text)
+        print(f"\n[5. 답변] status={result.get('status')}")
+    print(qa.summary(result))
     block = qa.render(result)
     if block:
         print(f"\n{block}")
-    if dropped:
-        print(
-            f"\n[숫자 확인] 설명 문장에 근거 없는 숫자({', '.join(dropped)})가 있어 "
-            "문장을 빼고 수치만 표시"
-        )
-    else:
-        print("\n[숫자 확인] 이상 없음")
 
 
 def main() -> None:

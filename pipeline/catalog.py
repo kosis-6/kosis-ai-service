@@ -19,6 +19,7 @@
 """
 
 import json
+import os
 import re
 import sys
 import tomllib
@@ -28,7 +29,7 @@ import duckdb
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parent.parent
-DB_PATH = ROOT / "data" / "processed" / "kosis.duckdb"
+DB_PATH = ROOT / os.environ.get("DUCKDB_PATH", "data/processed/kosis.duckdb")
 NOTES_PATH = ROOT / "config" / "catalog_notes.toml"
 
 

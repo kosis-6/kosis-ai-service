@@ -143,7 +143,7 @@ python -m scripts.collect_kosis --list scripts/tables.csv --dry-run
 | 경로 | 내용 |
 | --- | --- |
 | `data/processed/<표ID>.csv` | 수집한 데이터 (값 하나당 한 줄) |
-| `data/processed/<표ID>.meta.json` | 표 이름, 분류 이름, 항목 목록, 수록 기간 |
+| `data/processed/<표ID>.meta.json` | 표 이름, 분류 이름, 항목 목록, 수록 기간, 수집 시각(`collected_at`) |
 | `data/raw/<표ID>/` | API 원본 응답 (`--save-raw`를 붙였을 때만 저장, 용량이 커서 기본은 저장 안 함) |
 
 CSV 주요 열:
@@ -172,12 +172,21 @@ CSV 주요 열:
 팀에서 공유받은 원본 zip을 `data/kosis_processed.zip`에 두고 컨테이너 터미널에서 실행합니다.
 
 ```bash
-python pipeline/run_all.py   # 압축 해제 → 전처리 → 카탈로그 → 검증
+python pipeline/run_all.py   # 압축 해제 → 전처리 → 카탈로그 → 검증 → DB 교체
 ```
 
 `data/processed/kosis.duckdb`가 만들어집니다. 테이블과 규칙은 [`docs/data_dictionary.md`](docs/data_dictionary.md)를 참고합니다.
 
-> DB를 다시 만들기 전에는 서버를 멈춥니다(`docker compose stop api`). 서버가 DB 파일을 열고 있으면 덮어쓰지 못할 수 있습니다.
+KOSIS에서 직접 다시 받아 DB를 갱신할 때는 zip 없이 수집 결과를 바로 씁니다.
+
+```bash
+python -m scripts.collect_kosis --list scripts/tables.csv   # KOSIS OpenAPI 수집
+python pipeline/run_all.py --source collect                 # 수집 결과 → 전처리 → 검증 → DB 교체
+```
+
+- DB는 임시 파일(`kosis.new.duckdb`)에 먼저 만들고, **검증을 모두 통과해야** `kosis.duckdb`로 바꿉니다. 중간에 실패하면 기존 DB가 그대로 남아 서비스가 계속 동작합니다.
+- 실행 중인 서버는 기존 DB를 계속 읽으므로, 교체 후 `docker compose restart api`로 반영합니다.
+- 표마다 수집 시각은 `catalog.collected_at`에 들어갑니다 (예전 zip 자료는 기록이 없어 비어 있음).
 
 ### 2. 질문하기
 
@@ -196,7 +205,9 @@ python -m scripts.ask -q "최근 5년 부산 인구 변화" --debug
 | --- | --- | --- |
 | 1. 질문 이해 | HCX-007 | 질문 → 유형·지표·지역·연도 JSON |
 | 2~4. 판단·조회·계산 | 코드 (`indicators.py`) | 답변 가능 여부(status) 판단, DuckDB 조회, 계산 |
-| 5. 답변 생성 | HCX-007 + 코드 | LLM은 숫자 없는 설명 문장만, 수치·출처는 코드가 계산 결과에서 그대로 작성 |
+| 5. 답변 생성 | 코드 (`qa.py`) | 질문 유형별 템플릿에 계산 결과를 채워 문장 작성, 수치 목록·출처·KOSIS 통계표 링크 첨부 |
+
+응답의 `status`는 `ok` 또는 답변 불가 사유(`out_of_range`, `unknown_indicator`, `missing_region` 등)이고, `sources`에 답변에 쓴 통계표가 들어 있습니다.
 
 ## 프로젝트 구조
 
