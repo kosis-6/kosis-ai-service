@@ -1,3 +1,4 @@
+import asyncio
 from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
@@ -7,6 +8,9 @@ import httpx
 from app.core.config import get_settings
 
 SUCCESS_CODE = "20000"
+RATE_LIMIT_CODE = "42901"
+# 호출 제한에 걸리면 기다렸다가 다시 시도하는 간격 (초). 다 실패하면 HcxError
+RETRY_WAITS = (1.0, 3.0, 6.0)
 
 
 class HcxError(RuntimeError):
@@ -17,6 +21,10 @@ class HcxError(RuntimeError):
         self.code = code
         self.message = message
         self.http_status = http_status
+
+    @property
+    def is_rate_limit(self) -> bool:
+        return self.code == RATE_LIMIT_CODE or self.http_status == 429
 
 
 @dataclass
@@ -35,6 +43,7 @@ class HcxClient:
         base_url: str | None = None,
         timeout: float = 60.0,
         transport: httpx.AsyncBaseTransport | None = None,
+        retry_waits: tuple[float, ...] = RETRY_WAITS,
     ) -> None:
         settings = get_settings()
         self.api_key = api_key or settings.hcx_api_key
@@ -42,9 +51,24 @@ class HcxClient:
         self.timeout = timeout
         # 테스트에서 실제 API 대신 가짜 응답을 넣을 때 사용
         self.transport = transport
+        self.retry_waits = retry_waits
 
     async def chat(self, model: str, messages: list[dict[str, Any]], **options: Any) -> ChatResult:
-        """메시지를 보내고 답변을 받는다. options는 temperature, maxTokens 등 요청 본문 필드."""
+        """메시지를 보내고 답변을 받는다. options는 temperature, maxTokens 등 요청 본문 필드.
+
+        호출 제한(42901, HTTP 429)에 걸리면 retry_waits 간격으로 다시 시도한다.
+        """
+        for wait in (*self.retry_waits, None):
+            try:
+                return await self._chat_once(model, messages, **options)
+            except HcxError as e:
+                if not e.is_rate_limit or wait is None:
+                    raise
+                await asyncio.sleep(wait)
+
+    async def _chat_once(
+        self, model: str, messages: list[dict[str, Any]], **options: Any
+    ) -> ChatResult:
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "X-NCP-CLOVASTUDIO-REQUEST-ID": uuid4().hex,

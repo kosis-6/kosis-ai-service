@@ -34,7 +34,11 @@ def test_ask_empty_question() -> None:
 
 @pytest.mark.parametrize(
     ("error", "status_code"),
-    [(DuckDBNotFoundError("DB 없음"), 503), (HcxError("42901", "Too many requests"), 502)],
+    [
+        (DuckDBNotFoundError("DB 없음"), 503),
+        (HcxError("42901", "Too many requests", 429), 429),
+        (HcxError("40100", "Unauthorized", 401), 502),
+    ],
 )
 def test_ask_errors(monkeypatch: pytest.MonkeyPatch, error: Exception, status_code: int) -> None:
     async def fail(question: str) -> dict:

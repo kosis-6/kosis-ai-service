@@ -378,7 +378,7 @@ def _signed(v, unit):
 
 
 def _body(r):
-    """status가 ok인 계산 결과 → 숫자 줄 목록. 값 하나짜리(단순 조회·추계)는 문장에 다 있어 비운다"""
+    """status가 ok인 계산 결과 → 숫자 줄 목록. 값 하나짜리(조회·추계)는 문장에 있어 비운다"""
     unit = r.get("unit", "")
     name = r.get("indicator", "")
     if "series" in r:  # 추이
