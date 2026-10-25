@@ -1,0 +1,416 @@
+# 통계표 설명서 (카탈로그 보강)
+#
+# 사람이 읽고 고치는 파일. src/catalog.py가 읽어서 kosis.duckdb에 넣는다.
+#
+#   [groups.*]      비교 그룹: 같은 그룹끼리만 값을 직접 비교할 수 있다 (답변 불가 사례 3)
+#   [tables.*]      표마다 원래 조사 이름, 기준 시점, 대상, 비교 그룹
+#   [[indicators]]  지표 사전: 질문 속 지표 이름 → 어느 표의 어느 항목인지
+#
+# verified = true  : KOSIS 통계표 주석·통계설명자료로 확인함
+# verified = false : 초안(일반 지식 기반). 확인 후 true로 바꾼다
+# check            : 아직 확인이 필요한 내용
+# series_breaks    : 통계 기준이 바뀐 해. 그 해를 포함하는 추이에 주의사항을 붙인다
+# region_notes     : 특정 지역(코드)에만 해당하는 주의사항. year가 있으면 그 해에만
+
+# ---------------------------------------------------------------------------
+# 비교 그룹
+#   measure = "stock" : 특정 시점의 인구 수 (저량)
+#   measure = "flow"  : 1년 동안 발생한 건수 (유량)
+# ---------------------------------------------------------------------------
+
+[groups.resident_registration]
+name = "주민등록인구"
+measure = "stock"
+description = "주민등록 신고 기준 인구. 연도 값은 12월 말 시점"
+
+[groups.census]
+name = "인구총조사"
+measure = "stock"
+description = "행정자료 기반 인구총조사"
+
+[groups.projection]
+name = "장래인구추계"
+measure = "stock"
+description = "추계값(실적 아님). 7월 1일 기준, 국적과 상관없이 국내 상주 인구(외국인 포함)"
+
+[groups.foreign_residents]
+name = "지방자치단체 외국인주민 현황"
+measure = "stock"
+description = "행정안전부 외국인주민 통계. 11월 1일 기준. 외국인 + 귀화자 + 외국인주민 자녀"
+
+[groups.vital_statistics]
+name = "인구동향조사(출생·사망·혼인·이혼)"
+measure = "flow"
+description = "1년간 건수. 조출생률 등 율의 분모는 연앙인구"
+
+[groups.vital_statistics_multicultural]
+name = "다문화 인구동태"
+measure = "flow"
+description = "귀화·인지에 의한 국적취득자와 외국국적자가 포함된 다문화가족의 출생·혼인"
+
+[groups.migration]
+name = "국내인구이동통계"
+measure = "flow"
+description = "1년간 전입신고 기준 이동. 연간 통계는 연말 기준 행정구역으로 집계"
+
+# 그룹이 달라도 직접 비교해도 되는 조합 (같은 신고 자료에서 나온 경우)
+[[compatible_groups]]
+groups = ["vital_statistics", "vital_statistics_multicultural"]
+reason = "다문화 인구동태는 인구동향조사 신고 자료의 일부"
+
+# ---------------------------------------------------------------------------
+# 통계표
+# ---------------------------------------------------------------------------
+
+[tables.DT_1B04006]
+survey = "주민등록인구현황"
+producer = "행정안전부 (KOSIS 수록: 국가데이터처 (구 통계청))"
+group = "resident_registration"
+reference_date = "각 연도 12월 말 (월별 자료의 12월 값)"
+scope = "주민등록 전체 = 거주자 + 거주불명자(2010년 1월부터) + 재외국민(2015년 1월부터)"
+note = "연령은 주민등록 신고 기준이라 실제 연령과 다를 수 있음. 인구가 없는 8개 면(파주 군내·장단·진서, 철원 근동·원동·원남·임남, 고성 수동)은 제외"
+source_coverage = "KOSIS 원표는 월별 2008.01~2026.09, 수집본은 연간(12월 말) 2008~2025"
+latest_available = "2026년 9월(월별)"
+verified = true
+series_breaks = [
+  { year = 2010, description = "거주불명자 통계 포함 시작 (이 해 증가분에 기준 변경 효과 포함)" },
+  { year = 2015, description = "재외국민 통계 포함 시작 (이 해 증가분에 기준 변경 효과 포함)" },
+]
+
+[tables.DT_1BPB002]
+survey = "장래인구추계 시도편 (2022년 기준, 2024년 5월 공표)"
+producer = "국가데이터처 (구 통계청)"
+group = "projection"
+reference_date = "각 연도 7월 1일"
+scope = "국적과 상관없이 대한민국에 상주하는 인구 (외국인 포함)"
+note = """1970~2022년은 확정인구, 2023년 이후는 추계값으로 다음 추계 때 바뀔 수 있음. \
+시나리오: 중위(기본) = 출생·사망·이동 중위가정, 고위(최대인구) = 출생·사망·국제이동 고위 + 국내이동 중위, \
+저위(최소인구) = 출생·사망·국제이동 저위 + 국내이동 중위, 무이동 = 출생·사망 중위 + 국제·국내이동 없음. \
+용어: '인구구성비'는 전국 인구 중 해당 시도 인구의 비중(연령 구성이 아님). \
+인구성장률 = ln(Pt/P0)/T × 100. 성비 = 남자/여자 × 100. 노령화지수 = 고령인구/유소년인구 × 100. \
+유소년부양비 = 유소년인구/생산연령인구 × 100, 노년부양비 = 고령인구/생산연령인구 × 100"""
+verified = true
+region_notes = [
+  { region = "27", description = "장래추계의 대구광역시에는 2023.7.1 편입된 군위군 인구가 포함되지 않음 (실적 통계의 대구와 범위가 다름)" },
+  { region = "44", year = 2012, description = "2012년 충청남도 인구에는 세종시로 편입된 인구가 제외됨" },
+  { region = "43", year = 2012, description = "2012년 충청북도 인구에는 세종시로 편입된 인구가 제외됨" },
+]
+
+[tables.DT_1BPB003]
+survey = "장래인구추계 시도편 (2022년 기준, 2024년 5월 공표)"
+producer = "국가데이터처 (구 통계청)"
+group = "projection"
+reference_date = "각 연도 7월 1일"
+scope = "국적과 상관없이 대한민국에 상주하는 인구 (외국인 포함)"
+note = "단위가 천명. 1970~2022년은 확정인구, 2023년 이후는 추계값. 같은 공표(DT_1BPB002)의 주석 기준"
+verified = true
+region_notes = [
+  { region = "27", description = "장래추계의 대구광역시에는 2023.7.1 편입된 군위군 인구가 포함되지 않음 (실적 통계의 대구와 범위가 다름)" },
+]
+
+[tables.DT_1BPB101]
+survey = "장래인구추계 시도편 (2022년 기준, 2024년 5월 공표)"
+producer = "국가데이터처 (구 통계청)"
+group = "projection"
+reference_date = "각 연도"
+scope = "출산율 가정값"
+note = "가정별 장래 연령별 출산율. 실적 출산율이 아님. 같은 공표(DT_1BPB002)의 주석 기준"
+verified = true
+
+[tables.DT_1B8000H]
+survey = "인구동향조사"
+producer = "국가데이터처 (구 통계청)"
+group = "vital_statistics"
+reference_date = "각 연도 1월 1일 ~ 12월 31일"
+scope = "출생·사망: 국내 거주자, 다음 해 4월 신고분까지 집계 / 혼인·이혼: 신고 기준, 남편 주소지 기준 행정구역, 1998년 이후 해외 주소 제외"
+note = """조출생률·조사망률·조혼인율·조이혼율 = 연간 건수 ÷ 연앙인구 × 1000 (주민등록인구로 직접 나누면 값이 조금 다를 수 있음). \
+1981~2008년 출생·혼인·이혼, 1983~2007년 사망 수치는 시계열 보정 결과로 기존 공표자료와 다름. \
+확정 공표: 혼인·이혼 다음 해 3월 말, 출생 다음 해 8월 말, 사망 다음 해 9월 말"""
+verified = true
+
+[tables.INH_1B8000F_01]
+survey = "인구동향조사 (전국 장기 추이)"
+producer = "국가데이터처 (구 통계청)"
+group = "vital_statistics"
+reference_date = "각 연도 1월 1일 ~ 12월 31일"
+scope = "전국"
+note = "인구동향조사 공통 주석(DT_1B8000H) 기준"
+verified = true
+
+[tables.DT_1B81A12]
+survey = "인구동향조사 출생통계"
+producer = "국가데이터처 (구 통계청)"
+group = "vital_statistics"
+reference_date = "각 연도 1월 1일 ~ 12월 31일"
+scope = "출생아 (모의 연령 5세 단위, 출산순위별)"
+note = "인구동향조사 공통 주석(DT_1B8000H) 기준"
+verified = true
+
+[tables.DT_1B81A20]
+survey = "인구동향조사 출생통계"
+producer = "국가데이터처 (구 통계청)"
+group = "vital_statistics"
+reference_date = "각 연도 1월 1일 ~ 12월 31일"
+scope = "출생아의 모(母) 평균 연령"
+note = "인구동향조사 공통 주석(DT_1B8000H) 기준"
+verified = true
+
+[tables.DT_1B81A21]
+survey = "인구동향조사 출생통계"
+producer = "국가데이터처 (구 통계청)"
+group = "vital_statistics"
+reference_date = "각 연도 1월 1일 ~ 12월 31일"
+scope = "합계출산율, 모의 연령별(5세 단위) 출산율"
+note = "합계출산율 = 한 여자가 가임기간(15~49세) 동안 낳을 것으로 예상되는 평균 출생아 수 (연령별 출산율의 합). 인구동향조사 공통 주석(DT_1B8000H) 기준"
+verified = true
+
+[tables.DT_1B81A23]
+survey = "인구동향조사 출생통계 (시군구)"
+producer = "국가데이터처 (구 통계청)"
+group = "vital_statistics"
+reference_date = "각 연도 1월 1일 ~ 12월 31일"
+scope = "시군구 출생아 수, 합계출산율"
+note = "행정구역 변경 전 지역은 '(변동전)'으로 따로 수록. 인구동향조사 공통 주석(DT_1B8000H) 기준"
+verified = true
+
+[tables.DT_1B83A05]
+survey = "인구동향조사 혼인통계"
+producer = "국가데이터처 (구 통계청)"
+group = "vital_statistics"
+reference_date = "각 연도 1월 1일 ~ 12월 31일 신고"
+scope = "초혼 부부의 평균 연령"
+note = "인구동향조사 공통 주석(DT_1B8000H) 기준"
+verified = true
+
+[tables.DT_1B83A34]
+survey = "인구동향조사 혼인통계"
+producer = "국가데이터처 (구 통계청)"
+group = "vital_statistics"
+reference_date = "각 연도 1월 1일 ~ 12월 31일 신고"
+scope = "일반혼인율 = 총 혼인건수 ÷ 해당 연도 15세 이상 인구 × 1000"
+note = "남편·아내 항목이 따로 있음. 인구동향조사 공통 주석(DT_1B8000H) 기준"
+verified = true
+
+[tables.DT_1BB0002]
+survey = "다문화 인구동태통계 (혼인)"
+producer = "국가데이터처 (구 통계청)"
+group = "vital_statistics_multicultural"
+reference_date = "각 연도 1월 1일 ~ 12월 31일 신고"
+scope = "전체 혼인 중 다문화 혼인"
+note = "다문화 = 귀화·인지에 의한 국적취득자와 외국국적자가 포함된 다문화가족"
+verified = true
+
+[tables.DT_1BB0006]
+survey = "다문화 인구동태통계 (출생)"
+producer = "국가데이터처 (구 통계청)"
+group = "vital_statistics_multicultural"
+reference_date = "각 연도 1월 1일 ~ 12월 31일 신고"
+scope = "전체 출생 중 다문화 출생"
+note = "다문화 = 귀화·인지에 의한 국적취득자와 외국국적자가 포함된 다문화가족"
+verified = true
+
+[tables.DT_1B26002]
+survey = "국내인구이동통계"
+producer = "국가데이터처 (구 통계청)"
+group = "migration"
+reference_date = "각 연도 1월 1일 ~ 12월 31일 전입신고"
+scope = "순이동 = 전입 - 전출 (성·연령 5세 단위)"
+note = """1970년은 성별 구분이 불가능해 전출·순이동은 남녀 합계만 있음. \
+1986년 이전에는 전국 전출에 국외·기타가 포함된 경우가 있어 시도 합과 전국이 다를 수 있음. \
+시군구의 구는 자치구만 (일반구 제외). 연간 통계는 연말 기준 행정구역으로 집계 \
+(예: 2012 세종 소급 작성, 2014 청주·청원 통합은 연말 기준 청주시, 2023 군위군은 월간 합계와 연간이 다름). \
+2026년 연간은 연말 기준 전남광주통합특별시, 인천 개편 후 행정구역으로 집계 예정"""
+verified = true
+
+[tables.DT_1B26B24]
+survey = "국내인구이동통계"
+producer = "국가데이터처 (구 통계청)"
+group = "migration"
+reference_date = "각 연도 1월 1일 ~ 12월 31일 전입신고"
+scope = "1인 이동 전입 건수 (연령·전입사유별)"
+note = "전남광주통합특별시(코드 12)는 출범 전 자리값(0)이라 결측 처리됨. 국내인구이동통계 공통 주석(DT_1B26002) 기준"
+verified = true
+
+[tables.DT_1MR2060]
+survey = "인구총조사"
+producer = "국가데이터처 (구 통계청)"
+group = "census"
+reference_date = "인구총조사 기준 시점 (11월 1일로 알려져 있으나 원표에서 미확인)"
+scope = "18세 이상 내국인의 혼인상태"
+note = "개인정보 보호를 위해 5 미만 값은 X로 비공개 (0이 아님). 조사명 「인구총조사」는 출처 표기로 확인"
+verified = false
+check = "조사기준시점 - 통계설명자료 또는 census.go.kr에서 확인 가능"
+
+[tables.TX_11025_A000_A]
+survey = "지방자치단체 외국인주민 현황"
+producer = "행정안전부"
+group = "foreign_residents"
+reference_date = "각 연도 11월 1일"
+scope = "외국인주민 = 한국국적 미취득자 + 귀화자 + 외국인주민 자녀"
+note = "5인 미만은 *로 비공개. 외국인주민 자녀(출생) = 외국인 또는 귀화자의 자녀로 출생과 동시에 한국 국적을 취득한 자"
+verified = true
+
+[tables.TX_11025_A017_A]
+survey = "지방자치단체 외국인주민 현황"
+producer = "행정안전부"
+group = "foreign_residents"
+reference_date = "각 연도 11월 1일"
+scope = "한국국적 취득자(귀화자)의 이전 국적별 인원"
+note = "5인 미만은 *로 비공개. 같은 조사(TX_11025_A000_A)의 주석 기준"
+verified = true
+
+[tables.DT_110025_A041_A]
+survey = "지방자치단체 외국인주민 현황"
+producer = "행정안전부"
+group = "foreign_residents"
+reference_date = "각 연도 11월 1일"
+scope = "외국인주민 자녀 (유형·성별)"
+note = "5인 미만은 *로 비공개. 같은 조사(TX_11025_A000_A)의 주석 기준"
+verified = true
+
+# ---------------------------------------------------------------------------
+# 지표 사전
+#   method = "computed" : app/services/indicators.py 함수로 계산 (population 표 사용)
+#   method = "lookup"   : facts 표에서 값을 그대로 조회. filters = 고정할 분류 코드
+#   level  : 그 표로 답할 수 있는 지역 수준
+# ---------------------------------------------------------------------------
+
+[[indicators]]
+name = "총인구"
+aliases = ["인구", "인구수", "전체 인구", "주민등록인구"]
+unit = "명"
+method = "computed"
+sources = [{ table = "DT_1B04006", level = "시군구" }]
+projection = { table = "DT_1BPB002", c3_id = "10" }
+
+[[indicators]]
+name = "고령인구 비율"
+aliases = ["고령화율", "고령 비율", "노인 비율", "노인인구 비율", "65세 이상 비율", "65세 이상 인구 비율"]
+unit = "%"
+method = "computed"
+sources = [{ table = "DT_1B04006", level = "시군구" }]
+projection = { table = "DT_1BPB002", c3_id = "33" }
+
+[[indicators]]
+name = "유소년인구 비율"
+aliases = ["유소년 비율", "어린이 비율", "0~14세 비율", "0-14세 비율"]
+unit = "%"
+method = "computed"
+sources = [{ table = "DT_1B04006", level = "시군구" }]
+projection = { table = "DT_1BPB002", c3_id = "31" }
+
+[[indicators]]
+name = "노령화지수"
+aliases = ["노령화 지수"]
+unit = "유소년인구 100명당 명"
+method = "computed"
+sources = [{ table = "DT_1B04006", level = "시군구" }]
+projection = { table = "DT_1BPB002", c3_id = "50" }
+
+[[indicators]]
+name = "출생아 수"
+aliases = ["출생아수", "출생건수", "출생 수", "신생아 수"]
+unit = "명"
+method = "lookup"
+sources = [
+  { table = "DT_1B8000H", item_id = "T10", level = "시도" },
+  { table = "DT_1B81A23", item_id = "T1", level = "시군구" },
+]
+
+[[indicators]]
+name = "합계출산율"
+aliases = ["출산율", "TFR"]
+unit = "가임여성 1명당 명"
+method = "lookup"
+sources = [
+  { table = "DT_1B8000H", item_id = "T12", level = "시도" },
+  { table = "DT_1B81A23", item_id = "T2", level = "시군구" },
+]
+
+[[indicators]]
+name = "조출생률"
+aliases = ["인구 천명당 출생아 수"]
+unit = "천명당"
+method = "lookup"
+note = "연간 출생아 수 ÷ 연앙인구 × 1000"
+sources = [{ table = "DT_1B8000H", item_id = "T11", level = "시도" }]
+
+[[indicators]]
+name = "사망자 수"
+aliases = ["사망건수", "사망자수"]
+unit = "명"
+method = "lookup"
+sources = [{ table = "DT_1B8000H", item_id = "T20", level = "시도" }]
+
+[[indicators]]
+name = "조사망률"
+aliases = ["사망률"]
+unit = "천명당"
+method = "lookup"
+note = "연간 사망자 수 ÷ 연앙인구 × 1000"
+sources = [{ table = "DT_1B8000H", item_id = "T22", level = "시도" }]
+
+[[indicators]]
+name = "자연증가 건수"
+aliases = ["자연증가", "자연증감"]
+unit = "명"
+method = "lookup"
+sources = [{ table = "DT_1B8000H", item_id = "T30", level = "시도" }]
+
+[[indicators]]
+name = "혼인 건수"
+aliases = ["혼인건수", "결혼 건수"]
+unit = "건"
+method = "lookup"
+sources = [{ table = "DT_1B8000H", item_id = "T40", level = "시도" }]
+
+[[indicators]]
+name = "이혼 건수"
+aliases = ["이혼건수"]
+unit = "건"
+method = "lookup"
+sources = [{ table = "DT_1B8000H", item_id = "T50", level = "시도" }]
+
+[[indicators]]
+name = "평균 초혼연령"
+aliases = ["초혼 연령", "평균 결혼 연령"]
+unit = "세"
+method = "lookup"
+note = "남편(T1)과 아내(T2)가 따로 있음. 기본은 둘 다 제시"
+sources = [{ table = "DT_1B83A05", item_id = ["T1", "T2"], level = "시도" }]
+
+[[indicators]]
+name = "모의 평균 출산연령"
+aliases = ["평균 출산연령", "엄마 평균 나이", "출산 연령"]
+unit = "세"
+method = "lookup"
+sources = [{ table = "DT_1B81A20", item_id = "T10", level = "시도" }]
+
+[[indicators]]
+name = "순이동"
+aliases = ["순이동자 수", "인구 순유입", "전입 초과"]
+unit = "명"
+method = "lookup"
+sources = [{ table = "DT_1B26002", item_id = "T60", level = "시군구", filters = { c2_id = "0", c3_id = "000" } }]
+
+[[indicators]]
+name = "다문화 출생 비중"
+aliases = ["다문화 출생비중", "다문화 출생 비율"]
+unit = "%"
+method = "lookup"
+sources = [{ table = "DT_1BB0006", item_id = "T02", level = "시군구" }]
+
+[[indicators]]
+name = "다문화 혼인 비중"
+aliases = ["다문화 혼인비중", "국제결혼 비율"]
+unit = "%"
+method = "lookup"
+sources = [{ table = "DT_1BB0002", item_id = "T02", level = "시군구" }]
+
+[[indicators]]
+name = "외국인주민 수"
+aliases = ["외국인 주민 수", "외국인주민", "외국인 수"]
+unit = "명"
+method = "lookup"
+note = "귀화자·외국인주민 자녀 포함. '외국인 수'는 한국국적 미취득자만 뜻할 수 있어 확인 필요"
+sources = [{ table = "TX_11025_A000_A", item_id = "16110AAA0", level = "시도", filters = { c2_id = "15110AA000", c3_id = "A001A" } }]

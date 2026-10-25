@@ -17,6 +17,9 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql+psycopg://kosis@localhost:5432/kosis"
 
+    # pipeline/run_all.py가 만드는 전처리 DB (프로젝트 루트 기준 상대 경로)
+    duckdb_path: str = "data/processed/kosis.duckdb"
+
 
 @lru_cache
 def get_settings() -> Settings:

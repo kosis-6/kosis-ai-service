@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import csv
 import json
+from datetime import datetime
 from math import prod
 from pathlib import Path
 from typing import Any
@@ -212,6 +213,7 @@ async def collect(
         "items": {x["ITM_ID"]: x["ITM_NM"] for x in meta["items"]},
         "classes": {f"c{i}": c["name"] for i, c in enumerate(meta["classes"], start=1)},
         "rows": len(rows),
+        "collected_at": datetime.now().isoformat(timespec="seconds"),
     }
     meta_path = OUT_DIR / f"{tbl_id}.meta.json"
     meta_path.write_text(json.dumps(meta_out, ensure_ascii=False, indent=2))

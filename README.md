@@ -26,9 +26,20 @@
 
 - 언어 / 프레임워크: Python 3.12.15, FastAPI
 - 패키지 관리: uv 0.13.3
-- DB: PostgreSQL 17 + pgvector 0.8.7 (벡터 검색), pg_trgm (키워드 검색 보완)
+- DB: DuckDB 2.0 (통계 데이터), PostgreSQL 17 + pgvector 0.8.7, pg_trgm (서비스 데이터)
 - 실행 환경: Docker, Docker Compose
 - 테스트 / 린트: pytest, ruff
+
+### DB 역할
+
+| DB | 담는 것 | 읽기·쓰기 | 만드는 방법 |
+| --- | --- | --- | --- |
+| DuckDB (`data/processed/kosis.duckdb`) | 전처리한 통계 수치, 지역, 통계표 카탈로그 | 서버는 읽기만 | `python pipeline/run_all.py` |
+| PostgreSQL (`compose.yaml`의 `db`) | 통계표 검색용 임베딩(pgvector)·키워드 검색(pg_trgm), 대화 기록, 질의·평가 로그 | 서버가 읽고 씀 | `docker compose up` 시 자동 생성 |
+
+- 통계 수치는 DuckDB에서만 조회합니다. PostgreSQL에 복사하지 않습니다.
+- PostgreSQL은 실전 2(통계표 안내 챗봇)부터 사용합니다. 지금은 연결 확인(`/health/db`)만 있습니다.
+- DuckDB는 한 번에 한 프로세스만 쓸 수 있어서, 요청마다 저장하는 데이터는 PostgreSQL에 둡니다.
 
 ## 개발 환경 세팅
 
@@ -132,7 +143,7 @@ python -m scripts.collect_kosis --list scripts/tables.csv --dry-run
 | 경로 | 내용 |
 | --- | --- |
 | `data/processed/<표ID>.csv` | 수집한 데이터 (값 하나당 한 줄) |
-| `data/processed/<표ID>.meta.json` | 표 이름, 분류 이름, 항목 목록, 수록 기간 |
+| `data/processed/<표ID>.meta.json` | 표 이름, 분류 이름, 항목 목록, 수록 기간, 수집 시각(`collected_at`) |
 | `data/raw/<표ID>/` | API 원본 응답 (`--save-raw`를 붙였을 때만 저장, 용량이 커서 기본은 저장 안 함) |
 
 CSV 주요 열:
@@ -154,6 +165,50 @@ CSV 주요 열:
 > - `value_flag`가 있는 칸은 0이 아니라 **결측**으로 다룹니다.
 > - 표마다 기준(예: 주민등록인구는 외국인 제외)이 다르므로 답변에 출처를 함께 표시합니다.
 
+## 질의응답
+
+### 1. 전처리 DB 만들기
+
+팀에서 공유받은 원본 zip을 `data/kosis_processed.zip`에 두고 컨테이너 터미널에서 실행합니다.
+
+```bash
+python pipeline/run_all.py   # 압축 해제 → 전처리 → 카탈로그 → 검증 → DB 교체
+```
+
+`data/processed/kosis.duckdb`가 만들어집니다. 테이블과 규칙은 [`docs/data_dictionary.md`](docs/data_dictionary.md)를 참고합니다.
+
+KOSIS에서 직접 다시 받아 DB를 갱신할 때는 zip 없이 수집 결과를 바로 씁니다.
+
+```bash
+python -m scripts.collect_kosis --list scripts/tables.csv   # KOSIS OpenAPI 수집
+python pipeline/run_all.py --source collect                 # 수집 결과 → 전처리 → 검증 → DB 교체
+```
+
+- DB는 임시 파일(`kosis.new.duckdb`)에 먼저 만들고, **검증을 모두 통과해야** `kosis.duckdb`로 바꿉니다. 중간에 실패하면 기존 DB가 그대로 남아 서비스가 계속 동작합니다.
+- 실행 중인 서버는 기존 DB를 계속 읽으므로, 교체 후 `docker compose restart api`로 반영합니다.
+- 표마다 수집 시각은 `catalog.collected_at`에 들어갑니다 (예전 zip 자료는 기록이 없어 비어 있음).
+
+### 2. 질문하기
+
+```bash
+# API (서버 실행 중) → http://localhost:8000/docs 에서도 시험 가능
+curl -X POST localhost:8000/ask -H 'Content-Type: application/json' \
+  -d '{"question": "2025년 서울과 부산 중 고령인구 비율이 높은 지역은?"}'
+
+# 명령줄 (중간 결과까지 보려면 --debug)
+python -m scripts.ask -q "최근 5년 부산 인구 변화" --debug
+```
+
+처리 순서 (`app/services/qa.py`):
+
+| 단계 | 담당 | 내용 |
+| --- | --- | --- |
+| 1. 질문 이해 | HCX-007 | 질문 → 유형·지표·지역·연도 JSON |
+| 2~4. 판단·조회·계산 | 코드 (`indicators.py`) | 답변 가능 여부(status) 판단, DuckDB 조회, 계산 |
+| 5. 답변 생성 | 코드 (`qa.py`) | 질문 유형별 템플릿에 계산 결과를 채워 문장 작성, 수치 목록·출처·KOSIS 통계표 링크 첨부 |
+
+응답의 `status`는 `ok` 또는 답변 불가 사유(`out_of_range`, `unknown_indicator`, `missing_region` 등)이고, `sources`에 답변에 쓴 통계표가 들어 있습니다.
+
 ## 프로젝트 구조
 
 ```
@@ -162,16 +217,30 @@ kosis-ai-service/
 │   ├── main.py              # FastAPI 앱 생성, 라우터 등록 (진입점)
 │   ├── core/
 │   │   ├── config.py        # 환경변수(.env) 설정 관리
-│   │   └── db.py            # DB 연결 (SQLAlchemy 비동기 세션)
+│   │   ├── db.py            # PostgreSQL 연결 (SQLAlchemy 비동기 세션)
+│   │   └── duckdb.py        # 전처리 DB(kosis.duckdb) 읽기 전용 연결
 │   ├── api/
 │   │   ├── router.py        # 모든 라우터를 하나로 모음
 │   │   └── routes/          # 기능별 API 엔드포인트
-│   │       └── health.py
-│   └── services/            # 비즈니스 로직 (KOSIS 호출, AI 처리 등)
-│       └── kosis_client.py
+│   │       ├── health.py
+│   │       └── ask.py       # POST /ask 질의응답
+│   ├── schemas/             # 요청·응답 모델 (Pydantic)
+│   ├── prompts/             # LLM 프롬프트, 답변 정책(answer_policy.md)
+│   └── services/            # 비즈니스 로직
+│       ├── kosis_client.py  # KOSIS OpenAPI 호출
+│       ├── hcx_client.py    # HCX(CLOVA Studio) 호출
+│       ├── analysis.py      # 증감률·구성비·순위 등 계산 함수
+│       ├── indicators.py    # 지표 조회·추이·비교·순위 (DuckDB)
+│       ├── catalog.py       # 통계표 설명·비교 가능 여부 조회
+│       └── qa.py            # 질문 → 답변 (1~5단계 연결)
+├── pipeline/                # 전처리 DB를 만드는 배치 작업 (서버와 별개)
+├── config/catalog_notes.toml # 통계표 설명·지표 사전 원본
+├── docs/                    # 데이터 사전, 작업 기록
 ├── scripts/
 │   ├── collect_kosis.py     # KOSIS 통계표 수집
-│   └── tables.csv           # 수집할 통계표 목록
+│   ├── tables.csv           # 수집할 통계표 목록
+│   ├── check_hcx.py         # HCX 연결 확인
+│   └── ask.py               # 질의응답 명령줄 실행
 ├── data/                    # 수집한 데이터 (각자 생성, 커밋 X)
 ├── tests/                   # pytest 테스트
 ├── docker/postgres/init.sql # DB 최초 생성 시 확장(pgvector, pg_trgm) 설치

@@ -4,8 +4,10 @@ version = "0.1.0"
 description = "KOSIS 국가통계포털 데이터를 AI로 검색·분석하는 서비스"
 requires-python = "==3.12.15"
 dependencies = [
+    "duckdb==2.0.0",
     "fastapi>=0.151.0",
     "httpx>=0.28.1",
+    "pandas==3.0.6",
     "pgvector>=0.5.1",
     "psycopg[binary]>=3.3.6",
     "pydantic-settings>=2.16.1",
@@ -25,6 +27,10 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# 프롬프트 문장은 줄을 나누면 LLM에 보내는 내용이 바뀌므로 길이 제한 제외
+"app/prompts/*.py" = ["E501"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
