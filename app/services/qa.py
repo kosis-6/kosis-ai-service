@@ -65,6 +65,8 @@ async def understand(question):
 # ---- 질문 해석 보정: LLM 해석을 질문 원문과 대조해 바로잡는다 ------------------------------
 
 GENDER_WORDS = {"여": re.compile(r"여성|여자"), "남": re.compile(r"남성|남자")}
+# 남녀를 함께 묻는 표현 (구성비 질문이면 성별 구성)
+SEX_SPLIT = re.compile(r"남녀|성별|(남성|남자).*(여성|여자)|(여성|여자).*(남성|남자)")
 # 긴 표현부터 찾는다 ("재작년" 안에 "작년"이 있음)
 RELATIVE_YEARS = [("재작년", -2), ("지난해", -1), ("작년", -1), ("올해", 0), ("금년", 0)]
 AGE_BAND = re.compile(r"\d+(대|세)")
@@ -77,6 +79,7 @@ def correct(question, parsed, today=None):
     - 지표: 질문에 지표 이름·별칭이 하나만 있으면 그 지표
       (예: "고령화율"을 노령화지수로 해석한 경우)
     - 성별: "여성/여자", "남성/남자" 중 하나만 있으면 그 성별
+    - 구성비 기준: 구성비 질문에 "남녀", "성별"이 있으면 성별 구성
     - 지역: "전국"이 있는데 지역이 비었으면 전국
     - 연도: "작년", "올해" 같은 상대 표현은 오늘 날짜 기준
     고친 내용은 parsed["corrections"]에 남긴다.
@@ -107,6 +110,8 @@ def correct(question, parsed, today=None):
     genders = [sex for sex, pattern in GENDER_WORDS.items() if pattern.search(question)]
     if len(genders) == 1 and parsed.get("sex") in (None, "", "계"):
         fix("sex", genders[0], "질문의 성별 표현")
+    if kind == "composition" and parsed.get("by") != "sex" and SEX_SPLIT.search(question):
+        fix("by", "sex", "질문의 남녀 구성 표현")
 
     if "전국" in question and not parsed.get("regions") and kind not in NO_REGION_TYPES:
         fix("regions", ["전국"], "질문의 '전국'")
