@@ -111,6 +111,45 @@ def test_summary_rank_top_n() -> None:
     assert qa.summary(r) == "2025년 고령인구 비율이 가장 높은 시도는 전라남도(28.1%)입니다."
 
 
+def test_summary_composition() -> None:
+    r = {
+        "status": "ok",
+        "indicator": "인구 구성",
+        "unit": "%",
+        "region": "서울특별시",
+        "year": 2025,
+        "sex": "계",
+        "by": "age",
+        "total": 1000,
+        "parts": [
+            {"label": "유소년인구(0~14세)", "count": 100, "share": 10.0},
+            {"label": "생산연령인구(15~64세)", "count": 700, "share": 70.0},
+            {"label": "고령인구(65세 이상)", "count": 200, "share": 20.0},
+        ],
+    }
+    assert qa.summary(r) == (
+        "2025년 서울특별시 인구 1,000명의 연령대별 구성은 유소년인구(0~14세) 10.0%, "
+        "생산연령인구(15~64세) 70.0%, 고령인구(65세 이상) 20.0%입니다. "
+        "가장 큰 비중은 생산연령인구(15~64세)입니다."
+    )
+    assert "- 고령인구(65세 이상): 200명 (20.0%)" in qa.render(r)
+
+
+def test_compute_composition(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = []
+
+    def fake_composition(*args):
+        calls.append(args)
+        return {"status": "ok"}
+
+    monkeypatch.setattr(qa.indicators, "_data_years", lambda: (2008, 2025))
+    monkeypatch.setattr(qa.indicators, "composition", fake_composition)
+    # 구성비는 지표 확인 없이 총인구를 나눠 본다. 지역이 없으면 되묻는다
+    assert qa.compute({"type": "composition", "regions": []})["status"] == "missing_region"
+    qa.compute({"type": "composition", "indicator": "남녀 비중", "regions": ["서울"], "by": "sex"})
+    assert calls == [("서울", 2025, "sex", "계")]
+
+
 def test_summary_causal_prefix() -> None:
     r = {**TREND, "causal_question": "원인은 판단하지 않습니다."}
     assert qa.summary(r).startswith("원인은 판단하지 않습니다. 대구광역시의 총인구는")

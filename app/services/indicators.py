@@ -7,6 +7,7 @@ LLM이 숫자를 직접 계산하지 않도록, 질문 유형별 계산을 함�
   trend(지표, 지역, 시작, 끝)        추이 분석   "최근 5년 부산 고령인구 비율 변화는?" (증감률 포함)
   compare(지표, [지역...], 연도)     지역 비교   "서울과 부산 중 어디가 높아?"
   rank(지표, 연도, 수준)             순위        "고령인구 비율이 가장 높은 시도는?"
+  composition(지역, 연도, 기준)      구성비      "2025년 서울 인구의 연령대별 구성비는?"
   projection(지표, 지역, 연도)       장래추계    수록 기간 이후 연도 안내용
 
 결과의 status
@@ -16,6 +17,7 @@ LLM이 숫자를 직접 계산하지 않도록, 질문 유형별 계산을 함�
   ambiguous_region    같은 이름의 지역이 여럿 (예: 중구) → candidates로 되묻기
   out_of_range        수록 기간 밖 연도 → 추계가 있으면 suggestion에 담음 (답변 불가 사례 1)
   region_not_in_year  그 연도에 없던 지역 (예: 2025년 전남광주통합특별시)
+  missing_data        수록 기간 안이지만 그 지역·연도 값이 비어 있음
 
 실행(예시 질문 데모): python -m app.services.indicators
 """
@@ -220,13 +222,14 @@ def _out_of_range_reason(lo, hi):
 
 
 def _components(codes, y0, y1, sex):
-    """연도·지역별 총인구, 0~14세, 65세 이상 (100세 이상 포함)"""
+    """연도·지역별 총인구, 0~14세, 15~64세, 65세 이상 (100세 이상 포함)"""
     marks = ", ".join("?" for _ in codes)
     rows = _rows(
         f"""
         select year, region_code,
                sum(population) filter (where age is null)          as total,
                sum(population) filter (where age between 0 and 14) as young,
+               sum(population) filter (where age between 15 and 64) as working,
                sum(population) filter (where age >= 65)            as old
         from population
         where sex = ? and year between ? and ? and region_code in ({marks})
@@ -430,6 +433,60 @@ def compare(indicator, regions, year, sex="계"):
         if ind["kind"] == "count"
         else (round(gap, 2) if gap is not None else None),
         gap_unit=DIFF_UNIT[ind["kind"]],
+    )
+
+
+AGE_GROUPS = [
+    ("young", "유소년인구(0~14세)"),
+    ("working", "생산연령인구(15~64세)"),
+    ("old", "고령인구(65세 이상)"),
+]
+COMPOSITION = {
+    "unit": "%",
+    "formula": "항목별 인구 ÷ 총인구 × 100",
+}
+
+
+def composition(region, year, by="age", sex="계"):
+    """구성비: 한 지역·한 연도 인구의 연령대별(by="age") 또는 성별(by="sex") 비중"""
+    name, ind, regs, err = _prepare("총인구", [region], year)
+    if err:
+        return err
+    reg = regs[0]
+    if bad := _check(name, ind, reg, year, year):
+        return bad
+    code = reg["region_code"]
+    if by == "sex":
+        sex = "계"  # 성별 구성은 남녀 전체가 대상
+        counts = {
+            f"{s}자": (_components([code], year, year, s).get((year, code)) or {}).get("total")
+            for s in ("남", "여")
+        }
+    else:
+        comp = _components([code], year, year, sex).get((year, code)) or {}
+        counts = {label: comp.get(key) for key, label in AGE_GROUPS}
+    total = (_components([code], year, year, sex).get((year, code)) or {}).get("total")
+    if not total or None in counts.values():
+        return _base(
+            "인구 구성",
+            COMPOSITION,
+            "missing_data",
+            region=reg["display"],
+            reason=f"{reg['display']} {year}년 인구 자료가 없습니다.",
+        )
+    shares = analysis.composition(counts, total)  # 분모는 '계' 값 (연령 미상 등이 있어도 맞게)
+    return _base(
+        "인구 구성",
+        COMPOSITION,
+        region=reg["display"],
+        year=year,
+        sex=sex,
+        by=by,
+        total=int(total),
+        parts=[
+            {"label": label, "count": int(n), "share": round(shares[label], 2)}
+            for label, n in counts.items()
+        ],
     )
 
 

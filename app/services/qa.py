@@ -98,7 +98,10 @@ def correct(question, parsed, today=None):
             rest = rest[:start] + " " + rest[end:]
         if len(names) == 1 and not AGE_BAND.search(rest):
             name = names.pop()
-            if indicators.canonical_name(parsed.get("indicator") or "") != name:
+            current = indicators.canonical_name(parsed.get("indicator") or "")
+            # "인구"는 거의 모든 질문에 있어서, HCX가 다른 지표를 골랐으면 총인구로 바꾸지 않는다
+            # (예: "부산 인구에서 고령층이 차지하는 비중" → 고령인구 비율)
+            if current != name and not (name == "총인구" and current is not None):
                 fix("indicator", name, "질문의 지표 표현")
 
     genders = [sex for sex, pattern in GENDER_WORDS.items() if pattern.search(question)]
@@ -144,6 +147,15 @@ def compute(q):
     causal = kind == "causal"
     if causal:  # 답변 불가 사례 4: 인과 판단 없이 수치 변화만 제시
         kind = "trend" if regions else "rank"
+
+    if kind == "composition":  # 구성비는 지표가 아니라 총인구를 나눠 보므로 지표 확인을 건너뜀
+        if not regions:
+            return {"status": "missing_region", "reason": "어느 지역인지 질문에 없습니다."}
+        by = "sex" if q.get("by") == "sex" else "age"
+        try:
+            return indicators.composition(regions[0], year, by, sex)
+        except Exception as e:
+            return {"status": "error", "reason": f"계산 중 오류가 났습니다: {e}"}
 
     if indicators._get_indicator(ind)[0] is None:  # 지역보다 지표를 먼저 확인
         return {
@@ -211,6 +223,7 @@ REFUSAL_GUIDE = {
     "ambiguous_region": "아래 후보 중 하나로 다시 질문해 주세요.",
     "out_of_range": "수록 기간 안의 연도로 다시 질문해 주세요.",
     "region_not_in_year": "그 지역이 있던 연도로 다시 질문해 주세요.",
+    "missing_data": "다른 연도나 지역으로 질문해 주세요.",
     "error": "",
 }
 
@@ -241,7 +254,7 @@ def _meaning(name, v):
 
 
 def _subject(r):
-    """"여성 고령인구 비율" 처럼 성별을 붙인 지표 이름"""
+    """성별을 붙인 지표 이름 (예: 여성 고령인구 비율)"""
     return SEX_WORDS.get(r.get("sex"), "") + r.get("indicator", "")
 
 
@@ -326,6 +339,17 @@ def _rank_text(r):
     return f"{_josa(head, '은는')} {top['region']}({_val(top['value'], unit)})입니다."
 
 
+def _composition_text(r):
+    by = "성별" if r["by"] == "sex" else "연령대별"
+    whom = SEX_WORDS.get(r.get("sex"), "")
+    listed = ", ".join(f"{p['label']} {p['share']}%" for p in r["parts"])
+    biggest = max(r["parts"], key=lambda p: p["share"])
+    return (
+        f"{r['year']}년 {r['region']} {whom}인구 {r['total']:,}명의 {by} 구성은 {listed}입니다. "
+        f"가장 큰 비중은 {biggest['label']}입니다."
+    )
+
+
 def _refusal_text(r):
     status = r.get("status")
     if status == "unknown_indicator":
@@ -349,6 +373,8 @@ def summary(r):
             text = _compare_text(r)
         elif "ranking" in r:
             text = _rank_text(r)
+        elif "parts" in r:
+            text = _composition_text(r)
         else:
             text = _value_text(r)
         if r.get("causal_question"):
@@ -411,6 +437,10 @@ def _body(r):
             f"{r['year']}년 {name} {r['level']} 순위 ({r['order']}, 전체 {r['total_regions']}곳 중)"
         ]
         lines += [f"{x['rank']}. {x['region']}: {_num(x['value'], unit)}" for x in r["ranking"]]
+        return lines
+    if "parts" in r:  # 구성비
+        lines = [f"{r['region']} {r['year']}년 인구 구성 ({r['sex']}, 전체 {r['total']:,}명)"]
+        lines += [f"- {p['label']}: {p['count']:,}명 ({p['share']}%)" for p in r["parts"]]
         return lines
     return []
 
