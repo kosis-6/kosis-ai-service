@@ -69,6 +69,20 @@ def test_female_elderly_ratio() -> None:
     assert p["year"] == 2025
 
 
+@pytest.mark.parametrize(
+    ("question", "by"),
+    [
+        ("2025년 전국 인구 중 남녀 비중은 어떻게 돼?", "sex"),
+        ("서울 인구의 남자와 여자 구성비는?", "sex"),
+        ("2025년 서울 인구의 연령대별 구성비는?", None),
+    ],
+)
+def test_composition_by_sex(question: str, by: str | None) -> None:
+    # HCX가 by를 비워도 남녀를 묻는 구성비 질문은 성별 구성으로
+    p = qa.correct(question, parsed(type="composition", regions=["서울"]), TODAY)
+    assert p.get("by") == by
+
+
 def test_nationwide_region() -> None:
     p = qa.correct(
         "2009년부터 2016년까지 전국 인구 변화는?",
