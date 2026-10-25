@@ -34,6 +34,7 @@ PROJ_SOURCE = "국가데이터처 (구 통계청), 장래인구추계 시도편 
 PROJ_BASIS = "2022년 기준 장래인구추계, 각 연도 7월 1일 기준 (외국인 포함)"
 PROJ_TABLE = "DT_1BPB002"
 DEFAULT_SCENARIO = "중위 추계"
+KOSIS_URL = "https://kosis.kr/statHtml/statHtml.do?orgId={org_id}&tblId={tbl_id}"
 
 # kind에 따라 차이·변화의 단위가 달라진다
 #   count : 사람 수   → 차이는 명, 변화는 증감률(%)
@@ -67,6 +68,8 @@ INDICATORS = {
         "formula": "65세 이상 인구 ÷ 0~14세 인구 × 100",
         "calc": lambda c: _div(c["old"], c["young"]),
         "projection_c3": "50",
+        # 답변 문장에서 값의 뜻을 풀어 쓸 때 사용 (qa.summary)
+        "meaning": "유소년인구(0~14세) 100명당 65세 이상 인구가 {value}명",
     },
 }
 # 지표의 다른 이름(별칭)은 config/catalog_notes.toml의 지표 사전에서 읽는다 (_get_indicator)
@@ -139,6 +142,12 @@ def find_in_text(text):
     ]
 
 
+def kosis_url(tbl_id):
+    """KOSIS 통계표 화면 주소. 기관 ID는 수집 메타데이터(catalog 테이블)에서 읽는다"""
+    rows = _rows("select org_id from catalog where tbl_id = ?", [tbl_id])
+    return KOSIS_URL.format(org_id=rows[0]["org_id"], tbl_id=tbl_id) if rows else None
+
+
 def _base(name, ind, status="ok", **extra):
     out = {
         "status": status,
@@ -147,6 +156,8 @@ def _base(name, ind, status="ok", **extra):
         "formula": ind["formula"],
         "source": POP_SOURCE,
         "basis": POP_BASIS,
+        "tbl_id": POP_TABLE,
+        "url": kosis_url(POP_TABLE),
     }
     out.update(extra)
     return out
@@ -535,6 +546,8 @@ def projection(indicator, region, year, scenario=DEFAULT_SCENARIO):
         "scenario": scenario,
         "source": PROJ_SOURCE,
         "basis": PROJ_BASIS,
+        "tbl_id": PROJ_TABLE,
+        "url": kosis_url(PROJ_TABLE),
         "notes": notes,
     }
 

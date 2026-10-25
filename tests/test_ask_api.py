@@ -12,16 +12,20 @@ client = TestClient(app)
 def test_ask(monkeypatch: pytest.MonkeyPatch) -> None:
     async def fake_ask(question: str) -> dict:
         return {
+            "status": "ok",
+            "answer": f"답변: {question}",
             "parsed": {"type": "value"},
             "result": {"status": "ok"},
-            "answer": f"답변: {question}",
-            "dropped_numbers": [],
+            "sources": [{"name": "출처", "basis": "기준", "tbl_id": "DT_TEST", "url": None}],
         }
 
     monkeypatch.setattr(qa, "ask", fake_ask)
     response = client.post("/ask", json={"question": "서울 인구"})
     assert response.status_code == 200
-    assert response.json()["answer"] == "답변: 서울 인구"
+    body = response.json()
+    assert body["answer"] == "답변: 서울 인구"
+    assert body["status"] == "ok"
+    assert body["sources"][0]["tbl_id"] == "DT_TEST"
 
 
 def test_ask_empty_question() -> None:

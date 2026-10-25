@@ -1,3 +1,5 @@
+import pytest
+
 from app.services import qa
 
 # indicators.trend()가 돌려주는 형태 (DB 없이 테스트하기 위해 직접 만든 값)
@@ -25,15 +27,19 @@ TREND = {
     },
     "notes": [],
 }
-
-
-def test_facts_for_llm_hides_values() -> None:
-    facts = qa.facts_for_llm(TREND)
-    assert facts["overall"] == "감소"
-    assert facts["yearly"] == "매년 감소"
-    assert facts["period"] == "2023~2025년"
-    # LLM에는 값·차이·비율을 넘기지 않는다
-    assert "series" not in facts and "change" not in facts
+VALUE = {
+    "status": "ok",
+    "indicator": "고령인구 비율",
+    "unit": "%",
+    "region": "부산광역시",
+    "year": 2025,
+    "sex": "여",
+    "value": 27.66,
+    "source": "테스트 출처",
+    "basis": "테스트 기준",
+    "tbl_id": "DT_TEST",
+    "url": "https://kosis.kr/statHtml/statHtml.do?orgId=101&tblId=DT_TEST",
+}
 
 
 def test_render_trend() -> None:
@@ -43,12 +49,106 @@ def test_render_trend() -> None:
     assert text.endswith("출처: 테스트 출처 (테스트 기준)")
 
 
-def test_check_numbers() -> None:
-    question = "2023년부터 대구 인구 변화"
-    # 질문이나 LLM에 넘긴 정보(연도 등)에 있는 숫자는 허용
-    assert qa.check_numbers("2023~2025년 대구 인구는 줄었습니다.", question, TREND) == []
-    # 계산 결과 값이라도 LLM에 넘기지 않은 숫자는 근거 없는 숫자로 본다
-    assert qa.check_numbers("190명 줄었습니다.", question, TREND) == ["190"]
+def test_summary_trend() -> None:
+    assert qa.summary(TREND) == (
+        "대구광역시의 총인구는 2023년 1,000명, 2025년 810명입니다. "
+        "2023년 대비 190명 감소했습니다(증감률 -19.0%). 이 기간 동안 매년 감소했습니다."
+    )
+
+
+def test_summary_value_with_sex() -> None:
+    assert qa.summary(VALUE) == "2025년 부산광역시의 여성 고령인구 비율은 27.66%입니다."
+
+
+def test_summary_aging_index_meaning() -> None:
+    r = {**VALUE, "indicator": "노령화지수", "unit": "유소년인구 100명당 명", "sex": "계"}
+    r["value"] = 210.5
+    assert qa.summary(r) == (
+        "2025년 부산광역시의 노령화지수는 210.5입니다. "
+        "유소년인구(0~14세) 100명당 65세 이상 인구가 210.5명이라는 뜻입니다."
+    )
+
+
+def test_summary_compare_two() -> None:
+    r = {
+        "status": "ok",
+        "indicator": "고령인구 비율",
+        "unit": "%",
+        "year": 2025,
+        "sex": "계",
+        "values": [
+            {"region": "부산광역시", "value": 25.01},
+            {"region": "서울특별시", "value": 20.43},
+        ],
+        "gap": 4.58,
+        "gap_unit": "%p",
+    }
+    assert qa.summary(r) == (
+        "2025년 고령인구 비율은 부산광역시가 서울특별시보다 4.58%p 높습니다"
+        "(부산광역시 25.01%, 서울특별시 20.43%)."
+    )
+
+
+def test_summary_rank_top_n() -> None:
+    r = {
+        "status": "ok",
+        "indicator": "고령인구 비율",
+        "unit": "%",
+        "year": 2025,
+        "sex": "계",
+        "level": "시도",
+        "order": "높은 순",
+        "total_regions": 17,
+        "ranking": [
+            {"rank": 1, "region": "전라남도", "value": 28.1},
+            {"rank": 2, "region": "경상북도", "value": 27.05},
+        ],
+    }
+    assert qa.summary(r) == (
+        "2025년 고령인구 비율이 가장 높은 시도 2곳은 전라남도(28.1%), 경상북도(27.05%)입니다."
+    )
+    r["ranking"] = r["ranking"][:1]
+    assert qa.summary(r) == "2025년 고령인구 비율이 가장 높은 시도는 전라남도(28.1%)입니다."
+
+
+def test_summary_causal_prefix() -> None:
+    r = {**TREND, "causal_question": "원인은 판단하지 않습니다."}
+    assert qa.summary(r).startswith("원인은 판단하지 않습니다. 대구광역시의 총인구는")
+
+
+@pytest.mark.parametrize(
+    ("result", "expected"),
+    [
+        (
+            {"status": "missing_region", "reason": "어느 지역인지 질문에 없습니다."},
+            "어느 지역인지 질문에 없습니다. 지역을 넣어 다시 질문해 주세요.",
+        ),
+        (
+            {"status": "unknown_indicator", "indicator": "혼인율"},
+            "'혼인율'은(는) 아직 지원하지 않는 지표입니다. 아래 지원 지표로 다시 질문해 주세요.",
+        ),
+        (
+            {"status": "parse_error", "reason": "질문을 이해하지 못했습니다."},
+            "질문을 이해하지 못했습니다.",
+        ),
+    ],
+)
+def test_summary_refusal(result: dict, expected: str) -> None:
+    assert qa.summary(result) == expected
+
+
+def test_josa() -> None:
+    assert qa._josa("총인구", "은는") == "총인구는"
+    assert qa._josa("고령인구 비율", "은는") == "고령인구 비율은"
+    assert qa._josa("부산광역시", "이가") == "부산광역시가"
+
+
+def test_sources_and_link() -> None:
+    assert qa.sources(VALUE) == [
+        {"name": "테스트 출처", "basis": "테스트 기준", "tbl_id": "DT_TEST", "url": VALUE["url"]}
+    ]
+    assert qa.render(VALUE).endswith(f"통계표: {VALUE['url']}")
+    assert qa.sources({"status": "missing_region"}) == []
 
 
 def test_add_yearly_change() -> None:

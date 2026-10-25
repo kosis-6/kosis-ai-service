@@ -196,7 +196,9 @@ python -m scripts.ask -q "최근 5년 부산 인구 변화" --debug
 | --- | --- | --- |
 | 1. 질문 이해 | HCX-007 | 질문 → 유형·지표·지역·연도 JSON |
 | 2~4. 판단·조회·계산 | 코드 (`indicators.py`) | 답변 가능 여부(status) 판단, DuckDB 조회, 계산 |
-| 5. 답변 생성 | HCX-007 + 코드 | LLM은 숫자 없는 설명 문장만, 수치·출처는 코드가 계산 결과에서 그대로 작성 |
+| 5. 답변 생성 | 코드 (`qa.py`) | 질문 유형별 템플릿에 계산 결과를 채워 문장 작성, 수치 목록·출처·KOSIS 통계표 링크 첨부 |
+
+응답의 `status`는 `ok` 또는 답변 불가 사유(`out_of_range`, `unknown_indicator`, `missing_region` 등)이고, `sources`에 답변에 쓴 통계표가 들어 있습니다.
 
 ## 프로젝트 구조
 
