@@ -570,8 +570,8 @@ def projection(indicator, region, year, scenario=DEFAULT_SCENARIO):
             "reason": f"{reg['display']} {year}년 장래인구추계({scenario}) 값이 없습니다.",
         }
     r = rows[0]
+    # "실제 통계가 아닌 추계값입니다."는 답변 문장(qa._projection_text)에 있어 여기서는 뺀다
     notes = [
-        "실제 통계가 아닌 추계값입니다.",
         "주민등록인구와 기준(시점, 외국인 포함 여부)이 달라 실적과 직접 이어서 비교하지 않습니다.",
     ]
     # 추계표의 지역별 주의사항 (예: 대구는 군위군 미포함)
