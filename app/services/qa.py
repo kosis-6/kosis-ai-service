@@ -399,6 +399,10 @@ def _read_question(question, parsed, fix):
             asked["extreme"] = mode
     if STREAK.search(question):
         asked["streak"] = "negative" if re.search(r"유출|빠져|감소|줄", question) else "positive"
+        if not SPAN.search(question) and not SINCE.search(question):  # 기간을 안 물었으면 전체
+            for key in ("start_year", "end_year"):
+                if parsed.get(key):
+                    fix(key, None, "연속 기간은 수록 기간 전체에서 셈")
     if REBOUND.search(question):
         asked["rebound"] = True
     if PER_YEAR.search(question):
@@ -430,7 +434,7 @@ def _read_question(question, parsed, fix):
         parsed["asked"] = asked
 
     if (
-        parsed.get("type") == "value"
+        parsed.get("type") in ("value", "compare")
         and RANK_ASK.search(question)
         and not by_year
         and len(parsed.get("regions") or []) <= 1
@@ -454,9 +458,13 @@ def _read_question(question, parsed, fix):
         if parsed.get("indicator") == "순이동" and re.search(r"빠져나간|유출", question):
             if not parsed.get("ascending"):
                 fix("ascending", True, "순유출이 큰 순 = 순이동이 낮은 순")
-        if re.search(r"몇\s*위", question) and parsed.get("regions"):
-            parsed["target"] = parsed["regions"][0]
-            parsed["top"] = None
+        if re.search(r"몇\s*위", question):
+            regions = parsed.get("regions") or [
+                r for r in indicators.find_regions(question) if r != "전국"
+            ]
+            if regions:
+                parsed["target"] = regions[0]
+                parsed["top"] = None
     if parsed.get("type") == "rank" and BOTH_ENDS.search(question) and parsed.get("top"):
         fix("top", None, "가장 높은 곳과 낮은 곳을 함께 물음")
         if parsed.get("ascending"):
@@ -601,6 +609,8 @@ def _compute_lookup(q, sp, kind, regions, year, sex, ages):
         regions = ["전국"]
     if kind == "compare" and len(regions) == 1:  # 한 지역의 남녀 비교 등
         kind = "value"
+    if not any(s.get("by_sex") for s in sp["sources"]):  # 성별 구분이 없는 지표 (예: 합계출산율)
+        sex = "계"
     if ages and len(ages) > 1:
         parts = [_compute_lookup(q, sp, kind, regions, year, sex, [a]) for a in ages]
         return _combine(parts)

@@ -197,6 +197,7 @@ def _base(name, ind, status="ok", **extra):
     out = {
         "status": status,
         "indicator": name,
+        "kind": ind.get("kind"),
         "unit": ind["unit"],
         "formula": ind["formula"],
         "source": POP_SOURCE,

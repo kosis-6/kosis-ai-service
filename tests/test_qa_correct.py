@@ -287,3 +287,29 @@ def test_since_year_runs_to_latest() -> None:
 def test_merge_province_and_district() -> None:
     assert qa._merge_regions(["서울", "중구"]) == ["서울 중구"]
     assert qa._merge_regions(["서울", "부산"]) == ["서울", "부산"]
+
+
+def test_rank_from_compare_and_target_from_text() -> None:
+    p = qa.correct(
+        "2025년 여자 평균초혼연령이 가장 높은 시도랑 가장 낮은 시도는?",
+        parsed(type="compare", indicator="평균 초혼연령", sex="여"),
+        TODAY,
+    )
+    assert (p["type"], p["level"], p.get("top")) == ("rank", "시도", None)
+    p = qa.correct(
+        "2024년 다문화 출생아 수로 보면 안산시는 전국 시 중 몇 위예요?",
+        parsed(type="rank", indicator="다문화 출생아 수"),
+        TODAY,
+    )
+    assert p["target"] == "안산시" and p["level"] == "시"
+
+
+def test_streak_uses_whole_period() -> None:
+    p = qa.correct(
+        "세종시는 몇 년 연속 인구가 순유입됐나요?",
+        parsed(
+            type="trend", indicator="순이동", regions=["세종시"], start_year=2019, end_year=2023
+        ),
+        TODAY,
+    )
+    assert (p["start_year"], p["end_year"], p["asked"]["streak"]) == (None, None, "positive")
