@@ -125,7 +125,7 @@ KOSIS OpenAPI로 통계표 수치를 받아 `data/` 폴더에 저장합니다.
 컨테이너 터미널에서 실행합니다.
 
 ```bash
-# 목록 전체 받기 (약 10분)
+# 목록 전체 받기 (20개 표 약 15분, 주민등록인구 DT_1B04006만 약 7분)
 python -m scripts.collect_kosis --list scripts/tables.csv
 
 # 표 하나만 받기
@@ -145,6 +145,12 @@ python -m scripts.collect_kosis --list scripts/tables.csv --dry-run
 | `data/processed/<표ID>.csv` | 수집한 데이터 (값 하나당 한 줄) |
 | `data/processed/<표ID>.meta.json` | 표 이름, 분류 이름, 항목 목록, 수록 기간, 수집 시각(`collected_at`) |
 | `data/raw/<표ID>/` | API 원본 응답 (`--save-raw`를 붙였을 때만 저장, 용량이 커서 기본은 저장 안 함) |
+
+수집이 끝나면 표별 수록 기간·행 수·수집 시각을 한 표로 정리해 보고서에 붙일 수 있습니다. `meta.json`이 없는 표는 '미수집'으로 표시됩니다.
+
+```bash
+python -m scripts.collect_report   # → data/reports/collect_<시각>.md (보고서용) / .csv (엑셀용)
+```
 
 CSV 주요 열:
 
@@ -207,7 +213,22 @@ python -m scripts.ask -q "최근 5년 부산 인구 변화" --debug
 | 2~4. 판단·조회·계산 | 코드 (`indicators.py`) | 답변 가능 여부(status) 판단, DuckDB 조회, 계산 |
 | 5. 답변 생성 | 코드 (`qa.py`) | 질문 유형별 템플릿에 계산 결과를 채워 문장 작성, 수치 목록·출처·KOSIS 통계표 링크 첨부 |
 
-응답의 `status`는 `ok` 또는 답변 불가 사유(`out_of_range`, `unknown_indicator`, `missing_region` 등)이고, `sources`에 답변에 쓴 통계표가 들어 있습니다.
+응답의 `status`는 `ok` 또는 답변 불가 사유이고, `sources`에 답변에 쓴 통계표가 들어 있습니다. 답변 불가일 때는 사유와 다시 질문하는 방법을 안내합니다.
+
+| 경우 | `status` | 처리 |
+| --- | --- | --- |
+| 인구 통계와 관계없는 질문 | `not_supported_question` | 거절 + 지원 지표 목록 |
+| 지원하지 않는 지표 | `unknown_indicator` | 거절 + 지원 지표 목록 |
+| 지역 누락 | `missing_region` | 지역을 넣어 다시 질문 요청 (순위 질문은 지역 없이 답함) |
+| 모르는 지역 이름 | `unknown_region` | 시도·시군구 이름으로 다시 질문 요청 |
+| 같은 이름의 여러 지역 (예: 중구) | `ambiguous_region` | 후보 목록을 보여 주고 다시 질문 요청 |
+| 수록 기간 밖 연도 | `out_of_range` | 수록 기간 안내. 미래 연도이고 장래추계가 있으면 추계값을 대신 보여줌 (status는 그대로) |
+| 그 연도에 없던 지역 (예: 2020년 대구 군위군) | `region_not_in_year` | 지역이 있던 기간 안내 |
+| 수록 기간 안이지만 값이 빔 | `missing_data` | 다른 연도·지역으로 질문 요청 |
+| 질문 해석 실패 | `parse_error` | 지역·연도·지표를 넣어 다시 질문 요청 |
+| 원인·정책 효과 질문 | `ok` | 원인은 판단하지 않고 수치 변화만 답함 |
+
+답변 문장은 `qa.py`의 템플릿으로 만듭니다: 요약 문장 `summary()`, 수치 목록·출처 `render()`, 답변 불가 안내 `REFUSAL_GUIDE`.
 
 질문할 때는 KOSIS를 호출하지 않습니다. DB에 없는 데이터 때문에 답하지 못한 질문(`unknown_indicator`, `out_of_range`, `region_not_in_year`, `missing_data`)은 `data/requests/missing.jsonl`에 쌓이고, 다음 회차 수집 대상을 정할 때 집계해서 봅니다.
 
@@ -275,10 +296,13 @@ kosis-ai-service/
 ├── docs/                    # 데이터 사전, 작업 기록
 ├── scripts/
 │   ├── collect_kosis.py     # KOSIS 통계표 수집
+│   ├── collect_report.py    # 수집 결과 표 (표별 수록 기간·행 수·수집 시각)
 │   ├── tables.csv           # 수집할 통계표 목록
 │   ├── check_hcx.py         # HCX 연결 확인
 │   ├── ask.py               # 질의응답 명령줄 실행
 │   ├── eval_golden.py       # 골든셋 자동 평가
+│   ├── compare_llm.py       # 전처리 데이터 유무에 따른 HCX 답변 비교 실험
+│   ├── clova_eval.py        # 계산을 코드 대신 CLOVA가 할 때 정확도 비교 실험
 │   ├── missing_requests.py  # DB에 없는 데이터 요청 집계
 │   └── request_log.py       # 요청 로그 보기 (원인 추적)
 ├── eval/golden.csv          # 골든셋 (질문 + 정답)
