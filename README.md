@@ -275,7 +275,11 @@ python -m scripts.eval_golden --golden eval/golden_sheet.csv --round 1 --interva
 - 결과는 `data/eval/golden_<시각>.csv`(질문별, 엑셀용)와 `.md`(영역별 요약, 틀린 질문 목록)에 저장됩니다. CSV에 HCX 원문(`hcx_raw`)과 보정까지 반영한 해석(`parsed`)이 있어 틀린 원인을 바로 볼 수 있습니다.
 - `.md` 머리에 회차, 변경 내용, 채점에 쓴 DB(생성·최근 수집 시각)가 남아, 정확도가 바뀐 이유가 코드인지 데이터인지 구분할 수 있습니다.
 - 질문을 추가할 때는 빈 칸은 채점하지 않으므로 아는 칸만 채웁니다. `expected`는 KOSIS 화면 등에서 확인한 값을 넣고 `expected_source`에 확인한 곳을 적습니다.
-- 같은 질문도 실행마다 HCX 해석이 달라질 수 있어, 정확도는 여러 번 돌려 비교합니다.
+- 같은 질문도 실행마다 HCX 해석이 달라질 수 있어, 정확도는 여러 번 돌려 비교합니다. 같은 코드·DB로 반복한 결과 CSV를 넣으면 문항마다 행동·답변이 매번 같은지 집계합니다.
+
+```bash
+python -m scripts.eval_stability data/eval/golden_r4-1_*.csv data/eval/golden_r4-2_*.csv data/eval/golden_r4-3_*.csv
+```
 
 ## 프로젝트 구조
 
@@ -312,6 +316,7 @@ kosis-ai-service/
 │   ├── check_hcx.py         # HCX 연결 확인
 │   ├── ask.py               # 질의응답 명령줄 실행
 │   ├── eval_golden.py       # 골든셋 자동 평가
+│   ├── eval_stability.py    # 반복 채점 비교 (HCX 해석 흔들림 측정)
 │   ├── compare_llm.py       # 전처리 데이터 유무에 따른 HCX 답변 비교 실험
 │   ├── clova_eval.py        # 계산을 코드 대신 CLOVA가 할 때 정확도 비교 실험
 │   ├── missing_requests.py  # DB에 없는 데이터 요청 집계
