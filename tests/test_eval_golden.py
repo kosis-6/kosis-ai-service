@@ -56,3 +56,27 @@ def test_refusal_and_reason() -> None:
         False,
     )
     assert ev.grade_refusal(case(), "missing_region") == (False, False)
+
+
+def test_sheet_actions() -> None:
+    sheet = case(expected_status="refuse:대안안내", allowed_action="대안안내")
+    assert ev.grade_refusal(sheet, "out_of_range", {"status": "out_of_range"}) == (True, True)
+    assert ev.grade_refusal(sheet, "unknown_indicator", {"status": "unknown_indicator"}) == (
+        True,
+        False,
+    )
+    # 수록 기간 밖이지만 추계값으로 대신 답했으면 '답변'
+    projected = {"status": "out_of_range", "result": {"suggestion": {"status": "ok"}}}
+    assert ev.action_of(projected) == "답변"
+    both = case(expected_status="ok", allowed_action="명확화, 답변")
+    clarified = {"status": "ambiguous_region"}
+    assert ev.grade_refusal(both, "ambiguous_region", clarified) == (True, True)
+
+
+def test_table_choice() -> None:
+    c = case(allowed_tables="DT_1BB0006 + DT_1B81A23")
+    ok = {"status": "ok", "sources": [{"tbl_id": "DT_1BB0006"}]}
+    assert ev.grade_tables(c, ok) is True
+    assert ev.grade_tables(c, {"status": "ok", "sources": [{"tbl_id": "DT_1B04006"}]}) is False
+    assert ev.grade_tables(c, {"status": "unknown_indicator"}) is None
+    assert ev.grade_tables(case(allowed_tables="-"), ok) is None

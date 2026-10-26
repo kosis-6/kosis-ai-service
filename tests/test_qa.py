@@ -176,6 +176,31 @@ def test_summary_refusal(result: dict, expected: str) -> None:
     assert qa.summary(result) == expected
 
 
+def test_out_of_range_with_projection() -> None:
+    """수록 기간 밖 연도: status는 답변 불가로 두고 추계값을 대신 보여준다. 추계 안내는 한 번만"""
+    projection = {
+        "status": "ok",
+        "indicator": "고령인구 비율",
+        "region": "서울특별시",
+        "year": 2030,
+        "value": 24.2,
+        "unit": "%",
+        "scenario": "중위",
+        "source": "장래인구추계",
+        "basis": "2022년 기준",
+        "notes": ["주민등록인구와 기준이 달라 실적과 직접 이어서 비교하지 않습니다."],
+    }
+    r = {
+        "status": "out_of_range",
+        "reason": "수집된 주민등록인구 자료는 2008~2025년(연간)만 있습니다.",
+        "suggestion": projection,
+    }
+    answer = f"{qa.summary(r)}\n\n{qa.render(r)}"
+    assert answer.startswith("수집된 주민등록인구 자료는 2008~2025년(연간)만 있습니다. 대신")
+    assert answer.count("실제 통계가 아닌 추계값입니다") == 1
+    assert "출처: 장래인구추계 (2022년 기준)" in answer
+
+
 def test_josa() -> None:
     assert qa._josa("총인구", "은는") == "총인구는"
     assert qa._josa("고령인구 비율", "은는") == "고령인구 비율은"
@@ -198,3 +223,24 @@ def test_add_yearly_change() -> None:
     qa._add_yearly_change(result)
     assert result["series"][1]["diff_from_prev"] == 50
     assert result["series"][1]["rate_from_prev"] == 25.0
+
+
+def test_json_objects() -> None:
+    text = '```json\n{"type": "value", "sex": "남"}\n{"type": "value", "sex": "여"}\n```\n※ 참고'
+    assert [o["sex"] for o in qa._json_objects(text)] == ["남", "여"]
+    assert qa._json_objects("JSON 없음") == []
+
+
+def test_refusal_says_not_implemented_or_not_collected() -> None:
+    # 멘토링 피드백: 거절이 데이터상 불가능(수집 안 함)인지 미구현인지 구분
+    collected = {
+        "status": "unknown_indicator",
+        "indicator": "외국인 근로자 수",
+        "gap": "not_implemented",
+        "related": ["시도별 외국인주민 현황 (TX_11025_A000_A)"],
+    }
+    assert "수집한 통계표(시도별 외국인주민 현황 (TX_11025_A000_A))에 관련 자료가 있지만" in (
+        qa.summary(collected)
+    )
+    missing = {"status": "unknown_indicator", "indicator": "1인 가구", "gap": "not_collected"}
+    assert "아직 수집하지 않은 통계입니다." in qa.summary(missing)

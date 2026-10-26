@@ -125,7 +125,7 @@ KOSIS OpenAPI로 통계표 수치를 받아 `data/` 폴더에 저장합니다.
 컨테이너 터미널에서 실행합니다.
 
 ```bash
-# 목록 전체 받기 (약 10분)
+# 목록 전체 받기 (20개 표 약 15분, 주민등록인구 DT_1B04006만 약 7분)
 python -m scripts.collect_kosis --list scripts/tables.csv
 
 # 표 하나만 받기
@@ -145,6 +145,12 @@ python -m scripts.collect_kosis --list scripts/tables.csv --dry-run
 | `data/processed/<표ID>.csv` | 수집한 데이터 (값 하나당 한 줄) |
 | `data/processed/<표ID>.meta.json` | 표 이름, 분류 이름, 항목 목록, 수록 기간, 수집 시각(`collected_at`) |
 | `data/raw/<표ID>/` | API 원본 응답 (`--save-raw`를 붙였을 때만 저장, 용량이 커서 기본은 저장 안 함) |
+
+수집이 끝나면 표별 수록 기간·행 수·수집 시각을 한 표로 정리해 보고서에 붙일 수 있습니다. `meta.json`이 없는 표는 '미수집'으로 표시됩니다.
+
+```bash
+python -m scripts.collect_report   # → data/reports/collect_<시각>.md (보고서용) / .csv (엑셀용)
+```
 
 CSV 주요 열:
 
@@ -177,6 +183,12 @@ python pipeline/run_all.py   # 압축 해제 → 전처리 → 카탈로그 → 
 
 `data/processed/kosis.duckdb`가 만들어집니다. 테이블과 규칙은 [`docs/data_dictionary.md`](docs/data_dictionary.md)를 참고합니다.
 
+DB를 만든 뒤에는 서비스가 원본 CSV와 같은 분자·분모·기간으로 계산하는지 전수 대조할 수 있습니다. 전처리·서비스 코드를 쓰지 않고 원본 CSV를 pandas로 따로 계산해 비교합니다 (계산 지표 전 연도·전 지역·성별, 조회 지표 전국·시도, 표별 수록 기간).
+
+```bash
+python -m scripts.check_raw   # → data/eval/raw_check_<시각>.md
+```
+
 KOSIS에서 직접 다시 받아 DB를 갱신할 때는 zip 없이 수집 결과를 바로 씁니다.
 
 ```bash
@@ -204,10 +216,47 @@ python -m scripts.ask -q "최근 5년 부산 인구 변화" --debug
 | 단계 | 담당 | 내용 |
 | --- | --- | --- |
 | 1. 질문 이해 | HCX-007 | 질문 → 유형·지표·지역·연도 JSON |
-| 2~4. 판단·조회·계산 | 코드 (`indicators.py`) | 답변 가능 여부(status) 판단, DuckDB 조회, 계산 |
+| 2~4. 판단·조회·계산 | 코드 (`indicators.py`, `lookup.py`) | 답변 가능 여부(status) 판단, DuckDB 조회, 계산 |
 | 5. 답변 생성 | 코드 (`qa.py`) | 질문 유형별 템플릿에 계산 결과를 채워 문장 작성, 수치 목록·출처·KOSIS 통계표 링크 첨부 |
 
-응답의 `status`는 `ok` 또는 답변 불가 사유(`out_of_range`, `unknown_indicator`, `missing_region` 등)이고, `sources`에 답변에 쓴 통계표가 들어 있습니다.
+지표는 `config/catalog_notes.toml`의 지표 사전(40개)에 있습니다.
+
+- **계산 지표** (`indicators.py`): 총인구·고령인구 비율·유소년인구 비율·노령화지수. 주민등록인구에서 직접 계산하고, "6~11세 인구"처럼 연령 구간 인구 수도 답합니다.
+- **조회 지표** (`lookup.py`): 합계출산율, 혼인 건수, 평균 초혼연령, 다문화 출생아 수, 미혼 비율, 외국인주민 비율 등 KOSIS가 공표한 값을 `facts`에서 꺼냅니다. 지역 수준(전국·시도·시군구)과 연도에 맞는 표를 고르고, 남녀가 따로 있는 표는 둘 다, 연령 분류가 있는 표는 질문한 연령 구간만 더합니다. 출산순위별·전입 사유별·외국인주민 유형별 같은 구성비도 답합니다.
+- 질문 원문에서 코드가 직접 읽는 조건: 연령 구간, 지역 묶음(수도권·충청권·5대 광역시)과 합계, 가장 높/낮은 해, 몇 년 연속, 다시 오른 해, 해마다 평균, 작년 대비, 몇 배, 전국 대비 비중, 전국 시 중 몇 위
+- 지표 바꿔치기 방지: 질문에 근거가 없는 지표로 답하지 않습니다 (예: "6~11세 인구 수"를 유소년인구 비율로 답하지 않음).
+- 지표를 추가할 때는 지표 사전에 한 항목을 추가하면 됩니다 (필드 설명은 파일 안 주석).
+
+응답의 `status`는 `ok` 또는 답변 불가 사유이고, `sources`에 답변에 쓴 통계표가 들어 있습니다. 답변 불가일 때는 사유와 다시 질문하는 방법을 안내합니다.
+
+| 경우 | `status` | 처리 |
+| --- | --- | --- |
+| 인구 통계와 관계없는 질문 (날씨, 집값 등) | `not_supported_question` | 거절 + 지원 지표 목록 |
+| 지원하지 않는 지표 (예: 1인 가구), 표에 없는 연령 구간 | `unknown_indicator` | 거절 + 지원 지표 목록 |
+| 지역 누락 | `missing_region` | 지역을 넣어 다시 질문 요청 (순위 질문은 지역 없이 답함) |
+| 모르는 지역 이름 | `unknown_region` | 시도·시군구 이름으로 다시 질문 요청 |
+| 같은 이름의 여러 지역 (예: 중구, 시군구 자료가 있는 지표의 "광주", "충청도") | `ambiguous_region` | 후보 목록을 보여 주고 다시 질문 요청 |
+| 수록 기간 밖 연도 | `out_of_range` | 수록 기간과 가장 가까운 연도 안내. 미래 연도이고 장래추계가 있으면 추계값을 대신 보여줌 (status는 그대로), 추계 범위(~2052)도 넘으면 추계 마지막 연도 안내 |
+| 그 연도에 없던 지역 | `region_not_in_year` | 지역이 있던 기간 안내. 같은 이름의 지역이 그 해에 있었으면 그 값으로 답함 (예: 2020년 대구 군위군 → 경북 군위군) |
+| 수록 기간 안이지만 값이 빔 | `missing_data` | 다른 연도·지역으로 질문 요청 |
+| 질문 해석 실패 | `parse_error` | 지역·연도·지표를 넣어 다시 질문 요청 |
+| 원인·정책 효과 질문 | `ok` | 원인은 판단하지 않고 수치 변화만 답함 |
+
+답변 문장은 `qa.py`의 템플릿으로 만듭니다: 요약 문장 `summary()`, 수치 목록·출처 `render()`, 답변 불가 안내 `REFUSAL_GUIDE`.
+
+질문할 때는 KOSIS를 호출하지 않습니다. DB에 없는 데이터 때문에 답하지 못한 질문(`unknown_indicator`, `out_of_range`, `region_not_in_year`, `missing_data`)은 `data/requests/missing.jsonl`에 쌓이고, 다음 회차 수집 대상을 정할 때 집계해서 봅니다.
+
+```bash
+python -m scripts.missing_requests   # 같은 요청끼리 묶어 많이 나온 순서로
+```
+
+모든 `/ask` 요청은 `data/requests/requests.jsonl`에 HCX 원문, 해석 결과(코드 보정 내역 포함), 계산 결과, 단계별 응답 시간과 함께 남습니다. 틀린 답이 질문 해석 문제인지 조회·계산 문제인지 여기서 추적합니다.
+
+```bash
+python -m scripts.request_log                       # status별 건수·평균 응답 시간 + 최근 10건
+python -m scripts.request_log --status parse_error  # 이 status만
+python -m scripts.request_log --last 3 --detail     # HCX 원문·해석·계산 결과까지
+```
 
 ### 3. 골든셋 평가
 
@@ -216,6 +265,8 @@ python -m scripts.ask -q "최근 5년 부산 인구 변화" --debug
 ```bash
 python -m scripts.eval_golden                  # 전체
 python -m scripts.eval_golden --only g01 g11   # 일부 질문만
+python -m scripts.eval_golden --round 3 --note "남녀 비중 보정 추가"   # 회차 기록
+python -m scripts.eval_golden --golden eval/golden_sheet.csv --round 1 --interval 15   # 시트 골든셋 60문항
 ```
 
 | 영역 | 채점 방법 |
@@ -223,12 +274,25 @@ python -m scripts.eval_golden --only g01 g11   # 일부 질문만
 | 질의 이해 | HCX 해석(`parsed`)을 정답 칸(`type`, `indicator`, `regions`, `year` ...)과 비교 |
 | 데이터 정확성 | 계산 결과의 `target` 값(`value`, `rate`, `ranking`, `share:여자` 등)을 `expected`와 비교. 숫자는 정답에 적은 자릿수만큼 비교 |
 | 답변 신뢰성 | 답한 경우 출처·KOSIS 통계표 링크, 답변 불가인 경우 안내 문장이 있는지 |
-| 답변 불가 판단 | `status`를 `expected_status`와 비교 (거절 여부, 사유 코드) |
+| 답변 불가 판단 | `status`를 `expected_status`와 비교 (거절 여부, 사유 코드). 시트 골든셋은 기대 행동(답변·명확화·범위안내·대안안내, `allowed_action`)과 비교 |
+| 표 선택 | 답한 경우 실제로 쓴 통계표가 `allowed_tables` 안에 있는지 (시트 골든셋만) |
 | 자연어 품질 | 자동 채점 안 함. 결과 CSV의 `quality` 칸에 사람이 0~2점 |
 
-- 결과는 `data/eval/golden_<시각>.csv`(질문별, 엑셀용)와 `.md`(영역별 요약, 틀린 질문 목록)에 저장됩니다.
+- 결과는 `data/eval/golden_<시각>.csv`(질문별, 엑셀용)와 `.md`(영역별 요약, 틀린 질문 목록)에 저장됩니다. CSV에 HCX 원문(`hcx_raw`)과 보정까지 반영한 해석(`parsed`)이 있어 틀린 원인을 바로 볼 수 있습니다.
+- `.md` 머리에 회차, 변경 내용, 채점에 쓴 DB(생성·최근 수집 시각)가 남아, 정확도가 바뀐 이유가 코드인지 데이터인지 구분할 수 있습니다.
 - 질문을 추가할 때는 빈 칸은 채점하지 않으므로 아는 칸만 채웁니다. `expected`는 KOSIS 화면 등에서 확인한 값을 넣고 `expected_source`에 확인한 곳을 적습니다.
-- 같은 질문도 실행마다 HCX 해석이 달라질 수 있어, 정확도는 여러 번 돌려 비교합니다.
+- 같은 질문도 실행마다 HCX 해석이 달라질 수 있어, 정확도는 여러 번 돌려 비교합니다. 같은 코드·DB로 반복한 결과 CSV를 넣으면 문항마다 행동·답변이 매번 같은지 집계합니다.
+
+질문 해석 보정·계산 코드를 고친 뒤에는, 지난 채점에서 기록한 HCX 해석(`hcx_raw`)을 지금 코드에 다시 넣어 HCX 호출 없이 회귀를 확인합니다. HCX가 실행마다 다르게 해석했던 경우를 모두 견디는지 볼 수 있습니다.
+
+```bash
+python -m scripts.eval_replay                             # data/eval의 모든 채점 결과 (1분 이내)
+python -m scripts.eval_replay data/eval/golden_r5_*.csv   # 일부만
+```
+
+```bash
+python -m scripts.eval_stability data/eval/golden_r4-1_*.csv data/eval/golden_r4-2_*.csv data/eval/golden_r4-3_*.csv
+```
 
 ## 프로젝트 구조
 
@@ -251,7 +315,8 @@ kosis-ai-service/
 │       ├── kosis_client.py  # KOSIS OpenAPI 호출
 │       ├── hcx_client.py    # HCX(CLOVA Studio) 호출
 │       ├── analysis.py      # 증감률·구성비·순위 등 계산 함수
-│       ├── indicators.py    # 지표 조회·추이·비교·순위 (DuckDB)
+│       ├── indicators.py    # 계산 지표 조회·추이·비교·순위, 지역 찾기 (DuckDB)
+│       ├── lookup.py        # 조회 지표 (KOSIS 공표 값, facts) 조회·추이·비교·순위·구성비
 │       ├── catalog.py       # 통계표 설명·비교 가능 여부 조회
 │       └── qa.py            # 질문 → 답변 (1~5단계 연결)
 ├── pipeline/                # 전처리 DB를 만드는 배치 작업 (서버와 별개)
@@ -259,11 +324,20 @@ kosis-ai-service/
 ├── docs/                    # 데이터 사전, 작업 기록
 ├── scripts/
 │   ├── collect_kosis.py     # KOSIS 통계표 수집
+│   ├── collect_report.py    # 수집 결과 표 (표별 수록 기간·행 수·수집 시각)
 │   ├── tables.csv           # 수집할 통계표 목록
 │   ├── check_hcx.py         # HCX 연결 확인
 │   ├── ask.py               # 질의응답 명령줄 실행
-│   └── eval_golden.py       # 골든셋 자동 평가
-├── eval/golden.csv          # 골든셋 (질문 + 정답)
+│   ├── eval_golden.py       # 골든셋 자동 평가
+│   ├── eval_stability.py    # 반복 채점 비교 (HCX 해석 흔들림 측정)
+│   ├── eval_replay.py       # 기록된 HCX 해석으로 재생 검증 (HCX 호출 없음)
+│   ├── check_raw.py         # 원본 CSV ↔ 서비스 값 전수 대조 (분자·분모·기간)
+│   ├── compare_llm.py       # 전처리 데이터 유무에 따른 HCX 답변 비교 실험
+│   ├── clova_eval.py        # 계산을 코드 대신 CLOVA가 할 때 정확도 비교 실험
+│   ├── missing_requests.py  # DB에 없는 데이터 요청 집계
+│   └── request_log.py       # 요청 로그 보기 (원인 추적)
+├── eval/golden.csv          # 개발셋 골든셋 16문항 (질문 + 정답)
+├── eval/golden_sheet.csv    # 시트 골든셋 60문항 (기대 행동·허용 표)
 ├── data/                    # 수집한 데이터 (각자 생성, 커밋 X)
 ├── tests/                   # pytest 테스트
 ├── docker/postgres/init.sql # DB 최초 생성 시 확장(pgvector, pg_trgm) 설치

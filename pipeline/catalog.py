@@ -177,7 +177,11 @@ def check(con, notes):
                 continue
             for item in _as_list(s.get("item_id", [])):
                 where = [f"tbl_id = '{s['table']}'", f"item_id = '{item}'"]
-                where += [f"{col} = '{val}'" for col, val in s.get("filters", {}).items()]
+                # 값이 목록이면 그중 하나라도 있으면 됨 (lookup.py가 더해서 쓴다)
+                where += [
+                    f"{col} in ({', '.join(repr(v) for v in _as_list(val))})"
+                    for col, val in s.get("filters", {}).items()
+                ]
                 n = con.sql(f"select count(*) from facts where {' and '.join(where)}").fetchall()[
                     0
                 ][0]
