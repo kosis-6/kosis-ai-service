@@ -26,6 +26,7 @@
 import argparse
 import asyncio
 import csv
+import json
 import re
 from datetime import datetime
 from decimal import Decimal
@@ -42,7 +43,22 @@ OUT_DIR = Path("data/eval")
 CALL_INTERVAL = 3  # 호출 제한(42901) 대응 (초). 그래도 걸리면 HcxClient가 다시 시도
 RATE_LIMIT_WAITS = (60, 120, 180)  # HcxClient 재시도까지 실패하면 질문 단위로 쉬고 다시 (초)
 PARSE_FIELDS = ["type", "indicator", "regions", "year", "start_year", "end_year", "sex", "by"]
-AREAS = ["질의 이해", "데이터 정확성", "답변 신뢰성", "답변 불가 판단"]
+AREAS = ["질의 이해", "데이터 정확성", "답변 신뢰성", "답변 불가 판단", "표 선택"]
+# 시트 골든셋(eval/golden_sheet.csv)의 기대 행동 ↔ 서비스 결과
+#   답변: 답함 (수록 기간 밖이지만 추계값으로 대신 답한 경우 포함)
+#   명확화: 어느 지역인지 되물음 / 범위안내: 지원 범위 밖이라 안내 / 대안안내: 다른 연도·지역을 제안
+ACTIONS = {
+    "ok": "답변",
+    "ambiguous_region": "명확화",
+    "missing_region": "명확화",
+    "not_supported_question": "범위안내",
+    "unknown_indicator": "범위안내",
+    "out_of_range": "대안안내",
+    "region_not_in_year": "대안안내",
+    "missing_data": "대안안내",
+    "unknown_region": "다시질문",
+}
+TABLE_ID = re.compile(r"[A-Z]{2,3}_[0-9A-Z_]+")
 
 
 def load_golden(path: Path = GOLDEN) -> list[dict[str, str]]:
@@ -128,17 +144,47 @@ def grade_reliability(status: str | None, res: dict[str, Any]) -> bool:
     return bool(res["answer"])
 
 
-def grade_refusal(case: dict[str, str], status: str | None) -> tuple[bool, bool]:
-    """(거절 여부가 맞음, 사유 코드까지 맞음)"""
+def action_of(res: dict[str, Any]) -> str | None:
+    """서비스 결과 → 시트의 행동 이름"""
+    status = res.get("status")
+    suggestion = (res.get("result") or {}).get("suggestion") or {}
+    if status == "out_of_range" and suggestion.get("status") == "ok":
+        return "답변"  # 수록 기간 밖이지만 추계값으로 대신 답함
+    if status == "unknown_region" and (res.get("result") or {}).get("alternative"):
+        return "대안안내"  # 생활권 이름 → 속한 시군구 제안
+    return ACTIONS.get(status)
+
+
+def grade_refusal(
+    case: dict[str, str], status: str | None, res: dict[str, Any] | None = None
+) -> tuple[bool, bool]:
+    """(거절 여부가 맞음, 사유 코드까지 맞음)
+    시트 골든셋(allowed_action 칸)은 사유 코드 대신
+    기대 행동(답변/명확화/범위안내/대안안내)과 비교"""
     want = case.get("expected_status") or "ok"
+    if case.get("allowed_action"):
+        action = action_of(res or {"status": status})
+        allowed = {a.strip() for a in case["allowed_action"].split(",")}
+        hit = action in allowed
+        return hit or (action == "답변") == (want == "ok"), hit
     return (want == "ok") == (status == "ok"), want == status
+
+
+def grade_tables(case: dict[str, str], res: dict[str, Any]) -> bool | None:
+    """답한 경우 실제로 쓴 통계표가 허용 표 안에 있는지. 허용 표 칸이 없으면 채점하지 않음"""
+    allowed = set(TABLE_ID.findall(case.get("allowed_tables", "")))
+    if not allowed or action_of(res) != "답변":
+        return None
+    used = {s.get("tbl_id") for s in res.get("sources") or []}
+    return bool(used) and used <= allowed
 
 
 def grade(case: dict[str, str], res: dict[str, Any]) -> dict[str, Any]:
     status = res.get("status")
     parse_ok, parse_wrong = grade_parse(case, res.get("parsed") or {})
     value_ok, got = grade_value(case, res.get("result") or {})
-    refuse_ok, reason_ok = grade_refusal(case, status)
+    refuse_ok, reason_ok = grade_refusal(case, status, res)
+    trace = res.get("trace") or {}
     return {
         "id": case["id"],
         "category": case.get("category", ""),
@@ -154,9 +200,16 @@ def grade(case: dict[str, str], res: dict[str, Any]) -> dict[str, Any]:
         "답변 신뢰성": grade_reliability(status, res),
         "답변 불가 판단": refuse_ok,
         "reason_ok": reason_ok,
+        "action": action_of(res) or "",
+        "expected_action": case.get("allowed_action", ""),
+        "표 선택": grade_tables(case, res),
+        "tables": ",".join(s.get("tbl_id") or "" for s in res.get("sources") or []),
         "answer": res.get("answer", ""),
         "quality": "",  # 자연어 품질 0~2점, 사람이 채움
         "error": res.get("error", ""),
+        # 원인 분석용: HCX 원문과 코드 보정까지 반영한 해석
+        "hcx_raw": trace.get("hcx_raw", ""),
+        "parsed": json.dumps(res.get("parsed") or {}, ensure_ascii=False),
     }
 
 
@@ -207,9 +260,15 @@ def _problems(r: dict[str, Any]) -> list[str]:
         out.append(f"데이터 정확성: {r['target']} {r['got']} (정답 {r['expected']})")
     if r["답변 신뢰성"] is False:
         out.append("답변 신뢰성: 출처·통계표 링크 또는 안내 문장 없음")
+    if r["표 선택"] is False:
+        out.append(f"표 선택: {r['tables']}")
     if not r["reason_ok"]:
         area = "답변 불가 판단" if r["답변 불가 판단"] is False else "사유 코드"
-        out.append(f"{area}: status {r['status']} (정답 {r['expected_status']})")
+        if r["expected_action"]:
+            got = f"{r['action']} / status {r['status']}"
+            out.append(f"{area}: {got} (정답 {r['expected_action']})")
+        else:
+            out.append(f"{area}: status {r['status']} (정답 {r['expected_status']})")
     return out
 
 
@@ -222,6 +281,9 @@ def summarize(rows: list[dict[str, Any]]) -> str:
     refusals = [r for r in rows if r["expected_status"] != "ok"]
     reason = sum(r["reason_ok"] for r in refusals)
     lines.append(f"\n답변 불가 질문 {len(refusals)}개 중 사유 코드까지 맞음 {reason}개")
+    if any(r["expected_action"] for r in rows):
+        hit = sum(r["reason_ok"] for r in rows)
+        lines.append(f"기대 행동(답변/명확화/범위안내/대안안내) 일치 {hit}/{len(rows)}")
     lines.append("자연어 품질은 결과 CSV의 quality 칸(0~2점)을 사람이 채점합니다.")
 
     failed = [(r, _problems(r)) for r in rows]

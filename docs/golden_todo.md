@@ -33,6 +33,8 @@ status: unknown_indicator 28 / not_supported_question 18 / ok 10 / out_of_range 
 - [x] 0회차(기준점) 평가 실행: `python -m scripts.eval_golden --golden eval/golden_sheet.csv --round 0 --interval 30`
 - [ ] 채점 규칙: 추계값으로 대신 답한 out_of_range(s56)는 답변으로 인정
 - [ ] 채점 규칙: status가 ok여도 답한 지표가 질문 지표와 다르면 오답 (지금은 ok면 답변 불가 판단 통과)
+- [x] 채점 규칙: 허용 표 정하기. s56은 시트 탐색 통계표가 DT_1BPB003인데 DT_1BPB002로 답함. 표 선택 채점을 넣으면 오답이 되니 두 표 모두 허용할지 결정
+  → 두 표 모두 허용 (같은 공표의 장래인구추계, `golden_sheet.csv` s56 allowed_tables에 DT_1BPB002 추가). 표 선택 채점은 `eval_golden.grade_tables`
 - [ ] 결과를 시트 '결과_r0' 탭으로 기록 (Google Sheets 커넥터 필요, 안 되면 Q~Y열 CSV로)
 - [ ] P열 정답값 채우기: 원본 CSV(`facts`)로 직접 계산 (지금은 s03 하나만 있음)
 - [ ] `golden_sheet.csv`에 `target` 칸 추가 (정답값이 있어도 target이 없으면 데이터 정확성을 채점하지 않음)
@@ -58,7 +60,9 @@ status: unknown_indicator 28 / not_supported_question 18 / ok 10 / out_of_range 
 - [ ] 수록 기간 확인을 표별 start_year·end_year로 (다문화는 2024까지)
 - [ ] 답변 불가 안내의 "지원 지표" 목록에 lookup 지표 포함
 
-풀리는 문항: s01, s03, s06, s07, s14, s15, s16, s22, s23, s29, s30, s31, s32, s33, s42, s50(되묻기), s53(동명 지역)
+풀리는 문항: s01, s03, s06, s07, s11(수도권 합산은 3번), s14, s15, s16, s22, s23(첫째아 필터는 2번), s29, s30, s31, s32, s33, s42, s50(되묻기), s53(동명 지역)
+
+→ 구현: `app/services/lookup.py` (지역 수준·연도로 표 고르기, 남녀 항목, 전국 전용 표, 표별 수록 기간, 실제로 쓴 표로 출처·링크)
 
 ## 2. 지표 사전 추가 (약 20문항)
 
@@ -66,9 +70,10 @@ status: unknown_indicator 28 / not_supported_question 18 / ok 10 / out_of_range 
 
 | 지표 | 표 | 문항 |
 |---|---|---|
-| 다문화 혼인 건수, 다문화 출생아 수 (지금은 비율만) | DT_1BB0002, DT_1BB0006 | s04, s05, s13, s25, s26, s37, s54 |
+| ✅ 다문화 혼인 건수, 다문화 출생아 수 (지금은 비율만) | DT_1BB0002, DT_1BB0006 | s04, s05, s09, s13, s25, s26, s37, s54 |
 | 일반혼인율 (남녀 별도) | DT_1B83A34 | s17, s24 |
 | 출산순위별 출생아 수 (첫째·둘째·셋째·넷째 이상) | DT_1B81A12 | s10, s34, s39 |
+| ✅ 출산순위별 모의 평균 출산연령 (지금은 전체 T10만, 첫째아 T20 등 필요) → '첫째아 평균 출산연령'(T20) 추가 | DT_1B81A20 | s20, s23 |
 | 혼인상태별 인구 (미혼·유배우 등, 성·연령별) | DT_1MR2060 | s38, s45, s55 |
 | 외국인주민 수·비율·유형 | TX_11025_A000_A | s27, s40 |
 | 전입 사유별 이동 | DT_1B26B24 | s28, s41 |
@@ -98,6 +103,10 @@ status: unknown_indicator 28 / not_supported_question 18 / ok 10 / out_of_range 
 - [ ] "충청도", "충청권" 해석 고지: s09, s59
 - [ ] 수록 기간 밖 → 가장 가까운 연도 제안이 lookup 지표에도 나오게: s54, s55
 - [ ] 잘못된 전제 ("결혼한 부부 중 몇 %가 이혼") → 전제를 바로잡고 이혼 건수/혼인 건수로 안내: s60
+- [x] 거절 안내 문구 바로잡기: not_supported_question 18개 중 16개가 인구통계 질문인데 "지역별 인구통계 질문에만 답할 수 있습니다"로 나감. 진짜 범위 밖은 s46, s47뿐이고 나머지는 지원 지표가 없다는 안내(unknown_indicator)가 맞음
+  → HCX가 other로 봐도 질문에 인구·출생·혼인·가구 등 통계 표현이 있으면 unknown_indicator (`qa.correct`, STATS_WORDS)
+- [x] 거절 문구의 지표 이름이 질문 표현을 잃지 않게: s05 "다문화 출생 수" → '출생아 수', s27 "외국인 주민 비율" → '외국인주민 수'
+  → 두 지표를 지원 지표로 추가(다문화 출생아 수, 외국인주민 비율). 질문 별칭이 긴 쪽을 우선해 '출생아 수'로 줄지 않음. 거절할 때는 HCX가 뽑은 질문 원래 표현(term)으로 안내
 - [ ] 필수 고지 (시트 J열): 성별 미지정 → 남녀 모두, 지표 해석("합계출생율" → 합계출산율), 기준 시점, 비교 기준(건수/조혼인율)
 
 ## 5. 확인할 것

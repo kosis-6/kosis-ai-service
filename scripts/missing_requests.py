@@ -21,6 +21,8 @@ REASONS = {
     "region_not_in_year": "그 연도에 없던 지역",
     "missing_data": "값이 비어 있음",
 }
+# 지원하지 않는 지표의 구분: 수집한 표에 관련 자료가 있는지 (qa.compute가 기록)
+GAPS = {"not_implemented": "미구현 (수집한 표에 있음)", "not_collected": "수집 안 함"}
 
 
 def load(path: Path = MISSING_LOG, since: str | None = None) -> list[dict]:
@@ -30,11 +32,12 @@ def load(path: Path = MISSING_LOG, since: str | None = None) -> list[dict]:
     return [r for r in records if not since or r["at"] >= since]
 
 
-def key(record: dict) -> tuple[str, str, str, str]:
+def key(record: dict) -> tuple[str, str, str, str, str]:
     p = record.get("parsed") or {}
     years = p.get("year") or "~".join(str(y) for y in (p.get("start_year"), p.get("end_year")) if y)
     return (
         record["status"],
+        GAPS.get(record.get("gap"), ""),
         p.get("indicator") or "",
         ", ".join(p.get("regions") or []),
         str(years or ""),
@@ -49,13 +52,20 @@ def summarize(records: list[dict]) -> str:
     lines = [
         f"요청 {len(records)}건, 묶음 {len(counts)}개",
         "",
-        "| 건수 | 사유 | 지표 | 지역 | 연도 | 예시 질문 |",
-        "|---|---|---|---|---|---|",
+        "| 건수 | 사유 | 구분 | 지표 | 지역 | 연도 | 예시 질문 |",
+        "|---|---|---|---|---|---|---|",
     ]
     for k, n in counts.most_common():
-        status, ind, regions, years = k
+        status, gap, ind, regions, years = k
         reason = REASONS.get(status, status)
-        lines.append(f"| {n} | {reason} | {ind} | {regions} | {years} | {examples[k]} |")
+        lines.append(f"| {n} | {reason} | {gap} | {ind} | {regions} | {years} | {examples[k]} |")
+    gaps = Counter(r.get("gap") for r in records if r.get("gap"))
+    if gaps:
+        lines.append(
+            "\n지원하지 않는 지표: "
+            + ", ".join(f"{GAPS[g]} {n}건" for g, n in gaps.items() if g in GAPS)
+            + " (미구현은 코드·지표 사전 작업, 수집 안 함은 다음 회차 수집 후보)"
+        )
     return "\n".join(lines)
 
 

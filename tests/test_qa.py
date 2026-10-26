@@ -223,3 +223,24 @@ def test_add_yearly_change() -> None:
     qa._add_yearly_change(result)
     assert result["series"][1]["diff_from_prev"] == 50
     assert result["series"][1]["rate_from_prev"] == 25.0
+
+
+def test_json_objects() -> None:
+    text = '```json\n{"type": "value", "sex": "남"}\n{"type": "value", "sex": "여"}\n```\n※ 참고'
+    assert [o["sex"] for o in qa._json_objects(text)] == ["남", "여"]
+    assert qa._json_objects("JSON 없음") == []
+
+
+def test_refusal_says_not_implemented_or_not_collected() -> None:
+    # 멘토링 피드백: 거절이 데이터상 불가능(수집 안 함)인지 미구현인지 구분
+    collected = {
+        "status": "unknown_indicator",
+        "indicator": "외국인 근로자 수",
+        "gap": "not_implemented",
+        "related": ["시도별 외국인주민 현황 (TX_11025_A000_A)"],
+    }
+    assert "수집한 통계표(시도별 외국인주민 현황 (TX_11025_A000_A))에 관련 자료가 있지만" in (
+        qa.summary(collected)
+    )
+    missing = {"status": "unknown_indicator", "indicator": "1인 가구", "gap": "not_collected"}
+    assert "아직 수집하지 않은 통계입니다." in qa.summary(missing)
