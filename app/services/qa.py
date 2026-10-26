@@ -172,9 +172,7 @@ def _pick_indicator(question, names):
         return next(iter(rest))
     if PCT_ASK.search(question):
         ratio = {
-            n
-            for n in rest
-            if lookup.kind_of(indicators.specs()[n]) in ("ratio", "composition")
+            n for n in rest if lookup.kind_of(indicators.specs()[n]) in ("ratio", "composition")
         }
         if len(ratio) == 1:
             return next(iter(ratio))
@@ -564,8 +562,11 @@ def _combine(parts):
     for p in parts:
         if p.get("status") != "ok":
             return p
-    return {**{k: parts[0][k] for k in ("source", "basis", "tbl_id", "url") if k in parts[0]},
-            "status": "ok", "split": parts}
+    return {
+        **{k: parts[0][k] for k in ("source", "basis", "tbl_id", "url") if k in parts[0]},
+        "status": "ok",
+        "split": parts,
+    }
 
 
 def _sum_regions(result, q):
@@ -735,9 +736,7 @@ def _value_text(r):
     if negative and r["value"] < 0:
         text += " " + negative.format(value=f"{-r['value']:,}")
     if share := r.get("share"):
-        text += (
-            f" {share['base']}({_val(share['base_value'], unit)})의 {share['value']}%입니다."
-        )
+        text += f" {share['base']}({_val(share['base_value'], unit)})의 {share['value']}%입니다."
     return text
 
 

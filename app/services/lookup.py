@@ -76,9 +76,7 @@ def _effective(src, sex):
 @lru_cache
 def _table(tbl_id):
     """표 이름·기관·수록 기간·기준 시점"""
-    c = _rows(
-        "select tbl_nm, org_nm, start_year, end_year from catalog where tbl_id = ?", [tbl_id]
-    )
+    c = _rows("select tbl_nm, org_nm, start_year, end_year from catalog where tbl_id = ?", [tbl_id])
     c = c[0] if c else {"tbl_nm": tbl_id, "org_nm": "", "start_year": None, "end_year": None}
     basis = ind_mod._catalog_rows(
         "select survey, reference_date from table_notes where tbl_id = ?", [tbl_id]
@@ -363,9 +361,7 @@ def trend(spec, region, start_year, end_year, sex="계", ages=None):
     code = reg["region_code"]
     vals = _fetch(src, [code], start_year, end_year, age_codes)
     series = [
-        {"year": y, "value": _round(v, spec)}
-        for (y, _), v in sorted(vals.items())
-        if v is not None
+        {"year": y, "value": _round(v, spec)} for (y, _), v in sorted(vals.items()) if v is not None
     ]
     if len(series) < 2:
         return _base(
@@ -492,8 +488,11 @@ def rank(
         t = ind_mod.resolve_region(target, year)
         if t["status"] == "ok":
             hit = next((it for it in items if it["region"] == t["display"]), None)
-            out["target"] = {"region": t["display"], "rank": hit["rank"] if hit else None,
-                             "value": hit["value"] if hit else None}
+            out["target"] = {
+                "region": t["display"],
+                "rank": hit["rank"] if hit else None,
+                "value": hit["value"] if hit else None,
+            }
     return out
 
 
