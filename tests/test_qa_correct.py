@@ -7,11 +7,17 @@ from app.services import indicators, qa
 # config/catalog_notes.toml 지표 사전 일부 (DB 없이 테스트)
 ALIASES = {
     "총인구": ["인구", "인구수", "전체 인구", "주민등록인구"],
-    "고령인구 비율": ["고령화율", "노인 비율", "65세 이상 비율"],
+    "고령인구 비율": ["고령화율", "노인 비율", "65세 이상 비율", "고령층"],
     "유소년인구 비율": ["유소년 비율", "0~14세 비율"],
     "노령화지수": ["노령화 지수"],
     "합계출산율": ["출산율", "TFR"],
-    "순이동": ["인구 순유입"],
+    "순이동": ["인구 순유입", "순유입", "빠져나간"],
+    "다문화 출생아 수": ["다문화 출생 수"],
+    "출생아 수": ["출생 수", "태어난 아이"],
+    "다문화 출생 비중": ["다문화 가정 아이"],
+    "출산순위별 출생 구성": ["첫째"],
+    "첫째아 평균 출산연령": ["첫째를 낳는 나이"],
+    "자연증가 건수": ["출생아보다 사망자"],
 }
 TODAY = date(2026, 10, 24)
 
@@ -119,7 +125,6 @@ def test_unsupported_lookup_indicator_is_named() -> None:
 @pytest.mark.parametrize(
     "question",
     [
-        "2025년 서울 20대 인구는?",  # 연령 조건이 있으면 총인구로 바꾸지 않는다
         "서울 고령화율과 노령화지수를 비교해줘",  # 지표가 둘이면 HCX 해석을 따른다
         "저출산 정책이 효과가 있었나요?",  # 지표 표현이 없으면 HCX 해석을 따른다
     ],
@@ -145,3 +150,93 @@ def test_relative_years() -> None:
     # 추이 질문의 기간은 건드리지 않는다
     p = qa.correct("작년까지 5년간 변화", parsed(type="trend", indicator="총인구"), TODAY)
     assert p["year"] is None
+
+
+def test_age_band_population_count() -> None:
+    # 연령 구간 인구 수는 총인구 + 연령 구간 (HCX가 비슷한 비율 지표로 바꿔도 되돌린다)
+    p = qa.correct(
+        "2025년 대전 유성구의 만 6~11세 인구는 몇 명이에요?",
+        parsed(indicator="유소년인구 비율", regions=["대전 유성구"]),
+        TODAY,
+    )
+    assert p["indicator"] == "총인구"
+    assert p["ages"] == [[6, 11]]
+    p = qa.correct("서울 20대(20~29세) 인구는?", parsed(indicator="총인구"), TODAY)
+    assert p["ages"] == [[20, 29]]
+
+
+def test_extract_ages() -> None:
+    assert qa.extract_ages("서울로 이사 온 20대랑 30대") == [[20, 29], [30, 39]]
+    assert qa.extract_ages("65세 이상 인구") == [[65, None]]
+    assert qa.extract_ages("2024년 다문화 혼인 건수를 5대 광역시끼리") == []
+
+
+def test_ratio_indicator_for_count_question_is_refused() -> None:
+    # "몇 명"을 물었는데 비율 지표로 답하지 않는다 (0회차 s08 같은 바꿔치기)
+    p = qa.correct(
+        "2025년 서울 1인 가구는 몇 가구예요?",
+        parsed(indicator="고령인구 비율", regions=["서울"], term="1인 가구"),
+        TODAY,
+    )
+    assert p["unsupported"] is True
+    assert p["indicator"] == "1인 가구"
+
+
+def test_other_with_stats_words_is_unsupported_indicator() -> None:
+    p = qa.correct("2025년 서울 1인 가구는 몇 가구예요?", parsed(type="other"), TODAY)
+    assert p["type"] == "value" and p["unsupported"] is True
+    p = qa.correct("내일 울산에 비 와요?", parsed(type="other"), TODAY)
+    assert p["type"] == "other"
+
+
+def test_composition_needs_share_words() -> None:
+    # "구별 20대 인구"는 구성비가 아니라 서울 안 구별 목록
+    p = qa.correct(
+        "2023년 서울 지역의 구별 20대(20~29세) 인구는 몇 명인가요?",
+        parsed(type="composition", indicator="총인구", regions=["서울"]),
+        TODAY,
+    )
+    assert (p["type"], p["level"], p["sido"], p["regions"]) == ("rank", "시군구", "서울", [])
+
+
+def test_more_specific_indicator_wins() -> None:
+    # 별칭이 여럿 잡히면 '인구' 말고 다른 쪽, 비율을 물었으면 비율 지표
+    q = "작년에 인구가 가장 많이 빠져나간 시군구는?"
+    p = qa.correct(q, parsed(type="rank", indicator="총인구"), TODAY)
+    assert p["indicator"] == "순이동" and p["ascending"] is True
+    p = qa.correct(
+        "2024년 안산시에서 태어난 아이 중 다문화 가정 아이는 몇 %예요?",
+        parsed(indicator="출생아 수", regions=["안산시"]),
+        TODAY,
+    )
+    assert p["indicator"] == "다문화 출생 비중"
+    p = qa.correct("2021년 시흥시의 다문화 출생 수는?", parsed(indicator="출생아 수"), TODAY)
+    assert p["indicator"] == "다문화 출생아 수"
+
+
+def test_question_conditions() -> None:
+    p = qa.correct("2024년 충청권 다문화 혼인 건수 합계는요?", parsed(), TODAY)
+    assert p["regions"] == ["대전", "세종", "충북", "충남"] and p["aggregate"] == "sum"
+    p = qa.correct(
+        "1990년 이후 전북 합계출산율이 가장 낮았던 해는 언제예요?",
+        parsed(type="rank", regions=["전북"], start_year=1990),
+        TODAY,
+    )
+    assert p["type"] == "trend" and p["asked"]["extreme"] == "min"
+    p = qa.correct(
+        "2025년 출생아 수는 작년보다 얼마나 늘었어요?",
+        parsed(indicator="출생아 수", year=2025),
+        TODAY,
+    )
+    assert (p["type"], p["start_year"], p["end_year"]) == ("trend", 2024, 2025)
+    q = "2024년 안산시 다문화 출생아는 수원시의 몇 배예요?"
+    p = qa.correct(q, parsed(type="compare"), TODAY)
+    assert p["asked"]["ratio"] is True
+    p = qa.correct(
+        "2024년 다문화 출생아 수로 보면 안산시는 전국 시 중 몇 위예요?",
+        parsed(type="rank", regions=["안산시"]),
+        TODAY,
+    )
+    assert (p["level"], p["target"]) == ("시", "안산시")
+    p = qa.correct("2025년 서울 25개 구 중에 합계출산율 꼴찌는?", parsed(type="rank", top=1), TODAY)
+    assert p["top"] == 1 and p["ascending"] is True
