@@ -183,6 +183,12 @@ python pipeline/run_all.py   # 압축 해제 → 전처리 → 카탈로그 → 
 
 `data/processed/kosis.duckdb`가 만들어집니다. 테이블과 규칙은 [`docs/data_dictionary.md`](docs/data_dictionary.md)를 참고합니다.
 
+DB를 만든 뒤에는 서비스가 원본 CSV와 같은 분자·분모·기간으로 계산하는지 전수 대조할 수 있습니다. 전처리·서비스 코드를 쓰지 않고 원본 CSV를 pandas로 따로 계산해 비교합니다 (계산 지표 전 연도·전 지역·성별, 조회 지표 전국·시도, 표별 수록 기간).
+
+```bash
+python -m scripts.check_raw   # → data/eval/raw_check_<시각>.md
+```
+
 KOSIS에서 직접 다시 받아 DB를 갱신할 때는 zip 없이 수집 결과를 바로 씁니다.
 
 ```bash
@@ -325,6 +331,7 @@ kosis-ai-service/
 │   ├── eval_golden.py       # 골든셋 자동 평가
 │   ├── eval_stability.py    # 반복 채점 비교 (HCX 해석 흔들림 측정)
 │   ├── eval_replay.py       # 기록된 HCX 해석으로 재생 검증 (HCX 호출 없음)
+│   ├── check_raw.py         # 원본 CSV ↔ 서비스 값 전수 대조 (분자·분모·기간)
 │   ├── compare_llm.py       # 전처리 데이터 유무에 따른 HCX 답변 비교 실험
 │   ├── clova_eval.py        # 계산을 코드 대신 CLOVA가 할 때 정확도 비교 실험
 │   ├── missing_requests.py  # DB에 없는 데이터 요청 집계
