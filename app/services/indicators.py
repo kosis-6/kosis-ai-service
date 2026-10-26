@@ -372,6 +372,29 @@ def in_year(reg, year):
 # ---- 공개 함수 ------------------------------------------------------------------
 
 
+@lru_cache
+def _region_names():
+    """질문 속 지역 찾기용 이름 목록 (별칭 + 시도·시군구 이름, 긴 것부터)"""
+    names = {r["alias"] for r in _rows("select alias from region_aliases")}
+    names |= {r["region_name"] for r in _rows("select region_name from regions")}
+    names |= set(AMBIGUOUS_NAMES)
+    names -= {"합계", "총계", "전국", "계"}  # 표의 합계 행 이름 (지역이 아님)
+    return sorted((_norm(n) for n in names if len(_norm(n)) >= 2), key=len, reverse=True)
+
+
+def find_regions(text):
+    """문장에 나온 지역 이름들 (나온 순서). HCX가 지역을 빠뜨렸을 때 쓴다
+    더 긴 이름 안에 든 짧은 이름(예: "광주광역시" 안의 "광주")은 세지 않는다"""
+    s = _norm(text)
+    taken, found = [], []
+    for name in _region_names():
+        for m in re.finditer(re.escape(name), s):
+            if not any(a < m.end() and m.start() < b for a, b in taken):
+                taken.append((m.start(), m.end()))
+                found.append((m.start(), name))
+    return [name for _, name in sorted(found)]
+
+
 def resolve_region(name, year=None, sigungu=False):
     """지역 이름·별칭·코드 → 지역 정보
 

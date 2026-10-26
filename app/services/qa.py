@@ -57,12 +57,29 @@ async def understand(question, trace=None):
     text = await _chat(question, system)
     if trace is not None:
         trace["hcx_raw"] = text
-    m = re.search(r"\{.*\}", text, re.S)  # 코드 블록(```json)으로 감싸 오는 경우 대비
-    try:
-        parsed = json.loads(m.group(0))
-    except (AttributeError, json.JSONDecodeError):
+    objects = _json_objects(text)
+    if not objects:
         return {"type": "parse_error", "raw": text}
+    parsed = objects[0]
+    # 남녀를 나눠 JSON을 두 번 쓴 경우 → 성별 구분 없이 (남녀를 함께 보여준다)
+    if len({json.dumps(o.get("sex"), ensure_ascii=False) for o in objects}) > 1:
+        parsed["sex"] = "계"
     return await run_in_threadpool(correct, question, parsed)
+
+
+def _json_objects(text):
+    """HCX 출력 속 JSON 객체들 (코드 블록으로 감싸거나 설명 문장이 붙어 와도 읽는다)"""
+    decoder, out, i = json.JSONDecoder(), [], 0
+    while (i := text.find("{", i)) != -1:
+        try:
+            obj, end = decoder.raw_decode(text, i)
+        except json.JSONDecodeError:
+            i += 1
+            continue
+        if isinstance(obj, dict):
+            out.append(obj)
+        i = end
+    return out
 
 
 def _indicator_list():
@@ -98,11 +115,19 @@ REGION_GROUPS = {
     "6대 광역시": ["부산", "대구", "인천", "광주광역시", "대전", "울산"],
     "5대 광역시": ["부산", "대구", "인천", "광주광역시", "대전"],
 }
-SUM_WORDS = re.compile(r"합계|합친|합쳐|합하면|총\s*몇|모두\s*더|더하면|총합|총\s*인원")
+# "합계출산율"의 합계는 합산이 아니다
+SUM_WORDS = re.compile(
+    r"합계(?!\s*출[산생])|합친|합쳐|합하면|총\s*몇|모두\s*더|더하면|총합|총\s*인원"
+)
 COUNT_ASK = re.compile(r"몇\s*(명|건|가구|곳|개)|인구는|인구가|인구\s*수|수는|수가|건수")
 PCT_ASK = re.compile(r"%|퍼센트|비율|비중|몇\s*프로")
 COMPOSITION_WORDS = re.compile(r"구성|비중|비율|%|퍼센트|나누면|몇\s*프로")
-BY_REGION = re.compile(r"(구|시군구|시도|지역|시)\s*(별|마다)")
+BY_REGION = re.compile(r"(구|시군구|시도|지역|시)\s*(별|마다)|\d+\s*개\s*(구|시군구)\s*중")
+# "가장 높은 시도랑 가장 낮은 시도" 처럼 양 끝을 함께 물음
+BOTH_ENDS = re.compile(
+    r"(높|많)\S*\s*\S*\s*(랑|와|과|하고)\s*.*(낮|적)|(낮|적)\S*\s*\S*\s*(랑|와|과|하고)\s*.*(높|많)"
+)
+NATIONAL_NAMES = {"우리나라", "한국", "국내", "대한민국"}
 YEAR_EXTREME = {
     "min": re.compile(r"(가장|제일)\s*(낮|적)\S*(\s+\S+){0,2}\s*해(\s|$|[?가는를]|\d)"),
     "max": re.compile(r"(가장|제일)\s*(높|많)\S*(\s+\S+){0,2}\s*해(\s|$|[?가는를]|\d)"),
@@ -116,6 +141,18 @@ LEVEL_CITY = re.compile(r"전국\s*(의\s*)?시\s*(중|가운데)|시\s*단위")
 ASCENDING = re.compile(r"꼴찌|최하위|가장\s*(낮|적)|제일\s*(낮|적)")
 TOP_N = re.compile(r"(상위|하위)\s*(\d+)|(\d+)\s*(곳|개|위까지)(?!\s*\S*\s*중)")
 RECENT = re.compile(r"최근\s*(\d+)\s*년")
+SPAN = re.compile(r"((?:19|20)\d{2})\s*년?\s*(대비|부터|에서)\s*((?:19|20)\d{2})\s*년")
+NATIONWIDE = re.compile(r"전국|우리나라|대한민국|한국\s*(전체|의|은|는)|국내\s*(전체)?")
+CAUSAL = re.compile(r"효과가?\s*(있|없|컸)|효과적|원인|왜\s|영향을?\s*(줬|주|미쳤|끼쳤)")
+# "가장 많이 빠져나간 시군구", "합계출산율이 가장 높은 시도" → 순위
+RANK_ASK = re.compile(
+    r"(가장|제일|꼴찌|최하위)\S*\s*(\S+\s*){0,3}?(시군구|시도|지역|곳|구|시)(는|가|은|이|를|\s|$|\?)"
+)
+# 별칭으로 못 찾은 지표 표현 (질문 표현 → 지표 이름)
+INDICATOR_PATTERNS = [
+    (re.compile(r"(아이|아기|신생아)\S*\s*(\S+\s*){0,3}태어"), "출생아 수"),
+    (re.compile(r"결혼(을|한)?\s*(\S+\s*){0,2}(많이|적게)"), "혼인 건수"),
+]
 # 구성비 질문에서 콕 집어 물은 항목 (질문 표현 → 구성 항목 이름)
 FOCUS_WORDS = {
     "일자리": "직업",
@@ -199,17 +236,32 @@ def correct(question, parsed, today=None):
         fixes.append(f"{key}: {parsed.get(key)!r} → {value!r} ({reason})")
         parsed[key] = value
 
-    if kind == "other" and STATS_WORDS.search(question):
-        fix("type", "value", "통계를 묻는 질문")
-        kind = "value"
-        parsed["unsupported"] = True  # 지원 지표가 아니어서 HCX가 other로 본 것
+    if kind == "other" and CAUSAL.search(question):
+        fix("type", "causal", "원인·효과를 묻는 질문")
+        kind = "causal"
+    elif kind == "other" and STATS_WORDS.search(question):
+        kind = "compare" if len(parsed.get("regions") or []) > 1 else "value"
+        fix("type", kind, "통계를 묻는 질문")
+        if indicators.spec(parsed.get("indicator")) is None:
+            parsed["unsupported"] = True  # 지원 지표가 아니어서 HCX가 other로 본 것
 
     ages = extract_ages(question)
     if ages:
         parsed["ages"] = ages
+    if parsed.get("sex") not in (None, "", "계", "남", "여"):  # 예: ["남", "여"]
+        fix("sex", "계", "성별 값 정리")
+    if parsed.get("level") in ("구", "시군구별", "구별", "군", "시군"):
+        fix("level", "시군구", "지역 수준 정리")
+    regions = [r for r in parsed.get("regions") or [] if r not in NATIONAL_NAMES]
+    if not regions and kind not in ("other", "parse_error") and not NATIONWIDE.search(question):
+        found = [r for r in indicators.find_regions(question) if r != "전국"]
+        if found:
+            fix("regions", found, "질문의 지역 이름")
 
     if kind not in ("other", "parse_error"):
         names = {name for *_, name in indicators.find_in_text(question)}
+        if not names - {"총인구"}:
+            names |= {name for pattern, name in INDICATOR_PATTERNS if pattern.search(question)}
         name = _pick_indicator(question, names)
         current = indicators.canonical_name(parsed.get("indicator") or "")
         if name and current != name:
@@ -225,6 +277,11 @@ def correct(question, parsed, today=None):
     is_comp = sp is not None and lookup.kind_of(sp) == "composition"
     if is_comp and kind not in ("composition", "causal"):
         fix("type", "composition", "구성비 지표")
+    elif kind in ("value", "rank") and BY_REGION.search(question) and not is_comp:
+        if kind == "value" or (parsed.get("regions") and not parsed.get("target")):
+            if kind == "value":
+                fix("type", "rank", "지역별 목록")
+            _region_list(question, parsed, fix)
     elif kind == "composition" and not is_comp:
         population = sp is None or sp["name"] == "총인구"
         if not (population and COMPOSITION_WORDS.search(question) and not ages):
@@ -239,11 +296,15 @@ def correct(question, parsed, today=None):
     genders = [sex for sex, pattern in GENDER_WORDS.items() if pattern.search(question)]
     if len(genders) == 1 and parsed.get("sex") in (None, "", "계"):
         fix("sex", genders[0], "질문의 성별 표현")
+    if len(genders) == 2 and parsed.get("sex") in ("남", "여"):  # "남자랑 여자 중 누가"
+        fix("sex", "계", "남녀를 함께 물음")
     if kind == "composition" and parsed.get("by") != "sex" and SEX_SPLIT.search(question):
         fix("by", "sex", "질문의 남녀 구성 표현")
 
-    if "전국" in question and not parsed.get("regions") and kind not in NO_REGION_TYPES:
-        fix("regions", ["전국"], "질문의 '전국'")
+    if NATIONWIDE.search(question) and kind not in NO_REGION_TYPES:
+        regions = parsed.get("regions") or []
+        if not regions or all(r in NATIONAL_NAMES for r in regions):
+            fix("regions", ["전국"], "질문의 전국 표현")
 
     for word, offset in RELATIVE_YEARS:
         if word in question and not PREV_YEAR.search(question):
@@ -282,11 +343,13 @@ def _region_list(question, parsed, fix):
     """'서울 구별 ~' → 서울 안의 시군구 목록(순위). 지역은 sido로 옮긴다"""
     regions = parsed.get("regions") or []
     level = "시도" if re.search(r"시도\s*(별|마다)", question) else "시군구"
-    fix("level", level, "지역별 목록")
+    if parsed.get("level") != level:
+        fix("level", level, "지역별 목록")
     if regions and level == "시군구":
         fix("sido", regions[0], "지역별 목록의 범위")
         fix("regions", [], "지역별 목록")
-    fix("top", None, "지역별 목록은 전체")
+    if re.search(r"(별|마다)", question) and parsed.get("top"):
+        fix("top", None, "지역별 목록은 전체")
 
 
 def _read_question(question, parsed, fix):
@@ -301,6 +364,17 @@ def _read_question(question, parsed, fix):
         parsed["aggregate"] = "sum"
     if parsed.get("group") and kind == "compare":
         parsed.pop("aggregate", None)
+
+    if CAUSAL.search(question) and kind not in ("causal", "composition", "other"):
+        fix("type", "causal", "원인·효과를 묻는 질문")
+        kind = "causal"
+    if (m := SPAN.search(question)) and kind in ("value", "trend", "causal"):
+        start, end = int(m[1]), int(m[3])
+        if kind == "value":
+            fix("type", "trend", "두 연도 사이 변화")
+        if (parsed.get("start_year"), parsed.get("end_year")) != (start, end):
+            fix("start_year", start, "질문의 기간")
+            fix("end_year", end, "질문의 기간")
 
     asked = {}
     for mode, pattern in YEAR_EXTREME.items():
@@ -317,10 +391,11 @@ def _read_question(question, parsed, fix):
         asked["recent"] = int(m[1])
     if (by_year or (asked.get("recent") and parsed.get("aggregate"))) and kind != "trend":
         fix("type", "trend", "연도별 변화를 물음")
-    if PREV_YEAR.search(question) and parsed.get("type") in ("value", "trend"):
+    if PREV_YEAR.search(question) and parsed.get("type") in ("value", "trend", "compare"):
         year = parsed.get("year") or parsed.get("end_year")
         if year:
-            fix("type", "trend", "전년 대비를 물음")
+            if parsed.get("type") != "trend":
+                fix("type", "trend", "전년 대비를 물음")
             fix("start_year", year - 1, "전년 대비")
             fix("end_year", year, "전년 대비")
     if RATIO_ASK.search(question):
@@ -331,6 +406,23 @@ def _read_question(question, parsed, fix):
     if asked:
         parsed["asked"] = asked
 
+    if (
+        parsed.get("type") == "value"
+        and RANK_ASK.search(question)
+        and not by_year
+        and len(parsed.get("regions") or []) <= 1
+    ):
+        fix("type", "rank", "가장 높은·낮은 지역을 물음")
+        level = None
+        if "시도" in question:
+            level = "시도"
+        elif re.search(r"시군구|구\b", question):
+            level = "시군구"
+        if level and parsed.get("level") != level:
+            fix("level", level, "질문의 지역 수준")
+        if parsed.get("regions") and level == "시군구":
+            fix("sido", parsed["regions"][0], "순위 범위")
+        fix("regions", [], "순위")
     if parsed.get("type") == "rank":
         if LEVEL_CITY.search(question) and parsed.get("level") != "시":
             fix("level", "시", "전국 시 중 순위")
@@ -342,6 +434,10 @@ def _read_question(question, parsed, fix):
         if re.search(r"몇\s*위", question) and parsed.get("regions"):
             parsed["target"] = parsed["regions"][0]
             parsed["top"] = None
+    if parsed.get("type") == "rank" and BOTH_ENDS.search(question) and parsed.get("top"):
+        fix("top", None, "가장 높은 곳과 낮은 곳을 함께 물음")
+        if parsed.get("ascending"):
+            fix("ascending", False, "높은 순으로 보여줌")
     if (m := TOP_N.search(question)) and parsed.get("type") in ("rank", "composition", "trend"):
         n = int(m[2] or m[3])
         if parsed.get("top") != n and n < 50:
@@ -360,8 +456,9 @@ def _read_question(question, parsed, fix):
         and parsed.get("type") == "value"
     ):
         regions = [r for r in parsed.get("regions") or [] if r != "전국"]
+        regions = regions or [r for r in indicators.find_regions(question) if r != "전국"]
         if regions:
-            fix("regions", regions, "전국 대비 비중")
+            fix("regions", regions[:1], "전국 대비 비중")
             parsed["share_of"] = "전국"
 
 
@@ -390,6 +487,9 @@ def compute(q):
     causal = kind == "causal"
     if causal:  # 답변 불가 사례 4: 인과 판단 없이 수치 변화만 제시
         kind = "trend" if regions else "rank"
+        if not indicators.spec(ind) or q.get("unsupported"):  # 지표가 없으면 전국 인구 추이
+            ind, regions, kind = "총인구", ["전국"], "trend"
+            q = {**q, "unsupported": False, "start_year": None, "end_year": None}
 
     sp = None if q.get("unsupported") else indicators.spec(ind)
     population = sp is None or sp["name"] == "총인구"
@@ -519,7 +619,8 @@ def _lookup_trend(q, sp, region, year, sex, ages):
     asked = q.get("asked") or {}
     lo, hi = _lookup_span(sp, region, sex)
     end = min(q.get("end_year") or year or hi, hi)
-    if asked.get("recent"):
+    if asked.get("recent"):  # HCX가 준 기간 대신 자료 마지막 연도 기준 N개년
+        end = hi
         start = end - asked["recent"] + 1
     elif asked.get("streak") and not q.get("start_year"):
         start = lo
@@ -529,7 +630,7 @@ def _lookup_trend(q, sp, region, year, sex, ages):
     if start < lo:
         notes.append(f"{sp['name']} 자료가 {lo}년부터 있어 {lo}년부터 봤습니다")
         start = lo
-    if (q.get("end_year") or year or hi) > hi:
+    if (q.get("end_year") or year or hi) > hi and not asked.get("recent"):
         notes.append(f"{sp['name']} 자료가 {hi}년까지 있어 {hi}년까지 봤습니다")
     result = lookup.trend(sp, region, start, end, sex, ages)
     if result.get("status") == "ok":
@@ -695,6 +796,14 @@ def _josa(word, pair):
     return f"{word}{pair[0]}({pair[1]})"
 
 
+def _ro(word):
+    """(으)로: 받침이 있으면(ㄹ 제외) '으로'"""
+    last = word[-1] if word else ""
+    if "가" <= last <= "힣" and (ord(last) - ord("가")) % 28 not in (0, 8):
+        return word + "으로"
+    return word + "로"
+
+
 def _val(v, unit):
     """문장 속 값. 설명형 단위(예: "유소년인구 100명당 명")는 뜻풀이 문장으로 따로 쓰므로 뺀다"""
     if v is None:
@@ -798,7 +907,8 @@ def _trend_answer(r):
                 f"{run['years']}년 연속 {words[sign]}입니다."
             )
             if run["until"] != last["year"]:
-                out.append(f"{last['year']}년은 {_val(last['value'], unit)}로 이어지지 않았습니다.")
+                value = _ro(_val(last["value"], unit))
+                out.append(f"{last['year']}년은 {value} 이어지지 않았습니다.")
     if asked.get("rebound"):
         if r.get("rebound_year"):
             out.append(
@@ -864,13 +974,15 @@ def _rank_text(r):
     if unit in ("명", "건"):
         order = {"낮은": "적은", "높은": "많은"}[order]
     head = f"{r['year']}년 {_josa(name, '이가')} 가장 {order} {r['level']}"
+    if r.get("indicator") == "순이동" and r["order"] == "낮은 순":  # 순유출이 큰 순
+        head = f"{r['year']}년 인구가 가장 많이 빠져나간(순유출이 가장 큰) {r['level']}"
     listed = ", ".join(f"{x['region']}({_val(x['value'], unit)})" for x in items)
     if target := r.get("target"):
         if target["rank"] is None:
             return f"{r['year']}년 {target['region']}의 {name} 값이 없어 순위를 매길 수 없습니다."
         return (
             f"{r['year']}년 {target['region']}의 {_josa(name, '은는')} "
-            f"{_val(target['value'], unit)}로 "
+            f"{_ro(_val(target['value'], unit))} "
             f"{r['level']} {r['total_regions']}곳 중 {r['order'].replace(' 순', '')} 순으로 "
             f"{target['rank']}위입니다."
         )

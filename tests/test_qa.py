@@ -223,3 +223,9 @@ def test_add_yearly_change() -> None:
     qa._add_yearly_change(result)
     assert result["series"][1]["diff_from_prev"] == 50
     assert result["series"][1]["rate_from_prev"] == 25.0
+
+
+def test_json_objects() -> None:
+    text = '```json\n{"type": "value", "sex": "남"}\n{"type": "value", "sex": "여"}\n```\n※ 참고'
+    assert [o["sex"] for o in qa._json_objects(text)] == ["남", "여"]
+    assert qa._json_objects("JSON 없음") == []

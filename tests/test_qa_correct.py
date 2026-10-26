@@ -240,3 +240,36 @@ def test_question_conditions() -> None:
     assert (p["level"], p["target"]) == ("시", "안산시")
     p = qa.correct("2025년 서울 25개 구 중에 합계출산율 꼴찌는?", parsed(type="rank", top=1), TODAY)
     assert p["top"] == 1 and p["ascending"] is True
+
+
+def test_span_causal_and_nationwide() -> None:
+    p = qa.correct("2015년 대비 2025년 대구 총인구 증감률은?", parsed(regions=["대구"]), TODAY)
+    assert (p["type"], p["start_year"], p["end_year"]) == ("trend", 2015, 2025)
+    p = qa.correct("최근 10년간 저출산 정책이 효과가 있었나요?", parsed(type="trend"), TODAY)
+    assert p["type"] == "causal"
+    p = qa.correct("2025년 우리나라 합계출산율은 얼마예요?", parsed(regions=["우리나라"]), TODAY)
+    assert p["regions"] == ["전국"]
+    # 사유를 묻는 구성비 질문은 원인 질문이 아니다
+    q = "부산으로 이사 온 사람 중 일자리 때문에 온 비율은?"
+    p = qa.correct(q, parsed(type="composition"), TODAY)
+    assert p["type"] != "causal"
+
+
+def test_round2_misreads() -> None:
+    # HCX가 실행마다 다르게 해석한 경우 (2회차): 원문에서 바로잡는다
+    p = qa.correct(
+        "2025년에 결혼을 더 많이 한 곳은 부산이에요, 대구예요?",
+        parsed(type="other", indicator="혼인 건수", regions=["부산", "대구"]),
+        TODAY,
+    )
+    assert (p["type"], p["indicator"]) == ("compare", "혼인 건수") and "unsupported" not in p
+    p = qa.correct(
+        "작년에 인구가 가장 많이 빠져나간 시군구는 어디예요?", parsed(indicator="순이동"), TODAY
+    )
+    assert (p["type"], p["level"]) == ("rank", "시군구")
+    p = qa.correct(
+        "1970년 이후 아이가 가장 적게 태어난 해 3개는 언제예요?", parsed(indicator="아이"), TODAY
+    )
+    assert p["indicator"] == "출생아 수" and p["type"] == "trend"
+    p = qa.correct("2025년 복지 정책이 효과적이었나요?", parsed(type="other"), TODAY)
+    assert p["type"] == "causal"
