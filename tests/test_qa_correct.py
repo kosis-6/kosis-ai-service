@@ -341,3 +341,9 @@ def test_other_composition_question() -> None:
         TODAY,
     )
     assert (p["type"], p["indicator"], p["by"]) == ("composition", "총인구", "sex")
+
+
+def test_explicit_year_wins() -> None:
+    q = "2024년에 서울로 이사 온 20대랑 30대는 이사 온 이유가 어떻게 달라요?"
+    p = qa.correct(q, parsed(type="composition", indicator="전입 사유 구성", year=2025), TODAY)
+    assert p["year"] == 2024

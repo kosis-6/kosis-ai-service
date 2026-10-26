@@ -157,6 +157,7 @@ ASCENDING = re.compile(r"꼴찌|최하위|가장\s*(낮|적)|제일\s*(낮|적)"
 TOP_N = re.compile(r"(상위|하위)\s*(\d+)|(\d+)\s*(곳|개|위까지)(?!\s*\S*\s*중)")
 RECENT = re.compile(r"최근\s*(\d+)\s*년")
 SPAN = re.compile(r"((?:19|20)\d{2})\s*년?\s*(대비|부터|에서)\s*((?:19|20)\d{2})\s*년")
+YEAR = re.compile(r"((?:19|20)\d{2})\s*년")
 SINCE = re.compile(r"((?:19|20)\d{2})\s*년\s*(이후|이래|부터)(?!.*까지)")
 NATIONWIDE = re.compile(r"전국|우리나라|대한민국|한국\s*(전체|의|은|는)|국내\s*(전체)?")
 CAUSAL = re.compile(r"효과가?\s*(있|없|컸)|효과적|원인|왜\s|영향을?\s*(줬|주|미쳤|끼쳤)")
@@ -333,6 +334,13 @@ def correct(question, parsed, today=None):
         regions = parsed.get("regions") or []
         if not regions or all(r in NATIONAL_NAMES for r in regions):
             fix("regions", ["전국"], "질문의 전국 표현")
+
+    years = {int(y) for y in YEAR.findall(question)}
+    single = len(years) == 1 and not SPAN.search(question) and not SINCE.search(question)
+    if single and parsed.get("type") not in ("trend", "other", "parse_error"):
+        year = years.pop()
+        if parsed.get("year") != year:  # HCX가 질문의 연도 대신 최신 연도를 넣은 경우
+            fix("year", year, "질문의 연도")
 
     for word, offset in RELATIVE_YEARS:
         if word in question and not PREV_YEAR.search(question):
