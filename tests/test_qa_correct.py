@@ -273,3 +273,17 @@ def test_round2_misreads() -> None:
     assert p["indicator"] == "출생아 수" and p["type"] == "trend"
     p = qa.correct("2025년 복지 정책이 효과적이었나요?", parsed(type="other"), TODAY)
     assert p["type"] == "causal"
+
+
+def test_since_year_runs_to_latest() -> None:
+    p = qa.correct(
+        "1970년 이후 아이가 가장 적게 태어난 해 3개는 언제예요?",
+        parsed(type="trend", indicator="출생아 수", start_year=1970, end_year=2022),
+        TODAY,
+    )
+    assert (p["start_year"], p["end_year"], p["asked"]["since"]) == (1970, None, 1970)
+
+
+def test_merge_province_and_district() -> None:
+    assert qa._merge_regions(["서울", "중구"]) == ["서울 중구"]
+    assert qa._merge_regions(["서울", "부산"]) == ["서울", "부산"]

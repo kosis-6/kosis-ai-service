@@ -142,6 +142,7 @@ ASCENDING = re.compile(r"꼴찌|최하위|가장\s*(낮|적)|제일\s*(낮|적)"
 TOP_N = re.compile(r"(상위|하위)\s*(\d+)|(\d+)\s*(곳|개|위까지)(?!\s*\S*\s*중)")
 RECENT = re.compile(r"최근\s*(\d+)\s*년")
 SPAN = re.compile(r"((?:19|20)\d{2})\s*년?\s*(대비|부터|에서)\s*((?:19|20)\d{2})\s*년")
+SINCE = re.compile(r"((?:19|20)\d{2})\s*년\s*(이후|이래|부터)(?!.*까지)")
 NATIONWIDE = re.compile(r"전국|우리나라|대한민국|한국\s*(전체|의|은|는)|국내\s*(전체)?")
 CAUSAL = re.compile(r"효과가?\s*(있|없|컸)|효과적|원인|왜\s|영향을?\s*(줬|주|미쳤|끼쳤)")
 # "가장 많이 빠져나간 시군구", "합계출산율이 가장 높은 시도" → 순위
@@ -252,6 +253,9 @@ def correct(question, parsed, today=None):
         fix("sex", "계", "성별 값 정리")
     if parsed.get("level") in ("구", "시군구별", "구별", "군", "시군"):
         fix("level", "시군구", "지역 수준 정리")
+    merged = _merge_regions(parsed.get("regions") or [])
+    if merged != (parsed.get("regions") or []):
+        fix("regions", merged, "시도와 시군구를 한 지역으로")
     regions = [r for r in parsed.get("regions") or [] if r not in NATIONAL_NAMES]
     if not regions and kind not in ("other", "parse_error") and not NATIONWIDE.search(question):
         found = [r for r in indicators.find_regions(question) if r != "전국"]
@@ -316,6 +320,19 @@ def correct(question, parsed, today=None):
     if fixes:
         parsed["corrections"] = fixes
     return parsed
+
+
+def _merge_regions(regions):
+    """["서울", "중구"] → ["서울 중구"]: 시도 바로 뒤에 그 시도 안의 시군구가 오면 한 지역"""
+    out = []
+    for name in regions:
+        if out and indicators.resolve_region(out[-1]).get("kind") == "시도":
+            both = indicators.resolve_region(f"{out[-1]} {name}")
+            if both["status"] == "ok" and both["kind"] != "시도":
+                out[-1] = f"{out[-1]} {name}"
+                continue
+        out.append(name)
+    return out
 
 
 def _guard_indicator(question, parsed, names, fix):
@@ -389,6 +406,12 @@ def _read_question(question, parsed, fix):
     by_year = {"extreme", "streak", "rebound", "per_year"} & set(asked)
     if m := RECENT.search(question):
         asked["recent"] = int(m[1])
+    if (m := SINCE.search(question)) and not SPAN.search(question):  # "1970년 이후" → 끝은 최신
+        asked["since"] = int(m[1])
+        if parsed.get("start_year") != int(m[1]):
+            fix("start_year", int(m[1]), "질문의 시작 연도")
+        if parsed.get("end_year"):
+            fix("end_year", None, "'이후'는 최신 연도까지")
     if (by_year or (asked.get("recent") and parsed.get("aggregate"))) and kind != "trend":
         fix("type", "trend", "연도별 변화를 물음")
     if PREV_YEAR.search(question) and parsed.get("type") in ("value", "trend", "compare"):
@@ -619,6 +642,8 @@ def _lookup_trend(q, sp, region, year, sex, ages):
     asked = q.get("asked") or {}
     lo, hi = _lookup_span(sp, region, sex)
     end = min(q.get("end_year") or year or hi, hi)
+    if asked.get("since"):
+        end = hi
     if asked.get("recent"):  # HCX가 준 기간 대신 자료 마지막 연도 기준 N개년
         end = hi
         start = end - asked["recent"] + 1
@@ -993,7 +1018,12 @@ def _rank_text(r):
     if len(items) == r["total_regions"] > 1:  # 전체 순위면 반대쪽 끝도 알려준다
         last = items[-1]
         other = {"낮은": "높은", "높은": "낮은", "적은": "많은", "많은": "적은"}[order]
-        text += f" 가장 {other} 곳은 {last['region']}({_val(last['value'], unit)})입니다."
+        other = f"가장 {other} 곳은"
+        if r.get("indicator") == "순이동":
+            other = "가장 많이 들어온(순유입이 가장 큰) 곳은"
+            if r["order"] != "낮은 순":
+                other = "가장 많이 빠져나간(순유출이 가장 큰) 곳은"
+        text += f" {other} {last['region']}({_val(last['value'], unit)})입니다."
     return text
 
 
