@@ -215,6 +215,14 @@ python -m scripts.ask -q "최근 5년 부산 인구 변화" --debug
 python -m scripts.missing_requests   # 같은 요청끼리 묶어 많이 나온 순서로
 ```
 
+모든 `/ask` 요청은 `data/requests/requests.jsonl`에 HCX 원문, 해석 결과(코드 보정 내역 포함), 계산 결과, 단계별 응답 시간과 함께 남습니다. 틀린 답이 질문 해석 문제인지 조회·계산 문제인지 여기서 추적합니다.
+
+```bash
+python -m scripts.request_log                       # status별 건수·평균 응답 시간 + 최근 10건
+python -m scripts.request_log --status parse_error  # 이 status만
+python -m scripts.request_log --last 3 --detail     # HCX 원문·해석·계산 결과까지
+```
+
 ### 3. 골든셋 평가
 
 `eval/golden.csv`의 질문을 서비스에 넣고 4개 영역을 자동 채점합니다 (질문마다 HCX 1회).
@@ -271,7 +279,8 @@ kosis-ai-service/
 │   ├── check_hcx.py         # HCX 연결 확인
 │   ├── ask.py               # 질의응답 명령줄 실행
 │   ├── eval_golden.py       # 골든셋 자동 평가
-│   └── missing_requests.py  # DB에 없는 데이터 요청 집계
+│   ├── missing_requests.py  # DB에 없는 데이터 요청 집계
+│   └── request_log.py       # 요청 로그 보기 (원인 추적)
 ├── eval/golden.csv          # 골든셋 (질문 + 정답)
 ├── data/                    # 수집한 데이터 (각자 생성, 커밋 X)
 ├── tests/                   # pytest 테스트

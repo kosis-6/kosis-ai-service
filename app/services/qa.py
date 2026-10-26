@@ -18,6 +18,7 @@ API: POST /ask
 
 import json
 import re
+import time
 from datetime import date, datetime
 from pathlib import Path
 
@@ -48,13 +49,16 @@ async def _chat(prompt, system, temperature=0.1):
     return result.content
 
 
-async def understand(question):
-    """1단계: 질문 → dict. JSON을 못 읽으면 type이 parse_error"""
+async def understand(question, trace=None):
+    """1단계: 질문 → dict. JSON을 못 읽으면 type이 parse_error
+    trace(dict)를 주면 HCX 원본 출력을 담는다 (요청 로그용)"""
     lo, hi = await run_in_threadpool(indicators._data_years)
     system = PARSE_SYSTEM.replace("{INDICATORS}", ", ".join(indicators.INDICATORS)).replace(
         "{LATEST}", str(hi)
     )
     text = await _chat(question, system)
+    if trace is not None:
+        trace["hcx_raw"] = text
     m = re.search(r"\{.*\}", text, re.S)  # 코드 블록(```json)으로 감싸 오는 경우 대비
     try:
         parsed = json.loads(m.group(0))
@@ -498,26 +502,47 @@ def sources(result):
 
 
 async def ask(question):
-    """질문 하나를 끝까지 처리. {"status", "answer", "parsed", "result", "sources"}를 반환한다.
-    status: ok 또는 답변 불가 사유 (indicators.py 결과의 status)"""
-    parsed = await understand(question)
+    """질문 하나를 끝까지 처리. status, answer, parsed, result, sources, trace를 반환한다.
+    status: ok 또는 답변 불가 사유 (indicators.py 결과의 status)
+    trace: HCX 원본 출력과 단계별 시간(ms). 요청 로그에만 쓰고 API 응답에는 넣지 않는다"""
+    trace = {}
+    start = time.perf_counter()
+    parsed = await understand(question, trace)
+    trace["understand_ms"] = round((time.perf_counter() - start) * 1000)
+    start = time.perf_counter()
     # DuckDB 조회는 동기 함수라 이벤트 루프를 막지 않도록 스레드에서 실행
     result = await run_in_threadpool(compute, parsed)
+    trace["compute_ms"] = round((time.perf_counter() - start) * 1000)
     return {
         "status": result.get("status"),
         "answer": f"{summary(result)}\n\n{render(result)}".strip(),
         "parsed": parsed,
         "result": result,
         "sources": sources(result),
+        "trace": trace,
     }
 
 
-# ---- DB에 없는 데이터 요청 기록 ----------------------------------------------------------
+# ---- 요청 기록 ---------------------------------------------------------------------------
 # 질문할 때 KOSIS를 부르지 않는다. 대신 DB에 없어서 답하지 못한 질문을 모아 두고,
 # 다음 회차 배치 수집에서 추가할 데이터를 정할 때 본다 (scripts/missing_requests.py)
+# 모든 요청은 따로 남겨, 틀린 답이 질문 해석(HCX·보정) 문제인지 조회·계산 문제인지 추적한다
+# (scripts/request_log.py)
 
 DATA_GAP = {"unknown_indicator", "out_of_range", "region_not_in_year", "missing_data"}
-MISSING_LOG = Path(__file__).resolve().parents[2] / "data" / "requests" / "missing.jsonl"
+REQUESTS_DIR = Path(__file__).resolve().parents[2] / "data" / "requests"
+MISSING_LOG = REQUESTS_DIR / "missing.jsonl"
+REQUEST_LOG = REQUESTS_DIR / "requests.jsonl"
+
+
+def _append(path, record):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+
+
+def _now():
+    return datetime.now().isoformat(timespec="seconds")
 
 
 def log_missing(question, res, path=None):
@@ -525,13 +550,35 @@ def log_missing(question, res, path=None):
     if res.get("status") not in DATA_GAP:
         return False
     record = {
-        "at": datetime.now().isoformat(timespec="seconds"),
+        "at": _now(),
         "question": question,
         "status": res["status"],
         "parsed": res.get("parsed"),
     }
-    path = path or MISSING_LOG
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    _append(path or MISSING_LOG, record)
     return True
+
+
+def log_request(question, res=None, error=None, elapsed_ms=None, path=None):
+    """모든 /ask 요청을 한 줄(JSON)로 남긴다. 실패한 요청(res 없음)은 error에 원인
+
+    단계별로 보면 원인을 나눌 수 있다:
+      hcx_raw     HCX가 돌려준 원문 (JSON을 못 읽었으면 여기서 원인 확인)
+      parsed      해석 결과 + corrections(코드가 고친 항목과 이유)
+      result      조회·계산 결과와 status
+    """
+    res = res or {}
+    trace = res.get("trace") or {}
+    record = {
+        "at": _now(),
+        "question": question,
+        "status": res.get("status"),
+        "error": error,
+        "elapsed_ms": elapsed_ms,
+        "understand_ms": trace.get("understand_ms"),
+        "compute_ms": trace.get("compute_ms"),
+        "hcx_raw": trace.get("hcx_raw"),
+        "parsed": res.get("parsed"),
+        "result": res.get("result"),
+    }
+    _append(path or REQUEST_LOG, record)
