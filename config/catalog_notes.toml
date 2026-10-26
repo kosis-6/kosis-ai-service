@@ -577,6 +577,42 @@ note = "귀화자·외국인주민 자녀 포함 (행정안전부, 11월 1일 �
 sources = [{ table = "TX_11025_A000_A", item_id = "16110AAA0", level = "시도", filters = { c2_id = "15110AA000" }, by_sex = { "계" = { filters = { c3_id = "A001A" } }, "남" = { filters = { c3_id = "A001B" } }, "여" = { filters = { c3_id = "A001C" } } } }]
 
 [[indicators]]
+name = "외국인근로자 수"
+aliases = ["외국인 근로자", "외국인근로자", "이주노동자", "외국인 노동자"]
+unit = "명"
+method = "lookup"
+desc = "외국인주민 중 외국인근로자"
+note = "행정안전부 지방자치단체 외국인주민 현황, 11월 1일 기준"
+sources = [{ table = "TX_11025_A000_A", item_id = "16110AAA0", level = "시도", filters = { c2_id = "15110AA0ADAA" }, by_sex = { "계" = { filters = { c3_id = "A001A" } }, "남" = { filters = { c3_id = "A001B" } }, "여" = { filters = { c3_id = "A001C" } } } }]
+
+[[indicators]]
+name = "결혼이민자 수"
+aliases = ["결혼이민자", "결혼 이민자", "결혼이주여성"]
+unit = "명"
+method = "lookup"
+desc = "외국인주민 중 결혼이민자 (한국 국적 미취득)"
+note = "행정안전부 지방자치단체 외국인주민 현황, 11월 1일 기준"
+sources = [{ table = "TX_11025_A000_A", item_id = "16110AAA0", level = "시도", filters = { c2_id = "15110AA0ADAK" }, by_sex = { "계" = { filters = { c3_id = "A001A" } }, "남" = { filters = { c3_id = "A001B" } }, "여" = { filters = { c3_id = "A001C" } } } }]
+
+[[indicators]]
+name = "외국인 유학생 수"
+aliases = ["유학생", "외국인 유학생"]
+unit = "명"
+method = "lookup"
+desc = "외국인주민 중 유학생"
+note = "행정안전부 지방자치단체 외국인주민 현황, 11월 1일 기준"
+sources = [{ table = "TX_11025_A000_A", item_id = "16110AAA0", level = "시도", filters = { c2_id = "15110AA0ADAC" }, by_sex = { "계" = { filters = { c3_id = "A001A" } }, "남" = { filters = { c3_id = "A001B" } }, "여" = { filters = { c3_id = "A001C" } } } }]
+
+[[indicators]]
+name = "귀화자 수"
+aliases = ["귀화자", "한국 국적 취득자", "귀화한 사람", "국적 취득자"]
+unit = "명"
+method = "lookup"
+desc = "외국인주민 중 한국 국적을 취득한 사람"
+note = "행정안전부 지방자치단체 외국인주민 현황, 11월 1일 기준"
+sources = [{ table = "TX_11025_A000_A", item_id = "16110AAA0", level = "시도", filters = { c2_id = "15110AA0AF" }, by_sex = { "계" = { filters = { c3_id = "A001A" } }, "남" = { filters = { c3_id = "A001B" } }, "여" = { filters = { c3_id = "A001C" } } } }]
+
+[[indicators]]
 name = "외국인주민 비율"
 formula = "외국인주민 수 ÷ 총인구 × 100"
 aliases = ["외국인 주민 비율", "외국인 비율", "외국인주민 비중", "외국인 주민 비중"]

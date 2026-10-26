@@ -555,3 +555,46 @@ def composition(spec, region, year, sex="계", ages=None, top=None):
         parts=parts[:top] if top else parts,
         notes=notes,
     )
+
+
+# ---- 거절 사유 구분: 미구현 / 수집 안 함 ----------------------------------------------
+
+# 지표 표현에서 떼고 찾을 끝말 (예: "1인 가구 수" → "1인가구")
+TERM_SUFFIX = re.compile(r"(수|율|률|비율|비중|건수|인구|현황|통계)$")
+TERM_STOP = {"인구", "통계", "비율", "비중", "수", "명", "건", "얼마", "몇"}
+
+
+@lru_cache
+def _labels():
+    """수집한 통계표의 표 이름·항목·분류 이름 (지역 분류 c1은 뺀다) → [(표 ID, 표 이름, 이름)]"""
+    rows = _rows(
+        """
+        select distinct f.tbl_id, c.tbl_nm, f.label
+        from (select tbl_id, item_nm as label from facts
+              union select tbl_id, c2_nm from facts where c2_nm is not null
+              union select tbl_id, c3_nm from facts where c3_nm is not null) f
+        join catalog c using (tbl_id)
+        union select tbl_id, tbl_nm, tbl_nm from catalog
+    """
+    )
+    return tuple((r["tbl_id"], r["tbl_nm"], ind_mod._norm(r["label"])) for r in rows)
+
+
+def data_gap(term):
+    """지원하지 않는 지표 표현 → 수집한 표에 관련 자료가 있는지
+    {"gap": "not_implemented", "related": [표 이름...]}  수집했지만 아직 답하는 기능이 없음
+    {"gap": "not_collected"}                             수집하지 않은 통계"""
+    words = []
+    for w in re.findall(r"[가-힣A-Za-z0-9]+", str(term or "")):
+        w = TERM_SUFFIX.sub("", w)
+        if len(w) >= 2 and w not in TERM_STOP and not re.fullmatch(r"\d+(년|대|세)?", w):
+            words.append(w)
+    if not words:
+        return {"gap": "not_collected"}
+    related = {}
+    for tbl_id, tbl_nm, label in _labels():
+        if all(w in label for w in words):  # 지표 표현의 낱말이 모두 들어 있는 항목
+            related[tbl_id] = f"{tbl_nm} ({tbl_id})"
+    if related:
+        return {"gap": "not_implemented", "related": sorted(related.values())[:3]}
+    return {"gap": "not_collected"}

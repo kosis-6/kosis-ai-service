@@ -604,10 +604,12 @@ def compute(q):
             return {"status": "error", "reason": f"계산 중 오류가 났습니다: {e}"}
 
     if sp is None:  # 지역보다 지표를 먼저 확인
+        term = q.get("term") or ind or None
         return {
             "status": "unknown_indicator",
-            "indicator": q.get("term") or ind or None,
+            "indicator": term,
             "supported": list(indicators.specs()),
+            **lookup.data_gap(term),
         }
 
     try:
@@ -618,6 +620,9 @@ def compute(q):
     except Exception as e:  # 계산 중 오류도 답변 단계에서 안내
         return {"status": "error", "reason": f"계산 중 오류가 났습니다: {e}"}
 
+    if result.get("status") == "unknown_indicator" and "gap" not in result:
+        # 지표는 있지만 질문한 구분(예: 연령)이 표에 없음 → 그 구분의 자료는 수집하지 않음
+        result["gap"] = "not_collected"
     for r in result.get("split") or [result]:
         if r.get("series"):
             _add_yearly_change(r)
@@ -877,6 +882,12 @@ def _add_trend_facts(result):
 
 SEX_WORDS = {"남": "남성 ", "여": "여성 "}
 
+# 지원하지 않는 지표의 구분 (멘토링 피드백: 데이터상 불가능한지, 미구현인지)
+GAP_TEXT = {
+    "not_implemented": "수집한 통계표({tables})에 관련 자료가 있지만 아직 답하는 기능이 없습니다. ",
+    "not_collected": "아직 수집하지 않은 통계입니다. ",
+}
+
 # 답변 불가 사유(status)별 안내. reason이 있으면 그 뒤에 붙인다
 REFUSAL_GUIDE = {
     "parse_error": "",
@@ -1134,10 +1145,15 @@ def _composition_text(r):
 def _refusal_text(r):
     status = r.get("status")
     if status == "unknown_indicator":
+        gap = GAP_TEXT.get(r.get("gap"), "")
+        if r.get("related"):
+            gap = gap.format(tables=", ".join(r["related"]))
         if r.get("reason"):
-            return f"{r['reason']} 아래 지원 지표로 다시 질문해 주세요."
+            return f"{r['reason']} {gap}아래 지원 지표로 다시 질문해 주세요."
         what = f"'{r['indicator']}'은(는)" if r.get("indicator") else "질문하신 지표는"
-        return f"{what} 아직 지원하지 않는 지표입니다. 아래 지원 지표로 다시 질문해 주세요."
+        return (
+            f"{what} 아직 지원하지 않는 지표입니다. {gap}아래 지원 지표로 다시 질문해 주세요."
+        )
     guide = REFUSAL_GUIDE.get(status, "")
     if status == "unknown_region" and r.get("alternative"):
         guide = f"속한 시군구({r['alternative']})로 다시 질문해 주세요."
@@ -1365,11 +1381,14 @@ def log_missing(question, res, path=None):
     """DB에 없는 데이터 때문에 답하지 못한 질문이면 한 줄(JSON) 추가. 기록했으면 True"""
     if res.get("status") not in DATA_GAP:
         return False
+    result = res.get("result") or {}
     record = {
         "at": _now(),
         "question": question,
         "status": res["status"],
         "parsed": res.get("parsed"),
+        "gap": result.get("gap"),  # 미구현(not_implemented) / 수집 안 함(not_collected)
+        "related": result.get("related"),
     }
     _append(path or MISSING_LOG, record)
     return True
