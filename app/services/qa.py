@@ -418,9 +418,17 @@ def _region_list(question, parsed, fix):
     level = "시도" if re.search(r"시도\s*(별|마다)", question) else "시군구"
     if parsed.get("level") != level:
         fix("level", level, "지역별 목록")
-    if regions and level == "시군구":
-        fix("sido", regions[0], "지역별 목록의 범위")
-        fix("regions", [], "지역별 목록")
+    if level == "시군구":
+        # 목록의 범위가 될 시도: 질문 원문 → HCX 지역 → HCX sido 순서로 처음 나오는 시도
+        found = indicators.find_regions(question)
+        names = [*found, *regions, parsed.get("sido")]
+        sido = next(
+            (n for n in names if n and indicators.resolve_region(n).get("kind") == "시도"), None
+        )
+        if sido and sido != parsed.get("sido"):
+            fix("sido", sido, "지역별 목록의 범위")
+        if regions:
+            fix("regions", [], "지역별 목록")
     if re.search(r"(별|마다)", question) and parsed.get("top"):
         fix("top", None, "지역별 목록은 전체")
 

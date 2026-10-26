@@ -347,3 +347,20 @@ def test_explicit_year_wins() -> None:
     q = "2024년에 서울로 이사 온 20대랑 30대는 이사 온 이유가 어떻게 달라요?"
     p = qa.correct(q, parsed(type="composition", indicator="전입 사유 구성", year=2025), TODAY)
     assert p["year"] == 2024
+
+
+def test_region_list_scope_from_question() -> None:
+    # HCX가 질문에 없는 구 목록을 지어내도 순위 범위는 질문의 시도
+    q = "2024년 서울 지역의 구별 15세 이상 여성중 배우자가 있는 여성의 비율은 어떻게 되나요?"
+    p = qa.correct(
+        q,
+        parsed(
+            type="composition",
+            indicator="유배우 비율",
+            regions=["강남구", "서초구", "송파구"],
+            sex="여",
+            sido="서울",
+        ),
+        TODAY,
+    )
+    assert (p["type"], p["sido"], p["regions"]) == ("rank", "서울", [])
