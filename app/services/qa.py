@@ -18,7 +18,8 @@ API: POST /ask
 
 import json
 import re
-from datetime import date
+from datetime import date, datetime
+from pathlib import Path
 
 from starlette.concurrency import run_in_threadpool
 
@@ -509,3 +510,28 @@ async def ask(question):
         "result": result,
         "sources": sources(result),
     }
+
+
+# ---- DB에 없는 데이터 요청 기록 ----------------------------------------------------------
+# 질문할 때 KOSIS를 부르지 않는다. 대신 DB에 없어서 답하지 못한 질문을 모아 두고,
+# 다음 회차 배치 수집에서 추가할 데이터를 정할 때 본다 (scripts/missing_requests.py)
+
+DATA_GAP = {"unknown_indicator", "out_of_range", "region_not_in_year", "missing_data"}
+MISSING_LOG = Path(__file__).resolve().parents[2] / "data" / "requests" / "missing.jsonl"
+
+
+def log_missing(question, res, path=None):
+    """DB에 없는 데이터 때문에 답하지 못한 질문이면 한 줄(JSON) 추가. 기록했으면 True"""
+    if res.get("status") not in DATA_GAP:
+        return False
+    record = {
+        "at": datetime.now().isoformat(timespec="seconds"),
+        "question": question,
+        "status": res["status"],
+        "parsed": res.get("parsed"),
+    }
+    path = path or MISSING_LOG
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    return True
