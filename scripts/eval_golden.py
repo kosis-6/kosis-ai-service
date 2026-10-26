@@ -20,6 +20,7 @@
 실행: python -m scripts.eval_golden                  (전체, 질문마다 HCX 1회)
       python -m scripts.eval_golden --only g01 g02   (일부 질문만)
       python -m scripts.eval_golden --round 2 --note "남녀 비중 보정 추가"
+      python -m scripts.eval_golden --interval 10      (호출 제한에 자주 걸릴 때)
 """
 
 import argparse
@@ -34,10 +35,12 @@ from typing import Any
 from app.core.duckdb import db_path
 from app.core.duckdb import rows as db_rows
 from app.services import qa
+from app.services.hcx_client import RATE_LIMIT_CODE
 
 GOLDEN = Path("eval/golden.csv")
 OUT_DIR = Path("data/eval")
 CALL_INTERVAL = 3  # 호출 제한(42901) 대응 (초). 그래도 걸리면 HcxClient가 다시 시도
+RATE_LIMIT_WAITS = (60, 120, 180)  # HcxClient 재시도까지 실패하면 질문 단위로 쉬고 다시 (초)
 PARSE_FIELDS = ["type", "indicator", "regions", "year", "start_year", "end_year", "sex", "by"]
 AREAS = ["질의 이해", "데이터 정확성", "답변 신뢰성", "답변 불가 판단"]
 
@@ -160,18 +163,31 @@ def grade(case: dict[str, str], res: dict[str, Any]) -> dict[str, Any]:
 # ---- 실행 ---------------------------------------------------------------------------
 
 
-async def run(cases: list[dict[str, str]]) -> list[dict[str, Any]]:
+async def _ask(question: str) -> dict[str, Any]:
+    """호출 제한이 HcxClient의 짧은 재시도로 안 풀리면 몇 분 쉬고 같은 질문을 다시 보낸다"""
+    for wait in (*RATE_LIMIT_WAITS, None):
+        try:
+            return await qa.ask(question)
+        except Exception as e:  # 한 질문이 실패해도 나머지는 계속
+            if wait is None or RATE_LIMIT_CODE not in str(e):
+                return {"status": "error", "answer": "", "error": f"{type(e).__name__}: {e}"}
+            print(f"  호출 제한, {wait}초 쉬고 다시 시도")
+            await asyncio.sleep(wait)
+    raise AssertionError("unreachable")
+
+
+async def run(cases: list[dict[str, str]], interval: float = CALL_INTERVAL) -> list[dict[str, Any]]:
     rows = []
     for i, case in enumerate(cases, 1):
         if i > 1:
-            await asyncio.sleep(CALL_INTERVAL)
-        try:
-            res = await qa.ask(case["question"])
-        except Exception as e:  # 한 질문이 실패해도 나머지는 계속
-            res = {"status": "error", "answer": "", "error": f"{type(e).__name__}: {e}"}
+            await asyncio.sleep(interval)
+        res = await _ask(case["question"])
         row = grade(case, res)
         marks = " ".join(f"{a}:{_mark(row[a])}" for a in AREAS)
-        print(f"[{i}/{len(cases)}] {case['id']} status={row['status']} | {marks}")
+        error = f" | {row['error']}" if row["error"] else ""
+        print(f"[{i}/{len(cases)}] {case['id']} status={row['status']} | {marks}{error}")
+        answer = (row["answer"] or "(답변 없음)").replace("\n", "\n     ")
+        print(f"  Q. {case['question']}\n  A. {answer}\n")
         rows.append(row)
     return rows
 
@@ -221,7 +237,14 @@ def db_info() -> str:
     """채점에 쓴 DB. 정확도가 바뀐 이유가 코드인지 데이터인지 구분하려고 남긴다"""
     path = db_path()
     built = datetime.fromtimestamp(path.stat().st_mtime)
-    collected = db_rows("select max(collected_at) as at from catalog")[0]["at"]
+    # zip 원본으로 만든 DB는 수집 시각이 없어 catalog에 collected_at 칸 자체가 없다
+    has_column = db_rows(
+        "select 1 from information_schema.columns"
+        " where table_name = 'catalog' and column_name = 'collected_at'"
+    )
+    collected = (
+        db_rows("select max(collected_at) as at from catalog")[0]["at"] if has_column else None
+    )
     collected_text = f"{collected:%Y-%m-%d %H:%M}" if collected else "기록 없음 (zip 원본)"
     return f"{path.name} (생성 {built:%Y-%m-%d %H:%M}, 최근 수집 {collected_text})"
 
@@ -232,12 +255,13 @@ def main() -> None:
     parser.add_argument("--only", nargs="+", help="이 id의 질문만 실행")
     parser.add_argument("--round", help="회차 번호 (결과 파일 이름과 보고서에 표시)")
     parser.add_argument("--note", default="", help="이번 회차에 바꾼 내용")
+    parser.add_argument("--interval", type=float, default=CALL_INTERVAL, help="질문 사이 대기 (초)")
     args = parser.parse_args()
 
     cases = load_golden(args.golden)
     if args.only:
         cases = [c for c in cases if c["id"] in args.only]
-    rows = asyncio.run(run(cases))
+    rows = asyncio.run(run(cases, args.interval))
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     prefix = f"golden_r{args.round}" if args.round else "golden"
