@@ -16,8 +16,10 @@
   expected_source  정답을 어디서 확인했는지 (KOSIS 화면 경로 등)
 
 결과: data/eval/golden_YYYYMMDD_HHMMSS.csv (질문별, 엑셀용) / .md (영역별 요약)
+      .md 머리에 회차, 변경 내용, 채점에 쓴 DB(생성·수집 시각)를 남겨 회차끼리 비교한다
 실행: python -m scripts.eval_golden                  (전체, 질문마다 HCX 1회)
       python -m scripts.eval_golden --only g01 g02   (일부 질문만)
+      python -m scripts.eval_golden --round 2 --note "남녀 비중 보정 추가"
 """
 
 import argparse
@@ -29,6 +31,8 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+from app.core.duckdb import db_path
+from app.core.duckdb import rows as db_rows
 from app.services import qa
 
 GOLDEN = Path("eval/golden.csv")
@@ -213,10 +217,21 @@ def summarize(rows: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def db_info() -> str:
+    """채점에 쓴 DB. 정확도가 바뀐 이유가 코드인지 데이터인지 구분하려고 남긴다"""
+    path = db_path()
+    built = datetime.fromtimestamp(path.stat().st_mtime)
+    collected = db_rows("select max(collected_at) as at from catalog")[0]["at"]
+    collected_text = f"{collected:%Y-%m-%d %H:%M}" if collected else "기록 없음 (zip 원본)"
+    return f"{path.name} (생성 {built:%Y-%m-%d %H:%M}, 최근 수집 {collected_text})"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="골든셋 자동 평가")
     parser.add_argument("--golden", type=Path, default=GOLDEN, help="골든셋 CSV")
     parser.add_argument("--only", nargs="+", help="이 id의 질문만 실행")
+    parser.add_argument("--round", help="회차 번호 (결과 파일 이름과 보고서에 표시)")
+    parser.add_argument("--note", default="", help="이번 회차에 바꾼 내용")
     args = parser.parse_args()
 
     cases = load_golden(args.golden)
@@ -225,13 +240,20 @@ def main() -> None:
     rows = asyncio.run(run(cases))
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    stem = OUT_DIR / f"golden_{datetime.now():%Y%m%d_%H%M%S}"
+    prefix = f"golden_r{args.round}" if args.round else "golden"
+    stem = OUT_DIR / f"{prefix}_{datetime.now():%Y%m%d_%H%M%S}"
     # utf-8-sig: 엑셀에서 열어도 한글이 깨지지 않음
     with stem.with_suffix(".csv").open("w", newline="", encoding="utf-8-sig") as f:
         writer = csv.DictWriter(f, fieldnames=rows[0].keys())
         writer.writeheader()
         writer.writerows(rows)
-    report = f"# 골든셋 평가 {datetime.now():%Y-%m-%d %H:%M}\n\n질문 {len(rows)}개\n\n"
+    head = [f"# 골든셋 평가 {datetime.now():%Y-%m-%d %H:%M}", ""]
+    if args.round:
+        head.append(f"- 회차: {args.round}")
+    if args.note:
+        head.append(f"- 변경 내용: {args.note}")
+    head += [f"- DB: {db_info()}", f"- 질문: {len(rows)}개", "", ""]
+    report = "\n".join(head)
     stem.with_suffix(".md").write_text(report + summarize(rows) + "\n", encoding="utf-8")
     print("\n" + summarize(rows))
     print(f"\n저장: {stem}.csv, {stem}.md")

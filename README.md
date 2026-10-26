@@ -209,6 +209,20 @@ python -m scripts.ask -q "최근 5년 부산 인구 변화" --debug
 
 응답의 `status`는 `ok` 또는 답변 불가 사유(`out_of_range`, `unknown_indicator`, `missing_region` 등)이고, `sources`에 답변에 쓴 통계표가 들어 있습니다.
 
+질문할 때는 KOSIS를 호출하지 않습니다. DB에 없는 데이터 때문에 답하지 못한 질문(`unknown_indicator`, `out_of_range`, `region_not_in_year`, `missing_data`)은 `data/requests/missing.jsonl`에 쌓이고, 다음 회차 수집 대상을 정할 때 집계해서 봅니다.
+
+```bash
+python -m scripts.missing_requests   # 같은 요청끼리 묶어 많이 나온 순서로
+```
+
+모든 `/ask` 요청은 `data/requests/requests.jsonl`에 HCX 원문, 해석 결과(코드 보정 내역 포함), 계산 결과, 단계별 응답 시간과 함께 남습니다. 틀린 답이 질문 해석 문제인지 조회·계산 문제인지 여기서 추적합니다.
+
+```bash
+python -m scripts.request_log                       # status별 건수·평균 응답 시간 + 최근 10건
+python -m scripts.request_log --status parse_error  # 이 status만
+python -m scripts.request_log --last 3 --detail     # HCX 원문·해석·계산 결과까지
+```
+
 ### 3. 골든셋 평가
 
 `eval/golden.csv`의 질문을 서비스에 넣고 4개 영역을 자동 채점합니다 (질문마다 HCX 1회).
@@ -216,6 +230,7 @@ python -m scripts.ask -q "최근 5년 부산 인구 변화" --debug
 ```bash
 python -m scripts.eval_golden                  # 전체
 python -m scripts.eval_golden --only g01 g11   # 일부 질문만
+python -m scripts.eval_golden --round 3 --note "남녀 비중 보정 추가"   # 회차 기록
 ```
 
 | 영역 | 채점 방법 |
@@ -227,6 +242,7 @@ python -m scripts.eval_golden --only g01 g11   # 일부 질문만
 | 자연어 품질 | 자동 채점 안 함. 결과 CSV의 `quality` 칸에 사람이 0~2점 |
 
 - 결과는 `data/eval/golden_<시각>.csv`(질문별, 엑셀용)와 `.md`(영역별 요약, 틀린 질문 목록)에 저장됩니다.
+- `.md` 머리에 회차, 변경 내용, 채점에 쓴 DB(생성·최근 수집 시각)가 남아, 정확도가 바뀐 이유가 코드인지 데이터인지 구분할 수 있습니다.
 - 질문을 추가할 때는 빈 칸은 채점하지 않으므로 아는 칸만 채웁니다. `expected`는 KOSIS 화면 등에서 확인한 값을 넣고 `expected_source`에 확인한 곳을 적습니다.
 - 같은 질문도 실행마다 HCX 해석이 달라질 수 있어, 정확도는 여러 번 돌려 비교합니다.
 
@@ -262,7 +278,9 @@ kosis-ai-service/
 │   ├── tables.csv           # 수집할 통계표 목록
 │   ├── check_hcx.py         # HCX 연결 확인
 │   ├── ask.py               # 질의응답 명령줄 실행
-│   └── eval_golden.py       # 골든셋 자동 평가
+│   ├── eval_golden.py       # 골든셋 자동 평가
+│   ├── missing_requests.py  # DB에 없는 데이터 요청 집계
+│   └── request_log.py       # 요청 로그 보기 (원인 추적)
 ├── eval/golden.csv          # 골든셋 (질문 + 정답)
 ├── data/                    # 수집한 데이터 (각자 생성, 커밋 X)
 ├── tests/                   # pytest 테스트
