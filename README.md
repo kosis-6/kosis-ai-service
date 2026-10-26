@@ -277,6 +277,13 @@ python -m scripts.eval_golden --golden eval/golden_sheet.csv --round 1 --interva
 - 질문을 추가할 때는 빈 칸은 채점하지 않으므로 아는 칸만 채웁니다. `expected`는 KOSIS 화면 등에서 확인한 값을 넣고 `expected_source`에 확인한 곳을 적습니다.
 - 같은 질문도 실행마다 HCX 해석이 달라질 수 있어, 정확도는 여러 번 돌려 비교합니다. 같은 코드·DB로 반복한 결과 CSV를 넣으면 문항마다 행동·답변이 매번 같은지 집계합니다.
 
+질문 해석 보정·계산 코드를 고친 뒤에는, 지난 채점에서 기록한 HCX 해석(`hcx_raw`)을 지금 코드에 다시 넣어 HCX 호출 없이 회귀를 확인합니다. HCX가 실행마다 다르게 해석했던 경우를 모두 견디는지 볼 수 있습니다.
+
+```bash
+python -m scripts.eval_replay                             # data/eval의 모든 채점 결과 (1분 이내)
+python -m scripts.eval_replay data/eval/golden_r5_*.csv   # 일부만
+```
+
 ```bash
 python -m scripts.eval_stability data/eval/golden_r4-1_*.csv data/eval/golden_r4-2_*.csv data/eval/golden_r4-3_*.csv
 ```
@@ -317,6 +324,7 @@ kosis-ai-service/
 │   ├── ask.py               # 질의응답 명령줄 실행
 │   ├── eval_golden.py       # 골든셋 자동 평가
 │   ├── eval_stability.py    # 반복 채점 비교 (HCX 해석 흔들림 측정)
+│   ├── eval_replay.py       # 기록된 HCX 해석으로 재생 검증 (HCX 호출 없음)
 │   ├── compare_llm.py       # 전처리 데이터 유무에 따른 HCX 답변 비교 실험
 │   ├── clova_eval.py        # 계산을 코드 대신 CLOVA가 할 때 정확도 비교 실험
 │   ├── missing_requests.py  # DB에 없는 데이터 요청 집계
