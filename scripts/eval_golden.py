@@ -150,6 +150,8 @@ def action_of(res: dict[str, Any]) -> str | None:
     suggestion = (res.get("result") or {}).get("suggestion") or {}
     if status == "out_of_range" and suggestion.get("status") == "ok":
         return "답변"  # 수록 기간 밖이지만 추계값으로 대신 답함
+    if status == "unknown_region" and (res.get("result") or {}).get("alternative"):
+        return "대안안내"  # 생활권 이름 → 속한 시군구 제안
     return ACTIONS.get(status)
 
 

@@ -313,3 +313,31 @@ def test_streak_uses_whole_period() -> None:
         TODAY,
     )
     assert (p["start_year"], p["end_year"], p["asked"]["streak"]) == (None, None, "positive")
+
+
+def test_sub_area_and_ungrounded_region() -> None:
+    q = "2015년부터 2020년까지 송도의 65세 이상 인구의 증감율은 어떻게 되나요?"
+    p = qa.correct(q, parsed(type="trend", indicator="총인구", regions=["인천광역시"]), TODAY)
+    assert p["sub_area"] == ["송도", "인천 연수구"]
+    assert p["ungrounded_region"] == "인천광역시"
+    p1 = qa.correct("2025년 부산 해운대구랑 수영구 합친 65세 이상 인구는?", parsed(), TODAY)
+    p2 = qa.correct("2025년 성남시 분당구 인구는?", parsed(), TODAY)
+    assert "sub_area" not in p1 and "sub_area" not in p2
+    p = qa.correct("2025년 서울 인구는?", parsed(regions=["서울특별시"]), TODAY)
+    assert "ungrounded_region" not in p
+    for q, r in [
+        ("세종시는 몇 년 연속 순유입됐나요?", "세종특별자치시"),
+        ("2025년 중구 인구는?", "서울 중구"),
+        ("시흥시의 다문화 출생 수는?", "경기도 시흥시"),
+        ("강원도 일반혼인율은?", "강원특별자치도"),
+    ]:
+        assert "ungrounded_region" not in qa.correct(q, parsed(regions=[r]), TODAY), q
+
+
+def test_other_composition_question() -> None:
+    p = qa.correct(
+        "2025년 전국 인구 중 남녀 비중은 어떻게 돼?",
+        parsed(type="other", indicator="성별 인구 비율", regions=["전국"]),
+        TODAY,
+    )
+    assert (p["type"], p["indicator"], p["by"]) == ("composition", "총인구", "sex")

@@ -128,6 +128,21 @@ BOTH_ENDS = re.compile(
     r"(높|많)\S*\s*\S*\s*(랑|와|과|하고)\s*.*(낮|적)|(낮|적)\S*\s*\S*\s*(랑|와|과|하고)\s*.*(높|많)"
 )
 NATIONAL_NAMES = {"우리나라", "한국", "국내", "대한민국"}
+# 시군구보다 작은 생활권·신도시 이름 → 속한 시군구 (자료가 없어 시군구로 다시 묻도록 안내)
+SUB_AREAS = {
+    "송도": "인천 연수구",
+    "청라": "인천 서구",
+    "영종": "인천 중구",
+    "판교": "경기 성남시 분당구",
+    "분당": "경기 성남시 분당구",
+    "일산": "경기 고양시",
+    "동탄": "경기 화성시",
+    "광교": "경기 수원시 영통구",
+    "위례": "경기 성남시 수정구, 하남시, 서울 송파구",
+    "마곡": "서울 강서구",
+    "목동": "서울 양천구",
+    "잠실": "서울 송파구",
+}
 YEAR_EXTREME = {
     "min": re.compile(r"(가장|제일)\s*(낮|적)\S*(\s+\S+){0,2}\s*해(\s|$|[?가는를]|\d)"),
     "max": re.compile(r"(가장|제일)\s*(높|많)\S*(\s+\S+){0,2}\s*해(\s|$|[?가는를]|\d)"),
@@ -242,6 +257,8 @@ def correct(question, parsed, today=None):
         kind = "causal"
     elif kind == "other" and STATS_WORDS.search(question):
         kind = "compare" if len(parsed.get("regions") or []) > 1 else "value"
+        if COMPOSITION_WORDS.search(question) and re.search(r"남녀|성별|연령", question):
+            kind = "composition"  # 예: "전국 인구 중 남녀 비중"
         fix("type", kind, "통계를 묻는 질문")
         if indicators.spec(parsed.get("indicator")) is None:
             parsed["unsupported"] = True  # 지원 지표가 아니어서 HCX가 other로 본 것
@@ -253,6 +270,11 @@ def correct(question, parsed, today=None):
         fix("sex", "계", "성별 값 정리")
     if parsed.get("level") in ("구", "시군구별", "구별", "군", "시군"):
         fix("level", "시군구", "지역 수준 정리")
+    for area, sigungu in SUB_AREAS.items():
+        # 뒤에 구·시·군이 붙으면 행정구역 이름 (예: 해운대구, 분당구)
+        if re.search(re.escape(area) + r"(?!\s*[구시군])", question):
+            parsed["sub_area"] = [area, sigungu]
+            break
     merged = _merge_regions(parsed.get("regions") or [])
     if merged != (parsed.get("regions") or []):
         fix("regions", merged, "시도와 시군구를 한 지역으로")
@@ -305,6 +327,8 @@ def correct(question, parsed, today=None):
     if kind == "composition" and parsed.get("by") != "sex" and SEX_SPLIT.search(question):
         fix("by", "sex", "질문의 남녀 구성 표현")
 
+    _ground_regions(question, parsed, fix)
+
     if NATIONWIDE.search(question) and kind not in NO_REGION_TYPES:
         regions = parsed.get("regions") or []
         if not regions or all(r in NATIONAL_NAMES for r in regions):
@@ -320,6 +344,30 @@ def correct(question, parsed, today=None):
     if fixes:
         parsed["corrections"] = fixes
     return parsed
+
+
+def _ground_regions(question, parsed, fix):
+    """HCX가 질문에 없는 지역으로 바꾸지 않게 한다 (예: "송도" → 인천광역시 전체)
+    질문에 그 지역 이름이 없고, 질문에서 찾은 지역 이름도 없으면 그 지역으로 답하지 않는다"""
+    if parsed.get("group"):
+        return
+    text = indicators._norm(question)
+    found = set()  # 질문에 나온 지역들의 코드 (시군구면 속한 시도 코드도)
+    for name in indicators.find_regions(question):
+        reg = indicators.resolve_region(name)
+        for c in [reg] if reg["status"] == "ok" else []:
+            found |= {c["region_code"], c.get("sido_code")}
+        for cand in reg.get("candidates", []):  # 이름이 같은 여러 지역은 이름으로 비교
+            found.add(indicators._norm(cand))
+    for r in parsed.get("regions") or []:
+        if r == "전국" or r in NATIONAL_NAMES or indicators._norm(r) in text:
+            continue
+        reg = indicators.resolve_region(r)
+        codes = {reg.get("region_code"), indicators._norm(reg.get("display", ""))}
+        if reg["status"] != "ok" or codes & found:
+            continue  # 지역을 못 찾으면 계산 단계에서 그대로 안내한다
+        parsed["ungrounded_region"] = r
+        return
 
 
 def _merge_regions(regions):
@@ -522,6 +570,19 @@ def compute(q):
             ind, regions, kind = "총인구", ["전국"], "trend"
             q = {**q, "unsupported": False, "start_year": None, "end_year": None}
 
+    if area := q.get("sub_area"):
+        return {
+            "status": "unknown_region",
+            "region": area[0],
+            "reason": f"'{area[0]}'처럼 동·생활권 단위 자료는 없습니다.",
+            "alternative": area[1],
+        }
+    if bad := q.get("ungrounded_region"):
+        return {
+            "status": "unknown_region",
+            "region": bad,
+            "reason": "질문의 지역을 시도·시군구로 확인하지 못했습니다.",
+        }
     sp = None if q.get("unsupported") else indicators.spec(ind)
     population = sp is None or sp["name"] == "총인구"
     if kind == "composition" and population and not q.get("unsupported"):
@@ -1070,6 +1131,8 @@ def _refusal_text(r):
         what = f"'{r['indicator']}'은(는)" if r.get("indicator") else "질문하신 지표는"
         return f"{what} 아직 지원하지 않는 지표입니다. 아래 지원 지표로 다시 질문해 주세요."
     guide = REFUSAL_GUIDE.get(status, "")
+    if status == "unknown_region" and r.get("alternative"):
+        guide = f"속한 시군구({r['alternative']})로 다시 질문해 주세요."
     if status == "out_of_range" and r.get("available_years"):
         lo, hi = r["available_years"]
         asked = r.get("asked_year")
