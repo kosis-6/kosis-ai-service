@@ -23,7 +23,7 @@ from app.services import qa
 from scripts import eval_golden as ev
 
 GOLDEN = Path("eval/golden_sheet.csv")
-SAVED = Path("data/eval/golden_r7_20261026_151907.csv")
+SAVED = Path("eval/results/golden_r7.csv")  # 7회차 결과 (data/eval/golden_r7_20261026_151907.csv 복사본)
 LINE = "━" * 70
 MARK = {True: "○", False: "✗", None: "-"}
 
