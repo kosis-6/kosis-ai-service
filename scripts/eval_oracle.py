@@ -115,7 +115,7 @@ def pct(a: float, b: float) -> float:
 
 SEJONG, SEOUL, BUSAN, DAEGU, INCHEON, GWANGJU, DAEJEON, ULSAN = "36", "11", "26", "27", "28", "29", "30", "31"
 GYEONGGI, CHUNGBUK, CHUNGNAM, JEONNAM, GANGWON, JEONBUK = "41", "43", "44", "46", "51", "52"
-METRO5 = [BUSAN, DAEGU, GWANGJU, DAEJEON, ULSAN]
+METRO5 = [BUSAN, DAEGU, INCHEON, GWANGJU, DAEJEON]  # 질문이 "지방" 5대 광역시가 아니므로 인천 포함·울산 제외
 THIRD_PLUS = ["3아", "4아", "5아", "6아", "7아", "8아이상"]
 BIRTH = "출생건수 (명)"
 MARRIAGE = "혼인건수 (건)"
@@ -312,7 +312,7 @@ def s26():
     vals = by_region("DT_1BB0002", METRO5, year=2024, item_nm="다문화 혼인 건수(건)")
     top, low = max(vals, key=vals.get), min(vals, key=vals.get)
     return dict(values=[(k, v, 0) for k, v in vals.items()], names=[top, low], cond=list(vals) + ["2024"],
-                notice=list(vals), basis="DT_1BB0002 2024 5대 광역시(부산·대구·광주·대전·울산) 다문화 혼인 건수")
+                notice=list(vals), basis="DT_1BB0002 2024 5대 광역시(부산·대구·인천·광주·대전) 다문화 혼인 건수")
 
 
 def s27():
