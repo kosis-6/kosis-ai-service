@@ -2,7 +2,7 @@
 
 [KOSIS 국가통계포털](https://kosis.kr) 데이터를 AI로 검색·분석하는 서비스입니다.
 
-> 프로젝트 초기 단계입니다. 아래 내용은 구현이 진행되면서 채워 나갈 예정입니다.
+> 실전 프로젝트 1(통계 수치 요약 서비스)을 마쳤습니다. 평가 결과와 남은 한계는 [실전 1 결과](#실전-1-결과)에 있습니다.
 
 - 연구계획서: [Notion](https://app.notion.com/p/likelion/40244860a4f4801b81f3d1b3c1ba1ed3)
 
@@ -232,7 +232,7 @@ python -m scripts.ask -q "최근 5년 부산 인구 변화" --debug
 | 경우 | `status` | 처리 |
 | --- | --- | --- |
 | 인구 통계와 관계없는 질문 (날씨, 집값 등) | `not_supported_question` | 거절 + 지원 지표 목록 |
-| 지원하지 않는 지표 (예: 1인 가구), 표에 없는 연령 구간 | `unknown_indicator` | 거절 + 지원 지표 목록 |
+| 지원하지 않는 지표 (예: 1인 가구), 표에 없는 연령 구간 | `unknown_indicator` | 거절 + 지원 지표 목록. `gap`으로 미구현(`not_implemented`, 수집한 표에 자료는 있음)과 수집 안 함(`not_collected`)을 나눠 안내 |
 | 지역 누락 | `missing_region` | 지역을 넣어 다시 질문 요청 (순위 질문은 지역 없이 답함) |
 | 모르는 지역 이름 | `unknown_region` | 시도·시군구 이름으로 다시 질문 요청 |
 | 같은 이름의 여러 지역 (예: 중구, 시군구 자료가 있는 지표의 "광주", "충청도") | `ambiguous_region` | 후보 목록을 보여 주고 다시 질문 요청 |
@@ -260,7 +260,12 @@ python -m scripts.request_log --last 3 --detail     # HCX 원문·해석·계산
 
 ### 3. 골든셋 평가
 
-`eval/golden.csv`의 질문을 서비스에 넣고 4개 영역을 자동 채점합니다 (질문마다 HCX 1회).
+골든셋은 두 가지입니다.
+
+- `eval/golden.csv`: 개발셋 16문항. 정답 값(`expected`)이 있어 질의 이해·데이터 정확성까지 채점합니다.
+- `eval/golden_sheet.csv`: 시트 60문항 (정상 45 + 예외 15). 기대 행동·허용 표·필수 고지를 채점하고, 정답 값은 아래 pandas 재계산 채점으로 확인합니다.
+
+질문을 서비스에 넣고 아래 영역을 자동 채점합니다 (질문마다 HCX 1회).
 
 ```bash
 python -m scripts.eval_golden                  # 전체
@@ -293,6 +298,49 @@ python -m scripts.eval_replay data/eval/golden_r5_*.csv   # 일부만
 ```bash
 python -m scripts.eval_stability data/eval/golden_r4-1_*.csv data/eval/golden_r4-2_*.csv data/eval/golden_r4-3_*.csv
 ```
+
+#### pandas 정답 재계산 채점
+
+`eval_golden.py`는 시트 문항에서 행동·표·출처만 보기 때문에, 답변 속 숫자가 틀려도 통과할 수 있습니다. `eval_oracle.py`는 서비스 코드(`app.services`)를 쓰지 않고 `kosis.duckdb`의 `facts`·`population`을 pandas로 읽어 문항마다 정답을 따로 계산한 뒤, 채점 결과 CSV의 답변 문장과 대조합니다 (HCX 호출 없음).
+
+```bash
+python -m scripts.eval_oracle data/eval/golden_r7_20261026_151907.csv   # → data/eval/oracle_<입력 이름>.md / .csv
+```
+
+- 문항 점수: 정답 값·이름이 모두 있으면 1, 절반 이상이거나 "매년 증가/감소"가 실제 추이와 어긋나면 0.5, 그 밖 0. 예외 문항은 기대 행동 + 안내 문장이면 1, 기대 행동만 맞으면 0.5
+- 지표 9개: 최종 정답률, 정상 문항 정답률, 예외 대응 정답률, 환각률, 표 선택 정확도, 조건 추출 정확도, 계산 정확도, 해석 고지율, 자연어 품질 (사람 채점)
+
+#### 시연
+
+```bash
+python -m scripts.demo ask s12 s30        # 시트 문항을 서비스에 넣고 답변 출력 (HCX 호출)
+python -m scripts.demo check s12          # 답변 + 기존 채점 + pandas 정답 채점 나란히
+python -m scripts.demo check s16 --saved  # HCX 없이 7회차 기록 답변으로 채점
+python -m scripts.demo score              # 7회차 전체 pandas 채점 지표와 감점 문항
+```
+
+발표·시연에 쓰는 결과는 `eval/results/`에 커밋되어 있습니다 (`golden_r0`, `golden_r7`, `oracle_r7`). `data/eval/`의 나머지 회차 결과는 각자 생성합니다.
+
+## 실전 1 결과
+
+| 평가 | 결과 | 기록 |
+| --- | --- | --- |
+| 시트 60문항 자동 채점 (기대 행동) | 0회차 19/60 (31.7%) → 7회차 60/60 | `eval/results/golden_r0.md`, `data/eval/golden_r7_20261026_151907.md` |
+| 개발셋 16문항 (질의 이해·데이터 정확성) | 7회차 16/16, 11/11 | `data/eval/golden_r7_20261026_152212.md` |
+| pandas 정답 재계산 (7회차 답변) | 57.5/60 (95.8%), 환각 0/11 | `eval/results/oracle_r7.md` |
+| 원본 CSV ↔ 서비스 값 전수 대조 | 불일치 0 (계산 지표별 15,315개) | `python -m scripts.check_raw` |
+
+- 1~7회차는 같은 60문항을 보며 고친 결과라, 60/60은 처음 보는 질문에 대한 성능이 아닙니다.
+- pandas 채점에서 감점된 문항과 상태:
+
+| 문항 | 내용 | 상태 |
+| --- | --- | --- |
+| s16 | 남편 초혼연령은 2024·2025년에 감소했는데 "매년 증가"가 누구 얘기인지 모호 | 문장에 대상 표시 필요 |
+| s26 | "5대 광역시"를 인천 포함·울산 제외로 해석, 답변에 기준을 밝히지 않음 | 팀 기준 확정 + 포함 지역 고지 필요 |
+| s38 | 서울 구별 값 범위를 강남구로 잘못 잡아 25개 구 값 없음 | 이후 코드에 같은 해석을 재생하면 해결, 전체 재채점 필요 |
+| s40 | 외국인주민 유형에서 한국국적 취득자(9.94%) 누락. 설정의 혼인귀화자·기타 귀화자 항목은 2015년에만 있음 | 미수정 (`config/catalog_notes.toml` 외국인주민 유형 구성) |
+
+- 골든셋 밖: 지역을 나열한 질문("경기도, 서울특별시, 인천광역시의 출생아 수")은 첫 지역 값만 답합니다. 합산은 "수도권" 같은 묶음 표현에서만 동작합니다.
 
 ## 프로젝트 구조
 
@@ -331,6 +379,8 @@ kosis-ai-service/
 │   ├── eval_golden.py       # 골든셋 자동 평가
 │   ├── eval_stability.py    # 반복 채점 비교 (HCX 해석 흔들림 측정)
 │   ├── eval_replay.py       # 기록된 HCX 해석으로 재생 검증 (HCX 호출 없음)
+│   ├── eval_oracle.py       # pandas 정답 재계산 채점 (서비스 코드 미사용)
+│   ├── demo.py              # 시연용 명령 (답변 → 정답 대조 → 전체 지표)
 │   ├── check_raw.py         # 원본 CSV ↔ 서비스 값 전수 대조 (분자·분모·기간)
 │   ├── compare_llm.py       # 전처리 데이터 유무에 따른 HCX 답변 비교 실험
 │   ├── clova_eval.py        # 계산을 코드 대신 CLOVA가 할 때 정확도 비교 실험
@@ -338,6 +388,7 @@ kosis-ai-service/
 │   └── request_log.py       # 요청 로그 보기 (원인 추적)
 ├── eval/golden.csv          # 개발셋 골든셋 16문항 (질문 + 정답)
 ├── eval/golden_sheet.csv    # 시트 골든셋 60문항 (기대 행동·허용 표)
+├── eval/results/            # 발표·시연용 채점 결과 (0·7회차, pandas 채점)
 ├── data/                    # 수집한 데이터 (각자 생성, 커밋 X)
 ├── tests/                   # pytest 테스트
 ├── docker/postgres/init.sql # DB 최초 생성 시 확장(pgvector, pg_trgm) 설치
@@ -357,8 +408,8 @@ kosis-ai-service/
 
 | 계층 | 역할 | 예시 |
 | --- | --- | --- |
-| `routes/` | 요청을 받고 입력값 검증 후 응답 반환 (입구 역할만) | `POST /summary` |
-| `services/` | 실제 로직 처리 | KOSIS API 호출, LLM 요약 |
+| `routes/` | 요청을 받고 입력값 검증 후 응답 반환 (입구 역할만) | `POST /ask` |
+| `services/` | 실제 로직 처리 | 질문 해석(HCX), DuckDB 조회·계산, 답변 템플릿 |
 | `core/` | 앱 전체 공통 설정 | API 키, 디버그 모드, DB 연결 |
 
 ### 새 API 추가하기
