@@ -522,8 +522,10 @@ def has_word(text: str, pattern: str) -> bool:
 def trend_conflict(text: str, trends: dict[str, dict[int, float]]) -> str:
     """'매년 증가/감소'라고 했는데 실제로 그렇지 않은 계열"""
     for word, ok in [("매년 증가", lambda a, b: b > a), ("매년 감소", lambda a, b: b < a)]:
-        if word in text:
-            for label, s in trends.items():
+        for sentence in (x for x in re.split(r"(?<=다\.)\s*", text) if word in x):
+            # 문장에 대상(예: 아내)이 있으면 그 계열만, 없으면 모든 계열과 대조
+            named = {k: v for k, v in trends.items() if k in sentence} or trends
+            for label, s in named.items():
                 ys = sorted(s)
                 bad = [y for a, y in zip(ys, ys[1:]) if not ok(s[a], s[y])]
                 if bad:
