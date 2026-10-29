@@ -71,3 +71,23 @@ def test_validate_rejects_bad_response() -> None:
         ecm.validate(ROWS, "101", "DT_OTHER")
     with pytest.raises(KosisError):
         ecm.validate([r for r in ROWS if r["OBJ_ID"] != "ITEM"], "101", "DT_X")
+
+
+def test_clean_comments_drops_blank_and_separator_lines() -> None:
+    rows = [
+        {"CMMT_NM": "통계표", "CMMT_DC": "주1) 18세이상 내국인 대상"},
+        {"CMMT_NM": "통계표", "CMMT_DC": ""},
+        {"CMMT_NM": "통계표", "CMMT_DC": "-----------------------"},
+        {"CMMT_NM": "통계표", "CMMT_DC": " ㅇ 용어 정비 : 노후기간 → 건축 경과연수"},
+        {"CMMT_NM": "총인구", "CMMT_DC": "외국인 포함"},
+    ]
+    result = ecm.clean_comments(rows)
+    assert result["comments"] == [
+        {"target": "통계표", "lines": ["주1) 18세이상 내국인 대상",
+                                      "ㅇ 용어 정비 : 노후기간 → 건축 경과연수"]},
+        {"target": "총인구", "lines": ["외국인 포함"]},
+    ]
+    assert result["comment_text"] == (
+        "주1) 18세이상 내국인 대상\nㅇ 용어 정비 : 노후기간 → 건축 경과연수\n[총인구] 외국인 포함"
+    )
+    assert ecm.clean_comments([]) == {"comments": [], "comment_text": ""}

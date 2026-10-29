@@ -1,16 +1,18 @@
-"""통계표 카탈로그에 KOSIS 분류·항목 메타데이터를 붙인다.
+"""통계표 카탈로그에 KOSIS 분류·항목과 주석 메타데이터를 붙인다.
 
 입력: data/catalog/population_table_catalog.jsonl (scripts/preprocess_population.py 결과)
 출력: data/catalog/population_table_catalog_with_meta.jsonl
-      - 기존 필드는 그대로 두고 classifications, items, meta_summary, meta_status를 추가
+      - 기존 필드는 그대로 두고 classifications, items, meta_summary, meta_status,
+        comments, comment_text를 추가
       data/catalog/meta_cache/<org_id>_<tbl_id>.json  표별 getMeta(type=ITM) 원본 응답
+      data/catalog/cmmt_cache/<org_id>_<tbl_id>.json  표별 getMeta(type=CMMT) 원본 응답
       data/catalog/meta_failures.jsonl                 이번 실행에서 실패한 표
 
 이미 받은 표는 캐시를 쓰므로 중간에 멈춰도 다시 실행하면 이어서 받는다.
 정리 규칙만 바꿨을 때는 --offline으로 KOSIS 호출 없이 결과 파일만 다시 만든다.
 
     python -m scripts.enrich_catalog_meta --limit 5   # 앞 5개 표로 시험
-    python -m scripts.enrich_catalog_meta             # 전체 (약 2,400개 표, 1시간 내외)
+    python -m scripts.enrich_catalog_meta             # 전체 (표마다 2번 호출, 처음엔 약 2시간)
     python -m scripts.enrich_catalog_meta --offline   # 캐시로 결과 파일만 다시 생성
 """
 
@@ -31,6 +33,7 @@ CATALOG_DIR = Path("data/catalog")
 CATALOG = CATALOG_DIR / "population_table_catalog.jsonl"
 OUTPUT = CATALOG_DIR / "population_table_catalog_with_meta.jsonl"
 CACHE_DIR = CATALOG_DIR / "meta_cache"
+CMMT_CACHE_DIR = CATALOG_DIR / "cmmt_cache"
 FAILURES = CATALOG_DIR / "meta_failures.jsonl"
 
 SAMPLE_SIZE = 10  # 분류별로 남길 대표 값 개수
@@ -55,8 +58,13 @@ UNIT_WORD = re.compile(
 )
 
 
-def cache_path(org_id: str, tbl_id: str) -> Path:
-    return CACHE_DIR / f"{org_id}_{tbl_id}.json"
+# 주석에서 버릴 줄: 빈 줄, 구분선(-----, =====)
+COMMENT_NOISE = re.compile(r"[\s\-=_~*·.]*")
+
+
+def cache_path(org_id: str, tbl_id: str, kind: str = "ITM") -> Path:
+    folder = CMMT_CACHE_DIR if kind == "CMMT" else CACHE_DIR
+    return folder / f"{org_id}_{tbl_id}.json"
 
 
 def validate(rows: list[dict[str, Any]], org_id: str, tbl_id: str) -> None:
@@ -174,27 +182,58 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def clean_comments(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """getMeta(type=CMMT) 응답을 주석 대상별 줄 목록으로 정리한다.
+
+    빈 줄과 구분선은 버리고, 같은 대상(CMMT_NM: 통계표·항목명 등)의 줄은 순서대로 모은다.
+    """
+    groups: dict[str, list[str]] = {}
+    for row in rows:
+        line = str(row.get("CMMT_DC") or "").strip()
+        if COMMENT_NOISE.fullmatch(line):
+            continue
+        target = str(row.get("CMMT_NM") or "통계표").strip() or "통계표"
+        groups.setdefault(target, []).append(line)
+    comments = [{"target": target, "lines": lines} for target, lines in groups.items()]
+    text = "\n".join(
+        line if c["target"] == "통계표" else f"[{c['target']}] {line}"
+        for c in comments
+        for line in c["lines"]
+    )
+    return {"comments": comments, "comment_text": text}
+
+
 async def download(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """캐시에 없는 표의 분류·항목을 KOSIS에서 받아 캐시에 저장한다. 실패 목록을 돌려준다."""
-    pending = [r for r in records if not cache_path(r["org_id"], r["tbl_id"]).exists()]
-    done = len(records) - len(pending)
-    print(f"대상 {len(records)}개 / 받은 표 {done}개 / 새로 받을 표 {len(pending)}개")
+    """캐시에 없는 표의 분류·항목(ITM)과 주석(CMMT)을 KOSIS에서 받아 저장한다. 실패 목록 반환."""
+    jobs = [
+        (record, kind)
+        for record in records
+        for kind in ("ITM", "CMMT")
+        if not cache_path(record["org_id"], record["tbl_id"], kind).exists()
+    ]
+    for kind in ("ITM", "CMMT"):
+        left = sum(1 for _, k in jobs if k == kind)
+        label = "분류·항목" if kind == "ITM" else "주석"
+        done = len(records) - left
+        print(f"{label}: 대상 {len(records)}개 / 받은 표 {done}개 / 새로 받을 표 {left}개")
     failures: list[dict[str, Any]] = []
     client = KosisClient()
-    if pending and not client.api_key:
+    if jobs and not client.api_key:
         raise SystemExit(".env에 KOSIS_API_KEY가 없습니다.")
     started = time.time()
-    for n, record in enumerate(pending, 1):
+    for n, (record, kind) in enumerate(jobs, 1):
         org_id, tbl_id = record["org_id"], record["tbl_id"]
-        params = {"method": "getMeta", "type": "ITM", "orgId": org_id, "tblId": tbl_id}
+        params = {"method": "getMeta", "type": kind, "orgId": org_id, "tblId": tbl_id}
         try:
+            # 주석이 없는 표는 KOSIS가 '데이터 없음(30)'을 주고, call()이 빈 목록으로 바꿔 준다
             rows = await call(client, "/statisticsData.do", params)
-            validate(rows, org_id, tbl_id)
-            path = cache_path(org_id, tbl_id)
+            if kind == "ITM":
+                validate(rows, org_id, tbl_id)
+            path = cache_path(org_id, tbl_id, kind)
             tmp = path.with_suffix(".tmp")
             tmp.write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
             tmp.replace(path)
-            status = "OK"
+            status = "OK" if rows or kind == "ITM" else "OK (주석 없음)"
         except (KosisError, httpx.HTTPError) as error:
             # httpx 오류 메시지에는 인증키가 든 URL이 있으므로 오류 종류만 남긴다
             if isinstance(error, httpx.HTTPError):
@@ -202,21 +241,21 @@ async def download(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
             else:
                 message = str(error).split(" ({")[0]
             failures.append({**{k: record[k] for k in ("org_id", "tbl_id", "table_name")},
-                             "error": message})
+                             "type": kind, "error": message})
             status = f"실패 - {message}"
             if len(failures) == n and n == 3:
-                print(f"[{n}/{len(pending)}] {tbl_id} {status}")
+                print(f"[{n}/{len(jobs)}] {tbl_id} {kind} {status}")
                 raise SystemExit(
                     "처음 3개가 모두 실패했습니다. 인증키와 인터넷 연결을 확인하세요."
                 ) from error
-        remaining = (time.time() - started) / n * (len(pending) - n) / 60
-        print(f"[{n}/{len(pending)}] {tbl_id} {status} (남은 시간 약 {remaining:.0f}분)")
+        remaining = (time.time() - started) / n * (len(jobs) - n) / 60
+        print(f"[{n}/{len(jobs)}] {tbl_id} {kind} {status} (남은 시간 약 {remaining:.0f}분)")
     return failures
 
 
-def build(records: list[dict[str, Any]]) -> tuple[int, int]:
-    """캐시 전체로 결과 파일을 새로 만든다. (붙은 표 수, 없는 표 수)"""
-    ok = missing = 0
+def build(records: list[dict[str, Any]]) -> tuple[int, int, int]:
+    """캐시 전체로 결과 파일을 새로 만든다. (분류·항목 붙은 표, 없는 표, 주석 있는 표)"""
+    ok = missing = commented = 0
     tmp = OUTPUT.with_suffix(".tmp")
     with tmp.open("w", encoding="utf-8", newline="\n") as stream:
         for record in records:
@@ -232,13 +271,20 @@ def build(records: list[dict[str, Any]]) -> tuple[int, int]:
                      "meta_status": "missing"}
                 )
                 missing += 1
+            cmmt_path = cache_path(record["org_id"], record["tbl_id"], "CMMT")
+            if cmmt_path.exists():
+                enriched.update(clean_comments(json.loads(cmmt_path.read_text(encoding="utf-8"))))
+                commented += bool(enriched["comments"])
+            else:
+                # 아직 받지 않음 (빈 목록 = 받았지만 주석 없음과 구분)
+                enriched.update({"comments": None, "comment_text": None})
             stream.write(json.dumps(enriched, ensure_ascii=False, separators=(",", ":")) + "\n")
     tmp.replace(OUTPUT)
-    return ok, missing
+    return ok, missing, commented
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="통계표 카탈로그에 분류·항목 메타데이터 추가")
+    parser = argparse.ArgumentParser(description="통계표 카탈로그에 분류·항목·주석 메타데이터 추가")
     parser.add_argument("--limit", type=int, help="앞에서부터 N개 표만 처리 (시험용)")
     parser.add_argument("--offline", action="store_true", help="KOSIS 호출 없이 캐시로만 생성")
     args = parser.parse_args()
@@ -252,9 +298,10 @@ def main() -> None:
     if args.limit:
         records = records[: args.limit]
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    CMMT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
     failures = [] if args.offline else asyncio.run(download(records))
-    ok, missing = build(records)
+    ok, missing, commented = build(records)
     if not args.offline:
         with FAILURES.open("w", encoding="utf-8", newline="\n") as stream:
             for failure in failures:
@@ -263,6 +310,7 @@ def main() -> None:
     print("\n완료")
     print(f"  분류·항목 붙은 표: {ok}개")
     print(f"  아직 없는 표: {missing}개" + (" (다시 실행하면 이어서 받습니다)" if missing else ""))
+    print(f"  주석 있는 표: {commented}개")
     if not args.offline:
         print(f"  이번 실행 실패: {len(failures)}개 → {FAILURES}")
     print(f"  결과 파일: {OUTPUT}")
