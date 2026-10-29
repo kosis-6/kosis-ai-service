@@ -52,8 +52,34 @@ def test_render_trend() -> None:
 def test_summary_trend() -> None:
     assert qa.summary(TREND) == (
         "대구광역시의 총인구는 2023년 1,000명, 2025년 810명입니다. "
-        "2023년 대비 190명 감소했습니다(증감률 -19.0%). 이 기간 동안 매년 감소했습니다."
+        "2023년 대비 190명 감소했습니다(증감률 -19.0%). 이 기간 동안 총인구는 매년 감소했습니다."
     )
+
+
+def test_summary_trend_turning_year() -> None:
+    # 증가하다 감소하면 '매년' 대신 꺾인 해를 밝힌다 (s16 남편 초혼연령)
+    r = {
+        **TREND,
+        "series": [
+            {"year": 2023, "value": 1000},
+            {"year": 2024, "value": 1100, "diff_from_prev": 100},
+            {"year": 2025, "value": 1050, "diff_from_prev": -50},
+        ],
+        "change": {"from_year": 2023, "to_year": 2025, "diff": 50, "diff_unit": "명"},
+    }
+    text = qa.summary(r)
+    assert "매년" not in text
+    assert text.endswith("총인구는 2024년까지 증가하다가 이후 감소했습니다.")
+
+
+def test_compute_group_scope(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 지역 묶음 비교는 포함 지역을 답변에 밝힌다 (s26 5대 광역시)
+    values = [{"region": "인천광역시", "value": 2}, {"region": "부산광역시", "value": 1}]
+    monkeypatch.setattr(qa.indicators, "_data_years", lambda: (2008, 2025))
+    monkeypatch.setattr(qa.indicators, "spec", lambda name: {"name": name, "method": "lookup"})
+    monkeypatch.setattr(qa, "_compute_lookup", lambda *a: {"status": "ok", "values": values})
+    q = {"type": "compare", "indicator": "혼인 건수", "regions": ["인천", "부산"], "group": "5대 광역시"}
+    assert qa.compute(q)["answer_note"] == "5대 광역시는 인천광역시, 부산광역시 기준입니다."
 
 
 def test_summary_value_with_sex() -> None:

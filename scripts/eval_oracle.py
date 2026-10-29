@@ -115,7 +115,7 @@ def pct(a: float, b: float) -> float:
 
 SEJONG, SEOUL, BUSAN, DAEGU, INCHEON, GWANGJU, DAEJEON, ULSAN = "36", "11", "26", "27", "28", "29", "30", "31"
 GYEONGGI, CHUNGBUK, CHUNGNAM, JEONNAM, GANGWON, JEONBUK = "41", "43", "44", "46", "51", "52"
-METRO5 = [BUSAN, DAEGU, GWANGJU, DAEJEON, ULSAN]
+METRO5 = [BUSAN, DAEGU, INCHEON, GWANGJU, DAEJEON]  # 질문이 "지방" 5대 광역시가 아니므로 인천 포함·울산 제외
 THIRD_PLUS = ["3아", "4아", "5아", "6아", "7아", "8아이상"]
 BIRTH = "출생건수 (명)"
 MARRIAGE = "혼인건수 (건)"
@@ -312,7 +312,7 @@ def s26():
     vals = by_region("DT_1BB0002", METRO5, year=2024, item_nm="다문화 혼인 건수(건)")
     top, low = max(vals, key=vals.get), min(vals, key=vals.get)
     return dict(values=[(k, v, 0) for k, v in vals.items()], names=[top, low], cond=list(vals) + ["2024"],
-                notice=list(vals), basis="DT_1BB0002 2024 5대 광역시(부산·대구·광주·대전·울산) 다문화 혼인 건수")
+                notice=list(vals), basis="DT_1BB0002 2024 5대 광역시(부산·대구·인천·광주·대전) 다문화 혼인 건수")
 
 
 def s27():
@@ -522,8 +522,10 @@ def has_word(text: str, pattern: str) -> bool:
 def trend_conflict(text: str, trends: dict[str, dict[int, float]]) -> str:
     """'매년 증가/감소'라고 했는데 실제로 그렇지 않은 계열"""
     for word, ok in [("매년 증가", lambda a, b: b > a), ("매년 감소", lambda a, b: b < a)]:
-        if word in text:
-            for label, s in trends.items():
+        for sentence in (x for x in re.split(r"(?<=다\.)\s*", text) if word in x):
+            # 문장에 대상(예: 아내)이 있으면 그 계열만, 없으면 모든 계열과 대조
+            named = {k: v for k, v in trends.items() if k in sentence} or trends
+            for label, s in named.items():
                 ys = sorted(s)
                 bad = [y for a, y in zip(ys, ys[1:]) if not ok(s[a], s[y])]
                 if bad:

@@ -629,7 +629,7 @@ kind = "composition"
 formula = "항목별 값 ÷ 합계 × 100"
 method = "lookup"
 desc = "외국인주민을 외국인근로자·결혼이민자·유학생·귀화자·자녀 등 유형으로 나눈 비중"
-sources = [{ table = "TX_11025_A000_A", item_id = "16110AAA0", level = "시도", filters = { c3_id = "A001A" }, parts_dim = "c2", parts_total = "15110AA000", parts = { "외국인근로자" = ["15110AA0ADAA"], "결혼이민자" = ["15110AA0ADAK"], "유학생" = ["15110AA0ADAC"], "외국국적동포" = ["15110AA0ADAL"], "기타 외국인" = ["15110AA0ADAD"], "혼인귀화자" = ["15110AA0AFAA"], "기타 귀화자" = ["15110AA0AFAB"], "외국인주민 자녀" = ["15110AA0AM"] } }]
+sources = [{ table = "TX_11025_A000_A", item_id = "16110AAA0", level = "시도", filters = { c3_id = "A001A" }, parts_dim = "c2", parts_total = "15110AA000", parts = { "외국인근로자" = ["15110AA0ADAA"], "결혼이민자" = ["15110AA0ADAK"], "유학생" = ["15110AA0ADAC"], "외국국적동포" = ["15110AA0ADAL"], "기타 외국인" = ["15110AA0ADAD"], "한국국적 취득자" = ["15110AA0AF"], "외국인주민 자녀" = ["15110AA0AM"] } }]
 
 [[indicators]]
 name = "외국인주민 자녀 수"

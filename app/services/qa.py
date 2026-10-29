@@ -644,6 +644,11 @@ def compute(q):
             for r in result.get("split") or [result]:
                 note = f"'{term}'을(를) {sp['name']}(으)로 보고 답했습니다"
                 r["notes"] = [note] + r.get("notes", [])
+    if (group := q.get("group")) and result.get("status") == "ok" and "values" in result:
+        # 묶음 비교·순위는 정의가 갈릴 수 있어 (예: 5대 광역시에 울산 포함 여부) 포함 지역을 밝힌다
+        names = ", ".join(v["region"] for v in result["values"])
+        scope = f"{_josa(group, '은는')} {names} 기준입니다."
+        result["answer_note"] = " ".join(filter(None, [scope, result.get("answer_note")]))
     if causal:
         result["causal_question"] = (
             "원인이나 정책 효과는 통계 수치만으로 판단할 수 없어 수치 변화만 보여드립니다."
@@ -993,14 +998,31 @@ def _trend_text(r):
     if "rate" in c:
         text += f"(증감률 {c['rate']:+}{c['rate_unit']})"
     text += "."
-    yearly = {
-        "증가" if s["diff_from_prev"] > 0 else "감소" if s["diff_from_prev"] < 0 else "같음"
+    steps = [
+        (s["year"], "증가" if s["diff_from_prev"] > 0 else "감소" if s["diff_from_prev"] < 0 else "같음")
         for s in r["series"]
         if "diff_from_prev" in s
-    }
-    if len(r["series"]) > 2 and yearly == {direction}:
-        text += f" 이 기간 동안 매년 {direction}했습니다."
+    ]
+    if len(r["series"]) > 2:
+        # 남녀처럼 추이 문장이 여러 개 이어질 때 누구 얘기인지 알 수 있게 주어를 붙인다
+        if {d for _, d in steps} == {direction}:
+            text += f" 이 기간 동안 {_josa(name, '은는')} 매년 {direction}했습니다."
+        elif turn := _turning_year(steps):
+            year, before, after = turn
+            text += f" {_josa(name, '은는')} {year}년까지 {before}하다가 이후 {after}했습니다."
     return text + _trend_answer(r)
+
+
+def _turning_year(steps):
+    """방향이 한 번만 바뀐 추이(증가 후 감소 등)면 (꺾인 해, 앞 방향, 뒤 방향)"""
+    dirs = [d for _, d in steps]
+    if "같음" in dirs:
+        return None
+    changes = [i for i in range(1, len(dirs)) if dirs[i] != dirs[i - 1]]
+    if len(changes) != 1:
+        return None
+    i = changes[0]
+    return steps[i - 1][0], dirs[0], dirs[i]
 
 
 def _trend_answer(r):
