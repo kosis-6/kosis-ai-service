@@ -6,6 +6,8 @@
 
 from typing import Any
 
+from app.services import notices
+
 CHECK_LABELS = {"year": "연도", "region_level": "지역 수준", "sex": "성별", "target": "대상"}
 STATUS_MESSAGES = {
     "out_of_scope": (
@@ -40,7 +42,12 @@ def member_label(t: dict[str, Any]) -> str:
 
 
 def recommendation(
-    rank: int, t: dict[str, Any], family: list[dict[str, Any]], checks: dict, score: float
+    rank: int,
+    t: dict[str, Any],
+    family: list[dict[str, Any]],
+    checks: dict,
+    score: float | None,
+    slots: dict[str, Any],
 ) -> dict[str, Any]:
     same_member = [r for r in family if (r["target"], r["sex"]) == (t["target"], t["sex"])]
     members = {}
@@ -78,13 +85,13 @@ def recommendation(
                 if r["tbl_id"] != t["tbl_id"]
             ],
         },
-        "notes": notes(t, family),
+        "notes": notices.notices(t, family, slots) + notes(t, family),
         "score": None if score is None else round(score, 3),
     }
 
 
 def notes(t: dict[str, Any], family: list[dict[str, Any]]) -> list[str]:
-    """표에 붙일 고지. 주석(기준일·결측 등) 고지는 주석 필드를 만든 뒤 추가 (검색 규칙 9장)"""
+    """주석 밖의 고지: 이름이 바뀐 판, 남녀 합계 없음 (주석 고지는 notices.py)"""
     out = []
     by_id = {r["tbl_id"]: r for r in family}
     member = [r for r in family if (r["target"], r["sex"]) == (t["target"], t["sex"])]
@@ -187,12 +194,14 @@ def respond(
     if status in ("ok", "partial_match"):
         chosen = by_id[result["table"]["tbl_id"]]
         family = [t for t in tables if t["family_id"] == chosen["family_id"]]
-        recs.append(recommendation(1, chosen, family, result["table"]["checks"], result["score"]))
+        recs.append(
+            recommendation(1, chosen, family, result["table"]["checks"], result["score"], slots)
+        )
         # 2순위부터는 다른 패밀리의 대표 표
         for i, o in enumerate(result.get("other_families", [])[: max(top_k - 1, 0)], start=2):
             t = by_id[o["tbl_id"]]
             fam = [r for r in tables if r["family_id"] == t["family_id"]]
-            recs.append(recommendation(i, t, fam, o.get("checks", {}), o["score"]))
+            recs.append(recommendation(i, t, fam, o.get("checks", {}), o["score"], slots))
     elif status == "clarify":
         clarify = {
             "level": "member",

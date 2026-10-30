@@ -48,7 +48,7 @@ MIGRATION = re.compile(r"이동|전입|전출|이주|이사")
 TABLES_SQL = """
 SELECT s.tbl_id, s.org_id, s.table_name, s.survey_name, s.organization, s.period, s.path_texts,
        s.classifications, s.items, s.start_year, s.end_year, s.region_levels,
-       s.prev_region_levels, s.sex_coverage, s.has_total, s.url,
+       s.prev_region_levels, s.sex_coverage, s.has_total, s.url, s.comments,
        f.family_id, f.family_name, f.target, f.sex, f.edition_order, f.edition, f.renamed_from
 FROM stat_tables s JOIN table_families f USING (tbl_id)
 """
