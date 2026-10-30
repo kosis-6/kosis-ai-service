@@ -28,6 +28,7 @@ from typing import Any
 from app.services import embedding, search
 from app.services import slots as slot_parser
 from app.services.hcx_client import HcxError
+from pipeline import search_docs
 
 RESULTS = Path(__file__).resolve().parent.parent / "eval" / "results"
 TOP_K = 10
@@ -126,32 +127,8 @@ async def probe(tables: list[dict[str, Any]], models: list[str]) -> list[dict[st
 
 
 def doc_lengths(tables: list[dict[str, Any]]) -> dict[str, list[int]]:
-    """검색 문서 후보별 글자 수 (API 호출 없음). 문서 구성은 기능 정의서 F-02 초안"""
-
-    def parts(t: dict[str, Any]) -> dict[str, str]:
-        classes = t["classifications"] or []
-        items = [i["name"] for i in t["items"] or []]
-        name = f"{t['survey_name']} {t['table_name']}"
-        with_classes = f"{name} {' '.join(c['name'] for c in classes)}"
-        return {
-            "표명+조사명": name,
-            "+분류명": with_classes,
-            "+분류명+항목명": f"{with_classes} {' '.join(items)}",
-            "+분류명+항목명+분류 값+경로": " ".join(
-                [
-                    with_classes,
-                    *items,
-                    *[v for c in classes for v in c.get("sample_values") or [] if v],
-                    *(t["path_texts"] or []),
-                ]
-            ),
-        }
-
-    out: dict[str, list[int]] = {}
-    for t in tables:
-        for k, v in parts(t).items():
-            out.setdefault(k, []).append(len(v))
-    return out
+    """검색 문서 구성별 글자 수 (API 호출 없음, pipeline/search_docs.py와 같은 문서)"""
+    return {p: [len(search_docs.build(t, p)) for t in tables] for p in search_docs.PRESETS}
 
 
 def write_report(
@@ -188,6 +165,9 @@ def write_report(
         " → 입력 한도 약 512토큰(한국어 약 380자)",
         "",
         f"## 검색 문서 길이 (표 {len(tables)}개, 글자 수)",
+        "",
+        "문서 구성은 pipeline/search_docs.py (name 조사명+표명 / classes +분류명 /"
+        " full +분류 값·항목명·경로, 범용 단어 제외)",
         "",
         "| 문서 구성 | 중앙값 | 90% | 최대 | 380자 넘는 표 (dolphin 불가) |",
         "|---|---|---|---|---|",
