@@ -7,10 +7,11 @@
                                      질문에 없는 조건(null)은 판정하지 않는다
   4. 패밀리 묶기 (fold)              같은 패밀리는 한 자리만 차지, 패밀리 점수 = 소속 표 최고 점수
   5. 멤버·판 선택 (choose)           대상·성별로 멤버, 연도로 판을 고른다 (검색 규칙 2.4)
-  6. 상태 판단 (decide)              ok / partial_match / ambiguous / out_of_scope / not_statistics
+  6. 상태 판단                       ok / partial_match / clarify / ambiguous / out_of_scope
+                                     / not_statistics. 대상이 빠지면 clarify (되묻기, 규칙 2.3 가안)
 
 표 메타데이터(stat_tables + table_families, 2천여 행)는 처음 한 번 읽어 메모리에 둔다.
-임베딩 검색(pgvector)과 되묻기(clarify)는 아직 없다. 빠진 축은 missing_axes로만 알려준다.
+되묻기 다음 턴(답 맞추기·세션)은 dialog.py가 맡는다. 임베딩 검색(pgvector)은 아직 없다.
 
 실행: python -m app.services.search "2024년 부산 시군구별 혼인 귀화자 수"
 """
@@ -184,7 +185,8 @@ def check(t: dict[str, Any], slots: dict[str, Any]) -> dict[str, bool]:
     for item in c["items"]:
         key = norm(item)
         out[f"item:{item}"] = key in t["meta_n"] or key in t["name_n"]
-    if slots.get("target"):
+    # '전체'는 멤버 선택값이지 표가 갖춰야 할 조건이 아니다
+    if slots.get("target") and slots["target"] != "전체":
         key = norm(slots["target"])
         out["target"] = key in t["name_n"] or key in t["meta_n"] or key in norm(t["target"] or "")
     return out
@@ -237,7 +239,8 @@ def family_axes(rows: list[dict[str, Any]]) -> dict[str, list[str]]:
         return sorted(values, key=lambda v: (v != "전체" and v != "계", v))
 
     axes = {"target": options("target"), "sex": options("sex")}
-    editions = sorted({(r["end_year"], r["start_year"], r["edition"]) for r in rows}, reverse=True)
+    # 최신 연도를 담은 판 → 기간이 긴 판 순 (규칙 2.4, '2006~2015 / 2007~2015 / 2015')
+    editions = sorted({(-r["end_year"], r["start_year"], r["edition"]) for r in rows})
     axes["edition"] = list(dict.fromkeys(e for _, _, e in editions))
     return {k: v for k, v in axes.items() if len(v) > 1}
 
@@ -245,8 +248,14 @@ def family_axes(rows: list[dict[str, Any]]) -> dict[str, list[str]]:
 def choose(
     family: list[dict[str, Any]], slots: dict[str, Any]
 ) -> tuple[dict[str, Any], list[str], list[str]]:
-    """패밀리 안에서 표 하나 → (표, 빠진 축, 연도 메모)"""
+    """패밀리 안에서 표 하나 → (표, 빠진 축, 연도 메모)
+
+    되묻기 답이나 화면 버튼으로 고른 값은 slots의 target('전체' 포함)·edition·tbl_id로 들어온다.
+    """
     c = slots["conditions"]
+    picked = [r for r in family if r["tbl_id"] == slots.get("tbl_id")]
+    if picked:  # 화면에서 표를 직접 고른 경우
+        return picked[0], [], []
     axes = family_axes(family)
     missing = []
     rows = family
@@ -255,6 +264,8 @@ def choose(
         # 대상 슬롯이 패밀리명이어도('한국국적 취득자') 질문 속 멤버 이름('혼인 귀화자')으로 고른다
         said = norm(f"{slots.get('question', '')} {slots.get('target') or ''}")
         match = [r for r in rows if r["target"] != "전체" and norm(r["target"]) in said]
+        if slots.get("target") == "전체":
+            match = [r for r in rows if r["target"] == "전체"]
         if not match:
             missing.append("target")
             match = [r for r in rows if r["target"] == "전체"] or rows
@@ -267,6 +278,7 @@ def choose(
                 missing.append("sex")
             match = [r for r in rows if r["sex"] == "계"] or rows
         rows = match
+    rows = [r for r in rows if r["edition"] == slots.get("edition")] or rows
 
     notes = []
     year = c["year"]
@@ -305,7 +317,9 @@ def _brief(t: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def find(tables: list[dict[str, Any]], slots: dict[str, Any]) -> dict[str, Any]:
+def find(
+    tables: list[dict[str, Any]], slots: dict[str, Any], allow_clarify: bool = True
+) -> dict[str, Any]:
     """슬롯 → 검색 결과 (DB·HCX 없이 동작해서 테스트·실험에 쓴다)"""
     result: dict[str, Any] = {"status": None, "reason": None, "slots": slots, "table": None}
     if slots["query_type"] == "not_statistics":
@@ -345,24 +359,77 @@ def find(tables: list[dict[str, Any]], slots: dict[str, Any]) -> dict[str, Any]:
         ]  # fmt: skip
         return {**result, "status": "ambiguous", "reason": "비슷한 통계표 묶음이 여럿입니다"}
 
-    family_id = top["table"]["family_id"]
+    return finish(result, tables, top["table"]["family_id"], top["score"], allow_clarify)
+
+
+def resolve(
+    tables: list[dict[str, Any]],
+    slots: dict[str, Any],
+    family_id: str,
+    allow_clarify: bool = True,
+) -> dict[str, Any]:
+    """패밀리가 정해진 뒤(되묻기 답) 검색 없이 멤버·판만 고른다"""
+    result = {"status": None, "reason": None, "slots": slots, "table": None, "candidates": []}
+    return finish(result, tables, family_id, None, allow_clarify)
+
+
+def clarify_axes(
+    family: list[dict[str, Any]], slots: dict[str, Any], missing: list[str]
+) -> list[dict[str, Any]]:
+    """되묻기 축 (규칙 2.3 가안). 기본값이 없는 대상이 빠졌을 때만 묻고,
+    기본값이 있는 성별·연도는 같은 메시지에 함께 넣는다"""
+    if "target" not in missing:
+        return []
+    axes = family_axes(family)
+    asked = [{"axis": "target", "options": axes["target"]}]
+    if "sex" in missing:
+        asked.append({"axis": "sex", "options": ["전체" if v == "계" else v for v in axes["sex"]]})
+    no_year = slots["conditions"]["year"] is None and not slots.get("edition")
+    if "edition" in axes and no_year:
+        asked.append({"axis": "edition", "options": axes["edition"]})
+    return asked
+
+
+def finish(
+    result: dict[str, Any],
+    tables: list[dict[str, Any]],
+    family_id: str,
+    score: float | None,
+    allow_clarify: bool,
+) -> dict[str, Any]:
+    """패밀리 확정 후: 멤버·판 선택 → 되묻기 또는 표 하나"""
+    slots = result["slots"]
     family = [t for t in tables if t["family_id"] == family_id]
     table, missing, notes = choose(family, slots)
+    info = {
+        "family_id": family_id,
+        "family_name": table["family_name"],
+        "survey_name": table["survey_name"],
+        "organization": table["organization"],
+        "axes": family_axes(family),
+    }
+    asked = clarify_axes(family, slots, missing) if allow_clarify else []
+    if asked:
+        return {
+            **result,
+            "status": "clarify",
+            "score": score,
+            "family": info,
+            "clarify_axes": asked,
+            "missing_axes": missing,
+            "reason": "패밀리 안에서 표를 고를 조건이 부족합니다",
+        }
     checks = check(table, slots)
     failed = [k for k, ok in checks.items() if not ok]
     result.update(
         {
             "status": "partial_match" if failed or notes else "ok",
-            "score": top["score"],
+            "score": score,
             "reason": "; ".join([*notes, *(f"조건 불충족: {k}" for k in failed)]) or None,
             "notes": notes,
             "failed": failed,
             "table": {**_brief(table), "period": table["period"], "checks": checks},
-            "family": {
-                "family_id": family_id,
-                "family_name": table["family_name"],
-                "axes": family_axes(family),
-            },
+            "family": info,
             "missing_axes": missing,
             "other_editions": [
                 _brief(t)
@@ -376,13 +443,15 @@ def find(tables: list[dict[str, Any]], slots: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-async def search(question: str, trace: dict[str, Any] | None = None) -> dict[str, Any]:
+async def search(
+    question: str, trace: dict[str, Any] | None = None, allow_clarify: bool = True
+) -> dict[str, Any]:
     """trace(dict)를 주면 HCX 원본 출력과 단계별 시간(ms)을 담는다 (요청 로그용)"""
     trace = {} if trace is None else trace
     start = time.perf_counter()
     slots = await slot_parser.extract(question, trace)
     parsed_at = time.perf_counter()
-    result = find(await load_tables(), slots)
+    result = find(await load_tables(), slots, allow_clarify)
     trace["timings"] = {
         "slots_ms": round((parsed_at - start) * 1000),
         "search_ms": round((time.perf_counter() - parsed_at) * 1000),

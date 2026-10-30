@@ -5,7 +5,7 @@ from uuid import uuid4
 from fastapi import APIRouter
 
 from app.schemas.search import SearchRequest, SearchResponse
-from app.services import search, search_answer, search_log
+from app.services import dialog, search, search_answer, search_log
 
 router = APIRouter(tags=["search"])
 logger = logging.getLogger(__name__)
@@ -19,7 +19,7 @@ async def search_tables(body: SearchRequest) -> SearchResponse:
     trace: dict = {}
     result, response, error = None, None, None
     try:
-        result = await search.search(body.question, trace)
+        result = await dialog.handle(body.question, session_id, body.selections, trace)
         tables = await search.load_tables()
         response = search_answer.respond(
             result, tables, session_id, body.top_k, trace, debug=body.debug

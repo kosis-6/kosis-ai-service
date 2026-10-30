@@ -19,6 +19,7 @@ STATUS_MESSAGES = {
     "parse_error": "질문을 이해하지 못했습니다. 찾는 통계의 주제를 넣어 다시 질문해 주세요.",
 }
 NUMBERS = "①②③④⑤"
+AXIS_LABELS = {"target": "대상", "sex": "성별", "edition": "연도"}
 
 
 def check_label(key: str, slots: dict[str, Any]) -> str:
@@ -78,7 +79,7 @@ def recommendation(
             ],
         },
         "notes": notes(t),
-        "score": round(score, 3),
+        "score": None if score is None else round(score, 3),
     }
 
 
@@ -123,6 +124,19 @@ def answer_text(result: dict[str, Any], rec: dict[str, Any] | None) -> str:
         lines = ["비슷한 통계표가 여러 개 있습니다. 어떤 자료를 찾으시나요?"]
         for n, o in zip(NUMBERS, result["options"], strict=False):
             lines.append(f"{n} {o['table_name']} ({o['survey_name']}, {o['edition']}년)")
+        lines.append("번호나 이름으로 답해 주세요.")
+        return "\n".join(lines)
+    if status == "clarify":
+        f = result["family"]
+        axes = result["clarify_axes"]
+        lines = [
+            f"‘{f['family_name']}’ 통계({f['organization']}, {f['survey_name']})가 있습니다. "
+            f"{len(axes)}가지만 확인할게요."
+        ]
+        for n, a in zip(NUMBERS, axes, strict=False):
+            options = [f"{o}년" if a["axis"] == "edition" else o for o in a["options"]]
+            lines.append(f"{n} {AXIS_LABELS[a['axis']]}: {' / '.join(options)}")
+        lines.append("예) “혼인 귀화자, 여, 2010년” 또는 “아무거나”")
         return "\n".join(lines)
 
     slots = result["slots"]
@@ -135,7 +149,7 @@ def answer_text(result: dict[str, Any], rec: dict[str, Any] | None) -> str:
         lines.append("조건 확인: " + " · ".join(marks))
     if result.get("notice"):
         lines.append(f"확인 필요: {result['notice']}")
-    if "target" in result.get("missing_axes", []):
+    if "target" in result.get("missing_axes", []) or slots.get("target_default"):
         lines.append("대상을 지정하지 않아 ‘전체’ 표를 안내합니다.")
     others = other_versions(rec["family"])
     if others:
@@ -171,6 +185,13 @@ def respond(
             t = by_id[o["tbl_id"]]
             fam = [r for r in tables if r["family_id"] == t["family_id"]]
             recs.append(recommendation(i, t, fam, o.get("checks", {}), o["score"]))
+    elif status == "clarify":
+        clarify = {
+            "level": "member",
+            "family_id": result["family"]["family_id"],
+            "family_name": result["family"]["family_name"],
+            "axes": result["clarify_axes"],
+        }
     elif status == "ambiguous":
         clarify = {
             "level": "family",
