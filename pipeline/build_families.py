@@ -14,9 +14,16 @@
           이름에 표기가 없는 멤버 후보(같은 폴더·같은 구조, 지역으로 쪼갠 표)는
           사람이 확인한 뒤 넣는다 (규칙 1.4, 아직 반영 안 함)
   '-시도'·'-시군구'처럼 지역 수준만 다른 표는 다른 패밀리로 둔다 (stat_tables.region_levels로 판정)
+  후속판  이름이 바뀌어 이어지는 표. 표 ID가 옛 표 ID + '_A'이고 같은 조사, 분류 ID 구성이
+          같으면 옛 표의 멤버에 판으로 붙인다. 대상 이름은 최신 표 기준.
+          'TX_11025_A017 한국국적을 취득한 자(계)(2006~2015)'
+            → 'TX_11025_A017_A 이전국적별 한국국적을 취득한 자(계)(2015~2024)'
+          'TX_11025_A008 …-국제결혼 이주자(계)' → 'TX_11025_A008_A …-결혼이민자(계)'
+          ID는 맞는데 분류 구성이 다른 표는 붙이지 않고 보고에 '확인 필요'로 남긴다
 
 출력
-  table_families  표마다 family_id, family_name, target, sex, edition_order, edition
+  table_families  표마다 family_id, family_name, target, sex, edition_order, edition,
+                  renamed_from(후속판이면 이름이 바뀌기 전 표 ID)
   family_axes     패밀리를 가르는 축(target / sex / edition)과 선택지. 선택지가 2개 이상인 축만
                   (F-14가 질문에 없는 축만 골라 되묻는다)
   두 테이블 모두 stat_tables에서 다시 만들 수 있으므로 실행할 때마다 새로 만든다.
@@ -37,6 +44,7 @@ EDITION_YEAR = re.compile(r"\s*\(\s*~?\s*\d{4}\s*년?\s*(?:~\s*(?:\d{4}\s*년?)?
 # 분류 개정 판: '직업별(신) 사망자수(1993~2017)' / '직업별(구) 사망자수(~1992)'
 EDITION_REVISION = re.compile(r"\((?:신|구)\)")
 SEX_MEMBER = re.compile(r"\((계|남|여)\)")
+SUCCESSOR_ID = re.compile(r"(.+)_A")
 TOTAL_TARGET = "전체"
 
 DDL = """
@@ -48,7 +56,8 @@ CREATE TABLE table_families (
     target         text,
     sex            text,
     edition_order  int NOT NULL,
-    edition        text NOT NULL
+    edition        text NOT NULL,
+    renamed_from   text
 );
 CREATE INDEX table_families_family_idx ON table_families (family_id);
 CREATE VIEW family_axes AS
@@ -59,8 +68,9 @@ WITH options AS (
     SELECT family_id, 'sex', sex, min(edition_order)
     FROM table_families WHERE sex IS NOT NULL GROUP BY family_id, sex
     UNION ALL
-    SELECT family_id, 'edition', edition, min(edition_order)
-    FROM table_families GROUP BY family_id, edition
+    -- 판은 최신 연도를 담은 판 → 기간이 긴 판 순
+    SELECT f.family_id, 'edition', f.edition, min(s.start_year - s.end_year * 10000)
+    FROM table_families f JOIN stat_tables s USING (tbl_id) GROUP BY f.family_id, f.edition
 )
 SELECT family_id, axis, array_agg(option ORDER BY option <> '전체', sort_key, option) AS options
 FROM options
@@ -91,17 +101,52 @@ def edition_label(start_year: int, end_year: int) -> str:
     return str(start_year) if start_year == end_year else f"{start_year}~{end_year}"
 
 
+def class_ids(t: dict[str, Any]) -> list[str]:
+    return sorted(c.get("id") or c["name"] for c in t.get("classifications") or [])
+
+
+def successors(tables: list[dict[str, Any]]) -> tuple[dict[str, str], list[tuple[str, str]]]:
+    """(새 표 ID → 옛 표 ID, 분류 구성이 달라 붙이지 않은 쌍)"""
+    by_id = {t["tbl_id"]: t for t in tables}
+    linked, unsure = {}, []
+    for t in tables:
+        m = SUCCESSOR_ID.fullmatch(t["tbl_id"])
+        old = by_id.get(m.group(1)) if m else None
+        if old is None or old["survey_name"] != t["survey_name"]:
+            continue
+        if class_ids(old) == class_ids(t):
+            linked[t["tbl_id"]] = old["tbl_id"]
+        else:
+            unsure.append((old["tbl_id"], t["tbl_id"]))
+    return linked, unsure
+
+
 def build(tables: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """tables: tbl_id, survey_name, table_name, start_year, end_year를 가진 dict 목록"""
+    """tables: tbl_id, survey_name, table_name, start_year, end_year, classifications를 가진 목록"""
+    linked, _ = successors(tables)
+    by_id = {t["tbl_id"]: t for t in tables}
+    # 이름까지 바뀐 경우만 기록 (ID에 '_A'만 붙고 표명이 같은 판은 원래 같은 멤버)
+    renamed = {
+        new: old
+        for new, old in linked.items()
+        if edition_name(by_id[new]["table_name"]) != edition_name(by_id[old]["table_name"])
+    }
+
+    def key(t: dict[str, Any]) -> tuple[str, str]:
+        anchor = by_id[linked.get(t["tbl_id"], t["tbl_id"])]  # 후속판은 옛 표의 멤버로
+        return anchor["survey_name"], edition_name(anchor["table_name"])
+
     members: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     for t in tables:
-        members[(t["survey_name"], edition_name(t["table_name"]))].append(t)
+        members[key(t)].append(t)
 
     rows = []
     for (survey, name), editions in members.items():
-        family_name, target, sex = member_of(name)
         # 최신 연도를 담은 판 → 기간이 긴 판 → 시작 연도가 이른 판 (규칙 2.4)
         editions.sort(key=lambda t: (-t["end_year"], t["start_year"], t["tbl_id"]))
+        family_name, _, sex = member_of(name)
+        # 대상 이름은 최신 판 표명 기준 ('국제결혼 이주자' → '결혼이민자')
+        target = member_of(edition_name(editions[0]["table_name"]))[1] or member_of(name)[1]
         for order, t in enumerate(editions, start=1):
             rows.append(
                 {
@@ -112,6 +157,7 @@ def build(tables: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "sex": sex,
                     "edition_order": order,
                     "edition": edition_label(t["start_year"], t["end_year"]),
+                    "renamed_from": renamed.get(t["tbl_id"]),
                 }
             )
 
@@ -125,7 +171,7 @@ def build(tables: list[dict[str, Any]]) -> list[dict[str, Any]]:
     )
 
 
-def report(rows: list[dict[str, Any]]) -> str:
+def report(rows: list[dict[str, Any]], unsure: list[tuple[str, str]] | None = None) -> str:
     size = Counter(r["family_id"] for r in rows)
     multi = {f for f, n in size.items() if n > 1}
     member_families = {r["family_id"] for r in rows if r["sex"]}
@@ -139,14 +185,26 @@ def report(rows: list[dict[str, Any]]) -> str:
         f"대상·성별 멤버로 나뉜 패밀리: {len(member_families)}개"
         f" ({sum(size[f] for f in member_families)}개 표)",
         "표가 많은 패밀리: " + ", ".join(f"{names[f]} {n}" for f, n in size.most_common(5)),
+        f"이름이 바뀐 후속판 연결: {sum(r['renamed_from'] is not None for r in rows)}개 표",
     ]
+    if unsure:
+        lines.append(f"후속판 확인 필요 (ID는 맞는데 분류 구성이 다름): {unsure}")
     return "\n".join(lines)
 
 
 def load(rows: list[dict[str, Any]], url: str) -> int:
     import psycopg
 
-    cols = ["tbl_id", "family_id", "family_name", "target", "sex", "edition_order", "edition"]
+    cols = [
+        "tbl_id",
+        "family_id",
+        "family_name",
+        "target",
+        "sex",
+        "edition_order",
+        "edition",
+        "renamed_from",
+    ]
     with psycopg.connect(url) as conn:  # 블록이 끝나면 커밋, 오류면 전부 되돌림
         conn.execute(DDL)
         with conn.cursor().copy(f"COPY table_families ({', '.join(cols)}) FROM STDIN") as copy:
@@ -161,7 +219,8 @@ def read_tables(url: str) -> list[dict[str, Any]]:
 
     with psycopg.connect(url, row_factory=dict_row) as conn:
         return conn.execute(
-            "SELECT tbl_id, survey_name, table_name, start_year, end_year FROM stat_tables"
+            "SELECT tbl_id, survey_name, table_name, start_year, end_year, classifications"
+            " FROM stat_tables"
         ).fetchall()
 
 
@@ -173,8 +232,9 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.dry_run:
-        rows = build(read_catalog())
-        print(report(rows))
+        tables = read_catalog()
+        rows = build(tables)
+        print(report(rows, successors(tables)[1]))
         print("\n--dry-run: DB에는 넣지 않음")
         return 0
     url = database_url()
@@ -183,7 +243,7 @@ def main() -> int:
         print("stat_tables가 비어 있음. pipeline.load_catalog를 먼저 실행", file=sys.stderr)
         return 1
     rows = build(tables)
-    print(report(rows))
+    print(report(rows, successors(tables)[1]))
     axes = load(rows, url)
     print(f"\ntable_families 적재 완료: {len(rows)}행 · family_axes {axes}행")
     return 0

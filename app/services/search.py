@@ -41,15 +41,15 @@ STOPWORDS = {
     "수", "통계", "통계표", "자료", "데이터", "현황", "관련", "표", "정보", "찾아줘", "알려줘",
     "보여줘", "몇", "명", "얼마", "얼마나", "몇명", "추이", "변화", "있어", "있나요",
 }  # fmt: skip
-# '취득한' → '취득', '국적을' → '국적'. 조사·어미 한 글자만 떼어 본다
-SUFFIXES = ("한", "된", "을", "를", "의", "은", "는", "이", "가", "에", "별", "인")
+# '취득한'·'취득자' → '취득', '국적을' → '국적'. 조사·어미 한 글자만 떼어 본다
+SUFFIXES = ("한", "된", "을", "를", "의", "은", "는", "이", "가", "에", "별", "인", "자")
 MIGRATION = re.compile(r"이동|전입|전출|이주|이사")
 
 TABLES_SQL = """
 SELECT s.tbl_id, s.org_id, s.table_name, s.survey_name, s.organization, s.period, s.path_texts,
        s.classifications, s.items, s.start_year, s.end_year, s.region_levels,
        s.prev_region_levels, s.sex_coverage, s.has_total, s.url,
-       f.family_id, f.family_name, f.target, f.sex, f.edition_order, f.edition
+       f.family_id, f.family_name, f.target, f.sex, f.edition_order, f.edition, f.renamed_from
 FROM stat_tables s JOIN table_families f USING (tbl_id)
 """
 

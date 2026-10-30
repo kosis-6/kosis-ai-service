@@ -53,3 +53,32 @@ def test_build_groups_members_and_orders_editions() -> None:
     assert (by_id["A020"]["edition_order"], by_id["A020"]["edition"]) == (1, "2007~2015")
     assert (by_id["A020_A"]["edition_order"], by_id["A020_A"]["edition"]) == (2, "2015")
     assert by_id["A017"]["target"] == "전체"
+
+
+def _tc(tbl_id: str, name: str, start: int, end: int, *class_ids: str) -> dict:
+    return {
+        **_t(tbl_id, name, start, end),
+        "classifications": [{"id": c, "name": c} for c in class_ids],
+    }
+
+
+def test_renamed_successor_joins_old_member() -> None:
+    tables = [
+        _tc("A017", "한국국적을 취득한 자(계)(2006~2015)", 2006, 2015, "R", "N"),
+        _tc("A017_A", "이전국적별 한국국적을 취득한 자(계)", 2015, 2024, "R", "N"),
+        _tc("A020", "한국국적을 취득한 자-혼인 귀화자(계)", 2007, 2015, "R"),
+        _tc("A008", "외국인-국제결혼 이주자(계)", 2007, 2015, "R"),
+        _tc("A008_A", "외국인-결혼이민자(계)", 2015, 2024, "R"),
+        # ID는 맞지만 분류 구성이 다르면 붙이지 않는다
+        _tc("A029", "국제결혼 가정 자녀(2007~2015)", 2007, 2015, "R"),
+        _tc("A029_A", "가정 자녀(연령별)", 2015, 2015, "R", "AGE"),
+    ]
+    by_id = {r["tbl_id"]: r for r in bf.build(tables)}
+    new, old = by_id["A017_A"], by_id["A017"]
+    assert new["family_id"] == old["family_id"] == by_id["A020"]["family_id"]
+    assert (new["target"], new["edition_order"], new["renamed_from"]) == ("전체", 1, "A017")
+    assert (old["edition_order"], old["renamed_from"]) == (2, None)
+    # 대상 이름은 최신 표 기준
+    assert by_id["A008"]["target"] == by_id["A008_A"]["target"] == "결혼이민자"
+    assert by_id["A029"]["family_id"] != by_id["A029_A"]["family_id"]
+    assert bf.successors(tables)[1] == [("A029", "A029_A")]

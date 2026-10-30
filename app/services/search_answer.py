@@ -73,19 +73,27 @@ def recommendation(
             "current": {"target": t["target"], "sex": t["sex"]},
             "members": list(members.values()),
             "editions": [
-                {"tbl_id": r["tbl_id"], "period": r["edition"]}
+                {"tbl_id": r["tbl_id"], "period": r["edition"], "tbl_nm": r["table_name"]}
                 for r in sorted(same_member, key=lambda r: -r["end_year"])
                 if r["tbl_id"] != t["tbl_id"]
             ],
         },
-        "notes": notes(t),
+        "notes": notes(t, family),
         "score": None if score is None else round(score, 3),
     }
 
 
-def notes(t: dict[str, Any]) -> list[str]:
+def notes(t: dict[str, Any], family: list[dict[str, Any]]) -> list[str]:
     """표에 붙일 고지. 주석(기준일·결측 등) 고지는 주석 필드를 만든 뒤 추가 (검색 규칙 9장)"""
     out = []
+    by_id = {r["tbl_id"]: r for r in family}
+    member = [r for r in family if (r["target"], r["sex"]) == (t["target"], t["sex"])]
+    if t.get("renamed_from") in by_id:
+        old = by_id[t["renamed_from"]]
+        out.append(f"{old['edition']}년 자료는 이름이 다른 ‘{old['table_name']}’ 표에 있습니다.")
+    for r in member:  # 옛 판을 고른 경우: 이후 자료는 이름이 바뀐 표에 있다
+        if r.get("renamed_from") == t["tbl_id"]:
+            out.append(f"{r['edition']}년 자료는 이름이 바뀐 ‘{r['table_name']}’ 표에 있습니다.")
     if t["has_total"] is False:
         out.append(
             "이 표에는 남녀 합계가 없습니다. "
