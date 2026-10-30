@@ -4,7 +4,8 @@
   2. 코드가 질문 원문과 맞춰 고친다 (correct)
      - 연도·지역 수준·성별은 질문에 그 말이 있을 때만 남긴다 (LLM이 추측한 조건 제거)
      - 지역 이름은 KOSIS 분류 값과 같은 정식 시도명으로 바꾼다 ("부산" → "부산광역시")
-  3. 두 번 다 JSON을 못 읽으면 원문 규칙만으로 슬롯을 만든다 (parse_error=True, 검색은 원문으로)
+  3. 두 번 다 JSON을 못 읽거나 HCX 호출이 실패하면 원문 규칙만으로 슬롯을 만든다
+     (parse_error=True, 검색은 원문으로)
 
 말하지 않은 조건은 null로 둔다. "전체"와 구분해야 재순위(F-05)가 감점하지 않고,
 되묻기(F-14)가 무엇을 물을지 안다.
@@ -19,7 +20,7 @@ import sys
 from typing import Any
 
 from app.prompts.search import SLOT_SYSTEM
-from app.services.hcx_client import HcxClient
+from app.services.hcx_client import HcxClient, HcxError
 
 MODEL = "HCX-DASH-002"
 QUERY_TYPES = {"find_table", "ambiguous", "not_statistics"}
@@ -120,11 +121,14 @@ async def extract(question: str, trace: dict[str, Any] | None = None) -> dict[st
     """질문 → 슬롯. trace(dict)를 주면 HCX 원본 출력을 담는다 (요청 로그용)"""
     raws = []
     parsed = None
-    for _ in range(2):  # JSON 형식이 틀리면 1회 재시도
-        raws.append(await _chat(question))
-        parsed = _json_object(raws[-1])
-        if parsed is not None:
-            break
+    try:
+        for _ in range(2):  # JSON 형식이 틀리면 1회 재시도
+            raws.append(await _chat(question))
+            parsed = _json_object(raws[-1])
+            if parsed is not None:
+                break
+    except HcxError as e:  # HCX 장애·호출 제한이어도 원문 규칙으로 검색은 이어간다
+        raws.append(f"HcxError: {e}")
     if trace is not None:
         trace["hcx_raw"] = raws
     if parsed is None:

@@ -20,6 +20,7 @@ import json
 import math
 import re
 import sys
+import time
 from typing import Any
 
 from sqlalchemy import text
@@ -44,7 +45,7 @@ SUFFIXES = ("한", "된", "을", "를", "의", "은", "는", "이", "가", "에"
 MIGRATION = re.compile(r"이동|전입|전출|이주|이사")
 
 TABLES_SQL = """
-SELECT s.tbl_id, s.table_name, s.survey_name, s.organization, s.period, s.path_texts,
+SELECT s.tbl_id, s.org_id, s.table_name, s.survey_name, s.organization, s.period, s.path_texts,
        s.classifications, s.items, s.start_year, s.end_year, s.region_levels,
        s.prev_region_levels, s.sex_coverage, s.has_total, s.url,
        f.family_id, f.family_name, f.target, f.sex, f.edition_order, f.edition
@@ -129,7 +130,8 @@ def keyword_scores(tables: list[dict[str, Any]], tokens: list[dict[str, Any]]) -
             or _found(variants, t["meta_n"])
             for t in tables
         )
-        idf.append(math.log((n + 1) / (df + 1)) if df else 0.0)
+        # 어느 표에도 없는 단어('아파트 매매 가격'의 '매매')는 가장 희귀한 단어로 쳐서 점수를 깎는다
+        idf.append(math.log((n + 1) / (df + 1)) if df else math.log(n + 1))
     total = sum(idf)
     if total == 0:
         return [0.0] * n
@@ -328,6 +330,7 @@ def find(tables: list[dict[str, Any]], slots: dict[str, Any]) -> dict[str, Any]:
             "family_id": f["table"]["family_id"],
             "family_name": f["table"]["family_name"],
             "score": round(f["score"], 3),
+            "checks": f["checks"],
             **_brief(f["table"]),
         }
         for f in families[1:TOP_FAMILIES]
@@ -350,7 +353,10 @@ def find(tables: list[dict[str, Any]], slots: dict[str, Any]) -> dict[str, Any]:
     result.update(
         {
             "status": "partial_match" if failed or notes else "ok",
+            "score": top["score"],
             "reason": "; ".join([*notes, *(f"조건 불충족: {k}" for k in failed)]) or None,
+            "notes": notes,
+            "failed": failed,
             "table": {**_brief(table), "period": table["period"], "checks": checks},
             "family": {
                 "family_id": family_id,
@@ -371,8 +377,17 @@ def find(tables: list[dict[str, Any]], slots: dict[str, Any]) -> dict[str, Any]:
 
 
 async def search(question: str, trace: dict[str, Any] | None = None) -> dict[str, Any]:
+    """trace(dict)를 주면 HCX 원본 출력과 단계별 시간(ms)을 담는다 (요청 로그용)"""
+    trace = {} if trace is None else trace
+    start = time.perf_counter()
     slots = await slot_parser.extract(question, trace)
-    return find(await load_tables(), slots)
+    parsed_at = time.perf_counter()
+    result = find(await load_tables(), slots)
+    trace["timings"] = {
+        "slots_ms": round((parsed_at - start) * 1000),
+        "search_ms": round((time.perf_counter() - parsed_at) * 1000),
+    }
+    return result
 
 
 def _print(result: dict[str, Any]) -> None:
