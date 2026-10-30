@@ -4,7 +4,11 @@
 
 입력: data/catalog/population_table_catalog_with_meta.jsonl
       (scripts/preprocess_population.py → scripts/enrich_catalog_meta.py 결과)
-출력: PostgreSQL stat_tables (실행할 때마다 새로 만든다)
+출력: PostgreSQL stat_tables
+      테이블을 지우지 않고 tbl_id 기준으로 갱신한다 (새 표는 추가, 바뀐 표는 수정,
+      카탈로그에서 빠진 표는 삭제). 임베딩·패밀리 같은 테이블이 tbl_id로 이 테이블을
+      참조해도 다시 적재할 때 지워지지 않게 하기 위해서다.
+      열 구성을 바꿨을 때만 --recreate로 테이블을 새로 만든다.
 
 정제
   - 표명·분류명·항목명의 앞뒤 공백, 연속 공백, 앞에 붙은 따옴표 정리
@@ -17,13 +21,15 @@
   prev_region_levels     5년전·1년전 거주지 분류의 지역 수준 (이동 질문에서만 지역 축으로 씀)
   sex_source             성별이 어디 있나: class(성별 분류) / item(항목 이름)
                          / member(표 이름의 (계)(남)(여)) / none
-  sex_coverage           both / male_only / female_only / none
+  sex_coverage           both / male_only / female_only / total_only((계) 표) / none
   has_total              성별 합계(계·합계·전체 등)가 있는가. 성별이 없는 표와 (남)/(여) 표는 NULL
+                         ((남)/(여) 표의 합계는 패밀리 단위로 판정, 검색 규칙 7장)
   is_single_period, has_comment, url
 
 실행 (서버 컨테이너 안, DB가 떠 있어야 함)
   docker compose exec api python -m pipeline.load_catalog            # 적재 + 보고
   docker compose exec api python -m pipeline.load_catalog --dry-run  # DB 없이 정제·보고만
+  docker compose exec api python -m pipeline.load_catalog --recreate # 테이블을 새로 만든 뒤 적재
 """
 
 import argparse
@@ -84,9 +90,9 @@ COLUMNS = [
 ]
 JSON_COLUMNS = {"catalog_periods", "paths", "classifications", "items", "comments"}
 
+DROP = "DROP TABLE IF EXISTS stat_tables CASCADE"
 DDL = """
-DROP TABLE IF EXISTS stat_tables;
-CREATE TABLE stat_tables (
+CREATE TABLE IF NOT EXISTS stat_tables (
     tbl_id              text PRIMARY KEY,
     org_id              text NOT NULL,
     organization        text NOT NULL,
@@ -116,8 +122,8 @@ CREATE TABLE stat_tables (
     url                 text NOT NULL,
     loaded_at           timestamptz NOT NULL DEFAULT now()
 );
-CREATE INDEX stat_tables_survey_idx ON stat_tables (survey_name);
-CREATE INDEX stat_tables_years_idx ON stat_tables (start_year, end_year);
+CREATE INDEX IF NOT EXISTS stat_tables_survey_idx ON stat_tables (survey_name);
+CREATE INDEX IF NOT EXISTS stat_tables_years_idx ON stat_tables (start_year, end_year);
 """
 
 
@@ -188,7 +194,7 @@ def sex_info(
         # (남)/(여) 표의 합계는 같은 패밀리의 (계) 표에 있으므로 표 단위로는 판정하지 않는다
         label = member.group(1)
         if label == "계":
-            return "member", "none", True
+            return "member", "total_only", True
         return "member", "male_only" if label == "남" else "female_only", None
 
     return "none", "none", None
@@ -320,22 +326,52 @@ def database_url() -> str:
     return get_settings().database_url.replace("postgresql+psycopg://", "postgresql://", 1)
 
 
-def load(records: list[dict[str, Any]], url: str) -> int:
+def load(records: list[dict[str, Any]], url: str, recreate: bool = False) -> dict[str, int]:
+    """임시 테이블에 COPY한 뒤 tbl_id 기준으로 stat_tables를 갱신한다"""
     import psycopg
     from psycopg.types.json import Jsonb
 
     rows = [tuple(Jsonb(r[c]) if c in JSON_COLUMNS else r[c] for c in COLUMNS) for r in records]
+    cols = ", ".join(COLUMNS)
+    updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in COLUMNS if c != "tbl_id")
     with psycopg.connect(url) as conn:  # 블록이 끝나면 커밋, 오류면 전부 되돌림
+        if recreate:
+            conn.execute(DROP)
         conn.execute(DDL)
-        with conn.cursor().copy(f"COPY stat_tables ({', '.join(COLUMNS)}) FROM STDIN") as copy:
+        conn.execute(
+            "CREATE TEMP TABLE incoming (LIKE stat_tables INCLUDING DEFAULTS) ON COMMIT DROP"
+        )
+        with conn.cursor().copy(f"COPY incoming ({cols}) FROM STDIN") as copy:
             for row in rows:
                 copy.write_row(row)
-        return conn.execute("SELECT count(*) FROM stat_tables").fetchone()[0]
+        # xmax = 0이면 새로 들어간 행, 아니면 기존 행을 고친 것
+        upserted = conn.execute(
+            f"""INSERT INTO stat_tables ({cols}) SELECT {cols} FROM incoming
+                ON CONFLICT (tbl_id) DO UPDATE SET {updates}, loaded_at = now()
+                RETURNING xmax = 0"""
+        ).fetchall()
+        deleted = conn.execute(
+            "DELETE FROM stat_tables s WHERE NOT EXISTS "
+            "(SELECT 1 FROM incoming i WHERE i.tbl_id = s.tbl_id)"
+        ).rowcount
+        total = conn.execute("SELECT count(*) FROM stat_tables").fetchone()[0]
+    inserted = sum(1 for (is_new,) in upserted if is_new)
+    return {
+        "inserted": inserted,
+        "updated": len(upserted) - inserted,
+        "deleted": deleted,
+        "total": total,
+    }
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--dry-run", action="store_true", help="DB에 넣지 않고 정제·보고만")
+    parser.add_argument(
+        "--recreate",
+        action="store_true",
+        help="열 구성을 바꿨을 때 테이블을 새로 만든다 (참조하는 테이블의 외래 키도 함께 지워짐)",
+    )
     args = parser.parse_args()
 
     records = read_catalog()
@@ -347,7 +383,11 @@ def main() -> int:
     if args.dry_run:
         print("\n--dry-run: DB에는 넣지 않음")
         return 0
-    print(f"\nstat_tables 적재 완료: {load(records, database_url())}행")
+    result = load(records, database_url(), recreate=args.recreate)
+    print(
+        f"\nstat_tables 적재 완료: {result['total']}행"
+        f" (추가 {result['inserted']}, 갱신 {result['updated']}, 삭제 {result['deleted']})"
+    )
     return 0
 
 
