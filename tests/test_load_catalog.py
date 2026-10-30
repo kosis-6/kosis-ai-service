@@ -69,7 +69,11 @@ def test_sex_from_items() -> None:
 
 
 def test_sex_from_member_table_name() -> None:
-    assert lc.sex_info("한국국적을 취득한 자-혼인 귀화자(계)", [], []) == ("member", "none", True)
+    assert lc.sex_info("한국국적을 취득한 자-혼인 귀화자(계)", [], []) == (
+        "member",
+        "total_only",
+        True,
+    )
     assert lc.sex_info("한국국적을 취득한 자(여)(2006~2015)", [], []) == (
         "member",
         "female_only",
