@@ -68,6 +68,7 @@ HOUSEHOLDER_SEX = re.compile(r"(?:남자|남성|여자|여성)\s*가구주")
 
 def empty_slots(question: str) -> dict[str, Any]:
     return {
+        "question": question.strip(),
         "topic": question.strip(),
         "target": None,
         "conditions": {
