@@ -110,3 +110,43 @@ def test_find_statuses() -> None:
     assert result["status"] == "ok"
     assert result["table"]["tbl_id"] == "혼인 귀화자여_old"
     assert result["family"]["axes"]["target"] == ["전체", "혼인 귀화자"]
+
+
+def _three_families() -> list[dict]:
+    return se.prepare(
+        [
+            _t("A", "시군구/월별 사망자수", 2015, 2024, "FA"),
+            _t("B", "시도별 인구", 2015, 2024, "FB"),
+            _t("C", "시도별 외국인주민 현황", 2015, 2024, "FC"),
+        ]
+    )
+
+
+def test_hybrid_finds_table_without_keyword() -> None:
+    tables = _three_families()
+    s = _slots("돌아가신 분 수", "돌아가신 분 수")
+    # 키워드만으로는 '돌아가신'이 표명에 없어 찾지 못한다
+    assert se.find(tables, s)["status"] == "out_of_scope"
+    result = se.find(tables, s, dense=[0.62, 0.40, 0.35])
+    assert result["retrieval"] == "hybrid"
+    assert result["status"] == "ok" and result["table"]["tbl_id"] == "A"
+    assert result["candidates"][0]["dense"] == 0.62
+
+
+def test_hybrid_adds_keyword_only_above_gate() -> None:
+    assert se.relevance(0.9, 0.0, 0.5) == 0.5 + se.KEYWORD_WEIGHT * 0.9
+    assert se.relevance(se.KEYWORD_GATE - 0.01, 0.5, 0.5) == 0.5  # 표명 유사도도 함께 빠진다
+    # 임베딩이 없으면 예전처럼 키워드 + 표명 유사도
+    assert se.relevance(0.4, 0.5, None) == 0.4 + se.NAME_WEIGHT * 0.5
+
+
+def test_hybrid_candidates_and_thresholds() -> None:
+    tables = _three_families()
+    s = _slots("오늘 날씨", "날씨")
+    # 키워드 0점이어도 임베딩 상위는 후보에 들고, 낮은 점수는 out_of_scope
+    result = se.find(tables, s, dense=[0.30, 0.31, 0.29])
+    assert len(result["candidates"]) == 3 and result["status"] == "out_of_scope"
+    # 1·2순위 패밀리가 거의 동점이면 ambiguous
+    result = se.find(tables, s, dense=[0.600, 0.598, 0.30])
+    assert result["status"] == "ambiguous"
+    assert [o["family_id"] for o in result["options"]] == ["FA", "FB"]
