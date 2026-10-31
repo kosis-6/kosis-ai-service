@@ -120,3 +120,38 @@ def test_householder_sex_is_a_class() -> None:
     s["topic"] = "미혼 인구"
     s["conditions"]["items"] = ["미혼"]
     assert sl.correct("연령별 미혼 여성 인구", s)["conditions"]["items"] == ["미혼"]
+
+
+def test_short_year_and_projection() -> None:
+    assert _slots("95년 인구 통계")["conditions"]["year"] == 1995
+    assert _slots("'05년도 출생아")["conditions"]["year"] == 2005
+    # '10년 전', '90년생', '20년간'은 연도가 아니다
+    for q in ("10년 전 대비 인구", "90년생 인구", "20년간 인구 변화"):
+        assert _slots(q)["conditions"]["year"] is None
+    # 올해 이후 연도나 예측 표현이면 장래 추계
+    assert _slots("2050년 인구")["projection"] is True
+    assert _slots("앞으로 인구가 어떻게 될지")["projection"] is True
+    assert _slots("2010년 인구")["projection"] is False
+
+
+def test_region_words() -> None:
+    assert _slots("우리 구 인구")["conditions"]["region_level"] == "시군구"
+    assert _slots("우리 동네 외국인 주민 수")["conditions"]["region_level"] == "시군구"
+    assert _slots("동 단위 인구")["conditions"]["region_level"] == "읍면동"
+
+
+def test_negation_and_spouse() -> None:
+    assert _slots("귀화한 사람 말고 결혼이민자 통계")["exclude"] == ["귀화한"]
+    assert _slots("65세 이상 제외 인구")["exclude"] == []  # 숫자·범위 단어는 빼지 않는다
+    s = _slots("외국인 여자와 결혼한 한국 남자")
+    # 배우자를 가리키는 남녀 단어는 성별 조건이 아니다
+    assert (s["spouse"], s["conditions"]["sex"]) == ("외국인 아내", None)
+    assert _slots("한국 여자가 외국 남자랑 결혼한 건수")["spouse"] == "외국인 남편"
+    # HCX가 배우자 표현을 대상으로 뽑아도 대상 조건으로 쓰지 않는다
+    q = "외국인 여자와 결혼한 한국 남자"
+    s = sl.empty_slots(q)
+    s["target"] = "한국 남자"
+    assert sl.correct(q, s)["target"] is None
+    # 결혼·이혼 질문이 아니면 그냥 성별
+    s = _slots("외국인 여자 수")
+    assert (s["spouse"], s["conditions"]["sex"]) == (None, "여")
