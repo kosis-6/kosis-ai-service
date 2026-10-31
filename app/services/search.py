@@ -1,11 +1,13 @@
 """통계표 검색: 질문 → 표 하나의 링크 (실전 2 F-04 · F-05 · F-18 · F-06 1차)
 
   1. 질의 분석 (slots.extract)       질문 → 슬롯
-  2. 후보 검색 (keyword_scores)      주제·대상 단어가 표명·경로·분류·항목에 얼마나 있는지.
+  2. 후보 검색 (keyword_scores)      질문 단어가 표명·경로·분류·항목에 얼마나 있는지.
+                                     검색어는 질문 원문 정리 + 일상어 사전 확장 (synonyms.py).
                                      단어마다 희귀도(IDF) 가중치 ('인구'처럼 흔한 단어는 덜 침)
      + 임베딩 (vector_search)        질문 원문과 표 문서의 코사인 유사도 (bge-m3).
                                      임베딩 점수를 기본으로 두고 키워드 점수가 높을 때만 더한다
-                                     (하이브리드. 질문 임베딩이 없으면 키워드만)
+                                     (하이브리드. 키워드는 질문마다 1위=1로 정규화한 뒤 비교.
+                                     질문 임베딩이 없으면 키워드만)
   3. 조건 검증·재순위 (check)        표(판) 단위로 연도·지역 수준·성별·분류·값·대상을 판정해 가감점.
                                      질문에 없는 조건(null)은 판정하지 않는다
   4. 패밀리 묶기 (fold)              같은 패밀리는 한 자리만 차지, 패밀리 점수 = 소속 표 최고 점수
@@ -31,7 +33,7 @@ from typing import Any
 from sqlalchemy import text
 
 from app.services import slots as slot_parser
-from app.services import vector_search
+from app.services import synonyms, vector_search
 
 logger = logging.getLogger(__name__)
 # 앱에 로그 설정이 없어 INFO가 안 보이므로, 서버 시작 메시지는 uvicorn 로그로 낸다
@@ -174,13 +176,26 @@ async def dense_scores(question: str) -> list[float] | None:
 # ---- 2. 후보 검색 ---------------------------------------------------------------
 
 
-def query_tokens(slots: dict[str, Any]) -> list[dict[str, Any]]:
-    """주제·대상 → 단어별 변형 목록 ('취득한' → ['취득한', '취득']).
+def keyword_query(slots: dict[str, Any]) -> str:
+    """키워드 검색어: 질문 원문 정리 + 사전 확장.
+
+    HCX topic·target은 요약하면서 지역·분류 단어('시군구별', '연령대별')를 빠뜨려 원문보다 나쁘다
+    (팀원 키워드 비교 실험 10/31: 팀원셋 흐름 59→65, 생성셋 79→86, 사전까지 넣으면 78·89)
+    """
+    question = slots.get("question") or slots["topic"]
+    # 빼 달라고 한 말('귀화한 사람 말고')은 사전으로 늘리면 오히려 그 표(국적취득)를 찾는다
+    for word in slots.get("exclude") or []:
+        question = question.replace(word, " ")
+    return synonyms.keyword_text(question)
+
+
+def query_tokens(slots: dict[str, Any], text: str | None = None) -> list[dict[str, Any]]:
+    """검색어(text, 없으면 keyword_query) → 단어별 변형 목록 ('취득한' → ['취득한', '취득']).
 
     value: 슬롯 items에 든 단어('미혼 인구'의 '미혼'). 분류 값이라 표명에 없어도 되므로
     어느 필드에 있든 같은 점수를 준다.
     """
-    words = re.findall(r"[0-9A-Za-z가-힣]+", f"{slots['topic']} {slots.get('target') or ''}")
+    words = re.findall(r"[0-9A-Za-z가-힣]+", keyword_query(slots) if text is None else text)
     values = norm(" ".join(slots["conditions"]["items"]))
     excluded = {v for w in slots.get("exclude") or [] for v in variants(w)}
     tokens = []
@@ -318,10 +333,17 @@ def rank(
     tables: list[dict[str, Any]], slots: dict[str, Any], dense: list[float] | None = None
 ) -> list[dict[str, Any]]:
     """dense: tables 순서의 임베딩 점수 (없으면 키워드만)"""
-    tokens = query_tokens(slots)
-    query = norm(f"{slots['topic']} {slots.get('target') or ''}")
+    text = keyword_query(slots)
+    tokens = query_tokens(slots, text)
+    query = norm(text)
     said = f"{slots.get('question', '')} {slots['topic']} {slots.get('target') or ''}"
     keywords = keyword_scores(tables, tokens)
+    if dense is not None:
+        # 키워드 원점수는 IDF 가중 평균이라 질문 단어 하나만 표에 없어도 게이트(0.5)를 못 넘는다
+        # (1위 원점수 중앙값 0.37, 0.5 이상 27%). 질문마다 1위를 1로 맞춘 뒤 게이트를 적용한다.
+        # 키워드만 쓸 때는 원점수로 범위 밖(MIN_SCORE)을 판정하므로 정규화하지 않는다
+        top = max(keywords, default=0.0) or 1.0
+        keywords = [k / top for k in keywords]
     cut = sorted(dense, reverse=True)[min(DENSE_TOP_K, len(dense)) - 1] if dense else None
     ranked = []
     for i, (t, kw) in enumerate(zip(tables, keywords, strict=True)):
