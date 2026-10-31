@@ -246,3 +246,17 @@ def test_hybrid_keyword_normalized_per_question() -> None:
     assert ranked[0]["table"]["tbl_id"] == "A" and ranked[0]["score"] > 0.6
     # 키워드만 쓸 때는 원점수 그대로 (범위 밖 판정 MIN_SCORE용)
     assert max(r["keyword"] for r in se.rank(tables, s)) == max(raw)
+
+
+def test_not_statistics_overridden_by_high_dense() -> None:
+    tables = _three_families()
+    s = _slots("아직도 연탄으로 난방하는 집이 있나", "연탄 난방")
+    s["query_type"] = "not_statistics"
+    # 임베딩이 없거나 낮으면 HCX 판정대로
+    assert se.find(tables, s)["status"] == "not_statistics"
+    low = se.NOT_STATISTICS_OVERRIDE - 0.05
+    assert se.find(tables, s, dense=[low, 0.3, 0.2])["status"] == "not_statistics"
+    # 높으면 검색하고, 고친 내용을 fixes에 남긴다
+    result = se.find(tables, s, dense=[se.NOT_STATISTICS_OVERRIDE + 0.05, 0.3, 0.2])
+    assert result["status"] not in ("not_statistics", "out_of_scope")
+    assert result["slots"]["fixes"][-1]["key"] == "query_type"

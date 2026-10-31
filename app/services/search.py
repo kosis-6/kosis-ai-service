@@ -72,6 +72,12 @@ KEYWORD_WEIGHT = 0.2
 # 범위 밖 질문의 원점수(0.50~0.65)가 범위 안 질문과 겹쳐 점수만으로는 못 가른다.
 # 명백한 경우만 거르고, 나머지는 HCX query_type(not_statistics)에 맡긴다
 HYBRID_MIN_SCORE = 0.5
+# HCX가 not_statistics라고 해도 임베딩 1위 점수가 이 이상이면 검색한다. HCX는 일상어 질문
+# ('연탄으로 난방하는 집이 있나', '누가 돌보는지')을 잡담으로 자주 본다 (개발셋 범위 안 6~10건,
+# 임베딩 0.53~0.66). 진짜 통계 아닌 질문은 날씨 0.47~0.51. 프롬프트로 고치면 다른 질문이
+# 새로 거절돼(11/1 실험: 오판 9→12) 점수와 함께 본다. 신청 방법('월세 지원금 신청', 0.57)은
+# 넘어가지만 관련 표를 안내하는 정도다. 기준은 개발셋으로 정한 1차 값
+NOT_STATISTICS_OVERRIDE = 0.55
 # 같은 주제의 형제 패밀리('고령자인구' 4개)는 임베딩 점수 차가 0.01 안쪽이라 거의 동점일 때만 묻는다
 HYBRID_AMBIGUOUS_GAP = 0.005
 
@@ -468,7 +474,14 @@ def find(
     dense(tables 순서의 임베딩 점수)를 주면 하이브리드, 없으면 키워드만"""
     result: dict[str, Any] = {"status": None, "reason": None, "slots": slots, "table": None}
     if slots["query_type"] == "not_statistics":
-        return {**result, "status": "not_statistics", "reason": "통계표를 찾는 질문이 아닙니다"}
+        top_dense = max(dense, default=0.0) if dense else None
+        if top_dense is None or top_dense < NOT_STATISTICS_OVERRIDE:
+            return {**result, "status": "not_statistics", "reason": "통계표를 찾는 질문이 아닙니다"}
+        slots["query_type"] = "find_table"
+        slots.setdefault("fixes", []).append(
+            {"key": "query_type", "from": "not_statistics", "to": "find_table",
+             "reason": f"임베딩 1위 {top_dense:.3f} ≥ {NOT_STATISTICS_OVERRIDE}"}
+        )  # fmt: skip
 
     ranked = rank(tables, slots, dense)
     families = fold(ranked)
