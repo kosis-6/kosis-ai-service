@@ -200,3 +200,13 @@ def test_hybrid_scope_uses_raw_dense_not_penalized_score() -> None:
     # 감점 후 점수는 기준 아래여도 임베딩 원점수가 기준 이상이면 범위 안
     assert result["candidates"][0]["score"] < se.HYBRID_MIN_SCORE
     assert result["status"] != "out_of_scope"
+
+
+def test_warm_up_failure_does_not_stop_server(monkeypatch) -> None:
+    import asyncio
+
+    async def broken() -> list:
+        raise OSError("DB 연결 실패")
+
+    monkeypatch.setattr(se, "load_tables", broken)
+    asyncio.run(se.warm_up())  # 예외 없이 끝나야 서버가 뜬다

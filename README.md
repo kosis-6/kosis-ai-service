@@ -352,6 +352,7 @@ curl -s -X POST localhost:8000/search -H 'Content-Type: application/json' \
 python -m app.services.search "2024년 부산 시군구별 혼인 귀화자 수"   # 명령줄
 ```
 
+- 준비 상태는 http://localhost:8000/health/search 에서 봅니다 (`tables` 2364, `retrieval` `hybrid`면 정상). 서버는 뜰 때 표·벡터를 미리 읽고, 로그에 `검색 데이터 준비: 표 2364개, 표 벡터 있음`을 남깁니다.
 - `debug.retrieval`이 `hybrid`면 임베딩까지 쓴 것이고, `keyword`면 표 임베딩이 없거나 질문 임베딩이 실패한 것입니다.
 - `debug.candidates`에 후보별 키워드·임베딩 점수가 나오고, 같은 내용이 `search_logs`에 남습니다.
 - 질문 임베딩은 환경변수 `EMBEDDING_BACKEND`로 고릅니다: `clova`(기본, CLOVA Studio v2) / `local`(bge-m3 직접 실행) / `off`(키워드만).

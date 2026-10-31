@@ -21,6 +21,7 @@
 
 import asyncio
 import json
+import logging
 import math
 import re
 import sys
@@ -31,6 +32,10 @@ from sqlalchemy import text
 
 from app.services import slots as slot_parser
 from app.services import vector_search
+
+logger = logging.getLogger(__name__)
+# 앱에 로그 설정이 없어 INFO가 안 보이므로, 서버 시작 메시지는 uvicorn 로그로 낸다
+startup_log = logging.getLogger("uvicorn.error")
 
 # 가중치·기준값은 개발셋으로 조정할 값 (기능 정의서 F-05, F-06 미결)
 FIELD_WEIGHTS = {"name": 1.0, "path": 0.6, "meta": 0.4}
@@ -126,6 +131,35 @@ async def load_tables() -> list[dict[str, Any]]:
             _vectors = await vector_search.load_matrix(conn, [t["tbl_id"] for t in tables])
         _tables = tables
     return _tables
+
+
+async def warm_up() -> None:
+    """서버 시작 때 표·벡터를 미리 읽는다. 실패해도(DB가 비었거나 아직 안 뜸) 서버는 뜨고,
+    첫 /search에서 다시 읽는다 (실전 1 /ask는 이 데이터와 무관)"""
+    start = time.perf_counter()
+    try:
+        tables = await load_tables()
+        await vector_search.warm_up()
+    except Exception as e:
+        startup_log.warning(
+            "검색 데이터 미리 읽기 실패 → 첫 /search에서 다시 읽음: %s: %s", type(e).__name__, e
+        )
+        return
+    startup_log.info(
+        "검색 데이터 준비: 표 %d개, 표 벡터 %s, %.1f초",
+        len(tables), "있음" if _vectors is not None else "없음(키워드 검색만)",
+        time.perf_counter() - start,
+    )  # fmt: skip
+
+
+def status() -> dict[str, Any]:
+    """검색 준비 상태 (/health/search)"""
+    return {
+        "tables": len(_tables or []),
+        "vectors": _vectors is not None,
+        "embedding_backend": vector_search.get_settings().embedding_backend,
+        "retrieval": "hybrid" if _vectors is not None else "keyword",
+    }
 
 
 async def dense_scores(question: str) -> list[float] | None:

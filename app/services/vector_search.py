@@ -61,6 +61,13 @@ def _local_encode(question: str) -> list[float]:
     return _encoder.encode([question], normalize_embeddings=True)[0]
 
 
+async def warm_up() -> None:
+    """local이면 bge-m3를 미리 올린다 (첫 질문에서 모델을 읽느라 수 초 걸리지 않게).
+    clova는 호출마다 비용이 들어 미리 부르지 않는다"""
+    if get_settings().embedding_backend == "local":
+        await asyncio.to_thread(_local_encode, "준비")
+
+
 async def embed_query(question: str) -> np.ndarray | None:
     """질문 → 길이 1 벡터. 끄거나 실패하면 None"""
     backend = get_settings().embedding_backend
