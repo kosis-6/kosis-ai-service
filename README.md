@@ -365,6 +365,17 @@ docker compose exec api python -m scripts.check_search   # 키워드 vs 하이�
 
 일상어 질문 10개 + 범위 밖 6개로 상태·최종 표·점수를 비교합니다. 골든셋이 아닌 규칙 기반 점검이라 가중치를 대략 정하는 용도입니다.
 
+### 4. 요청 로그 보기
+
+```bash
+docker compose exec api python -m scripts.search_log                     # 상태별 요약 + 최근 10건
+docker compose exec api python -m scripts.search_log --status ambiguous  # 이 상태만
+docker compose exec api python -m scripts.search_log --last 3 --detail   # 후보 10개·HCX 원문·답변까지
+docker compose exec api python -m scripts.search_log --session S_abc123  # 한 대화의 턴 순서대로
+```
+
+요청마다 슬롯(보정 내역), 후보 상위 10개의 키워드·임베딩 점수와 실패한 조건(✘), 안내한 표, 단계별 시간이 나옵니다. 틀린 안내가 슬롯 / 검색 / 재순위 / 패밀리·판 선택 중 어디서 생겼는지 가를 때 씁니다.
+
 ## 실전 1 결과
 
 | 평가 | 결과 | 기록 |
