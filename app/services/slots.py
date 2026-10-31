@@ -4,6 +4,9 @@
   2. 코드가 질문 원문과 맞춰 고친다 (correct)
      - 연도·지역 수준·성별은 질문에 그 말이 있을 때만 남긴다 (LLM이 추측한 조건 제거)
      - 지역 이름은 KOSIS 분류 값과 같은 정식 시도명으로 바꾼다 ("부산" → "부산광역시")
+     - 팀원 검색 실험(10/31)의 오답 분석에서 나온 규칙: 두 자리 연도("95년"), 미래 연도·예측
+       표현 → 장래 추계(projection), "우리 구"·"동네" → 시군구, 부정어("귀화한 사람 말고"
+       → exclude), 배우자 역할쌍("외국인 아내" ↔ "한국인 남편" → spouse)
   3. 두 번 다 JSON을 못 읽거나 HCX 호출이 실패하면 원문 규칙만으로 슬롯을 만든다
      (parse_error=True, 검색은 원문으로)
 
@@ -17,6 +20,7 @@ import asyncio
 import json
 import re
 import sys
+from datetime import date
 from typing import Any
 
 from app.prompts.search import SLOT_SYSTEM
@@ -48,10 +52,40 @@ SIDO = {
 SIDO_ALIAS = {alias: name for name, aliases in SIDO.items() for alias in [name, *aliases]}
 
 YEAR = re.compile(r"(?<!\d)((?:19|20)\d{2})(?!\d)")
+# '95년', "'05년도". '10년 전', '20년간', '90년생', '80년대'는 연도가 아니다
+SHORT_YEAR = re.compile(
+    r"(?<![\d~])'?(\d{2})\s*년(?!\s*(?:전|후|뒤|간|동안|생|대|째|만|마다|이상|이하|이내|미만|차))"
+)
+SHORT_YEAR_PIVOT = 50  # 50 미만은 20xx, 이상은 19xx ('45년' → 2045 추계, '95년' → 1995)
+PROJECTION = re.compile(r"앞으로|예측|전망|미래|추계|장래|될까|될지|예상")
+# '귀화한 사람 말고', '외국인 빼고', '서울 제외하고'
+NEGATION = re.compile(
+    r"([가-힣A-Za-z0-9]+(?:\s+[가-힣A-Za-z0-9]+)?)\s*(?:은|는|을|를|이|가)?\s*"
+    r"(?:말고|빼고|제외하고|제외한|제외)"
+)
+NEGATION_SKIP = {"사람", "것", "거", "분", "애들", "통계", "표", "자료", "이상", "이하", "미만"}
+# 국제결혼 표는 외국인 배우자 쪽으로 나뉜다
+# ('외국인 아내의 국적별 혼인' / '외국인 남편의 국적별 혼인').
+# '외국인 여자와 결혼한 한국 남자' = 외국인 아내. 결혼·이혼 질문에서만 본다
+MARRIAGE = re.compile(r"결혼|혼인|이혼|배우자|부부|신랑|신부")
+FOREIGN_WIFE = re.compile(
+    r"(?:외국인?|다문화)\s*(?:아내|부인|여자|여성|신부|와이프)|(?:한국인?|내국인)\s*(?:남편|남자|남성|신랑)"
+)
+FOREIGN_HUSBAND = re.compile(
+    r"(?:외국인?|다문화)\s*(?:남편|남자|남성|신랑)|(?:한국인?|내국인)\s*(?:아내|부인|여자|여성|신부|와이프)"
+)
 # '시군구별', '구별', '시군별'. '가구별'의 '구별'은 지역이 아니므로 앞 글자가 한글이면 안 된다
+# '우리 구', '구 단위' → 시군구, '동 단위' → 읍면동. '동네'는 읍면동이 아니라 시군구로 본다
+# (동네 주민이 찾는 자료는 대개 시군구 표, 팀원 검색 실험 10/31)
 LEVEL_WORDS = [
-    ("읍면동", re.compile(r"읍면동|(?<![가-힣])(?:읍|면|동)별")),
-    ("시군구", re.compile(r"시군구|시·군·구|(?<![가-힣])(?:구|시군|군)별")),
+    ("읍면동", re.compile(r"읍면동|(?<![가-힣])(?:읍|면|동)별|(?<![가-힣])(?:읍|면|동)\s*단위")),
+    (
+        "시군구",
+        re.compile(
+            r"시군구|시·군·구|(?<![가-힣])(?:구|시군|군)별|(?<![가-힣])(?:구|군)\s*단위"
+            r"|우리\s*(?:구|군)(?![가-힣])|동네"
+        ),
+    ),
     ("시도", re.compile(r"시도|시·도")),
 ]
 MALE = re.compile(r"남자|남성|남아")
@@ -83,6 +117,9 @@ def empty_slots(question: str) -> dict[str, Any]:
         },
         "query_type": "find_table",
         "parse_error": False,
+        "projection": False,  # 장래 추계를 찾는 질문
+        "exclude": [],  # 빼 달라고 한 단어 ('귀화한 사람 말고' → ['귀화한'])
+        "spouse": None,  # '외국인 아내' / '외국인 남편'
     }
 
 
@@ -169,15 +206,24 @@ def correct(question: str, slots: dict[str, Any]) -> dict[str, Any]:
             fixes.append({"key": key, "from": c[key], "to": value, "reason": reason})
             c[key] = value
 
-    # 연도: 질문에 쓰인 네 자리 연도만 인정한다
-    years = sorted({int(y) for y in YEAR.findall(question)})
+    # 연도: 질문에 쓰인 연도만 인정한다 (네 자리, '95년' 같은 두 자리)
+    years = sorted({int(y) for y in YEAR.findall(question)} | short_years(question))
     fix("year", years[0] if years else None, "질문의 연도")
     fix("year_end", years[-1] if len(years) > 1 else None, "질문의 기간")
+    # 장래 추계: 올해 이후 연도이거나 예측 표현
+    slots["projection"] = bool(
+        PROJECTION.search(question) or (years and years[-1] > date.today().year)
+    )
+    slots["exclude"] = negated_words(question)
 
     # 성별: 한 성별만 말했으면 그 성별, 남녀로 나눠 보려면 성별 분류, 말이 없으면 null
     if HOUSEHOLDER_SEX.search(question) and "가구주 성별" not in c["classes"]:
         c["classes"].append("가구주 성별")
     plain = HOUSEHOLDER_SEX.sub("", question)
+    # 배우자 역할쌍의 남녀 단어('외국인 여자')는 배우자를 가리키지 성별 조건이 아니다
+    slots["spouse"] = spouse_of(question)
+    if slots["spouse"]:
+        plain = FOREIGN_HUSBAND.sub("", FOREIGN_WIFE.sub("", plain))
     male, female = bool(MALE.search(plain)), bool(FEMALE.search(plain))
     if TOTAL_SEX.search(plain):
         fix("sex", "전체", "남녀 합계 명시")
@@ -209,6 +255,13 @@ def correct(question: str, slots: dict[str, Any]) -> dict[str, Any]:
     if target in SEX_VALUES:
         slots["target"] = None
         fixes.append({"key": "target", "from": target, "to": None, "reason": "성별은 sex"})
+    elif (
+        target
+        and slots["spouse"]
+        and (FOREIGN_WIFE.search(target) or FOREIGN_HUSBAND.search(target))
+    ):
+        slots["target"] = None
+        fixes.append({"key": "target", "from": target, "to": None, "reason": "배우자는 spouse"})
     elif target and AGE.search(target):
         slots["target"] = None
         c["items"] = [*c["items"], target]
@@ -228,6 +281,35 @@ def correct(question: str, slots: dict[str, Any]) -> dict[str, Any]:
 
     slots["fixes"] = fixes
     return slots
+
+
+def short_years(question: str) -> set[int]:
+    """'95년' → 1995, '05년도' → 2005"""
+    return {
+        (2000 if int(yy) < SHORT_YEAR_PIVOT else 1900) + int(yy)
+        for yy in SHORT_YEAR.findall(question)
+    }
+
+
+def negated_words(question: str) -> list[str]:
+    """'귀화한 사람 말고 결혼이민자' → ['귀화한']"""
+    words = []
+    for phrase in NEGATION.findall(question):
+        words += [
+            w for w in phrase.split()
+            if w not in NEGATION_SKIP and len(w) >= 2 and not re.search(r"\d", w)
+        ]  # fmt: skip
+    return list(dict.fromkeys(words))
+
+
+def spouse_of(question: str) -> str | None:
+    """결혼·이혼 질문의 외국인 배우자 쪽: '외국인 아내' / '외국인 남편' / None"""
+    if not MARRIAGE.search(question):
+        return None
+    wife, husband = bool(FOREIGN_WIFE.search(question)), bool(FOREIGN_HUSBAND.search(question))
+    if wife == husband:  # 둘 다 없거나 둘 다 있으면 정하지 않는다
+        return None
+    return "외국인 아내" if wife else "외국인 남편"
 
 
 def _level_of(region: str) -> str | None:

@@ -150,3 +150,63 @@ def test_hybrid_candidates_and_thresholds() -> None:
     result = se.find(tables, s, dense=[0.600, 0.598, 0.30])
     assert result["status"] == "ambiguous"
     assert [o["family_id"] for o in result["options"]] == ["FA", "FB"]
+
+
+def test_rule_conditions_projection_spouse_exclude() -> None:
+    tables = se.prepare(
+        [
+            _t("P", "시나리오별 추계인구", 2022, 2072, "FP", survey_name="장래인구추계"),
+            _t("W", "시도/시군구/외국인 아내의 국적별 혼인", 2015, 2024, "FW"),
+            _t("H", "시도/시군구/외국인 남편의 국적별 혼인", 2015, 2024, "FH"),
+            _t("N", "한국국적을 취득한 자-혼인 귀화자(계)", 2015, 2024, "FN"),
+        ]
+    )
+    p, w, h, n = tables
+
+    def rule_slots(q: str) -> dict:
+        return sl.correct(q, sl.empty_slots(q))
+
+    s = rule_slots("2050년 인구")
+    assert se.check(p, s)["projection"] and not se.check(w, s)["projection"]
+
+    s = rule_slots("외국인 여자와 결혼한 한국 남자")
+    assert se.check(w, s)["spouse"] and not se.check(h, s)["spouse"]
+
+    s = rule_slots("귀화한 사람 말고")
+    assert not se.check(n, s)["exclude"] and se.check(w, s)["exclude"]
+    # 빼 달라고 한 단어는 키워드 검색어에서도 뺀다
+    assert all("귀화" not in t["variants"] for t in se.query_tokens(s))
+
+
+def test_unasked_subset_modifier_yields_to_plain_sibling() -> None:
+    tables = se.prepare(
+        [
+            _t("B", "연령/교육정도별 혼인", 2015, 2024, "FB"),
+            _t("F", "연령/교육정도별 혼인(초혼)", 2015, 2024, "FF"),
+        ]
+    )
+    # 임베딩 점수는 수식어 표가 조금 높아도, 초혼을 말하지 않았으면 수식어 없는 표가 1순위
+    s = _slots("연령별 결혼 건수", "결혼 건수")
+    assert se.rank(tables, s, dense=[0.600, 0.605])[0]["table"]["tbl_id"] == "B"
+    # '처음 결혼'은 초혼을 말한 것
+    s = _slots("처음 결혼한 사람 연령별", "처음 결혼")
+    assert se.rank(tables, s, dense=[0.600, 0.605])[0]["table"]["tbl_id"] == "F"
+
+
+def test_hybrid_scope_uses_raw_dense_not_penalized_score() -> None:
+    tables = _three_families()
+    s = _slots("돌아가신 쌍둥이", "돌아가신 분", classes=["쌍둥이"])  # 표에 없는 조건 → 감점
+    result = se.find(tables, s, dense=[0.58, 0.30, 0.29])
+    # 감점 후 점수는 기준 아래여도 임베딩 원점수가 기준 이상이면 범위 안
+    assert result["candidates"][0]["score"] < se.HYBRID_MIN_SCORE
+    assert result["status"] != "out_of_scope"
+
+
+def test_warm_up_failure_does_not_stop_server(monkeypatch) -> None:
+    import asyncio
+
+    async def broken() -> list:
+        raise OSError("DB 연결 실패")
+
+    monkeypatch.setattr(se, "load_tables", broken)
+    asyncio.run(se.warm_up())  # 예외 없이 끝나야 서버가 뜬다

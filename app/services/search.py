@@ -21,6 +21,7 @@
 
 import asyncio
 import json
+import logging
 import math
 import re
 import sys
@@ -32,6 +33,10 @@ from sqlalchemy import text
 from app.services import slots as slot_parser
 from app.services import vector_search
 
+logger = logging.getLogger(__name__)
+# 앱에 로그 설정이 없어 INFO가 안 보이므로, 서버 시작 메시지는 uvicorn 로그로 낸다
+startup_log = logging.getLogger("uvicorn.error")
+
 # 가중치·기준값은 개발셋으로 조정할 값 (기능 정의서 F-05, F-06 미결)
 FIELD_WEIGHTS = {"name": 1.0, "path": 0.6, "meta": 0.4}
 NAME_WEIGHT = 0.3
@@ -41,6 +46,18 @@ MIN_SCORE = 0.45  # 1순위 패밀리 점수가 이보다 낮으면 out_of_scope
 AMBIGUOUS_GAP = 0.03  # 1·2순위 패밀리 점수 차가 이보다 작으면 ambiguous
 TOP_FAMILIES = 4
 
+# 모집단을 좁히는 수식어. 질문에 없으면 수식어 없는 형제 표를 기본값으로 앞세운다
+# ('결혼 건수' → '연령/교육정도별 혼인' > '…혼인(초혼)', 팀원 검색 실험 10/31 제안 5-B).
+# 키는 표명에 쓰인 말, 값은 질문에서 그 수식어를 말한 것으로 볼 표현
+SUBSET_MODIFIERS = {
+    "초혼": re.compile(r"초혼|처음\s*(?:한\s*)?결혼|첫\s*결혼"),
+    "재혼": re.compile(r"재혼|다시\s*(?:한\s*)?결혼|두\s*번째\s*결혼"),
+    "쌍태아": re.compile(r"쌍태아|쌍둥이|다태아"),
+    "발생기준": re.compile(r"발생\s*기준"),
+    "북한": re.compile(r"북한|탈북|새터민"),
+}
+MODIFIER_PENALTY = 0.03  # 형제 표끼리 임베딩 점수 차(0.01 안팎)를 뒤집을 만큼만
+
 # 하이브리드: 임베딩 우선 + 키워드 조건부 가산 (팀원 검색 실험 10/31: 고정 RRF는 약한 키워드의
 # 오답이 임베딩 정답을 끌어내림). 질문 임베딩이 있을 때만 쓰고, 없으면 위 키워드 기준을 쓴다
 DENSE_TOP_K = 50  # 키워드 점수가 0이어도 임베딩 상위 이만큼은 후보에 넣는다
@@ -48,7 +65,9 @@ KEYWORD_GATE = 0.5  # 키워드 점수가 이 이상일 때만 키워드·표명
 # 0.3이면 엉뚱한 단어로 기준을 겨우 넘은 키워드('우리 동네'의 동네·주민 → 사할린동포 조사 표)가
 # 임베딩 1위를 뒤집었다. 0.2는 일상어 질문 10개(scripts/check_search.py) 기준 1차 값
 KEYWORD_WEIGHT = 0.2
-# 범위 밖 질문의 임베딩 점수(0.50~0.65)가 범위 안 질문과 겹쳐 점수만으로는 못 가른다.
+# 범위 밖 판정은 조건 가감점 전 임베딩 원점수(1위)로 한다 (골든셋 설계 8장). 가감점 후 점수로 보면
+# HCX가 뽑은 대상('쌍둥이')이 표명에 없다는 감점만으로 맞는 표를 버린다.
+# 범위 밖 질문의 원점수(0.50~0.65)가 범위 안 질문과 겹쳐 점수만으로는 못 가른다.
 # 명백한 경우만 거르고, 나머지는 HCX query_type(not_statistics)에 맡긴다
 HYBRID_MIN_SCORE = 0.5
 # 같은 주제의 형제 패밀리('고령자인구' 4개)는 임베딩 점수 차가 0.01 안쪽이라 거의 동점일 때만 묻는다
@@ -61,6 +80,7 @@ STOPWORDS = {
 # '취득한'·'취득자' → '취득', '국적을' → '국적'. 조사·어미 한 글자만 떼어 본다
 SUFFIXES = ("한", "된", "을", "를", "의", "은", "는", "이", "가", "에", "별", "인", "자")
 MIGRATION = re.compile(r"이동|전입|전출|이주|이사")
+PROJECTION_TABLE = re.compile(r"추계|장래")
 
 TABLES_SQL = """
 SELECT s.tbl_id, s.org_id, s.table_name, s.survey_name, s.organization, s.period, s.path_texts,
@@ -113,6 +133,35 @@ async def load_tables() -> list[dict[str, Any]]:
     return _tables
 
 
+async def warm_up() -> None:
+    """서버 시작 때 표·벡터를 미리 읽는다. 실패해도(DB가 비었거나 아직 안 뜸) 서버는 뜨고,
+    첫 /search에서 다시 읽는다 (실전 1 /ask는 이 데이터와 무관)"""
+    start = time.perf_counter()
+    try:
+        tables = await load_tables()
+        await vector_search.warm_up()
+    except Exception as e:
+        startup_log.warning(
+            "검색 데이터 미리 읽기 실패 → 첫 /search에서 다시 읽음: %s: %s", type(e).__name__, e
+        )
+        return
+    startup_log.info(
+        "검색 데이터 준비: 표 %d개, 표 벡터 %s, %.1f초",
+        len(tables), "있음" if _vectors is not None else "없음(키워드 검색만)",
+        time.perf_counter() - start,
+    )  # fmt: skip
+
+
+def status() -> dict[str, Any]:
+    """검색 준비 상태 (/health/search)"""
+    return {
+        "tables": len(_tables or []),
+        "vectors": _vectors is not None,
+        "embedding_backend": vector_search.get_settings().embedding_backend,
+        "retrieval": "hybrid" if _vectors is not None else "keyword",
+    }
+
+
 async def dense_scores(question: str) -> list[float] | None:
     """load_tables() 순서대로 표마다 질문과의 코사인 유사도. 표 벡터나 질문 벡터가 없으면 None"""
     await load_tables()
@@ -133,15 +182,21 @@ def query_tokens(slots: dict[str, Any]) -> list[dict[str, Any]]:
     """
     words = re.findall(r"[0-9A-Za-z가-힣]+", f"{slots['topic']} {slots.get('target') or ''}")
     values = norm(" ".join(slots["conditions"]["items"]))
+    excluded = {v for w in slots.get("exclude") or [] for v in variants(w)}
     tokens = []
     for w in dict.fromkeys(words):
-        if w in STOPWORDS:
+        # 빼 달라고 한 단어는 찾는 단어가 아니다 ('귀화한 사람 말고'의 '귀화')
+        if w in STOPWORDS or excluded & set(variants(w)):
             continue
-        variants = [w]
-        if len(w) >= 3 and w.endswith(SUFFIXES):
-            variants.append(w[:-1])
-        tokens.append({"variants": variants, "value": bool(values) and w in values})
+        tokens.append({"variants": variants(w), "value": bool(values) and w in values})
     return tokens
+
+
+def variants(word: str) -> list[str]:
+    """'취득한' → ['취득한', '취득']"""
+    if len(word) >= 3 and word.endswith(SUFFIXES):
+        return [word, word[:-1]]
+    return [word]
 
 
 def _found(variants: list[str], field: str) -> bool:
@@ -214,6 +269,14 @@ def check(t: dict[str, Any], slots: dict[str, Any]) -> dict[str, bool]:
     for item in c["items"]:
         key = norm(item)
         out[f"item:{item}"] = key in t["meta_n"] or key in t["name_n"]
+    if slots.get("projection"):
+        out["projection"] = bool(PROJECTION_TABLE.search(t["survey_name"] + t["name_n"]))
+    if slots.get("spouse"):
+        out["spouse"] = norm(slots["spouse"]) in t["name_n"]
+    if slots.get("exclude"):
+        out["exclude"] = not any(
+            _found(variants(w), t["name_n"]) for w in slots["exclude"]
+        )  # fmt: skip
     # '전체'는 멤버 선택값이지 표가 갖춰야 할 조건이 아니다
     if slots.get("target") and slots["target"] != "전체":
         key = norm(slots["target"])
@@ -244,12 +307,20 @@ def relevance(keyword: float, name_sim: float, dense: float | None) -> float:
     return dense + (KEYWORD_WEIGHT * lexical if keyword >= KEYWORD_GATE else 0.0)
 
 
+def unasked_modifiers(t: dict[str, Any], said: str) -> list[str]:
+    """표명에 있지만 질문(said)에서 말하지 않은 모집단 수식어"""
+    return [
+        m for m, asked in SUBSET_MODIFIERS.items() if m in t["name_n"] and not asked.search(said)
+    ]
+
+
 def rank(
     tables: list[dict[str, Any]], slots: dict[str, Any], dense: list[float] | None = None
 ) -> list[dict[str, Any]]:
     """dense: tables 순서의 임베딩 점수 (없으면 키워드만)"""
     tokens = query_tokens(slots)
     query = norm(f"{slots['topic']} {slots.get('target') or ''}")
+    said = f"{slots.get('question', '')} {slots['topic']} {slots.get('target') or ''}"
     keywords = keyword_scores(tables, tokens)
     cut = sorted(dense, reverse=True)[min(DENSE_TOP_K, len(dense)) - 1] if dense else None
     ranked = []
@@ -263,6 +334,7 @@ def rank(
             relevance(kw, name_similarity(query, t["name_n"]), d)
             + PASS_BONUS * passed
             - FAIL_PENALTY * (len(checks) - passed)
+            - MODIFIER_PENALTY * len(unasked_modifiers(t, said))
         )
         ranked.append({"table": t, "keyword": kw, "dense": d, "checks": checks, "score": score})
     ranked.sort(key=lambda r: (-r["score"], r["table"]["edition_order"], r["table"]["tbl_id"]))
@@ -378,9 +450,12 @@ def find(
 
     ranked = rank(tables, slots, dense)
     families = fold(ranked)
-    min_score, gap = (MIN_SCORE, AMBIGUOUS_GAP) if dense is None else (
-        HYBRID_MIN_SCORE, HYBRID_AMBIGUOUS_GAP
-    )  # fmt: skip
+    if dense is None:
+        gap = AMBIGUOUS_GAP
+        in_scope = bool(families) and families[0]["score"] >= MIN_SCORE
+    else:
+        gap = HYBRID_AMBIGUOUS_GAP
+        in_scope = bool(families) and max(dense) >= HYBRID_MIN_SCORE
     result["retrieval"] = "keyword" if dense is None else "hybrid"
     result["candidates"] = [
         {
@@ -392,7 +467,7 @@ def find(
         }
         for r in ranked[:10]
     ]
-    if not families or families[0]["score"] < min_score:
+    if not in_scope:
         return {
             **result,
             "status": "out_of_scope",

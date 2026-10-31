@@ -82,3 +82,23 @@ def test_renamed_successor_joins_old_member() -> None:
     assert by_id["A008"]["target"] == by_id["A008_A"]["target"] == "결혼이민자"
     assert by_id["A029"]["family_id"] != by_id["A029_A"]["family_id"]
     assert bf.successors(tables)[1] == [("A029", "A029_A")]
+
+
+def test_spacing_and_symbol_variants_are_editions() -> None:
+    rows = bf.build(
+        [
+            _t("OLD", "성별 외국인 - 시군구", 2000, 2010),
+            _t("NEW", "성별 외국인-시군구", 2015, 2024),
+            _t("C1", "성별 통근ㆍ통학인구(12세이상)-시군구", 2000, 2010),
+            _t("C2", "성별 통근 통학 인구(12세 이상)-시군구", 2015, 2024),
+            _t("S", "성별 외국인-시도", 2015, 2024),
+        ]
+    )
+    by_id = {r["tbl_id"]: r for r in rows}
+    assert by_id["OLD"]["family_id"] == by_id["NEW"]["family_id"]
+    assert by_id["C1"]["family_id"] == by_id["C2"]["family_id"]
+    # 보여 줄 이름은 최신 판 표기, 판 순서는 최신 판이 1번
+    assert by_id["OLD"]["family_name"] == "성별 외국인-시군구"
+    assert (by_id["NEW"]["edition_order"], by_id["OLD"]["edition_order"]) == (1, 2)
+    # 지역 수준이 다르면 다른 패밀리
+    assert by_id["S"]["family_id"] != by_id["NEW"]["family_id"]
