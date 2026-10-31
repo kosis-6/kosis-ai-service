@@ -26,13 +26,15 @@ CONCURRENCY = 10
 MAX_RETRIES = 5
 
 
-async def _embed_one(client: httpx.AsyncClient, text: str, model: str) -> dict[str, Any]:
+async def _embed_one(
+    client: httpx.AsyncClient, text: str, model: str, max_retries: int = MAX_RETRIES
+) -> dict[str, Any]:
     settings = get_settings()
     headers = {
         "Authorization": f"Bearer {settings.hcx_api_key}",
         "X-NCP-CLOVASTUDIO-REQUEST-ID": uuid4().hex,
     }
-    for attempt in range(MAX_RETRIES + 1):
+    for attempt in range(max_retries + 1):
         response = await client.post(
             f"{settings.hcx_base_url}/v1/api-tools/embedding/{model}",
             headers=headers,
@@ -47,7 +49,7 @@ async def _embed_one(client: httpx.AsyncClient, text: str, model: str) -> dict[s
             status.get("message", response.text),
             response.status_code,
         )
-        if not error.is_rate_limit or attempt == MAX_RETRIES:
+        if not error.is_rate_limit or attempt == max_retries:
             raise error
         await asyncio.sleep(reset_seconds(response.headers, attempt))
     raise AssertionError("unreachable")
@@ -86,6 +88,17 @@ async def embed(texts: list[str], model: str = DEFAULT_MODEL) -> list[list[float
                 return (await _embed_one(client, text, model))["embedding"]
 
         return await asyncio.gather(*(one(t) for t in texts))
+
+
+async def embed_once(text: str, model: str = DEFAULT_MODEL, timeout: float = 3.0) -> list[float]:
+    """문장 하나를 다시 시도 없이 임베딩 (서비스의 질문 임베딩용).
+
+    embed는 색인용이라 호출 제한에 걸리면 25초씩 최대 5번 기다린다. 질문마다 그렇게 기다리면
+    /search가 멈추므로, 여기서는 한 번만 부르고 실패하면 바로 HcxError·타임아웃을 낸다
+    """
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        result = await asyncio.wait_for(_embed_one(client, text, model, max_retries=0), timeout)
+    return result["embedding"]
 
 
 async def embed_with_usage(text: str, model: str = DEFAULT_MODEL) -> dict[str, Any]:

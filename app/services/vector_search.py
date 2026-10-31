@@ -12,10 +12,14 @@
                   `uv run --with sentence-transformers`로 실행할 때만 쓴다
            off    임베딩을 쓰지 않는다 (키워드 검색만)
 질문 임베딩이 실패하거나 표 벡터가 없으면 None을 돌려주고, 검색은 키워드만으로 이어간다.
+CLOVA 질문 임베딩은 다시 시도하지 않고 QUERY_TIMEOUT 안에 못 받으면 포기한다 (호출 제한에 걸려도
+/search가 멈추지 않게). 같은 질문의 벡터는 메모리에 CACHE_SIZE개까지 저장해 다시 쓴다
+(시연·되묻기처럼 같은 질문이 반복되면 호출과 비용이 준다).
 """
 
 import asyncio
 import logging
+from collections import OrderedDict
 from typing import Any
 
 import numpy as np
@@ -28,8 +32,11 @@ logger = logging.getLogger(__name__)
 LOCAL_MODEL = "BAAI/bge-m3"
 CLOVA_MODEL = "v2"
 VECTORS_SQL = "SELECT tbl_id, embedding::real[] AS embedding FROM table_embeddings"
+QUERY_TIMEOUT = 3.0  # 초. CLOVA 질문 임베딩 응답은 보통 0.1~0.9초
+CACHE_SIZE = 1000
 
 _encoder: Any = None
+_cache: OrderedDict[tuple[str, str], np.ndarray] = OrderedDict()
 
 
 async def load_matrix(conn: Any, ids: list[str]) -> np.ndarray | None:
@@ -59,18 +66,26 @@ async def embed_query(question: str) -> np.ndarray | None:
     backend = get_settings().embedding_backend
     if backend == "off":
         return None
+    key = (backend, question.strip())
+    if key in _cache:
+        _cache.move_to_end(key)
+        return _cache[key]
     try:
         if backend == "local":
             vector = await asyncio.to_thread(_local_encode, question)
         else:
             from app.services import embedding
 
-            vector = (await embedding.embed([question], CLOVA_MODEL))[0]
-    except Exception as e:  # 임베딩 장애·호출 제한이어도 키워드 검색으로 답은 한다
+            vector = await embedding.embed_once(question, CLOVA_MODEL, QUERY_TIMEOUT)
+    except Exception as e:  # 임베딩 장애·호출 제한·지연이어도 키워드 검색으로 답은 한다
         logger.warning("질문 임베딩 실패 → 키워드 검색만: %s: %s", type(e).__name__, e)
         return None
     v = np.asarray(vector, dtype=np.float32)
-    return v / np.linalg.norm(v)
+    v = v / np.linalg.norm(v)
+    _cache[key] = v
+    if len(_cache) > CACHE_SIZE:
+        _cache.popitem(last=False)
+    return v
 
 
 def scores(matrix: np.ndarray, query: np.ndarray) -> list[float]:
