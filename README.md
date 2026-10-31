@@ -331,19 +331,17 @@ python -m scripts.demo score              # 7회차 전체 pandas 채점 지표�
 `data/catalog/population_table_catalog_with_meta.jsonl`이 있어야 합니다 (data/는 커밋하지 않음).
 
 ```bash
-# 1) 표 메타데이터 → stat_tables
-docker compose exec api python -m pipeline.load_catalog
-# 2) 패밀리·멤버·판 묶기 → table_families
-docker compose exec api python -m pipeline.build_families
-# 3) 표 임베딩 계산 (내 PC에서, DB 불필요) → data/embeddings/bge-m3__full.npy
+# 1) 표 임베딩 계산 (내 PC에서, DB 불필요) → data/embeddings/bge-m3__full.npy
 uv run --with sentence-transformers python -m pipeline.build_embeddings --dry-run
-# 4) 표 임베딩 적재 → table_embeddings, 서버 재시작 (표 정보는 서버가 처음 한 번 읽어 둠)
-docker compose exec api python -m pipeline.build_embeddings
+# 2) stat_tables → table_families → table_embeddings 한 번에 적재
+docker compose exec api python -m pipeline.build_search
+# 3) 서버 재시작 (표 정보는 서버가 처음 한 번 읽어 둠)
 docker compose restart api
 ```
 
-- 3)은 처음에 bge-m3 모델(약 2GB)을 내려받습니다. Apple GPU에서 약 1분, CPU에서 몇 분 걸립니다. 서버 이미지에는 sentence-transformers가 없어서 내 PC에서 계산합니다.
-- 3)이 어렵다면 4)에 `--model clova-v2`를 붙이면 서버에서 CLOVA로 만듭니다 (약 40분, HCX 키 사용량 발생).
+- 단계별로 돌리려면 `pipeline.load_catalog` → `pipeline.build_families` → `pipeline.build_embeddings` 순서입니다. 패밀리 규칙만 바뀌었으면 `pipeline.build_search --skip-catalog`로 카탈로그 적재를 건너뜁니다.
+- 1)은 처음에 bge-m3 모델(약 2GB)을 내려받습니다. Apple GPU에서 약 1분, CPU에서 몇 분 걸립니다. 서버 이미지에는 sentence-transformers가 없어서 내 PC에서 계산합니다.
+- 1)이 어렵다면 2)에 `--model clova-v2`를 붙이면 서버에서 CLOVA로 만듭니다 (약 40분, HCX 키 사용량 발생).
 - Windows는 WSL2(Ubuntu) 터미널에서 실행합니다. Docker Desktop의 WSL Integration을 켜고, uv는 WSL 안에 설치합니다.
 
 ### 2. 질문하기

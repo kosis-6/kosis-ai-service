@@ -41,6 +41,18 @@ MIN_SCORE = 0.45  # 1순위 패밀리 점수가 이보다 낮으면 out_of_scope
 AMBIGUOUS_GAP = 0.03  # 1·2순위 패밀리 점수 차가 이보다 작으면 ambiguous
 TOP_FAMILIES = 4
 
+# 모집단을 좁히는 수식어. 질문에 없으면 수식어 없는 형제 표를 기본값으로 앞세운다
+# ('결혼 건수' → '연령/교육정도별 혼인' > '…혼인(초혼)', 팀원 검색 실험 10/31 제안 5-B).
+# 키는 표명에 쓰인 말, 값은 질문에서 그 수식어를 말한 것으로 볼 표현
+SUBSET_MODIFIERS = {
+    "초혼": re.compile(r"초혼|처음\s*(?:한\s*)?결혼|첫\s*결혼"),
+    "재혼": re.compile(r"재혼|다시\s*(?:한\s*)?결혼|두\s*번째\s*결혼"),
+    "쌍태아": re.compile(r"쌍태아|쌍둥이|다태아"),
+    "발생기준": re.compile(r"발생\s*기준"),
+    "북한": re.compile(r"북한|탈북|새터민"),
+}
+MODIFIER_PENALTY = 0.03  # 형제 표끼리 임베딩 점수 차(0.01 안팎)를 뒤집을 만큼만
+
 # 하이브리드: 임베딩 우선 + 키워드 조건부 가산 (팀원 검색 실험 10/31: 고정 RRF는 약한 키워드의
 # 오답이 임베딩 정답을 끌어내림). 질문 임베딩이 있을 때만 쓰고, 없으면 위 키워드 기준을 쓴다
 DENSE_TOP_K = 50  # 키워드 점수가 0이어도 임베딩 상위 이만큼은 후보에 넣는다
@@ -48,7 +60,9 @@ KEYWORD_GATE = 0.5  # 키워드 점수가 이 이상일 때만 키워드·표명
 # 0.3이면 엉뚱한 단어로 기준을 겨우 넘은 키워드('우리 동네'의 동네·주민 → 사할린동포 조사 표)가
 # 임베딩 1위를 뒤집었다. 0.2는 일상어 질문 10개(scripts/check_search.py) 기준 1차 값
 KEYWORD_WEIGHT = 0.2
-# 범위 밖 질문의 임베딩 점수(0.50~0.65)가 범위 안 질문과 겹쳐 점수만으로는 못 가른다.
+# 범위 밖 판정은 조건 가감점 전 임베딩 원점수(1위)로 한다 (골든셋 설계 8장). 가감점 후 점수로 보면
+# HCX가 뽑은 대상('쌍둥이')이 표명에 없다는 감점만으로 맞는 표를 버린다.
+# 범위 밖 질문의 원점수(0.50~0.65)가 범위 안 질문과 겹쳐 점수만으로는 못 가른다.
 # 명백한 경우만 거르고, 나머지는 HCX query_type(not_statistics)에 맡긴다
 HYBRID_MIN_SCORE = 0.5
 # 같은 주제의 형제 패밀리('고령자인구' 4개)는 임베딩 점수 차가 0.01 안쪽이라 거의 동점일 때만 묻는다
@@ -259,12 +273,20 @@ def relevance(keyword: float, name_sim: float, dense: float | None) -> float:
     return dense + (KEYWORD_WEIGHT * lexical if keyword >= KEYWORD_GATE else 0.0)
 
 
+def unasked_modifiers(t: dict[str, Any], said: str) -> list[str]:
+    """표명에 있지만 질문(said)에서 말하지 않은 모집단 수식어"""
+    return [
+        m for m, asked in SUBSET_MODIFIERS.items() if m in t["name_n"] and not asked.search(said)
+    ]
+
+
 def rank(
     tables: list[dict[str, Any]], slots: dict[str, Any], dense: list[float] | None = None
 ) -> list[dict[str, Any]]:
     """dense: tables 순서의 임베딩 점수 (없으면 키워드만)"""
     tokens = query_tokens(slots)
     query = norm(f"{slots['topic']} {slots.get('target') or ''}")
+    said = f"{slots.get('question', '')} {slots['topic']} {slots.get('target') or ''}"
     keywords = keyword_scores(tables, tokens)
     cut = sorted(dense, reverse=True)[min(DENSE_TOP_K, len(dense)) - 1] if dense else None
     ranked = []
@@ -278,6 +300,7 @@ def rank(
             relevance(kw, name_similarity(query, t["name_n"]), d)
             + PASS_BONUS * passed
             - FAIL_PENALTY * (len(checks) - passed)
+            - MODIFIER_PENALTY * len(unasked_modifiers(t, said))
         )
         ranked.append({"table": t, "keyword": kw, "dense": d, "checks": checks, "score": score})
     ranked.sort(key=lambda r: (-r["score"], r["table"]["edition_order"], r["table"]["tbl_id"]))
@@ -393,9 +416,12 @@ def find(
 
     ranked = rank(tables, slots, dense)
     families = fold(ranked)
-    min_score, gap = (MIN_SCORE, AMBIGUOUS_GAP) if dense is None else (
-        HYBRID_MIN_SCORE, HYBRID_AMBIGUOUS_GAP
-    )  # fmt: skip
+    if dense is None:
+        gap = AMBIGUOUS_GAP
+        in_scope = bool(families) and families[0]["score"] >= MIN_SCORE
+    else:
+        gap = HYBRID_AMBIGUOUS_GAP
+        in_scope = bool(families) and max(dense) >= HYBRID_MIN_SCORE
     result["retrieval"] = "keyword" if dense is None else "hybrid"
     result["candidates"] = [
         {
@@ -407,7 +433,7 @@ def find(
         }
         for r in ranked[:10]
     ]
-    if not families or families[0]["score"] < min_score:
+    if not in_scope:
         return {
             **result,
             "status": "out_of_scope",
