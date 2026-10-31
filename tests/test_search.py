@@ -220,6 +220,16 @@ def test_keyword_query_from_question_with_synonyms() -> None:
     assert "시군구별로" in q and "1인가구" in q
     assert "몇" not in q and "인지" not in q  # 군더더기 말은 지운다
 
+    # 띄어쓰기가 있든 없든 지운다 (코드 리뷰 10/31). 단어 끝의 '표'('생명표')는 남긴다
+    def kq(question: str) -> str:
+        return se.keyword_query(_slots(question, question))
+
+    assert kq("시군구별 외국인 수 찾아줘").startswith("시군구별 외국인 수")
+    assert "찾아" not in kq("시군구별 외국인 수 찾아줘")
+    assert kq("볼수있는 표 알려주세요") == ""
+    assert kq("출산율 알고싶어").startswith("출산율") and "알고" not in kq("출산율 알고싶어")
+    assert kq("생명표 찾아주세요").startswith("생명표")
+
 
 def test_hybrid_keyword_normalized_per_question() -> None:
     tables = se.prepare(
