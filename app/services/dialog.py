@@ -21,6 +21,7 @@ from app.services import search
 from app.services.search import norm
 
 MAX_CLARIFY_TURNS = 2
+REJECTED = ("out_of_scope", "not_statistics")
 ANYTHING = re.compile(r"아무거나|아무\s*거나|상관\s*없|기본(?:값|으로)?|다\s*괜찮|알아서")
 YEAR = re.compile(r"(?<!\d)((?:19|20)\d{2})(?!\d)")
 EDITION = re.compile(r"((?:19|20)\d{2})\s*~\s*((?:19|20)\d{2})")
@@ -235,6 +236,16 @@ async def handle(
                 trace["follow_up"] = True
     if result is None:
         result = await search.search(question, trace)
+        if state and state["status"] in ("clarify", "ambiguous") and result["status"] in REJECTED:
+            # 되묻기에 '초혼'처럼 짧게 답했는데 선택지와 못 맞추면 답만으로 찾아 범위 밖이 된다.
+            # 그럴 때만 앞 질문에 답을 붙여 다시 찾는다. 답이 표 이름에 가까운 말이면
+            # 답만으로 찾는 게 더 잘 맞아서 먼저 시도한다 (개발셋 d115·d127)
+            retry = await search.search(f"{state['slots']['question']} {question}", trace)
+            if retry["status"] not in REJECTED:
+                result = retry
+                turns = state["clarify_turns"] + 1
+                if trace is not None:
+                    trace["follow_up_merged"] = True
     waiting = result["status"] in ("clarify", "ambiguous")
     await save_state(session_id, result, turns if waiting else 0)
     result["turn"] = turns
