@@ -80,3 +80,47 @@ def test_follow_up_ambiguous() -> None:
     assert (result["status"], result["family"]["family_id"]) == ("clarify", "F1")
     result = dl.follow_up(tables, _state("ambiguous", OPTIONS), "아무거나")
     assert result["family"]["family_id"] == "F1"
+
+
+def test_handle_retries_rejected_answer_with_previous_question(monkeypatch) -> None:
+    """되묻기 답('초혼')이 선택지와 안 맞고 답만으로 찾으면 범위 밖일 때,
+    앞 질문에 붙여 다시 찾는다"""
+    import asyncio
+
+    prev = sl.empty_slots("신혼부부 나이 차이")
+    state = {"status": "ambiguous", "slots": prev, "asked": OPTIONS, "family_id": None,
+             "clarify_turns": 0}  # fmt: skip
+    asked: list[str] = []
+
+    async def fake_search(question, trace=None, allow_clarify=True):
+        asked.append(question)
+        status = "out_of_scope" if question == "초혼" else "ambiguous"
+        return {"status": status, "slots": sl.empty_slots(question)}
+
+    async def load_state(session_id):
+        return state
+
+    async def save_state(session_id, result, turns):
+        return None
+
+    async def no_dense(question):
+        return None
+
+    async def no_tables():
+        return []
+
+    monkeypatch.setattr(dl, "load_state", load_state)
+    monkeypatch.setattr(dl, "save_state", save_state)
+    monkeypatch.setattr(dl.search, "search", fake_search)
+    monkeypatch.setattr(dl.search, "dense_scores", no_dense)
+    monkeypatch.setattr(dl.search, "load_tables", no_tables)
+
+    trace: dict = {}
+    result = asyncio.run(dl.handle("초혼", "S1", trace=trace))
+    assert asked == ["초혼", "신혼부부 나이 차이 초혼"]
+    assert result["status"] == "ambiguous" and result["turn"] == 1 and trace["follow_up_merged"]
+
+    # 답만으로 찾은 결과가 거절이 아니면 그대로 쓴다 (다시 찾지 않음)
+    asked.clear()
+    result = asyncio.run(dl.handle("누적 혼인", "S1"))
+    assert asked == ["누적 혼인"] and result["turn"] == 0
