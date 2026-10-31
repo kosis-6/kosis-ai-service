@@ -150,3 +150,29 @@ def test_hybrid_candidates_and_thresholds() -> None:
     result = se.find(tables, s, dense=[0.600, 0.598, 0.30])
     assert result["status"] == "ambiguous"
     assert [o["family_id"] for o in result["options"]] == ["FA", "FB"]
+
+
+def test_rule_conditions_projection_spouse_exclude() -> None:
+    tables = se.prepare(
+        [
+            _t("P", "시나리오별 추계인구", 2022, 2072, "FP", survey_name="장래인구추계"),
+            _t("W", "시도/시군구/외국인 아내의 국적별 혼인", 2015, 2024, "FW"),
+            _t("H", "시도/시군구/외국인 남편의 국적별 혼인", 2015, 2024, "FH"),
+            _t("N", "한국국적을 취득한 자-혼인 귀화자(계)", 2015, 2024, "FN"),
+        ]
+    )
+    p, w, h, n = tables
+
+    def rule_slots(q: str) -> dict:
+        return sl.correct(q, sl.empty_slots(q))
+
+    s = rule_slots("2050년 인구")
+    assert se.check(p, s)["projection"] and not se.check(w, s)["projection"]
+
+    s = rule_slots("외국인 여자와 결혼한 한국 남자")
+    assert se.check(w, s)["spouse"] and not se.check(h, s)["spouse"]
+
+    s = rule_slots("귀화한 사람 말고")
+    assert not se.check(n, s)["exclude"] and se.check(w, s)["exclude"]
+    # 빼 달라고 한 단어는 키워드 검색어에서도 뺀다
+    assert all("귀화" not in t["variants"] for t in se.query_tokens(s))

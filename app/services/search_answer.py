@@ -8,7 +8,13 @@ from typing import Any
 
 from app.services import notices
 
-CHECK_LABELS = {"year": "연도", "region_level": "지역 수준", "sex": "성별", "target": "대상"}
+CHECK_LABELS = {
+    "year": "연도",
+    "region_level": "지역 수준",
+    "sex": "성별",
+    "target": "대상",
+    "projection": "장래 추계",
+}
 STATUS_MESSAGES = {
     "out_of_scope": (
         "제공 범위(KOSIS 인구 분야 통계표)에서 질문에 맞는 통계표를 찾지 못했습니다. "
@@ -31,6 +37,10 @@ def check_label(key: str, slots: dict[str, Any]) -> str:
         return f"{c['year']}~{c['year_end']}년" if c["year_end"] else f"{c['year']}년"
     if key == "region_level":
         return c["region_level"]
+    if key == "spouse":
+        return slots["spouse"]
+    if key == "exclude":
+        return f"{', '.join(slots['exclude'])} 제외"
     return key.split(":", 1)[1] if ":" in key else CHECK_LABELS.get(key, key)
 
 

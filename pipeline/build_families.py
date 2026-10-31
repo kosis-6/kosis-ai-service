@@ -6,6 +6,9 @@
 묶는 규칙
   판      같은 조사 + 이름 속 연도·신구 표기를 지운 표명이 같은 표.
           '시도별 외국인주민 현황(2007~2015)' / '(2006)' / 연도 없는 표 → 판 3개.
+          띄어쓰기·기호만 다른 표명도 같은 표로 본다 (name_key, 팀원 검색 실험 10/31).
+          '성별 외국인 - 시군구' / '성별 외국인-시군구', '통근ㆍ통학' / '통근 통학' (52묶음).
+          보여 줄 이름은 최신 판의 표기를 쓴다
           수록 기간으로 구분하고, edition_order 1이 기본 판이다
           (가장 최신 연도를 담은 판 → 그중 기간이 긴 판, 규칙 2.4)
   멤버    표명 끝의 (계)/(남)/(여)로 성별 멤버, 그 앞의 '-대상'으로 대상 멤버를 나눈다.
@@ -85,6 +88,11 @@ def edition_name(table_name: str) -> str:
     return re.sub(r"\s+", " ", name).strip()
 
 
+def name_key(name: str) -> str:
+    """띄어쓰기·기호를 지운 비교용 표명 ('성별 외국인 - 시군구' = '성별 외국인-시군구')"""
+    return re.sub(r"[^0-9A-Za-z가-힣]", "", name)
+
+
 def member_of(name: str) -> tuple[str, str | None, str | None]:
     """(family_name, target, sex). 이름에 성별 표기가 없으면 멤버가 하나뿐인 패밀리"""
     sex = SEX_MEMBER.search(name)
@@ -132,18 +140,19 @@ def build(tables: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if edition_name(by_id[new]["table_name"]) != edition_name(by_id[old]["table_name"])
     }
 
-    def key(t: dict[str, Any]) -> tuple[str, str]:
-        anchor = by_id[linked.get(t["tbl_id"], t["tbl_id"])]  # 후속판은 옛 표의 멤버로
-        return anchor["survey_name"], edition_name(anchor["table_name"])
+    def anchor_name(t: dict[str, Any]) -> str:
+        """후속판은 옛 표의 이름으로 (옛 표의 멤버에 붙인다)"""
+        return edition_name(by_id[linked.get(t["tbl_id"], t["tbl_id"])]["table_name"])
 
     members: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     for t in tables:
-        members[key(t)].append(t)
+        members[(t["survey_name"], name_key(anchor_name(t)))].append(t)
 
     rows = []
-    for (survey, name), editions in members.items():
+    for (survey, _), editions in members.items():
         # 최신 연도를 담은 판 → 기간이 긴 판 → 시작 연도가 이른 판 (규칙 2.4)
         editions.sort(key=lambda t: (-t["end_year"], t["start_year"], t["tbl_id"]))
+        name = anchor_name(editions[0])
         family_name, _, sex = member_of(name)
         # 대상 이름은 최신 판 표명 기준 ('국제결혼 이주자' → '결혼이민자')
         target = member_of(edition_name(editions[0]["table_name"]))[1] or member_of(name)[1]
@@ -161,11 +170,19 @@ def build(tables: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 }
             )
 
-    # family_id는 조사·패밀리명 순서로 매긴다 (카탈로그가 같으면 같은 번호)
-    keys = sorted({(r["survey_name"], r["family_name"]) for r in rows})
+    # family_id는 조사·패밀리명 순서로 매긴다 (카탈로그가 같으면 같은 번호).
+    # 멤버끼리 패밀리명 표기가 다르면 ('취득한 자' / '취득한자') 가장 많이 쓰인 표기로
+    def family_key(r: dict[str, Any]) -> tuple[str, str]:
+        return r["survey_name"], name_key(r["family_name"])
+
+    spellings: dict[tuple[str, str], Counter[str]] = defaultdict(Counter)
+    for r in rows:
+        spellings[family_key(r)][r["family_name"]] += 1
+    keys = sorted(spellings, key=lambda k: (k[0], spellings[k].most_common(1)[0][0]))
     ids = {k: f"FAM_{i:04d}" for i, k in enumerate(keys, start=1)}
     for r in rows:
-        r["family_id"] = ids[(r["survey_name"], r["family_name"])]
+        k = family_key(r)
+        r["family_id"], r["family_name"] = ids[k], spellings[k].most_common(1)[0][0]
     return sorted(
         rows, key=lambda r: (r["family_id"], r["target"] or "", r["sex"] or "", r["edition_order"])
     )

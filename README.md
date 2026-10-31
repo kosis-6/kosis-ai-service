@@ -39,7 +39,7 @@
 | PostgreSQL (`compose.yaml`의 `db`) | 통계표 검색용 임베딩(pgvector)·키워드 검색(pg_trgm), 대화 기록, 질의·평가 로그 | 서버가 읽고 씀 | `docker compose up` 시 자동 생성 |
 
 - 통계 수치는 DuckDB에서만 조회합니다. PostgreSQL에 복사하지 않습니다.
-- PostgreSQL은 실전 2(통계표 안내 챗봇)부터 사용합니다. 지금은 연결 확인(`/health/db`)만 있습니다.
+- PostgreSQL은 실전 2(통계표 안내 챗봇)부터 사용합니다. 표 메타데이터(`stat_tables`), 패밀리(`table_families`), 표 임베딩(`table_embeddings`), 대화 상태(`chat_sessions`), 요청 로그(`search_logs`)를 담습니다. 만드는 순서는 [통계표 안내 (실전 2)](#통계표-안내-실전-2)를 보세요.
 - DuckDB는 한 번에 한 프로세스만 쓸 수 있어서, 요청마다 저장하는 데이터는 PostgreSQL에 둡니다.
 
 ## 개발 환경 세팅
@@ -322,6 +322,50 @@ python -m scripts.demo score              # 7회차 전체 pandas 채점 지표�
 
 발표·시연에 쓰는 결과는 `eval/results/`에 커밋되어 있습니다 (`golden_r0`, `golden_r7`, `oracle_r7`). `data/eval/`의 나머지 회차 결과는 각자 생성합니다.
 
+## 통계표 안내 (실전 2)
+
+질문에 맞는 KOSIS 통계표를 찾아 링크로 안내합니다 (`POST /search`). 검색은 키워드 + bge-m3 임베딩 하이브리드이고, 같은 표의 성별·대상·연도 판은 패밀리로 묶어 고릅니다.
+
+### 1. 검색용 데이터 적재 (처음 한 번, 메타데이터가 바뀌면 다시)
+
+`data/catalog/population_table_catalog_with_meta.jsonl`이 있어야 합니다 (data/는 커밋하지 않음).
+
+```bash
+# 1) 표 메타데이터 → stat_tables
+docker compose exec api python -m pipeline.load_catalog
+# 2) 패밀리·멤버·판 묶기 → table_families
+docker compose exec api python -m pipeline.build_families
+# 3) 표 임베딩 계산 (내 PC에서, DB 불필요) → data/embeddings/bge-m3__full.npy
+uv run --with sentence-transformers python -m pipeline.build_embeddings --dry-run
+# 4) 표 임베딩 적재 → table_embeddings, 서버 재시작 (표 정보는 서버가 처음 한 번 읽어 둠)
+docker compose exec api python -m pipeline.build_embeddings
+docker compose restart api
+```
+
+- 3)은 처음에 bge-m3 모델(약 2GB)을 내려받습니다. Apple GPU에서 약 1분, CPU에서 몇 분 걸립니다. 서버 이미지에는 sentence-transformers가 없어서 내 PC에서 계산합니다.
+- 3)이 어렵다면 4)에 `--model clova-v2`를 붙이면 서버에서 CLOVA로 만듭니다 (약 40분, HCX 키 사용량 발생).
+- Windows는 WSL2(Ubuntu) 터미널에서 실행합니다. Docker Desktop의 WSL Integration을 켜고, uv는 WSL 안에 설치합니다.
+
+### 2. 질문하기
+
+```bash
+curl -s -X POST localhost:8000/search -H 'Content-Type: application/json' \
+  -d '{"question": "앞으로 인구가 어떻게 될지 예측", "debug": true}'
+python -m app.services.search "2024년 부산 시군구별 혼인 귀화자 수"   # 명령줄
+```
+
+- `debug.retrieval`이 `hybrid`면 임베딩까지 쓴 것이고, `keyword`면 표 임베딩이 없거나 질문 임베딩이 실패한 것입니다.
+- `debug.candidates`에 후보별 키워드·임베딩 점수가 나오고, 같은 내용이 `search_logs`에 남습니다.
+- 질문 임베딩은 환경변수 `EMBEDDING_BACKEND`로 고릅니다: `clova`(기본, CLOVA Studio v2) / `local`(bge-m3 직접 실행) / `off`(키워드만).
+
+### 3. 검색 점검
+
+```bash
+docker compose exec api python -m scripts.check_search   # 키워드 vs 하이브리드 → eval/results/search_check_<날짜>.md
+```
+
+일상어 질문 10개 + 범위 밖 6개로 상태·최종 표·점수를 비교합니다. 골든셋이 아닌 규칙 기반 점검이라 가중치를 대략 정하는 용도입니다.
+
 ## 실전 1 결과
 
 | 평가 | 결과 | 기록 |
@@ -391,7 +435,7 @@ kosis-ai-service/
 │   └── request_log.py       # 요청 로그 보기 (원인 추적)
 ├── eval/golden.csv          # 개발셋 골든셋 16문항 (질문 + 정답)
 ├── eval/golden_sheet.csv    # 시트 골든셋 60문항 (기대 행동·허용 표)
-├── eval/results/            # 발표·시연용 채점 결과 (0·7회차, pandas 채점)
+├── eval/results/            # 발표·시연용 채점 결과 (0·7회차, pandas 채점), 실전 2 검색 점검
 ├── data/                    # 수집한 데이터 (각자 생성, 커밋 X)
 ├── tests/                   # pytest 테스트
 ├── docker/postgres/init.sql # DB 최초 생성 시 확장(pgvector, pg_trgm) 설치

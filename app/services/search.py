@@ -61,6 +61,7 @@ STOPWORDS = {
 # '취득한'·'취득자' → '취득', '국적을' → '국적'. 조사·어미 한 글자만 떼어 본다
 SUFFIXES = ("한", "된", "을", "를", "의", "은", "는", "이", "가", "에", "별", "인", "자")
 MIGRATION = re.compile(r"이동|전입|전출|이주|이사")
+PROJECTION_TABLE = re.compile(r"추계|장래")
 
 TABLES_SQL = """
 SELECT s.tbl_id, s.org_id, s.table_name, s.survey_name, s.organization, s.period, s.path_texts,
@@ -133,15 +134,21 @@ def query_tokens(slots: dict[str, Any]) -> list[dict[str, Any]]:
     """
     words = re.findall(r"[0-9A-Za-z가-힣]+", f"{slots['topic']} {slots.get('target') or ''}")
     values = norm(" ".join(slots["conditions"]["items"]))
+    excluded = {v for w in slots.get("exclude") or [] for v in variants(w)}
     tokens = []
     for w in dict.fromkeys(words):
-        if w in STOPWORDS:
+        # 빼 달라고 한 단어는 찾는 단어가 아니다 ('귀화한 사람 말고'의 '귀화')
+        if w in STOPWORDS or excluded & set(variants(w)):
             continue
-        variants = [w]
-        if len(w) >= 3 and w.endswith(SUFFIXES):
-            variants.append(w[:-1])
-        tokens.append({"variants": variants, "value": bool(values) and w in values})
+        tokens.append({"variants": variants(w), "value": bool(values) and w in values})
     return tokens
+
+
+def variants(word: str) -> list[str]:
+    """'취득한' → ['취득한', '취득']"""
+    if len(word) >= 3 and word.endswith(SUFFIXES):
+        return [word, word[:-1]]
+    return [word]
 
 
 def _found(variants: list[str], field: str) -> bool:
@@ -214,6 +221,14 @@ def check(t: dict[str, Any], slots: dict[str, Any]) -> dict[str, bool]:
     for item in c["items"]:
         key = norm(item)
         out[f"item:{item}"] = key in t["meta_n"] or key in t["name_n"]
+    if slots.get("projection"):
+        out["projection"] = bool(PROJECTION_TABLE.search(t["survey_name"] + t["name_n"]))
+    if slots.get("spouse"):
+        out["spouse"] = norm(slots["spouse"]) in t["name_n"]
+    if slots.get("exclude"):
+        out["exclude"] = not any(
+            _found(variants(w), t["name_n"]) for w in slots["exclude"]
+        )  # fmt: skip
     # '전체'는 멤버 선택값이지 표가 갖춰야 할 조건이 아니다
     if slots.get("target") and slots["target"] != "전체":
         key = norm(slots["target"])
