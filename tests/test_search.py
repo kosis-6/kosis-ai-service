@@ -195,7 +195,8 @@ def test_unasked_subset_modifier_yields_to_plain_sibling() -> None:
 
 def test_hybrid_scope_uses_raw_dense_not_penalized_score() -> None:
     tables = _three_families()
-    s = _slots("돌아가신 쌍둥이", "돌아가신 분", classes=["쌍둥이"])  # 표에 없는 조건 → 감점
+    # 표에 없는 조건 → 감점. 키워드 가산(정규화 후 1위=1)을 넘도록 조건 셋
+    s = _slots("돌아가신 쌍둥이", "돌아가신 분", classes=["쌍둥이", "학력", "직업"])
     result = se.find(tables, s, dense=[0.58, 0.30, 0.29])
     # 감점 후 점수는 기준 아래여도 임베딩 원점수가 기준 이상이면 범위 안
     assert result["candidates"][0]["score"] < se.HYBRID_MIN_SCORE
@@ -210,3 +211,28 @@ def test_warm_up_failure_does_not_stop_server(monkeypatch) -> None:
 
     monkeypatch.setattr(se, "load_tables", broken)
     asyncio.run(se.warm_up())  # 예외 없이 끝나야 서버가 뜬다
+
+
+def test_keyword_query_from_question_with_synonyms() -> None:
+    # HCX 요약(topic)이 아니라 원문에서: '시군구별'이 남고, 일상어에 통계 용어가 붙는다
+    s = _slots("시군구별로 혼자 사는 사람이 몇 명인지", "1인 가구 수")
+    q = se.keyword_query(s)
+    assert "시군구별로" in q and "1인가구" in q
+    assert "몇" not in q and "인지" not in q  # 군더더기 말은 지운다
+
+
+def test_hybrid_keyword_normalized_per_question() -> None:
+    tables = se.prepare(
+        [
+            _t("A", "시도별 외국인주민 현황", 2015, 2024, "FA", survey_name="조사"),
+            _t("B", "시도별 인구", 2015, 2024, "FB", survey_name="조사"),
+        ]
+    )
+    # '매매'는 어느 표에도 없어 원점수가 게이트(0.5) 아래지만, 정규화하면 1위 표는 1이 된다
+    s = _slots("외국인 매매 가격", "외국인 매매 가격")
+    raw = se.keyword_scores(tables, se.query_tokens(s))
+    assert max(raw) < se.KEYWORD_GATE
+    ranked = se.rank(tables, s, dense=[0.6, 0.6])
+    assert ranked[0]["table"]["tbl_id"] == "A" and ranked[0]["score"] > 0.6
+    # 키워드만 쓸 때는 원점수 그대로 (범위 밖 판정 MIN_SCORE용)
+    assert max(r["keyword"] for r in se.rank(tables, s)) == max(raw)
