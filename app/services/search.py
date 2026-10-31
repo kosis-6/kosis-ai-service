@@ -3,6 +3,9 @@
   1. 질의 분석 (slots.extract)       질문 → 슬롯
   2. 후보 검색 (keyword_scores)      주제·대상 단어가 표명·경로·분류·항목에 얼마나 있는지.
                                      단어마다 희귀도(IDF) 가중치 ('인구'처럼 흔한 단어는 덜 침)
+     + 임베딩 (vector_search)        질문 원문과 표 문서의 코사인 유사도 (bge-m3).
+                                     임베딩 점수를 기본으로 두고 키워드 점수가 높을 때만 더한다
+                                     (하이브리드. 질문 임베딩이 없으면 키워드만)
   3. 조건 검증·재순위 (check)        표(판) 단위로 연도·지역 수준·성별·분류·값·대상을 판정해 가감점.
                                      질문에 없는 조건(null)은 판정하지 않는다
   4. 패밀리 묶기 (fold)              같은 패밀리는 한 자리만 차지, 패밀리 점수 = 소속 표 최고 점수
@@ -11,7 +14,7 @@
                                      / not_statistics. 대상이 빠지면 clarify (되묻기, 규칙 2.3 가안)
 
 표 메타데이터(stat_tables + table_families, 2천여 행)는 처음 한 번 읽어 메모리에 둔다.
-되묻기 다음 턴(답 맞추기·세션)은 dialog.py가 맡는다. 임베딩 검색(pgvector)은 아직 없다.
+표 벡터(table_embeddings)도 함께 읽어 둔다. 되묻기 다음 턴(답 맞추기·세션)은 dialog.py가 맡는다.
 
 실행: python -m app.services.search "2024년 부산 시군구별 혼인 귀화자 수"
 """
@@ -27,6 +30,7 @@ from typing import Any
 from sqlalchemy import text
 
 from app.services import slots as slot_parser
+from app.services import vector_search
 
 # 가중치·기준값은 개발셋으로 조정할 값 (기능 정의서 F-05, F-06 미결)
 FIELD_WEIGHTS = {"name": 1.0, "path": 0.6, "meta": 0.4}
@@ -36,6 +40,19 @@ FAIL_PENALTY = 0.15
 MIN_SCORE = 0.45  # 1순위 패밀리 점수가 이보다 낮으면 out_of_scope
 AMBIGUOUS_GAP = 0.03  # 1·2순위 패밀리 점수 차가 이보다 작으면 ambiguous
 TOP_FAMILIES = 4
+
+# 하이브리드: 임베딩 우선 + 키워드 조건부 가산 (팀원 검색 실험 10/31: 고정 RRF는 약한 키워드의
+# 오답이 임베딩 정답을 끌어내림). 질문 임베딩이 있을 때만 쓰고, 없으면 위 키워드 기준을 쓴다
+DENSE_TOP_K = 50  # 키워드 점수가 0이어도 임베딩 상위 이만큼은 후보에 넣는다
+KEYWORD_GATE = 0.5  # 키워드 점수가 이 이상일 때만 키워드·표명 유사도를 더한다
+# 0.3이면 엉뚱한 단어로 기준을 겨우 넘은 키워드('우리 동네'의 동네·주민 → 사할린동포 조사 표)가
+# 임베딩 1위를 뒤집었다. 0.2는 일상어 질문 10개(scripts/check_search.py) 기준 1차 값
+KEYWORD_WEIGHT = 0.2
+# 범위 밖 질문의 임베딩 점수(0.50~0.65)가 범위 안 질문과 겹쳐 점수만으로는 못 가른다.
+# 명백한 경우만 거르고, 나머지는 HCX query_type(not_statistics)에 맡긴다
+HYBRID_MIN_SCORE = 0.5
+# 같은 주제의 형제 패밀리('고령자인구' 4개)는 임베딩 점수 차가 0.01 안쪽이라 거의 동점일 때만 묻는다
+HYBRID_AMBIGUOUS_GAP = 0.005
 
 STOPWORDS = {
     "수", "통계", "통계표", "자료", "데이터", "현황", "관련", "표", "정보", "찾아줘", "알려줘",
@@ -54,6 +71,7 @@ FROM stat_tables s JOIN table_families f USING (tbl_id)
 """
 
 _tables: list[dict[str, Any]] | None = None
+_vectors: Any = None  # _tables 순서의 표 벡터 행렬 (numpy). 없으면 None
 
 
 def norm(value: str) -> str:
@@ -83,14 +101,25 @@ def prepare(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 async def load_tables() -> list[dict[str, Any]]:
-    global _tables
+    global _tables, _vectors
     if _tables is None:
         from app.core.db import engine
 
         async with engine.connect() as conn:
             rows = (await conn.execute(text(TABLES_SQL))).mappings().all()
-        _tables = prepare([dict(r) for r in rows])
+            tables = prepare([dict(r) for r in rows])
+            _vectors = await vector_search.load_matrix(conn, [t["tbl_id"] for t in tables])
+        _tables = tables
     return _tables
+
+
+async def dense_scores(question: str) -> list[float] | None:
+    """load_tables() 순서대로 표마다 질문과의 코사인 유사도. 표 벡터나 질문 벡터가 없으면 None"""
+    await load_tables()
+    if _vectors is None:
+        return None
+    query = await vector_search.embed_query(question)
+    return None if query is None else vector_search.scores(_vectors, query)
 
 
 # ---- 2. 후보 검색 ---------------------------------------------------------------
@@ -202,22 +231,40 @@ def name_similarity(query: str, name: str) -> float:
     return 2 * len(a & b) / (len(a) + len(b)) if a and b else 0.0
 
 
-def rank(tables: list[dict[str, Any]], slots: dict[str, Any]) -> list[dict[str, Any]]:
+def relevance(keyword: float, name_sim: float, dense: float | None) -> float:
+    """후보 점수의 바탕 (조건 가감점 전).
+
+    키워드만: 키워드 + 표명 유사도.
+    하이브리드: 임베딩 + (키워드가 높을 때만) 키워드·표명 유사도. 표명 유사도도 글자 겹침이라
+    키워드와 같이 묶는다 ('결혼 몇 건'이 짧은 표명 '결혼 여부'에 끌려가지 않게)
+    """
+    lexical = keyword + NAME_WEIGHT * name_sim
+    if dense is None:
+        return lexical
+    return dense + (KEYWORD_WEIGHT * lexical if keyword >= KEYWORD_GATE else 0.0)
+
+
+def rank(
+    tables: list[dict[str, Any]], slots: dict[str, Any], dense: list[float] | None = None
+) -> list[dict[str, Any]]:
+    """dense: tables 순서의 임베딩 점수 (없으면 키워드만)"""
     tokens = query_tokens(slots)
     query = norm(f"{slots['topic']} {slots.get('target') or ''}")
+    keywords = keyword_scores(tables, tokens)
+    cut = sorted(dense, reverse=True)[min(DENSE_TOP_K, len(dense)) - 1] if dense else None
     ranked = []
-    for t, kw in zip(tables, keyword_scores(tables, tokens), strict=True):
-        if kw == 0:
+    for i, (t, kw) in enumerate(zip(tables, keywords, strict=True)):
+        d = dense[i] if dense else None
+        if kw == 0 and (d is None or d < cut):
             continue
         checks = check(t, slots)
         passed = sum(checks.values())
         score = (
-            kw
-            + NAME_WEIGHT * name_similarity(query, t["name_n"])
+            relevance(kw, name_similarity(query, t["name_n"]), d)
             + PASS_BONUS * passed
             - FAIL_PENALTY * (len(checks) - passed)
         )
-        ranked.append({"table": t, "keyword": kw, "checks": checks, "score": score})
+        ranked.append({"table": t, "keyword": kw, "dense": d, "checks": checks, "score": score})
     ranked.sort(key=lambda r: (-r["score"], r["table"]["edition_order"], r["table"]["tbl_id"]))
     return ranked
 
@@ -318,20 +365,34 @@ def _brief(t: dict[str, Any]) -> dict[str, Any]:
 
 
 def find(
-    tables: list[dict[str, Any]], slots: dict[str, Any], allow_clarify: bool = True
+    tables: list[dict[str, Any]],
+    slots: dict[str, Any],
+    allow_clarify: bool = True,
+    dense: list[float] | None = None,
 ) -> dict[str, Any]:
-    """슬롯 → 검색 결과 (DB·HCX 없이 동작해서 테스트·실험에 쓴다)"""
+    """슬롯 → 검색 결과 (DB·HCX 없이 동작해서 테스트·실험에 쓴다).
+    dense(tables 순서의 임베딩 점수)를 주면 하이브리드, 없으면 키워드만"""
     result: dict[str, Any] = {"status": None, "reason": None, "slots": slots, "table": None}
     if slots["query_type"] == "not_statistics":
         return {**result, "status": "not_statistics", "reason": "통계표를 찾는 질문이 아닙니다"}
 
-    ranked = rank(tables, slots)
+    ranked = rank(tables, slots, dense)
     families = fold(ranked)
+    min_score, gap = (MIN_SCORE, AMBIGUOUS_GAP) if dense is None else (
+        HYBRID_MIN_SCORE, HYBRID_AMBIGUOUS_GAP
+    )  # fmt: skip
+    result["retrieval"] = "keyword" if dense is None else "hybrid"
     result["candidates"] = [
-        {**_brief(r["table"]), "score": round(r["score"], 3), "checks": r["checks"]}
+        {
+            **_brief(r["table"]),
+            "score": round(r["score"], 3),
+            "keyword": round(r["keyword"], 3),
+            "dense": None if r["dense"] is None else round(r["dense"], 3),
+            "checks": r["checks"],
+        }
         for r in ranked[:10]
     ]
-    if not families or families[0]["score"] < MIN_SCORE:
+    if not families or families[0]["score"] < min_score:
         return {
             **result,
             "status": "out_of_scope",
@@ -350,8 +411,8 @@ def find(
         for f in families[1:TOP_FAMILIES]
     ]
     result["other_families"] = others
-    if len(families) > 1 and top["score"] - families[1]["score"] < AMBIGUOUS_GAP:
-        close = [o for o in others if top["score"] - o["score"] < AMBIGUOUS_GAP]
+    if len(families) > 1 and top["score"] - families[1]["score"] < gap:
+        close = [o for o in others if top["score"] - o["score"] < gap]
         result["options"] = [
             {"family_id": top["table"]["family_id"], "family_name": top["table"]["family_name"],
              "score": round(top["score"], 3), **_brief(top["table"])},
@@ -449,12 +510,21 @@ async def search(
     """trace(dict)를 주면 HCX 원본 출력과 단계별 시간(ms)을 담는다 (요청 로그용)"""
     trace = {} if trace is None else trace
     start = time.perf_counter()
-    slots = await slot_parser.extract(question, trace)
-    parsed_at = time.perf_counter()
-    result = find(await load_tables(), slots, allow_clarify)
+
+    async def timed(coro: Any) -> tuple[Any, float]:
+        value = await coro
+        return value, time.perf_counter()
+
+    # 슬롯 추출(HCX)과 질문 임베딩은 서로 기다릴 필요가 없어 함께 보낸다
+    (slots, parsed_at), (dense, embedded_at) = await asyncio.gather(
+        timed(slot_parser.extract(question, trace)), timed(dense_scores(question))
+    )
+    ready = max(parsed_at, embedded_at)
+    result = find(await load_tables(), slots, allow_clarify, dense)
     trace["timings"] = {
         "slots_ms": round((parsed_at - start) * 1000),
-        "search_ms": round((time.perf_counter() - parsed_at) * 1000),
+        "embed_ms": round((embedded_at - start) * 1000),
+        "search_ms": round((time.perf_counter() - ready) * 1000),
     }
     return result
 
@@ -464,7 +534,11 @@ def _print(result: dict[str, Any]) -> None:
     print(json.dumps(keep, ensure_ascii=False, indent=2))
     print("\n후보 상위:")
     for c in result.get("candidates", [])[:5]:
-        print(f"  {c['score']:.3f} {c['table_name']} ({c['edition']}) {c['checks']}")
+        dense = "-" if c["dense"] is None else f"{c['dense']:.3f}"
+        print(
+            f"  {c['score']:.3f} (키워드 {c['keyword']:.3f} · 임베딩 {dense})"
+            f" {c['table_name']} ({c['edition']}) {c['checks']}"
+        )
 
 
 if __name__ == "__main__":

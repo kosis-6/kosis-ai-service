@@ -132,8 +132,10 @@ def follow_up(
     state: dict[str, Any],
     answer: str,
     selections: dict[str, Any] | None = None,
+    dense: list[float] | None = None,
 ) -> dict[str, Any] | None:
-    """직전 되묻기에 대한 답이면 결과, 새 질문이면 None"""
+    """직전 되묻기에 대한 답이면 결과, 새 질문이면 None.
+    dense: 앞 질문의 임베딩 점수 (ambiguous에 조건만 답해 다시 검색할 때 하이브리드로)"""
     selections = {k: v for k, v in (selections or {}).items() if v}
     turns = state["clarify_turns"]
     last_turn = turns + 1 >= MAX_CLARIFY_TURNS
@@ -150,7 +152,7 @@ def follow_up(
         picked = match_member(answer, [{"axis": "sex", "options": ["전체", "남", "여"]}])
         if picked and set(picked) <= {"sex", "year"}:
             merged = apply_answer(slots, picked, last_turn=False)
-            return search.find(tables, merged, allow_clarify=not last_turn)
+            return search.find(tables, merged, allow_clarify=not last_turn, dense=dense)
         return None
 
     if state["status"] == "clarify":
@@ -222,7 +224,11 @@ async def handle(
     result = None
     turns = 0
     if state and state["status"] in ("clarify", "ambiguous"):
-        result = follow_up(await search.load_tables(), state, question, selections)
+        # ambiguous에 조건만 답하면 앞 질문으로 다시 검색하므로 앞 질문의 임베딩이 필요하다
+        dense = None
+        if state["status"] == "ambiguous":
+            dense = await search.dense_scores(state["slots"]["question"])
+        result = follow_up(await search.load_tables(), state, question, selections, dense)
         if result is not None:
             turns = state["clarify_turns"] + 1
             if trace is not None:

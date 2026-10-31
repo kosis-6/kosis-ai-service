@@ -237,6 +237,7 @@ def respond(
     }
     if debug:
         response["debug"] = {
+            "retrieval": result.get("retrieval"),
             "candidates": result.get("candidates", []),
             "missing_axes": result.get("missing_axes", []),
             "fixes": slots.get("fixes", []),
