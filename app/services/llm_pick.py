@@ -146,6 +146,13 @@ async def review(
 
     slots = dict(result["slots"])
     if undecided:  # 되묻기 대신 LLM 이 고른 표로 멤버·판까지 확정
+        from app.services import synonyms
+
+        said = se.norm(synonyms.keyword_text(f"{question} {slots.get('target') or ''}"))
+        target = picked.get("target") or "전체"
+        if target != "전체" and se.norm(target) not in said:
+            # 질문에 없는 대상('기타', '혼인 귀화자')을 LLM 이 골랐으면 기본값 규칙(전체·계)을 지킨다
+            return {**result, "llm_pick": {**trace["llm_pick"], "ignored": "질문에 없는 대상"}}
         slots["tbl_id"] = pick
     redone = se.resolve(tables, slots, picked["family_id"], allow_clarify=not undecided)
     redone["candidates"] = result.get("candidates", [])

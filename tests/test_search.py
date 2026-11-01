@@ -497,3 +497,22 @@ def test_llm_match_none_rejects_and_partial_keeps(monkeypatch) -> None:
 
     monkeypatch.setattr(lp, "_ask", none)
     assert asyncio.run(lp.review("집값", dict(base), tables, {}))["status"] == "out_of_scope"
+
+
+def test_llm_resolve_ignores_member_not_mentioned(monkeypatch) -> None:
+    import asyncio
+
+    from app.services import llm_pick as lp
+
+    family = se.prepare(_naturalized())
+    base = {"status": "clarify", "slots": _slots("국적 취득한 외국인", "국적 취득자"), "table": None,
+            "family": {"family_id": "F1"}, "candidates": [{"tbl_id": "혼인 귀화자계_old"}, {"tbl_id": "전체계_old"}]}
+    monkeypatch.setattr(lp.get_settings(), "llm_pick", True, raising=False)
+    monkeypatch.setattr(lp.get_settings(), "llm_pick_mode", "resolve", raising=False)
+
+    async def pick_member(question, cands):
+        return {"pick": "혼인 귀화자계_old", "match": "exact", "item": "", "reason": "x"}
+
+    monkeypatch.setattr(lp, "_ask", pick_member)
+    out = asyncio.run(lp.review("국적 취득한 외국인", dict(base), family, {}))
+    assert out["status"] == "clarify" and out["llm_pick"].get("ignored")  # 질문에 없는 멤버는 무시
