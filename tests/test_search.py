@@ -533,3 +533,20 @@ def test_survey_population_penalty_and_class_via_items() -> None:
                        items=[{"name": "총인구수"}, {"name": "남자인구수"}, {"name": "여자인구수"}, {"name": "미혼"}])])[0]
     chk = se.check(t, _slots("q", "인구", classes=["성별", "미혼"]))
     assert chk["class:성별"] and chk["class:미혼"]
+
+
+def test_off_domain_word_rejects_without_llm(monkeypatch) -> None:
+    import asyncio
+
+    from app.services import llm_pick as lp
+
+    tables = se.prepare([_t("A1", "인구동태건수 및 동태율 추이(출생,사망,혼인,이혼)", 1970, 2025, "FA")])
+    base = se.find(tables, _slots("교통사고로 죽은 사람", "사망"), dense=[0.8])
+    monkeypatch.setattr(lp.get_settings(), "llm_pick", True, raising=False)
+
+    async def boom(question, cands):
+        raise AssertionError("LLM 을 부르면 안 된다")
+
+    monkeypatch.setattr(lp, "_ask", boom)
+    out = asyncio.run(lp.review("교통사고로 죽은 사람이 1년에 몇 명인지", dict(base), tables, {}))
+    assert out["status"] == "out_of_scope"

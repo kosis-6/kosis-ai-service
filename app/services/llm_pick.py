@@ -19,10 +19,20 @@ from typing import Any
 from app.core.config import get_settings
 from app.services.hcx_client import HcxClient
 
+
+def se_norm(value: str) -> str:
+    return re.sub(r"[^0-9A-Za-z가-힣]", "", value or "")
+
 logger = logging.getLogger(__name__)
 
 MODEL = "HCX-007"
 TOP_K = 5
+# 인구 통계 카탈로그에 없는 주제. 질문에 이 말이 있는데 어느 후보의 이름·분류·항목에도 없으면 LLM 을 거치지 않고 범위 밖
+# (레포 측정 §68-6: LLM 이 '교통사고 사망'→사망자수, '암 환자'→사망자수, '의사 수'→직업별 취업자처럼 주제 인접 표를 partial 로 통과시킴)
+OFF_DOMAIN = re.compile(
+    r"교통사고|암\s*환자|코로나|질병|환자|관리비|난방비|등록금|월급|임금|소득|집값|매매가|전세가|분양가|범죄|자살|목숨을 끊|"
+    r"흡연|담배|음주|의사가|의사 수|병원|병상|빈집|학업중단|진학률|학생 수|학생이 몇"
+)
 SYSTEM = """당신은 통계청 KOSIS 통계표 안내 챗봇의 최종 검토자입니다. 사용자 질문과 검색된 후보 통계표 목록(최대 5개)을 받습니다.
 각 후보에는 표 이름, 조사, 수록 기간, 지역 단위, 분류(축)와 값 예시, 항목이 있습니다.
 
@@ -109,6 +119,11 @@ async def review(
     cands = [by[i] for i in cand_ids if i in by]
     if not cands:
         return result
+    if (m := OFF_DOMAIN.search(question)) and not any(
+        se_norm(m.group(0)) in (t["name_n"] + t["meta_n"] + t["path_n"]) for t in cands
+    ):
+        trace["llm_pick"] = {"off_domain": m.group(0)}
+        return {**result, "status": "out_of_scope", "reason": f"'{m.group(0)}'은 인구 통계 범위 밖입니다", "llm_pick": trace["llm_pick"]}
     start = time.perf_counter()
     try:
         parsed = await _ask(question, cands)
