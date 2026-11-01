@@ -718,7 +718,7 @@ async def search(
             dense = [(a + b) / 2 for a, b in zip(dense, dense2, strict=True)]
     ready = max(parsed_at, embedded_at)
     tables = await load_tables()
-    result = find(tables, slots, allow_clarify, dense, scope_by_llm=get_settings().llm_pick)
+    result = find(tables, slots, allow_clarify, dense, scope_by_llm=vector_search.get_settings().llm_pick)
     searched = time.perf_counter()
     from app.services import llm_pick  # 검색 뒤 HCX-007 최종 검토
 

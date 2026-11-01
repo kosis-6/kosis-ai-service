@@ -442,3 +442,34 @@ def test_scope_by_llm_skips_threshold_rejection() -> None:
     assert se.find(tables, _slots("앞으로 일할 사람", "일할 사람"), dense=[0.3], scope_by_llm=True)["status"] != "out_of_scope"
     s2 = _slots("안녕", "안녕"); s2["query_type"] = "not_statistics"
     assert se.find(tables, s2, dense=[0.3], scope_by_llm=True)["status"] != "not_statistics"
+
+
+def test_search_runs_end_to_end_with_stubs(monkeypatch) -> None:
+    """search() 전체 경로가 NameError 없이 도는지 (슬롯·임베딩·LLM 은 가짜로)"""
+    import asyncio
+
+    from app.services import llm_pick as lp
+    from app.services import slots as sl
+
+    tables = se.prepare([_t("A1", "인구 - 시도", 2015, 2025, "FA"), _t("B1", "혼인 - 시도", 2015, 2025, "FB")])
+
+    async def fake_tables():
+        return tables
+
+    async def fake_extract(question, trace):
+        return sl.correct(question, sl.empty_slots(question))
+
+    async def fake_dense(question):
+        return [0.9, 0.3]
+
+    async def fake_ask(question, cands):
+        return {"pick": "A1", "answerable": True, "reason": "ok"}
+
+    monkeypatch.setattr(se, "load_tables", fake_tables)
+    monkeypatch.setattr(se.slot_parser, "extract", fake_extract)
+    monkeypatch.setattr(se, "dense_scores", fake_dense)
+    monkeypatch.setattr(lp, "_ask", fake_ask)
+    trace: dict = {}
+    result = asyncio.run(se.search("인구 통계", trace))
+    assert result["status"] in ("ok", "partial_match") and result["table"]["tbl_id"] == "A1"
+    assert "llm_pick_ms" in trace["timings"]
