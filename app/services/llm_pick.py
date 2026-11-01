@@ -120,8 +120,8 @@ async def review(
             + (f" ({parsed.get('reason')})" if parsed and parsed.get("reason") else ""),
             "llm_pick": trace["llm_pick"],
         }
-    if pick == "__unknown__":
-        return result
+    if pick == "__unknown__" or get_settings().llm_pick_mode == "filter":
+        return {**result, "llm_pick": trace["llm_pick"]}
     picked = by[pick]
     current = (result.get("family") or {}).get("family_id") or (result.get("table") or {}).get("family_id")
     if picked["family_id"] == current and result["status"] != "ambiguous":

@@ -333,6 +333,7 @@ def test_llm_pick_review_switches_family_and_rejects(monkeypatch) -> None:
     base = se.find(tables, s, dense=[0.9, 0.3])  # 임베딩상 1위는 A1(인구)
     assert base["table"]["tbl_id"] == "A1"
     monkeypatch.setattr(lp.get_settings(), "llm_pick", True, raising=False)
+    monkeypatch.setattr(lp.get_settings(), "llm_pick_mode", "pick", raising=False)
 
     async def pick_b(question, cands):
         return {"pick": "B1", "answerable": True, "reason": "혼인 표"}
@@ -368,3 +369,29 @@ def test_target_in_survey_path_passes_and_soft_penalty_is_small() -> None:
     hard = se.rank([t], _slots("옛날 q", "인구", year=1990), [0.6])[0]["score"]
     assert abs((base - soft) - se.SOFT_FAIL_PENALTY) < 1e-9
     assert abs((base - hard) - se.FAIL_PENALTY) < 1e-9
+
+
+def test_llm_pick_filter_mode_keeps_ranking(monkeypatch) -> None:
+    import asyncio
+
+    from app.services import llm_pick as lp
+
+    tables = se.prepare(
+        [_t("A1", "인구 - 시도", 2015, 2025, "FA", survey_name="조사"), _t("B1", "혼인 - 시도", 2015, 2025, "FB", survey_name="조사")]
+    )
+    base = se.find(tables, _slots("통계 자료", "통계 자료"), dense=[0.9, 0.3])
+    monkeypatch.setattr(lp.get_settings(), "llm_pick", True, raising=False)
+    monkeypatch.setattr(lp.get_settings(), "llm_pick_mode", "filter", raising=False)
+
+    async def pick_b(question, cands):
+        return {"pick": "B1", "answerable": True, "reason": "혼인 표"}
+
+    monkeypatch.setattr(lp, "_ask", pick_b)
+    out = asyncio.run(lp.review("통계 자료", dict(base), tables, {}))
+    assert out["table"]["tbl_id"] == "A1"  # filter 모드는 후보를 바꾸지 않는다
+
+    async def none(question, cands):
+        return {"pick": "none", "answerable": False, "reason": "주제 없음"}
+
+    monkeypatch.setattr(lp, "_ask", none)
+    assert asyncio.run(lp.review("집값", dict(base), tables, {}))["status"] == "out_of_scope"  # 거르기는 한다
