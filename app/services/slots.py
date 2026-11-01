@@ -24,6 +24,7 @@ from datetime import date
 from typing import Any
 
 from app.prompts.search import SLOT_SYSTEM
+from app.services import agegroup, timeref
 from app.services.hcx_client import HcxClient, HcxError
 
 MODEL = "HCX-DASH-002"
@@ -52,9 +53,9 @@ SIDO = {
 SIDO_ALIAS = {alias: name for name, aliases in SIDO.items() for alias in [name, *aliases]}
 
 YEAR = re.compile(r"(?<!\d)((?:19|20)\d{2})(?!\d)")
-# '95년', "'05년도". '10년 전', '20년간', '90년생', '80년대'는 연도가 아니다
+# '95년', "'05년도". '10년 전', '20년간', '90년생', '80년대', '10년 넘게'는 연도가 아니다
 SHORT_YEAR = re.compile(
-    r"(?<![\d~])'?(\d{2})\s*년(?!\s*(?:전|후|뒤|간|동안|생|대|째|만|마다|이상|이하|이내|미만|차))"
+    r"(?<![\d~])'?(\d{2})\s*년(?!\s*(?:전|후|뒤|간|동안|생|대|째|만|마다|이상|이하|이내|미만|차|넘|넘게|넘는|넘은|가까이|정도|쯤|남짓))"
 )
 SHORT_YEAR_PIVOT = 50  # 50 미만은 20xx, 이상은 19xx ('45년' → 2045 추계, '95년' → 1995)
 PROJECTION = re.compile(r"앞으로|예측|전망|미래|추계|장래|될까|될지|예상")
@@ -120,6 +121,8 @@ def empty_slots(question: str) -> dict[str, Any]:
         "projection": False,  # 장래 추계를 찾는 질문
         "exclude": [],  # 빼 달라고 한 단어 ('귀화한 사람 말고' → ['귀화한'])
         "spouse": None,  # '외국인 아내' / '외국인 남편'
+        "age": None,  # 연령 집단 이름 ('노인' → {"expr": "노인", "lo": 65, "hi": None, "basis": ...})
+        "time_ref": None,  # 상대시점 ('작년' → {"expr": "작년", "year": 2025, "open_end": False})
     }
 
 
@@ -207,14 +210,26 @@ def correct(question: str, slots: dict[str, Any]) -> dict[str, Any]:
             c[key] = value
 
     # 연도: 질문에 쓰인 연도만 인정한다 (네 자리, '95년' 같은 두 자리)
+    today = date.today()
     years = sorted({int(y) for y in YEAR.findall(question)} | short_years(question))
-    fix("year", years[0] if years else None, "질문의 연도")
-    fix("year_end", years[-1] if len(years) > 1 else None, "질문의 기간")
+    slots["time_ref"] = None
+    if not years and (ref := timeref.resolve(question, today)):
+        # 상대시점("작년", "2년 전부터")은 LLM이 아니라 오늘 날짜로 코드가 푼다. 끝이 열린 기간은 최신까지
+        years = [ref.year]
+        slots["time_ref"] = {"expr": ref.expr, "year": ref.year, "open_end": ref.open_end}
+        fix("year", ref.year, ref.describe(today))
+        fix("year_end", None, ref.describe(today))
+    else:
+        fix("year", years[0] if years else None, "질문의 연도")
+        fix("year_end", years[-1] if len(years) > 1 else None, "질문의 기간")
     # 장래 추계: 올해 이후 연도이거나 예측 표현
     slots["projection"] = bool(
-        PROJECTION.search(question) or (years and years[-1] > date.today().year)
+        PROJECTION.search(question) or (years and years[-1] > today.year)
     )
     slots["exclude"] = negated_words(question)
+    # 연령 집단 이름("노인", "청년")은 법령·통계 정의 사전으로 구간을 정한다. 숫자 구간이 있으면 그쪽이 우선
+    age = agegroup.resolve(question)
+    slots["age"] = {"expr": age.expr, "lo": age.lo, "hi": age.hi, "basis": age.basis} if age else None
 
     # 성별: 한 성별만 말했으면 그 성별, 남녀로 나눠 보려면 성별 분류, 말이 없으면 null
     if HOUSEHOLDER_SEX.search(question) and "가구주 성별" not in c["classes"]:
