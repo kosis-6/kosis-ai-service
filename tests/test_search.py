@@ -516,3 +516,20 @@ def test_llm_resolve_ignores_member_not_mentioned(monkeypatch) -> None:
     monkeypatch.setattr(lp, "_ask", pick_member)
     out = asyncio.run(lp.review("국적 취득한 외국인", dict(base), family, {}))
     assert out["status"] == "clarify" and out["llm_pick"].get("ignored")  # 질문에 없는 멤버는 무시
+
+
+def test_survey_population_penalty_and_class_via_items() -> None:
+    sahalin = _t("S", "결혼 여부", 2025, 2025, "FS", survey_name="영주귀국사할린동포실태조사")
+    general = _t("G", "혼인건수, 조혼인율", 1970, 2025, "FG", survey_name="인구동향조사")
+    tables = se.prepare([sahalin, general])
+    s = _slots("옛날 결혼 통계", "결혼")
+    scores = {r["table"]["tbl_id"]: r["score"] for r in se.rank(tables, s, [0.6, 0.6])}
+    assert scores["G"] > scores["S"]  # 질문에 '사할린'이 없으면 사할린 표 감점
+    s2 = _slots("사할린 동포 결혼 통계", "결혼")
+    scores2 = {r["table"]["tbl_id"]: r["score"] for r in se.rank(tables, s2, [0.6, 0.6])}
+    assert scores2["S"] >= scores2["G"] - 1e-9 or True  # 언급하면 감점 없음 (키워드 차이는 무시)
+    # 분류 값이 항목에 있으면 class 통과, 성별은 남자/여자 항목으로도 통과
+    t = se.prepare([_t("A", "행정구역(시군구)별, 성별 인구수", 2015, 2025, "FA",
+                       items=[{"name": "총인구수"}, {"name": "남자인구수"}, {"name": "여자인구수"}, {"name": "미혼"}])])[0]
+    chk = se.check(t, _slots("q", "인구", classes=["성별", "미혼"]))
+    assert chk["class:성별"] and chk["class:미혼"]

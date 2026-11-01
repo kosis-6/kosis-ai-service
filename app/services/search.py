@@ -46,7 +46,14 @@ PASS_BONUS = 0.08
 FAIL_PENALTY = 0.15
 # 대상·분류·항목·성별은 HCX 추출과 표 메타의 표현 차이로 자주 어긋나는 '부드러운' 조건이라 감점을 작게 둔다
 # (실험실에는 이 판정이 없음. 어댑터 실측 후보 재계산: 팀원 R@1 62→70, 생성 75→82, 개발 65→67, 손해 없음)
-SOFT_CHECKS = ("target", "class", "item", "sex")
+SOFT_CHECKS = ("target", "class", "item", "sex", "spouse")
+# 특정 집단만 조사한 통계는 질문에 그 집단 말이 없으면 감점 (개발셋 d57 '평균 몇 살까지 사는지'에 사할린 '결혼 여부' 표,
+# d79 '동호회 모임 참여'에 사할린 '모임 및 단체 참여' 표가 1위로 오던 문제)
+SURVEY_POPULATION = {
+    "영주귀국사할린동포실태조사": ("사할린", "동포"),
+    "고령친화용품제조업실태조사": ("고령친화", "노인용품", "용품", "실버"),
+}
+SURVEY_PENALTY = 0.1
 SOFT_FAIL_PENALTY = 0.05
 PUBLISH_LAG = 2  # 상대시점이 가리키는 해가 아직 공표 전이어도 이 햇수 안이면 최신 판을 맞는 표로 본다
 
@@ -325,7 +332,10 @@ def check(t: dict[str, Any], slots: dict[str, Any]) -> dict[str, bool]:
             ok = any("가구주" in n and "성" in n for n in t["class_n"])
         else:
             key = norm(cls).removesuffix("별")
-            ok = any(key in n for n in t["class_n"]) or key in t["name_n"]
+            # HCX 가 '미혼'처럼 분류 값을 classes 에 넣기도 하므로 항목·표본값(meta_n)도 본다
+            ok = any(key in n for n in t["class_n"]) or key in t["name_n"] or key in t["meta_n"]
+        if cls == "성별" and not ok:  # 항목이 남자/여자로 갈라진 표도 성별을 담는다 (주민등록 시군구별 성별 인구수)
+            ok = "남자" in t["meta_n"] and "여자" in t["meta_n"]
         out[f"class:{cls}"] = ok
     for item in c["items"]:
         key = norm(item)
@@ -394,6 +404,12 @@ def recency_bonus(t: dict[str, Any], slots: dict[str, Any]) -> float:
     )
 
 
+def _population_unmentioned(t: dict[str, Any], said_n: str) -> bool:
+    """특정 집단 조사의 표인데 질문에 그 집단 말이 없다"""
+    words = SURVEY_POPULATION.get(t["survey_name"])
+    return bool(words) and not any(norm(w) in said_n for w in words)
+
+
 def unasked_modifiers(t: dict[str, Any], said: str) -> list[str]:
     """표명에 있지만 질문(said)에서 말하지 않은 모집단 수식어"""
     return [
@@ -419,6 +435,7 @@ def rank(
     cut = sorted(dense, reverse=True)[min(DENSE_TOP_K, len(dense)) - 1] if dense else None
     # 키워드만 쓸 때는 패밀리 점수로 범위 밖을 판정하므로 가산하지 않는다
     timeless = dense is not None and wants_current(slots)
+    said_n = norm(said)
     ranked = []
     for i, (t, kw) in enumerate(zip(tables, keywords, strict=True)):
         d = dense[i] if dense else None
@@ -434,6 +451,7 @@ def rank(
             - FAIL_PENALTY * (len(failed) - soft_failed)
             - SOFT_FAIL_PENALTY * soft_failed
             - MODIFIER_PENALTY * len(unasked_modifiers(t, said))
+            - (SURVEY_PENALTY if _population_unmentioned(t, said_n) else 0.0)
             + (recency_bonus(t, slots) if timeless else 0.0)
         )
         ranked.append({"table": t, "keyword": kw, "dense": d, "checks": checks, "score": score})
