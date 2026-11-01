@@ -27,6 +27,7 @@ SYSTEM = """당신은 통계청 KOSIS 통계표 안내 챗봇의 최종 검토�
 할 일:
 1. 질문에 가장 잘 맞는 후보 하나를 고릅니다. 기준: 묻는 대상·조건(연도, 지역 단위, 성별, 분류)을 실제로 담고 있는가, 묻는 값(수/비율/평균)이 항목에 있는가, 수록 기간이 질문 시점을 포함하는가. 같은 내용이면 수록 기간이 길고 최신인 표를 고릅니다.
 2. 고른 표로 질문에 답할 수 있으면 answerable=true. 후보 중 어느 것도 질문의 주제를 다루지 않으면(예: 집값, 월급, 날씨, 신청 방법) pick="none", answerable=false.
+   주제가 비슷해 보여도 질문이 묻는 값(예: 학생 수, 자살자 수, 흡연율, 의사 수, 빈집 수, 연금 수급자 수)이 항목·분류에 없으면 답할 수 없는 것입니다. 수십 년 전 한 해만 있는 표로 요즘 질문에 답하지 마세요.
 후보 밖의 표 ID를 만들지 마세요. 설명 없이 JSON만: {"pick": "<후보의 tbl_id 또는 none>", "answerable": true|false, "reason": "<한 문장>"}"""
 
 
@@ -95,7 +96,7 @@ async def review(
     """검색 결과에 LLM 검토를 얹는다. 후보가 없거나 되묻기면 그대로"""
     if not get_settings().llm_pick:
         return result
-    if result.get("status") not in ("ok", "partial_match", "ambiguous"):
+    if result.get("status") not in ("ok", "partial_match", "ambiguous", "clarify"):
         return result
     cand_ids = [c["tbl_id"] for c in (result.get("candidates") or [])[:TOP_K]]
     by = {t["tbl_id"]: t for t in tables}
@@ -120,7 +121,7 @@ async def review(
             + (f" ({parsed.get('reason')})" if parsed and parsed.get("reason") else ""),
             "llm_pick": trace["llm_pick"],
         }
-    if pick == "__unknown__" or get_settings().llm_pick_mode == "filter":
+    if pick == "__unknown__" or get_settings().llm_pick_mode == "filter" or result["status"] == "clarify":
         return {**result, "llm_pick": trace["llm_pick"]}
     picked = by[pick]
     current = (result.get("family") or {}).get("family_id") or (result.get("table") or {}).get("family_id")
