@@ -167,6 +167,8 @@ async def load_tables() -> list[dict[str, Any]]:
             rows = (await conn.execute(text(TABLES_SQL))).mappings().all()
             tables = prepare([dict(r) for r in rows])
             _vectors = await vector_search.load_matrix(conn, [t["tbl_id"] for t in tables])
+        if _vectors is not None:
+            vector_search.load_adapter([t["tbl_id"] for t in tables])
         _tables = tables
     return _tables
 
@@ -197,6 +199,7 @@ def status() -> dict[str, Any]:
         "vectors": _vectors is not None,
         "embedding_backend": vector_search.get_settings().embedding_backend,
         "retrieval": "hybrid" if _vectors is not None else "keyword",
+        "adapter": vector_search.adapter_loaded(),
     }
 
 
@@ -687,6 +690,13 @@ async def search(
     (slots, parsed_at), (dense, embedded_at) = await asyncio.gather(
         timed(slot_parser.extract(question, trace)), timed(dense_scores(question))
     )
+    # 재작성 검색어(HCX search_query)가 있으면 그 임베딩 점수와 평균한다 (실험실 §52: 교체는 손해, 평균만
+    # 이득). 슬롯이 온 뒤에야 알 수 있어 임베딩 호출이 한 번 더 든다
+    rewrite = (slots.get("search_query") or "").strip()
+    if dense is not None and rewrite and rewrite != question.strip():
+        dense2, embedded_at = await timed(dense_scores(rewrite))
+        if dense2 is not None:
+            dense = [(a + b) / 2 for a, b in zip(dense, dense2, strict=True)]
     ready = max(parsed_at, embedded_at)
     result = find(await load_tables(), slots, allow_clarify, dense)
     trace["timings"] = {
