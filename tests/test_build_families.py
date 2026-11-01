@@ -102,3 +102,28 @@ def test_spacing_and_symbol_variants_are_editions() -> None:
     assert (by_id["NEW"]["edition_order"], by_id["OLD"]["edition_order"]) == (1, 2)
     # 지역 수준이 다르면 다른 패밀리
     assert by_id["S"]["family_id"] != by_id["NEW"]["family_id"]
+
+
+def test_notation_variants_are_editions_of_one_member() -> None:
+    def table(tbl_id: str, name: str, year: int) -> dict:
+        return {"tbl_id": tbl_id, "survey_name": "인구총조사", "table_name": name,
+                "start_year": year, "end_year": year, "classifications": []}  # fmt: skip
+
+    rows = {
+        r["tbl_id"]: r
+        for r in bf.build(
+            [
+                table("OLD", "성, 연령 및 근로장소별 취업 인구(15세 이상)-시도", 2010),
+                table("NEW", "성별/연령별/근로장소별 취업인구(15세이상)-시도", 2020),
+                table("SGG", "성별/연령별/근로장소별 취업인구(15세이상)-시군구", 2020),
+                table("MOM", "모의 연령별 출생", 2020),
+                table("DAD", "부의 연령별 출생", 2020),
+            ]
+        )
+    }
+    # '및'·'별'·기호만 다르면 같은 표의 판, 최신 판이 먼저
+    assert rows["OLD"]["family_id"] == rows["NEW"]["family_id"]
+    assert (rows["NEW"]["edition_order"], rows["OLD"]["edition_order"]) == (1, 2)
+    # 지역 단위나 다른 낱말이 다르면 합치지 않는다
+    assert rows["SGG"]["family_id"] != rows["NEW"]["family_id"]
+    assert rows["MOM"]["family_id"] != rows["DAD"]["family_id"]
