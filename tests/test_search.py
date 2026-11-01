@@ -475,3 +475,25 @@ def test_search_runs_end_to_end_with_stubs(monkeypatch) -> None:
     result = asyncio.run(se.search("인구 통계", trace))
     assert result["status"] in ("ok", "partial_match") and result["table"]["tbl_id"] == "A1"
     assert "llm_pick_ms" in trace["timings"]
+
+
+def test_llm_match_none_rejects_and_partial_keeps(monkeypatch) -> None:
+    import asyncio
+
+    from app.services import llm_pick as lp
+
+    tables = se.prepare([_t("A1", "인구 - 시도", 2015, 2025, "FA")])
+    base = se.find(tables, _slots("인구", "인구"), dense=[0.9])
+    monkeypatch.setattr(lp.get_settings(), "llm_pick", True, raising=False)
+
+    async def partial(question, cands):
+        return {"pick": "A1", "match": "partial", "item": "인구", "reason": "조건 다름"}
+
+    monkeypatch.setattr(lp, "_ask", partial)
+    assert asyncio.run(lp.review("인구", dict(base), tables, {}))["status"] != "out_of_scope"
+
+    async def none(question, cands):
+        return {"pick": "none", "match": "none", "item": "", "reason": "주제 없음"}
+
+    monkeypatch.setattr(lp, "_ask", none)
+    assert asyncio.run(lp.review("집값", dict(base), tables, {}))["status"] == "out_of_scope"
