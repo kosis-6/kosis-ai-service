@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     llm_pick: bool = True
     # filter: 범위 밖 거르기만 (후보 교체 없음). pick: 고른 표로 패밀리를 바꾼다.
     # 실험실 §56-4·레포 측정 §66: 최상 설정 위에서 pick 은 팀원셋 −3(형제 멤버로 바꿈), filter 는 손해 없음
-    llm_pick_mode: Literal["filter", "pick"] = "filter"
+    llm_pick_mode: Literal["filter", "pick", "resolve"] = "resolve"
 
     # pipeline/run_all.py가 만드는 전처리 DB (프로젝트 루트 기준 상대 경로)
     duckdb_path: str = "data/processed/kosis.duckdb"

@@ -5,6 +5,8 @@
   약 1.5초·900토큰. 실험실: 범위 밖 재현율 30/30, 거짓 거절 1/102, 새 테스트셋 흐름 68→74.
 - 고른 표의 패밀리가 1위와 다르면 그 패밀리로 멤버·판 선택을 다시 한다(resolve). 되묻기(clarify)가 필요한 결과는
   건드리지 않는다. 호출이 실패하면 검색 결과를 그대로 둔다.
+- 모드(LLM_PICK_MODE): filter = 거르기만 / pick = 고른 표로 패밀리 교체 / resolve(기본) = 확정 결과는 거르기만,
+  되묻기·모호 상태에서는 고른 표로 멤버·판까지 확정 (실험실 완전 흐름과 같음; 되묻기 횟수가 준다).
 - 설정 LLM_PICK=false 로 끈다.
 """
 
@@ -121,15 +123,22 @@ async def review(
             + (f" ({parsed.get('reason')})" if parsed and parsed.get("reason") else ""),
             "llm_pick": trace["llm_pick"],
         }
-    if pick == "__unknown__" or get_settings().llm_pick_mode == "filter" or result["status"] == "clarify":
+    if pick == "__unknown__":
+        return {**result, "llm_pick": trace["llm_pick"]}
+    mode = get_settings().llm_pick_mode
+    undecided = result["status"] in ("clarify", "ambiguous")
+    if mode == "filter" or (mode == "resolve" and not undecided):
         return {**result, "llm_pick": trace["llm_pick"]}
     picked = by[pick]
     current = (result.get("family") or {}).get("family_id") or (result.get("table") or {}).get("family_id")
-    if picked["family_id"] == current and result["status"] != "ambiguous":
+    if picked["family_id"] == current and not undecided:
         return {**result, "llm_pick": trace["llm_pick"]}
     from app.services import search as se  # 순환 참조를 피해 여기서 읽는다
 
-    redone = se.resolve(tables, result["slots"], picked["family_id"], allow_clarify=True)
+    slots = dict(result["slots"])
+    if undecided:  # 되묻기 대신 LLM 이 고른 표로 멤버·판까지 확정
+        slots["tbl_id"] = pick
+    redone = se.resolve(tables, slots, picked["family_id"], allow_clarify=not undecided)
     redone["candidates"] = result.get("candidates", [])
     redone["other_families"] = result.get("other_families", [])
     redone["llm_pick"] = trace["llm_pick"]

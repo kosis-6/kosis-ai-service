@@ -481,7 +481,8 @@ def choose(
 
     if "target" in axes:
         # 대상 슬롯이 패밀리명이어도('한국국적 취득자') 질문 속 멤버 이름('혼인 귀화자')으로 고른다
-        said = norm(f"{slots.get('question', '')} {slots.get('target') or ''}")
+        # 실험실 §47 멤버 매칭: 질문·대상을 사전(synonyms)으로 넓힌 뒤 멤버 이름과 대조
+        said = norm(synonyms.keyword_text(f"{slots.get('question', '')} {slots.get('target') or ''}"))
         match = [r for r in rows if r["target"] != "전체" and norm(r["target"]) in said]
         if slots.get("target") == "전체":
             match = [r for r in rows if r["target"] == "전체"]
@@ -540,10 +541,18 @@ def find(
     slots: dict[str, Any],
     allow_clarify: bool = True,
     dense: list[float] | None = None,
+    scope_by_llm: bool = False,
 ) -> dict[str, Any]:
     """슬롯 → 검색 결과 (DB·HCX 없이 동작해서 테스트·실험에 쓴다).
-    dense(tables 순서의 임베딩 점수)를 주면 하이브리드, 없으면 키워드만"""
+    dense(tables 순서의 임베딩 점수)를 주면 하이브리드, 없으면 키워드만.
+    scope_by_llm: 범위 밖 판정(HCX not_statistics·점수 문턱)을 뒤의 LLM 검토에 맡기고 여기서는 거절하지 않는다
+    (실험실 §61-3: 점수 문턱은 범위 안 질문을 잘못 거르고, 007 거르기가 범위 밖 30/30·거짓 거절 1/102)"""
     result: dict[str, Any] = {"status": None, "reason": None, "slots": slots, "table": None}
+    if slots["query_type"] == "not_statistics" and scope_by_llm and dense is not None:
+        slots["query_type"] = "find_table"
+        slots.setdefault("fixes", []).append(
+            {"key": "query_type", "from": "not_statistics", "to": "find_table", "reason": "LLM 검토가 범위를 판정"}
+        )
     if slots["query_type"] == "not_statistics":
         top_dense = max(dense, default=0.0) if dense else None
         if top_dense is None or top_dense < NOT_STATISTICS_OVERRIDE:
@@ -561,7 +570,7 @@ def find(
         in_scope = bool(families) and families[0]["score"] >= MIN_SCORE
     else:
         gap = HYBRID_AMBIGUOUS_GAP
-        in_scope = bool(families) and max(dense) >= HYBRID_MIN_SCORE
+        in_scope = bool(families) and (scope_by_llm or max(dense) >= HYBRID_MIN_SCORE)
     result["retrieval"] = "keyword" if dense is None else "hybrid"
     result["candidates"] = [
         {
@@ -709,7 +718,7 @@ async def search(
             dense = [(a + b) / 2 for a, b in zip(dense, dense2, strict=True)]
     ready = max(parsed_at, embedded_at)
     tables = await load_tables()
-    result = find(tables, slots, allow_clarify, dense)
+    result = find(tables, slots, allow_clarify, dense, scope_by_llm=get_settings().llm_pick)
     searched = time.perf_counter()
     from app.services import llm_pick  # 검색 뒤 HCX-007 최종 검토
 

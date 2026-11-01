@@ -395,3 +395,50 @@ def test_llm_pick_filter_mode_keeps_ranking(monkeypatch) -> None:
 
     monkeypatch.setattr(lp, "_ask", none)
     assert asyncio.run(lp.review("집값", dict(base), tables, {}))["status"] == "out_of_scope"  # 거르기는 한다
+
+
+def test_choose_matches_member_through_synonyms() -> None:
+    """질문의 일상어('결혼해서 귀화한')가 사전으로 멤버 이름('혼인 귀화자')에 닿으면 되묻지 않고 그 멤버"""
+    family = se.prepare(_naturalized())
+    said = se.synonyms.keyword_text("결혼해서 귀화한 외국인")
+    if "혼인귀화자" not in se.norm(said):  # 사전에 그 표현이 없으면 이 테스트는 의미 없음
+        import pytest
+
+        pytest.skip("사전에 '결혼해서 귀화한' 항목 없음")
+    s = _slots("결혼해서 귀화한 외국인", "귀화한 외국인")
+    table, missing, _ = se.choose(family, s)
+    assert table["target"] == "혼인 귀화자" and "target" not in missing
+
+
+def test_llm_resolve_mode_settles_clarify_but_keeps_decided_results(monkeypatch) -> None:
+    import asyncio
+
+    from app.services import llm_pick as lp
+
+    tables = se.prepare(
+        [
+            _t("A1", "인구 - 시도", 2015, 2025, "FA", survey_name="조사"),
+            _t("B1", "혼인 - 시도", 2015, 2025, "FB", survey_name="조사"),
+        ]
+    )
+    base = se.find(tables, _slots("통계 자료", "통계 자료"), dense=[0.9, 0.3])
+    monkeypatch.setattr(lp.get_settings(), "llm_pick", True, raising=False)
+    monkeypatch.setattr(lp.get_settings(), "llm_pick_mode", "resolve", raising=False)
+
+    async def pick_b(question, cands):
+        return {"pick": "B1", "answerable": True, "reason": "혼인 표"}
+
+    monkeypatch.setattr(lp, "_ask", pick_b)
+    assert asyncio.run(lp.review("통계 자료", dict(base), tables, {}))["table"]["tbl_id"] == "A1"  # 확정 결과는 안 바꿈
+    amb = {**base, "status": "ambiguous", "table": None, "family": None}
+    out = asyncio.run(lp.review("통계 자료", amb, tables, {}))
+    assert out["status"] in ("ok", "partial_match") and out["table"]["tbl_id"] == "B1"  # 모호하면 LLM 이 확정
+
+
+def test_scope_by_llm_skips_threshold_rejection() -> None:
+    tables = se.prepare([_t("A1", "인구 - 시도", 2015, 2025, "FA")])
+    s = _slots("앞으로 일할 사람", "일할 사람")
+    assert se.find(tables, s, dense=[0.3])["status"] == "out_of_scope"
+    assert se.find(tables, _slots("앞으로 일할 사람", "일할 사람"), dense=[0.3], scope_by_llm=True)["status"] != "out_of_scope"
+    s2 = _slots("안녕", "안녕"); s2["query_type"] = "not_statistics"
+    assert se.find(tables, s2, dense=[0.3], scope_by_llm=True)["status"] != "not_statistics"
