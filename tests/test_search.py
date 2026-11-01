@@ -431,8 +431,10 @@ def test_llm_resolve_mode_settles_clarify_but_keeps_decided_results(monkeypatch)
     monkeypatch.setattr(lp, "_ask", pick_b)
     assert asyncio.run(lp.review("통계 자료", dict(base), tables, {}))["table"]["tbl_id"] == "A1"  # 확정 결과는 안 바꿈
     amb = {**base, "status": "ambiguous", "table": None, "family": None}
-    out = asyncio.run(lp.review("통계 자료", amb, tables, {}))
-    assert out["status"] in ("ok", "partial_match") and out["table"]["tbl_id"] == "B1"  # 모호하면 LLM 이 확정
+    assert asyncio.run(lp.review("통계 자료", amb, tables, {}))["status"] == "ambiguous"  # 패밀리 모호는 그대로
+    cla = {**base, "status": "clarify", "table": None, "family": {"family_id": "FA"}}
+    out = asyncio.run(lp.review("통계 자료", cla, tables, {}))
+    assert out["status"] in ("ok", "partial_match") and out["table"]["tbl_id"] == "B1"  # 멤버 되묻기는 LLM 이 확정
 
 
 def test_scope_by_llm_skips_threshold_rejection() -> None:

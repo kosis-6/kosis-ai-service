@@ -6,7 +6,7 @@
 - 고른 표의 패밀리가 1위와 다르면 그 패밀리로 멤버·판 선택을 다시 한다(resolve). 되묻기(clarify)가 필요한 결과는
   건드리지 않는다. 호출이 실패하면 검색 결과를 그대로 둔다.
 - 모드(LLM_PICK_MODE): filter = 거르기만 / pick = 고른 표로 패밀리 교체 / resolve(기본) = 확정 결과는 거르기만,
-  되묻기·모호 상태에서는 고른 표로 멤버·판까지 확정 (실험실 완전 흐름과 같음; 되묻기 횟수가 준다).
+  멤버 되묻기(clarify) 상태에서는 고른 표로 멤버·판까지 확정 (되묻기 횟수가 준다). 패밀리 모호는 1위 유지.
 - 설정 LLM_PICK=false 로 끈다.
 """
 
@@ -126,7 +126,9 @@ async def review(
     if pick == "__unknown__":
         return {**result, "llm_pick": trace["llm_pick"]}
     mode = get_settings().llm_pick_mode
-    undecided = result["status"] in ("clarify", "ambiguous")
+    # 멤버 되묻기(clarify)만 LLM 이 확정한다. 패밀리 모호(ambiguous)는 1위 패밀리를 두는 편이 나았음
+    # (레포 측정 §68-4: LLM 이 같은 조사의 형제 패밀리로 바꿔 8건 손실, 얻은 건 1건)
+    undecided = result["status"] == "clarify"
     if mode == "filter" or (mode == "resolve" and not undecided):
         return {**result, "llm_pick": trace["llm_pick"]}
     picked = by[pick]
