@@ -698,11 +698,17 @@ async def search(
         if dense2 is not None:
             dense = [(a + b) / 2 for a, b in zip(dense, dense2, strict=True)]
     ready = max(parsed_at, embedded_at)
-    result = find(await load_tables(), slots, allow_clarify, dense)
+    tables = await load_tables()
+    result = find(tables, slots, allow_clarify, dense)
+    searched = time.perf_counter()
+    from app.services import llm_pick  # 검색 뒤 HCX-007 최종 검토
+
+    result = await llm_pick.review(question, result, tables, trace)
     trace["timings"] = {
         "slots_ms": round((parsed_at - start) * 1000),
         "embed_ms": round((embedded_at - start) * 1000),
-        "search_ms": round((time.perf_counter() - ready) * 1000),
+        "search_ms": round((searched - ready) * 1000),
+        "llm_pick_ms": round((time.perf_counter() - searched) * 1000),
     }
     return result
 

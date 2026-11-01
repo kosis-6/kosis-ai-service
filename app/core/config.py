@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     # 통계표 검색의 질문 임베딩 (app/services/vector_search.py)
     # clova: CLOVA Studio v2 / local: bge-m3 직접 실행 / off: 키워드 검색만
     embedding_backend: Literal["clova", "local", "off"] = "clova"
+    # 검색 뒤 HCX-007 최종 검토(후보 5개 중 선택·범위 밖 거르기). LLM_PICK=false 로 끈다
+    llm_pick: bool = True
 
     # pipeline/run_all.py가 만드는 전처리 DB (프로젝트 루트 기준 상대 경로)
     duckdb_path: str = "data/processed/kosis.duckdb"

@@ -315,3 +315,39 @@ def test_adapter_scores_match_reference() -> None:
     finally:
         vs._adapter = None
     assert vs.scores(base, base[1])[1] > 0.999  # 어댑터 없으면 코사인
+
+
+def test_llm_pick_review_switches_family_and_rejects(monkeypatch) -> None:
+    import asyncio
+
+    from app.services import llm_pick as lp
+
+    tables = se.prepare(
+        [
+            _t("A1", "인구 - 시도", 2015, 2025, "FA", survey_name="조사"),
+            _t("B1", "혼인 - 시도", 2015, 2025, "FB", survey_name="조사"),
+        ]
+    )
+    s = _slots("통계 자료", "통계 자료")  # 키워드가 안 잡혀 임베딩만으로 순위가 정해진다
+    base = se.find(tables, s, dense=[0.9, 0.3])  # 임베딩상 1위는 A1(인구)
+    assert base["table"]["tbl_id"] == "A1"
+    monkeypatch.setattr(lp.get_settings(), "llm_pick", True, raising=False)
+
+    async def pick_b(question, cands):
+        return {"pick": "B1", "answerable": True, "reason": "혼인 표"}
+
+    monkeypatch.setattr(lp, "_ask", pick_b)
+    out = asyncio.run(lp.review("혼인", dict(base), tables, {}))
+    assert out["table"]["tbl_id"] == "B1" and out["status"] in ("ok", "partial_match")
+
+    async def none(question, cands):
+        return {"pick": "none", "answerable": False, "reason": "주제 없음"}
+
+    monkeypatch.setattr(lp, "_ask", none)
+    assert asyncio.run(lp.review("집값", dict(base), tables, {}))["status"] == "out_of_scope"
+
+    async def boom(question, cands):
+        raise RuntimeError("timeout")
+
+    monkeypatch.setattr(lp, "_ask", boom)
+    assert asyncio.run(lp.review("혼인", dict(base), tables, {}))["table"]["tbl_id"] == "A1"  # 실패면 그대로
