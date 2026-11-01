@@ -260,3 +260,33 @@ def test_not_statistics_overridden_by_high_dense() -> None:
     result = se.find(tables, s, dense=[se.NOT_STATISTICS_OVERRIDE + 0.05, 0.3, 0.2])
     assert result["status"] not in ("not_statistics", "out_of_scope")
     assert result["slots"]["fixes"][-1]["key"] == "query_type"
+
+
+def test_recency_bonus_only_for_timeless_questions(monkeypatch) -> None:
+    tables = se.prepare(
+        [
+            _t("OLD", "연령/성별 인구-읍면동", 2005, 2005, "FO", survey_name="조사"),
+            _t("NEW", "연령 및 성별 인구 – 읍면동", 2015, 2025, "FN", survey_name="조사"),
+        ]
+    )
+    dense = [0.65, 0.62]  # 옛날 판이 임베딩으로 조금 앞섬
+
+    def top(question: str, **cond) -> str:
+        return se.rank(tables, _slots(question, question, **cond), dense)[0]["table"]["tbl_id"]
+
+    assert top("읍면동 연령별 인구") == "NEW"  # 연도 없음 → 최신·긴 판 가산
+    assert top("2005년 읍면동 연령별 인구", year=2005) == "OLD"  # 연도를 말하면 가산 없음
+    assert top("옛날 읍면동 연령별 인구") == "OLD"  # 옛날을 가리키는 말
+    assert top("20년 전 읍면동 연령별 인구") == "OLD"
+    # 키워드만 쓸 때는 가산 없음 (가산을 크게 해도 점수가 같다)
+    s = _slots("읍면동 연령별 인구", "읍면동 연령별 인구")
+    before = [r["score"] for r in se.rank(tables, s)]
+    monkeypatch.setattr(se, "RECENT_BONUS", 10.0)
+    assert [r["score"] for r in se.rank(tables, s)] == before
+    assert not se.wants_current(_slots("1990년대 인구", "인구"))
+    # 장래 추계 표는 미래를 물을 때만 가산
+    proj = se.prepare([_t("P", "장래 추계인구", 2022, 2072, "FP", survey_name="장래인구추계")])[0]
+    assert se.recency_bonus(proj, _slots("인구", "인구")) == 0.0
+    future = _slots("앞으로 인구", "인구")
+    future["projection"] = True
+    assert se.recency_bonus(proj, future) == se.RECENT_BONUS + se.LONG_SPAN_BONUS

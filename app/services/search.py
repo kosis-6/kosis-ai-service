@@ -81,6 +81,17 @@ NOT_STATISTICS_OVERRIDE = 0.55
 # 같은 주제의 형제 패밀리('고령자인구' 4개)는 임베딩 점수 차가 0.01 안쪽이라 거의 동점일 때만 묻는다
 HYBRID_AMBIGUOUS_GAP = 0.005
 
+# 연도를 말하지 않은 질문은 지금 표를 찾는 것으로 본다. 다른 패밀리의 옛날 단일 연도 표
+# ('2005년 연령/성별 인구')가 현행 표('2015~2025')를 이기는 일이 많아(개발셋 '다른 패밀리 1위'
+# 31건의 주된 유형) 최신 판·긴 수록 기간에 가산한다. choose는 패밀리 안에서만 최신 판을
+# 고르므로 패밀리가 다르면 못 잡는다. 값은 팀원 실험실 재현(11/1, 흐름 평균 +2.6p)
+RECENT_END_YEAR = 2023  # 이 해 이후까지 담은 표가 최신 판
+RECENT_BONUS = 0.05
+LONG_SPAN_YEARS = 10  # 수록 기간이 이 이상이면 긴 표 (단일 연도 표가 2,364개 중 1,926개)
+LONG_SPAN_BONUS = 0.05
+# 연도 대신 옛날을 가리키는 말이 있으면 가산하지 않는다
+PAST = re.compile(r"옛날|예전|과거|당시|그때|그\s*시절|\d+\s*년대|\d+\s*년\s*전")
+
 STOPWORDS = {
     "수", "통계", "통계표", "자료", "데이터", "현황", "관련", "표", "정보", "찾아줘", "알려줘",
     "보여줘", "몇", "명", "얼마", "얼마나", "몇명", "추이", "변화", "있어", "있나요",
@@ -328,6 +339,25 @@ def relevance(keyword: float, name_sim: float, dense: float | None) -> float:
     return dense + (KEYWORD_WEIGHT * lexical if keyword >= KEYWORD_GATE else 0.0)
 
 
+def wants_current(slots: dict[str, Any]) -> bool:
+    """연도도, 옛날을 가리키는 말도 없는 질문 → 지금 표를 찾는다"""
+    c = slots["conditions"]
+    return (
+        c["year"] is None and c["year_end"] is None and not PAST.search(slots.get("question", ""))
+    )
+
+
+def recency_bonus(t: dict[str, Any], slots: dict[str, Any]) -> float:
+    """최신 판(RECENT_END_YEAR 이후까지)·긴 수록 기간(LONG_SPAN_YEARS 이상) 가산.
+    장래 추계 표(~2072)는 늘 최신·긴 표라, 미래를 묻지 않으면 가산하지 않는다
+    ('애를 더 낳을 생각이 있는 여성' → 시나리오별 추계인구가 1위로 오던 문제)"""
+    if not slots.get("projection") and PROJECTION_TABLE.search(t["survey_name"] + t["name_n"]):
+        return 0.0
+    return RECENT_BONUS * (t["end_year"] >= RECENT_END_YEAR) + LONG_SPAN_BONUS * (
+        t["end_year"] - t["start_year"] >= LONG_SPAN_YEARS
+    )
+
+
 def unasked_modifiers(t: dict[str, Any], said: str) -> list[str]:
     """표명에 있지만 질문(said)에서 말하지 않은 모집단 수식어"""
     return [
@@ -351,6 +381,8 @@ def rank(
         top = max(keywords, default=0.0) or 1.0
         keywords = [k / top for k in keywords]
     cut = sorted(dense, reverse=True)[min(DENSE_TOP_K, len(dense)) - 1] if dense else None
+    # 키워드만 쓸 때는 패밀리 점수로 범위 밖을 판정하므로 가산하지 않는다
+    timeless = dense is not None and wants_current(slots)
     ranked = []
     for i, (t, kw) in enumerate(zip(tables, keywords, strict=True)):
         d = dense[i] if dense else None
@@ -363,6 +395,7 @@ def rank(
             + PASS_BONUS * passed
             - FAIL_PENALTY * (len(checks) - passed)
             - MODIFIER_PENALTY * len(unasked_modifiers(t, said))
+            + (recency_bonus(t, slots) if timeless else 0.0)
         )
         ranked.append({"table": t, "keyword": kw, "dense": d, "checks": checks, "score": score})
     ranked.sort(key=lambda r: (-r["score"], r["table"]["edition_order"], r["table"]["tbl_id"]))
