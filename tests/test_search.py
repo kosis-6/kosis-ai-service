@@ -284,6 +284,11 @@ def test_recency_bonus_only_for_timeless_questions(monkeypatch) -> None:
     monkeypatch.setattr(se, "RECENT_BONUS", 10.0)
     assert [r["score"] for r in se.rank(tables, s)] == before
     assert not se.wants_current(_slots("1990년대 인구", "인구"))
+    # 옛날을 시작점으로 쓴 추이 질문은 긴 수록 기간 표가 필요하므로 가산한다
+    assert top("옛날부터 지금까지 읍면동 연령별 인구") == "NEW"
+    assert se.wants_current(_slots("과거에서 현재까지 인구 변화", "인구"))
+    assert se.wants_current(_slots("20년 전부터 인구가 어떻게 변했는지", "인구"))
+    assert not se.wants_current(_slots("과거 인구", "인구"))
     # 장래 추계 표는 미래를 물을 때만 가산
     proj = se.prepare([_t("P", "장래 추계인구", 2022, 2072, "FP", survey_name="장래인구추계")])[0]
     assert se.recency_bonus(proj, _slots("인구", "인구")) == 0.0
