@@ -196,7 +196,8 @@ def test_unasked_subset_modifier_yields_to_plain_sibling() -> None:
 def test_hybrid_scope_uses_raw_dense_not_penalized_score() -> None:
     tables = _three_families()
     # 표에 없는 조건 → 감점. 키워드 가산(정규화 후 1위=1)을 넘도록 조건 셋
-    s = _slots("돌아가신 쌍둥이", "돌아가신 분", classes=["쌍둥이", "학력", "직업"])
+    # 분류 조건은 감점이 작으므로(SOFT_FAIL_PENALTY) 연도 조건(큰 감점)과 함께 건다
+    s = _slots("1990년 돌아가신 쌍둥이", "돌아가신 분", classes=["쌍둥이", "학력", "직업"], year=1990)
     result = se.find(tables, s, dense=[0.58, 0.30, 0.29])
     # 감점 후 점수는 기준 아래여도 임베딩 원점수가 기준 이상이면 범위 안
     assert result["candidates"][0]["score"] < se.HYBRID_MIN_SCORE
@@ -351,3 +352,19 @@ def test_llm_pick_review_switches_family_and_rejects(monkeypatch) -> None:
 
     monkeypatch.setattr(lp, "_ask", boom)
     assert asyncio.run(lp.review("혼인", dict(base), tables, {}))["table"]["tbl_id"] == "A1"  # 실패면 그대로
+
+
+def test_target_in_survey_path_passes_and_soft_penalty_is_small() -> None:
+    sahalin = se.prepare(
+        [_t("S1", "한 달 생활비", 2025, 2025, "FS", survey_name="영주귀국사할린동포실태조사")]
+    )[0]
+    s = _slots("사할린 동포들이 한 달 생활비를 얼마나 쓰는지", "생활비")
+    s["target"] = "사할린 동포"
+    assert se.check(sahalin, s)["target"] is True  # 조사 이름에 있는 대상은 통과
+    # 분류 조건 실패는 작은 감점, 연도 조건 실패는 큰 감점
+    t = se.prepare([_t("A", "인구", 2015, 2025, "FA")])[0]
+    base = se.rank([t], _slots("옛날 q", "인구"), [0.6])[0]["score"]  # '옛날' → 최신성 가산 없음
+    soft = se.rank([t], _slots("옛날 q", "인구", classes=["직업"]), [0.6])[0]["score"]
+    hard = se.rank([t], _slots("옛날 q", "인구", year=1990), [0.6])[0]["score"]
+    assert abs((base - soft) - se.SOFT_FAIL_PENALTY) < 1e-9
+    assert abs((base - hard) - se.FAIL_PENALTY) < 1e-9

@@ -44,6 +44,10 @@ FIELD_WEIGHTS = {"name": 1.0, "path": 0.6, "meta": 0.4}
 NAME_WEIGHT = 0.3
 PASS_BONUS = 0.08
 FAIL_PENALTY = 0.15
+# 대상·분류·항목·성별은 HCX 추출과 표 메타의 표현 차이로 자주 어긋나는 '부드러운' 조건이라 감점을 작게 둔다
+# (실험실에는 이 판정이 없음. 어댑터 실측 후보 재계산: 팀원 R@1 62→70, 생성 75→82, 개발 65→67, 손해 없음)
+SOFT_CHECKS = ("target", "class", "item", "sex")
+SOFT_FAIL_PENALTY = 0.05
 PUBLISH_LAG = 2  # 상대시점이 가리키는 해가 아직 공표 전이어도 이 햇수 안이면 최신 판을 맞는 표로 본다
 
 MIN_SCORE = 0.45  # 1순위 패밀리 점수가 이보다 낮으면 out_of_scope
@@ -341,7 +345,10 @@ def check(t: dict[str, Any], slots: dict[str, Any]) -> dict[str, bool]:
     # '전체'는 멤버 선택값이지 표가 갖춰야 할 조건이 아니다
     if slots.get("target") and slots["target"] != "전체":
         key = norm(slots["target"])
-        out["target"] = key in t["name_n"] or key in t["meta_n"] or key in norm(t["target"] or "")
+        # 조사 이름·경로에 있는 대상('사할린 동포', '고령친화')은 그 조사의 모든 표가 담는다
+        out["target"] = (
+            key in t["name_n"] or key in t["meta_n"] or key in norm(t["target"] or "") or key in t["path_n"]
+        )
     return out
 
 
@@ -419,10 +426,13 @@ def rank(
             continue
         checks = check(t, slots)
         passed = sum(checks.values())
+        failed = [k for k, ok in checks.items() if not ok]
+        soft_failed = sum(k.split(":")[0] in SOFT_CHECKS for k in failed)
         score = (
             relevance(kw, name_similarity(query, t["name_n"]), d)
             + PASS_BONUS * passed
-            - FAIL_PENALTY * (len(checks) - passed)
+            - FAIL_PENALTY * (len(failed) - soft_failed)
+            - SOFT_FAIL_PENALTY * soft_failed
             - MODIFIER_PENALTY * len(unasked_modifiers(t, said))
             + (recency_bonus(t, slots) if timeless else 0.0)
         )
