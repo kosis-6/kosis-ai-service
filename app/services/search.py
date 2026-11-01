@@ -102,6 +102,11 @@ RECENT_END_YEAR = 2023  # 이 해 이후까지 담은 표가 최신 판
 RECENT_BONUS = 0.05
 LONG_SPAN_YEARS = 10  # 수록 기간이 이 이상이면 긴 표 (단일 연도 표가 2,364개 중 1,926개)
 LONG_SPAN_BONUS = 0.05
+# 연도 없는 질문에서 수록이 오래전에 끝난 단일 연도 표 감점 (2005년 10% 표본 블록 등).
+# 최신판 가산은 2023년 이후 표에만 붙어 5년 주기 총조사(최신 2020)는 2005년 표와 동점이었다
+# (개발셋 d12 '노인 생활비': 2005년 65세 표 0.907 > 2020년 60세 표 0.862)
+STALE_YEARS = 15
+STALE_PENALTY = 0.05
 # 연도 대신 옛날을 가리키는 말이 있으면 가산하지 않는다
 PAST = re.compile(r"옛날|예전|과거|당시|그때|그\s*시절|\d+\s*년대|\d+\s*년\s*전")
 
@@ -399,8 +404,12 @@ def recency_bonus(t: dict[str, Any], slots: dict[str, Any]) -> float:
     ('애를 더 낳을 생각이 있는 여성' → 시나리오별 추계인구가 1위로 오던 문제)"""
     if not slots.get("projection") and PROJECTION_TABLE.search(t["survey_name"] + t["name_n"]):
         return 0.0
-    return RECENT_BONUS * (t["end_year"] >= RECENT_END_YEAR) + LONG_SPAN_BONUS * (
-        t["end_year"] - t["start_year"] >= LONG_SPAN_YEARS
+    long_span = t["end_year"] - t["start_year"] >= LONG_SPAN_YEARS
+    stale = not long_span and t["end_year"] <= RECENT_END_YEAR - STALE_YEARS
+    return (
+        RECENT_BONUS * (t["end_year"] >= RECENT_END_YEAR)
+        + LONG_SPAN_BONUS * long_span
+        - STALE_PENALTY * stale
     )
 
 

@@ -550,3 +550,15 @@ def test_off_domain_word_rejects_without_llm(monkeypatch) -> None:
     monkeypatch.setattr(lp, "_ask", boom)
     out = asyncio.run(lp.review("교통사고로 죽은 사람이 1년에 몇 명인지", dict(base), tables, {}))
     assert out["status"] == "out_of_scope"
+
+
+def test_stale_single_year_table_penalized_when_no_year_asked() -> None:
+    old = _t("O", "생활비원천별 고령자(65세 이상)-시군구", 2005, 2005, "FO")
+    new = _t("N", "성, 연령 및 생활비 원천별 고령자(60세이상)-시도", 2020, 2020, "FN")
+    tables = se.prepare([old, new])
+    s = _slots("노인들은 생활비를 어디서 마련하나요", "노인 생활비")
+    scores = {r["table"]["tbl_id"]: r["score"] for r in se.rank(tables, s, [0.6, 0.6])}
+    assert scores["N"] > scores["O"]  # 연도 없으면 2005년 단일 표는 감점
+    s2 = _slots("2005년 노인 생활비", "노인 생활비"); s2["conditions"]["year"] = 2005
+    scores2 = {r["table"]["tbl_id"]: r["score"] for r in se.rank(tables, s2, [0.6, 0.6])}
+    assert scores2["O"] > scores2["N"]  # 연도를 말하면 감점 없음 + 연도 조건 통과
