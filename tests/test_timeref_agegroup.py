@@ -24,7 +24,9 @@ def test_n_years_ago_and_open_end() -> None:
 def test_compare_base_and_non_years_are_not_time() -> None:
     assert timeref.resolve("작년보다 인구가 늘었어?", TODAY) is None
     assert timeref.resolve("5년 전이랑 비교해서 혼자 사는 집이 얼마나 늘었나", TODAY) is None
-    assert timeref.resolve("올해 외국인 유학생이 작년보다 늘었는지", TODAY).year == 2026  # 비교 기준은 빼고 시점만
+    assert (
+        timeref.resolve("올해 외국인 유학생이 작년보다 늘었는지", TODAY).year == 2026
+    )  # 비교 기준은 빼고 시점만
     assert timeref.resolve("전년 대비 출생아", TODAY) is None
     assert timeref.resolve("10년 전 대비 인구", TODAY) is None
     assert timeref.resolve("몇 년 전 인구", TODAY) is None
@@ -58,7 +60,9 @@ def test_age_coverage_and_long_years() -> None:
     from app.services import search as se
 
     # 연령 축이 있는 추계 표는 전 연령 (이름의 '고령인구'에 속지 않는다)
-    assert se.age_coverage(se.norm("주요 연령계층별 추계인구(생산연령인구, 고령인구 등)/시도"), ["인구종류별"], "") == (0, None)
+    assert se.age_coverage(
+        se.norm("주요 연령계층별 추계인구(생산연령인구, 고령인구 등)/시도"), ["인구종류별"], ""
+    ) == (0, None)
     assert se.age_coverage(se.norm("생활비원천별 고령자(65세 이상)-시군구"), [], "") == (65, None)
     assert se.age_coverage(se.norm("세대구성별 고령자 - 시군구"), [], "") == (65, None)
     # '10년 넘게'는 연도가 아니다

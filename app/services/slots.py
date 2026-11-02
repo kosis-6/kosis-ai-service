@@ -121,7 +121,8 @@ def empty_slots(question: str) -> dict[str, Any]:
         "projection": False,  # 장래 추계를 찾는 질문
         "exclude": [],  # 빼 달라고 한 단어 ('귀화한 사람 말고' → ['귀화한'])
         "spouse": None,  # '외국인 아내' / '외국인 남편'
-        "age": None,  # 연령 집단 이름 ('노인' → {"expr": "노인", "lo": 65, "hi": None, "basis": ...})
+        # 연령 집단 이름 ('노인' → {"expr": "노인", "lo": 65, "hi": None, "basis": ...})
+        "age": None,
         "search_query": None,  # HCX 재작성 검색어 (임베딩 평균용)
         "time_ref": None,  # 상대시점 ('작년' → {"expr": "작년", "year": 2025, "open_end": False})
     }
@@ -216,7 +217,8 @@ def correct(question: str, slots: dict[str, Any]) -> dict[str, Any]:
     years = sorted({int(y) for y in YEAR.findall(question)} | short_years(question))
     slots["time_ref"] = None
     if not years and (ref := timeref.resolve(question, today)):
-        # 상대시점("작년", "2년 전부터")은 LLM이 아니라 오늘 날짜로 코드가 푼다. 끝이 열린 기간은 최신까지
+        # 상대시점("작년", "2년 전부터")은 LLM이 아니라 오늘 날짜로 코드가 푼다. 끝이 열린 기간은
+        # 최신까지
         years = [ref.year]
         slots["time_ref"] = {"expr": ref.expr, "year": ref.year, "open_end": ref.open_end}
         fix("year", ref.year, ref.describe(today))
@@ -225,13 +227,14 @@ def correct(question: str, slots: dict[str, Any]) -> dict[str, Any]:
         fix("year", years[0] if years else None, "질문의 연도")
         fix("year_end", years[-1] if len(years) > 1 else None, "질문의 기간")
     # 장래 추계: 올해 이후 연도이거나 예측 표현
-    slots["projection"] = bool(
-        PROJECTION.search(question) or (years and years[-1] > today.year)
-    )
+    slots["projection"] = bool(PROJECTION.search(question) or (years and years[-1] > today.year))
     slots["exclude"] = negated_words(question)
-    # 연령 집단 이름("노인", "청년")은 법령·통계 정의 사전으로 구간을 정한다. 숫자 구간이 있으면 그쪽이 우선
+    # 연령 집단 이름("노인", "청년")은 법령·통계 정의 사전으로 구간을 정한다. 숫자 구간이 있으면
+    # 그쪽이 우선
     age = agegroup.resolve(question)
-    slots["age"] = {"expr": age.expr, "lo": age.lo, "hi": age.hi, "basis": age.basis} if age else None
+    slots["age"] = (
+        {"expr": age.expr, "lo": age.lo, "hi": age.hi, "basis": age.basis} if age else None
+    )
 
     # 성별: 한 성별만 말했으면 그 성별, 남녀로 나눠 보려면 성별 분류, 말이 없으면 null
     if HOUSEHOLDER_SEX.search(question) and "가구주 성별" not in c["classes"]:
