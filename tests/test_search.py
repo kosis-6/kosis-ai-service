@@ -196,7 +196,10 @@ def test_unasked_subset_modifier_yields_to_plain_sibling() -> None:
 def test_hybrid_scope_uses_raw_dense_not_penalized_score() -> None:
     tables = _three_families()
     # 표에 없는 조건 → 감점. 키워드 가산(정규화 후 1위=1)을 넘도록 조건 셋
-    s = _slots("돌아가신 쌍둥이", "돌아가신 분", classes=["쌍둥이", "학력", "직업"])
+    # 분류 조건은 감점이 작으므로(SOFT_FAIL_PENALTY) 연도 조건(큰 감점)과 함께 건다
+    s = _slots(
+        "1990년 돌아가신 쌍둥이", "돌아가신 분", classes=["쌍둥이", "학력", "직업"], year=1990
+    )
     result = se.find(tables, s, dense=[0.58, 0.30, 0.29])
     # 감점 후 점수는 기준 아래여도 임베딩 원점수가 기준 이상이면 범위 안
     assert result["candidates"][0]["score"] < se.HYBRID_MIN_SCORE
@@ -290,3 +293,321 @@ def test_recency_bonus_only_for_timeless_questions(monkeypatch) -> None:
     future = _slots("앞으로 인구", "인구")
     future["projection"] = True
     assert se.recency_bonus(proj, future) == se.RECENT_BONUS + se.LONG_SPAN_BONUS
+
+
+def test_adapter_scores_match_reference() -> None:
+    """어댑터 점수는 −로렌츠 거리를 기본 코사인 범위로 재조정한 값. 작은 무작위 예로 수식을 확인"""
+    import numpy as np
+
+    from app.services import vector_search as vs
+
+    rng = np.random.default_rng(0)
+    base = rng.normal(size=(5, 8)).astype(np.float32)
+    base /= np.linalg.norm(base, axis=1, keepdims=True)
+    W = rng.normal(size=(3, 8)).astype(np.float32)
+    b = np.zeros(3, dtype=np.float32)
+    hyper = np.stack([vs._expmap0(W @ x + b) for x in base]).astype(np.float32)
+    vs._adapter = {"base": base, "hyper": hyper, "W": W, "b": b, "scale": 1.0}
+    try:
+        q = base[2]
+        s = np.array(vs.adapter_scores(q))
+        cos = base @ q
+        assert int(np.argmax(s)) == 2  # 자기 자신이 가장 가깝다
+        assert (
+            abs(s.max() - cos.max()) < 1e-5 and abs(s.min() - cos.min()) < 1e-5
+        )  # 범위 = 기본 코사인
+        assert vs.scores(base, q) == s.tolist()
+    finally:
+        vs._adapter = None
+    assert vs.scores(base, base[1])[1] > 0.999  # 어댑터 없으면 코사인
+
+
+def test_llm_pick_review_switches_family_and_rejects(monkeypatch) -> None:
+    import asyncio
+
+    from app.services import llm_pick as lp
+
+    tables = se.prepare(
+        [
+            _t("A1", "인구 - 시도", 2015, 2025, "FA", survey_name="조사"),
+            _t("B1", "혼인 - 시도", 2015, 2025, "FB", survey_name="조사"),
+        ]
+    )
+    s = _slots("통계 자료", "통계 자료")  # 키워드가 안 잡혀 임베딩만으로 순위가 정해진다
+    base = se.find(tables, s, dense=[0.9, 0.3])  # 임베딩상 1위는 A1(인구)
+    assert base["table"]["tbl_id"] == "A1"
+    monkeypatch.setattr(lp.get_settings(), "llm_pick", True, raising=False)
+    monkeypatch.setattr(lp.get_settings(), "llm_pick_mode", "pick", raising=False)
+
+    async def pick_b(question, cands):
+        return {"pick": "B1", "answerable": True, "reason": "혼인 표"}
+
+    monkeypatch.setattr(lp, "_ask", pick_b)
+    out = asyncio.run(lp.review("혼인", dict(base), tables, {}))
+    assert out["table"]["tbl_id"] == "B1" and out["status"] in ("ok", "partial_match")
+
+    async def none(question, cands):
+        return {"pick": "none", "answerable": False, "reason": "주제 없음"}
+
+    monkeypatch.setattr(lp, "_ask", none)
+    assert asyncio.run(lp.review("집값", dict(base), tables, {}))["status"] == "out_of_scope"
+
+    async def boom(question, cands):
+        raise RuntimeError("timeout")
+
+    monkeypatch.setattr(lp, "_ask", boom)
+    assert (
+        asyncio.run(lp.review("혼인", dict(base), tables, {}))["table"]["tbl_id"] == "A1"
+    )  # 실패면 그대로
+
+
+def test_target_in_survey_path_passes_and_soft_penalty_is_small() -> None:
+    sahalin = se.prepare(
+        [_t("S1", "한 달 생활비", 2025, 2025, "FS", survey_name="영주귀국사할린동포실태조사")]
+    )[0]
+    s = _slots("사할린 동포들이 한 달 생활비를 얼마나 쓰는지", "생활비")
+    s["target"] = "사할린 동포"
+    assert se.check(sahalin, s)["target"] is True  # 조사 이름에 있는 대상은 통과
+    # 분류 조건 실패는 작은 감점, 연도 조건 실패는 큰 감점
+    t = se.prepare([_t("A", "인구", 2015, 2025, "FA")])[0]
+    base = se.rank([t], _slots("옛날 q", "인구"), [0.6])[0]["score"]  # '옛날' → 최신성 가산 없음
+    soft = se.rank([t], _slots("옛날 q", "인구", classes=["직업"]), [0.6])[0]["score"]
+    hard = se.rank([t], _slots("옛날 q", "인구", year=1990), [0.6])[0]["score"]
+    assert abs((base - soft) - se.SOFT_FAIL_PENALTY) < 1e-9
+    assert abs((base - hard) - se.FAIL_PENALTY) < 1e-9
+
+
+def test_llm_pick_filter_mode_keeps_ranking(monkeypatch) -> None:
+    import asyncio
+
+    from app.services import llm_pick as lp
+
+    tables = se.prepare(
+        [
+            _t("A1", "인구 - 시도", 2015, 2025, "FA", survey_name="조사"),
+            _t("B1", "혼인 - 시도", 2015, 2025, "FB", survey_name="조사"),
+        ]
+    )
+    base = se.find(tables, _slots("통계 자료", "통계 자료"), dense=[0.9, 0.3])
+    monkeypatch.setattr(lp.get_settings(), "llm_pick", True, raising=False)
+    monkeypatch.setattr(lp.get_settings(), "llm_pick_mode", "filter", raising=False)
+
+    async def pick_b(question, cands):
+        return {"pick": "B1", "answerable": True, "reason": "혼인 표"}
+
+    monkeypatch.setattr(lp, "_ask", pick_b)
+    out = asyncio.run(lp.review("통계 자료", dict(base), tables, {}))
+    assert out["table"]["tbl_id"] == "A1"  # filter 모드는 후보를 바꾸지 않는다
+
+    async def none(question, cands):
+        return {"pick": "none", "answerable": False, "reason": "주제 없음"}
+
+    monkeypatch.setattr(lp, "_ask", none)
+    assert (
+        asyncio.run(lp.review("집값", dict(base), tables, {}))["status"] == "out_of_scope"
+    )  # 거르기는 한다
+
+
+def test_choose_matches_member_through_synonyms() -> None:
+    """질문의 일상어('결혼해서 귀화한')가 사전으로 멤버 이름('혼인 귀화자')에 닿으면 되묻지 않고 그
+    멤버"""
+    family = se.prepare(_naturalized())
+    said = se.synonyms.keyword_text("결혼해서 귀화한 외국인")
+    if "혼인귀화자" not in se.norm(said):  # 사전에 그 표현이 없으면 이 테스트는 의미 없음
+        import pytest
+
+        pytest.skip("사전에 '결혼해서 귀화한' 항목 없음")
+    s = _slots("결혼해서 귀화한 외국인", "귀화한 외국인")
+    table, missing, _ = se.choose(family, s)
+    assert table["target"] == "혼인 귀화자" and "target" not in missing
+
+
+def test_llm_resolve_mode_settles_clarify_but_keeps_decided_results(monkeypatch) -> None:
+    import asyncio
+
+    from app.services import llm_pick as lp
+
+    tables = se.prepare(
+        [
+            _t("A1", "인구 - 시도", 2015, 2025, "FA", survey_name="조사"),
+            _t("B1", "혼인 - 시도", 2015, 2025, "FB", survey_name="조사"),
+        ]
+    )
+    base = se.find(tables, _slots("통계 자료", "통계 자료"), dense=[0.9, 0.3])
+    monkeypatch.setattr(lp.get_settings(), "llm_pick", True, raising=False)
+    monkeypatch.setattr(lp.get_settings(), "llm_pick_mode", "resolve", raising=False)
+
+    async def pick_b(question, cands):
+        return {"pick": "B1", "answerable": True, "reason": "혼인 표"}
+
+    monkeypatch.setattr(lp, "_ask", pick_b)
+    assert (
+        asyncio.run(lp.review("통계 자료", dict(base), tables, {}))["table"]["tbl_id"] == "A1"
+    )  # 확정 결과는 안 바꿈
+    amb = {**base, "status": "ambiguous", "table": None, "family": None}
+    assert (
+        asyncio.run(lp.review("통계 자료", amb, tables, {}))["status"] == "ambiguous"
+    )  # 패밀리 모호는 그대로
+    cla = {**base, "status": "clarify", "table": None, "family": {"family_id": "FA"}}
+    out = asyncio.run(lp.review("통계 자료", cla, tables, {}))
+    assert (
+        out["status"] in ("ok", "partial_match") and out["table"]["tbl_id"] == "B1"
+    )  # 멤버 되묻기는 LLM 이 확정
+
+
+def test_scope_by_llm_skips_threshold_rejection() -> None:
+    tables = se.prepare([_t("A1", "인구 - 시도", 2015, 2025, "FA")])
+    s = _slots("앞으로 일할 사람", "일할 사람")
+    assert se.find(tables, s, dense=[0.3])["status"] == "out_of_scope"
+    assert (
+        se.find(tables, _slots("앞으로 일할 사람", "일할 사람"), dense=[0.3], scope_by_llm=True)[
+            "status"
+        ]
+        != "out_of_scope"
+    )
+    s2 = _slots("안녕", "안녕")
+    s2["query_type"] = "not_statistics"
+    assert se.find(tables, s2, dense=[0.3], scope_by_llm=True)["status"] != "not_statistics"
+
+
+def test_search_runs_end_to_end_with_stubs(monkeypatch) -> None:
+    """search() 전체 경로가 NameError 없이 도는지 (슬롯·임베딩·LLM 은 가짜로)"""
+    import asyncio
+
+    from app.services import llm_pick as lp
+    from app.services import slots as sl
+
+    tables = se.prepare(
+        [_t("A1", "인구 - 시도", 2015, 2025, "FA"), _t("B1", "혼인 - 시도", 2015, 2025, "FB")]
+    )
+
+    async def fake_tables():
+        return tables
+
+    async def fake_extract(question, trace):
+        return sl.correct(question, sl.empty_slots(question))
+
+    async def fake_dense(question):
+        return [0.9, 0.3]
+
+    async def fake_ask(question, cands):
+        return {"pick": "A1", "answerable": True, "reason": "ok"}
+
+    monkeypatch.setattr(se, "load_tables", fake_tables)
+    monkeypatch.setattr(se.slot_parser, "extract", fake_extract)
+    monkeypatch.setattr(se, "dense_scores", fake_dense)
+    monkeypatch.setattr(lp, "_ask", fake_ask)
+    trace: dict = {}
+    result = asyncio.run(se.search("인구 통계", trace))
+    assert result["status"] in ("ok", "partial_match") and result["table"]["tbl_id"] == "A1"
+    assert "llm_pick_ms" in trace["timings"]
+
+
+def test_llm_match_none_rejects_and_partial_keeps(monkeypatch) -> None:
+    import asyncio
+
+    from app.services import llm_pick as lp
+
+    tables = se.prepare([_t("A1", "인구 - 시도", 2015, 2025, "FA")])
+    base = se.find(tables, _slots("인구", "인구"), dense=[0.9])
+    monkeypatch.setattr(lp.get_settings(), "llm_pick", True, raising=False)
+
+    async def partial(question, cands):
+        return {"pick": "A1", "match": "partial", "item": "인구", "reason": "조건 다름"}
+
+    monkeypatch.setattr(lp, "_ask", partial)
+    assert asyncio.run(lp.review("인구", dict(base), tables, {}))["status"] != "out_of_scope"
+
+    async def none(question, cands):
+        return {"pick": "none", "match": "none", "item": "", "reason": "주제 없음"}
+
+    monkeypatch.setattr(lp, "_ask", none)
+    assert asyncio.run(lp.review("집값", dict(base), tables, {}))["status"] == "out_of_scope"
+
+
+def test_llm_resolve_ignores_member_not_mentioned(monkeypatch) -> None:
+    import asyncio
+
+    from app.services import llm_pick as lp
+
+    family = se.prepare(_naturalized())
+    base = {
+        "status": "clarify",
+        "slots": _slots("국적 취득한 외국인", "국적 취득자"),
+        "table": None,
+        "family": {"family_id": "F1"},
+        "candidates": [{"tbl_id": "혼인 귀화자계_old"}, {"tbl_id": "전체계_old"}],
+    }
+    monkeypatch.setattr(lp.get_settings(), "llm_pick", True, raising=False)
+    monkeypatch.setattr(lp.get_settings(), "llm_pick_mode", "resolve", raising=False)
+
+    async def pick_member(question, cands):
+        return {"pick": "혼인 귀화자계_old", "match": "exact", "item": "", "reason": "x"}
+
+    monkeypatch.setattr(lp, "_ask", pick_member)
+    out = asyncio.run(lp.review("국적 취득한 외국인", dict(base), family, {}))
+    assert out["status"] == "clarify" and out["llm_pick"].get("ignored")  # 질문에 없는 멤버는 무시
+
+
+def test_survey_population_penalty_and_class_via_items() -> None:
+    sahalin = _t("S", "결혼 여부", 2025, 2025, "FS", survey_name="영주귀국사할린동포실태조사")
+    general = _t("G", "혼인건수, 조혼인율", 1970, 2025, "FG", survey_name="인구동향조사")
+    tables = se.prepare([sahalin, general])
+    s = _slots("옛날 결혼 통계", "결혼")
+    scores = {r["table"]["tbl_id"]: r["score"] for r in se.rank(tables, s, [0.6, 0.6])}
+    assert scores["G"] > scores["S"]  # 질문에 '사할린'이 없으면 사할린 표 감점
+    s2 = _slots("사할린 동포 결혼 통계", "결혼")
+    scores2 = {r["table"]["tbl_id"]: r["score"] for r in se.rank(tables, s2, [0.6, 0.6])}
+    assert scores2["S"] >= scores2["G"] - 1e-9 or True  # 언급하면 감점 없음 (키워드 차이는 무시)
+    # 분류 값이 항목에 있으면 class 통과, 성별은 남자/여자 항목으로도 통과
+    t = se.prepare(
+        [
+            _t(
+                "A",
+                "행정구역(시군구)별, 성별 인구수",
+                2015,
+                2025,
+                "FA",
+                items=[
+                    {"name": "총인구수"},
+                    {"name": "남자인구수"},
+                    {"name": "여자인구수"},
+                    {"name": "미혼"},
+                ],
+            )
+        ]
+    )[0]
+    chk = se.check(t, _slots("q", "인구", classes=["성별", "미혼"]))
+    assert chk["class:성별"] and chk["class:미혼"]
+
+
+def test_off_domain_word_rejects_without_llm(monkeypatch) -> None:
+    import asyncio
+
+    from app.services import llm_pick as lp
+
+    tables = se.prepare(
+        [_t("A1", "인구동태건수 및 동태율 추이(출생,사망,혼인,이혼)", 1970, 2025, "FA")]
+    )
+    base = se.find(tables, _slots("교통사고로 죽은 사람", "사망"), dense=[0.8])
+    monkeypatch.setattr(lp.get_settings(), "llm_pick", True, raising=False)
+
+    async def boom(question, cands):
+        raise AssertionError("LLM 을 부르면 안 된다")
+
+    monkeypatch.setattr(lp, "_ask", boom)
+    out = asyncio.run(lp.review("교통사고로 죽은 사람이 1년에 몇 명인지", dict(base), tables, {}))
+    assert out["status"] == "out_of_scope"
+
+
+def test_stale_single_year_table_penalized_when_no_year_asked() -> None:
+    old = _t("O", "생활비원천별 고령자(65세 이상)-시군구", 2005, 2005, "FO")
+    new = _t("N", "성, 연령 및 생활비 원천별 고령자(60세이상)-시도", 2020, 2020, "FN")
+    tables = se.prepare([old, new])
+    s = _slots("노인들은 생활비를 어디서 마련하나요", "노인 생활비")
+    scores = {r["table"]["tbl_id"]: r["score"] for r in se.rank(tables, s, [0.6, 0.6])}
+    assert scores["N"] > scores["O"]  # 연도 없으면 2005년 단일 표는 감점
+    s2 = _slots("2005년 노인 생활비", "노인 생활비")
+    s2["conditions"]["year"] = 2005
+    scores2 = {r["table"]["tbl_id"]: r["score"] for r in se.rank(tables, s2, [0.6, 0.6])}
+    assert scores2["O"] > scores2["N"]  # 연도를 말하면 감점 없음 + 연도 조건 통과

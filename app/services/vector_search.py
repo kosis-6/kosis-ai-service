@@ -30,6 +30,15 @@ from app.core.config import get_settings
 logger = logging.getLogger(__name__)
 
 LOCAL_MODEL = "BAAI/bge-m3"
+# 쌍곡 어댑터 (실험실 §49·§56): bge-m3 질문 벡터를 1024→128 선형 + 로렌츠 exp map 으로 옮겨 표
+# 벡터와
+# 거리를 재고, 질문마다 기본 코사인의 [min, max] 범위로 선형 재조정해 융합에 넣는다. 파일이 없으면
+# 코사인만
+# 쓴다. 표 쪽 벡터(base·hyper)는 실험실 문서(V3+분류값)로 만든 것이라 table_embeddings 와 별개로
+# 들고 있다
+# (2,364 × 1024 + 129, 약 11MB).
+ADAPTER_FILE = "data/embeddings/hyper_adapter.npz"
+_adapter: dict[str, Any] | None = None
 CLOVA_MODEL = "v2"
 VECTORS_SQL = "SELECT tbl_id, embedding::real[] AS embedding FROM table_embeddings"
 QUERY_TIMEOUT = 3.0  # 초. CLOVA 질문 임베딩 응답은 보통 0.1~0.9초
@@ -95,6 +104,57 @@ async def embed_query(question: str) -> np.ndarray | None:
     return v
 
 
+def load_adapter(ids: list[str]) -> bool:
+    """어댑터 파일을 읽어 표 순서(ids)에 맞춘다. 없거나 표가 빠지면 False (코사인만)"""
+    global _adapter
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[2] / ADAPTER_FILE
+    if not path.exists():
+        _adapter = None
+        return False
+    z = np.load(path, allow_pickle=True)
+    pos = {t: i for i, t in enumerate(z["ids"].tolist())}
+    missing = [i for i in ids if i not in pos]
+    if missing:
+        logger.warning("어댑터 표 벡터 %d개 빠짐 → 코사인만 (예: %s)", len(missing), missing[:3])
+        _adapter = None
+        return False
+    order = [pos[i] for i in ids]
+    _adapter = {
+        "base": z["base"][order].astype(np.float32),
+        "hyper": z["hyper"][order].astype(np.float32),
+        "W": z["W"].astype(np.float32),
+        "b": z["b"].astype(np.float32),
+        "scale": float(np.exp(float(z["log_scale"]))),
+    }
+    return True
+
+
+def adapter_loaded() -> bool:
+    return _adapter is not None
+
+
+def _expmap0(v: np.ndarray) -> np.ndarray:
+    n = max(float(np.linalg.norm(v)), 1e-6)
+    return np.concatenate([[np.cosh(n)], np.sinh(n) * v / n])
+
+
+def adapter_scores(query: np.ndarray) -> list[float]:
+    """어댑터 점수: −로렌츠 거리를 질문별 기본 코사인 범위로 재조정"""
+    assert _adapter is not None
+    base = _adapter["base"] @ query
+    h = _expmap0((_adapter["W"] @ query + _adapter["b"]) * _adapter["scale"])
+    hx = _adapter["hyper"]
+    inner = -h[0] * hx[:, 0] + hx[:, 1:] @ h[1:]
+    d = -np.arccosh(np.maximum(-inner, 1.0 + 1e-6))
+    lo, hi = d.min(), d.max()
+    return (base.min() + (d - lo) / max(hi - lo, 1e-9) * (base.max() - base.min())).tolist()
+
+
 def scores(matrix: np.ndarray, query: np.ndarray) -> list[float]:
-    """표마다 질문과의 코사인 유사도 (둘 다 길이 1이라 내적)"""
+    """표마다 질문과의 점수. 어댑터가 있으면 어댑터 점수, 없으면 코사인 유사도(둘 다 길이 1이라
+    내적)"""
+    if _adapter is not None:
+        return adapter_scores(query)
     return (matrix @ query).tolist()
