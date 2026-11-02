@@ -1,12 +1,17 @@
-"""검색 뒤 HCX-007 최종 검토 (실전 2, 실험실 §56-4·§61-3): 상위 5 후보 중 질문에 맞는 표 하나를 고르고,
+"""검색 뒤 HCX-007 최종 검토 (실전 2, 실험실 §56-4·§61-3): 상위 5 후보 중 질문에 맞는 표 하나를
+고르고,
 어느 후보도 질문 주제를 다루지 않으면 범위 밖으로 돌린다.
 
-- HCX-007, 생각 끄기(thinking none), Structured Outputs(responseFormat json + 후보 tbl_id enum)라 JSON이 깨지지 않고
+- HCX-007, 생각 끄기(thinking none), Structured Outputs(responseFormat json + 후보 tbl_id enum)라
+  JSON이 깨지지 않고
   약 1.5초·900토큰. 실험실: 범위 밖 재현율 30/30, 거짓 거절 1/102, 새 테스트셋 흐름 68→74.
-- 고른 표의 패밀리가 1위와 다르면 그 패밀리로 멤버·판 선택을 다시 한다(resolve). 되묻기(clarify)가 필요한 결과는
+- 고른 표의 패밀리가 1위와 다르면 그 패밀리로 멤버·판 선택을 다시 한다(resolve). 되묻기(clarify)가
+  필요한 결과는
   건드리지 않는다. 호출이 실패하면 검색 결과를 그대로 둔다.
-- 모드(LLM_PICK_MODE): filter = 거르기만 / pick = 고른 표로 패밀리 교체 / resolve(기본) = 확정 결과는 거르기만,
-  멤버 되묻기(clarify) 상태에서는 고른 표로 멤버·판까지 확정 (되묻기 횟수가 준다). 패밀리 모호는 1위 유지.
+- 모드(LLM_PICK_MODE): filter = 거르기만 / pick = 고른 표로 패밀리 교체 /
+  resolve(기본) = 확정 결과는 거르기만,
+  멤버 되묻기(clarify) 상태에서는 고른 표로 멤버·판까지 확정 (되묻기 횟수가 준다). 패밀리 모호는 1위
+  유지.
 - 설정 LLM_PICK=false 로 끈다.
 """
 
@@ -17,42 +22,41 @@ import time
 from typing import Any
 
 from app.core.config import get_settings
+from app.prompts.llm_pick import SYSTEM
 from app.services.hcx_client import HcxClient
 
 
 def se_norm(value: str) -> str:
     return re.sub(r"[^0-9A-Za-z가-힣]", "", value or "")
 
+
 logger = logging.getLogger(__name__)
 
 MODEL = "HCX-007"
-TOP_K = 8  # 5 → 8: 개발·t3 에서 정답이 6~8위인 문항(d21 전출지·전입지, d54 시도별 외국인과의 혼인, t34 외국인 근로자, t26 출산순위별 출생)을 LLM 이 보지 못했다 (§73)
-# 인구 통계 카탈로그에 없는 주제. 질문에 이 말이 있는데 어느 후보의 이름·분류·항목에도 없으면 LLM 을 거치지 않고 범위 밖
-# (레포 측정 §68-6: LLM 이 '교통사고 사망'→사망자수, '암 환자'→사망자수, '의사 수'→직업별 취업자처럼 주제 인접 표를 partial 로 통과시킴)
+# 후보 수 5 → 8: 정답이 6~8위인 문항(d21 전출지·전입지, d54 시도별 외국인과의 혼인, t34 외국인
+# 근로자,
+# t26 출산순위별 출생)을 LLM 이 보지 못했다 (§73)
+TOP_K = 8
+# 인구 통계 카탈로그에 없는 주제. 질문에 이 말이 있는데 어느 후보의 이름·분류·항목에도 없으면 LLM 을
+# 거치지 않고 범위 밖
+# (레포 측정 §68-6: LLM 이 '교통사고 사망'→사망자수, '암 환자'→사망자수, '의사 수'→직업별 취업자처럼
+# 주제 인접 표를 partial 로 통과시킴)
 OFF_DOMAIN = re.compile(
-    r"교통사고|암\s*환자|코로나|질병|환자|관리비|난방비|등록금|월급|임금|소득|집값|매매가|전세가|분양가|범죄|자살|목숨을 끊|"
+    r"교통사고|암\s*환자|코로나|질병|환자|관리비|난방비|등록금|월급|임금|소득|집값|매매가|전세가|분양가|"
+    r"범죄|자살|목숨을 끊|"
     r"흡연|담배|음주|의사가|의사 수|병원|병상|빈집|학업중단|진학률|학생 수|학생이 몇"
 )
-SYSTEM = """당신은 통계청 KOSIS 통계표 안내 챗봇의 최종 검토자입니다. 사용자 질문과 검색된 후보 통계표 목록(최대 8개)을 받습니다.
-각 후보에는 표 이름, 조사, 수록 기간, 지역 단위, 분류(축)와 값 예시, 항목이 있습니다.
-
-할 일:
-1. 질문에 가장 잘 맞는 후보 하나를 고릅니다. 기준: 묻는 대상·조건(연도, 지역 단위, 성별, 분류)을 실제로 담고 있는가, 묻는 값(수/비율/평균)이 항목에 있는가, 수록 기간이 질문 시점을 포함하는가. 같은 내용이면 수록 기간이 길고 최신인 표를 고릅니다.
-2. match 로 판정합니다.
-   - "exact": 고른 표의 항목·분류가 질문이 묻는 값을 그대로 담고 있다.
-   - "partial": 주제는 같지만 조건(연도·지역 단위·성별·세부 분류)이 조금 다르거나 더 넓은 표다. 이 경우도 그 표를 안내합니다.
-   - "none": 후보 중 어느 것도 질문의 주제를 다루지 않는다(예: 집값, 월급, 날씨, 신청 방법). 주제가 비슷해 보여도 질문이 묻는 값(예: 학생 수, 자살자 수, 흡연율, 의사 수, 빈집 수, 연금 수급자 수)이 어느 후보의 항목·분류에도 없으면 none 입니다. 수십 년 전 한 해만 있는 표로 요즘 질문에 답하지 마세요.
-3. item: 고른 표에서 질문의 값에 해당하는 항목 또는 분류 값 이름을 그대로 적습니다 (none 이면 빈 문자열).
-후보 밖의 표 ID를 만들지 마세요. 설명 없이 JSON만: {"pick": "<후보의 tbl_id 또는 none>", "match": "exact"|"partial"|"none", "item": "<항목 이름>", "reason": "<한 문장>"}"""
 
 
 def cand_text(t: dict[str, Any], i: int) -> str:
     cls = "; ".join(
-        f"{c['name']}({', '.join((c.get('sample_values') or [])[:4])})" for c in (t["classifications"] or [])[:4]
+        f"{c['name']}({', '.join((c.get('sample_values') or [])[:4])})"
+        for c in (t["classifications"] or [])[:4]
     )
     items = ", ".join(x["name"] for x in (t["items"] or [])[:8])
     return (
-        f"[{i}] tbl_id={t['tbl_id']} | {t['table_name']} | 조사: {t['survey_name']} | 수록: {t['period']} | "
+        f"[{i}] tbl_id={t['tbl_id']} | {t['table_name']} | 조사: {t['survey_name']} | "
+        f"수록: {t['period']} | "
         f"지역 단위: {', '.join(t['region_levels'] or []) or '전국'} | 분류: {cls} | 항목: {items}"
     )
 
@@ -82,7 +86,9 @@ def norm_pick(parsed: dict[str, Any] | None, cands: list[str]) -> str | None:
 
 
 async def _ask(question: str, cands: list[dict[str, Any]]) -> dict[str, Any] | None:
-    user = f"질문: {question}\n\n후보:\n" + "\n".join(cand_text(t, i + 1) for i, t in enumerate(cands))
+    user = f"질문: {question}\n\n후보:\n" + "\n".join(
+        cand_text(t, i + 1) for i, t in enumerate(cands)
+    )
     ids = [t["tbl_id"] for t in cands]
     result = await HcxClient().chat(
         MODEL,
@@ -123,7 +129,12 @@ async def review(
         se_norm(m.group(0)) in (t["name_n"] + t["meta_n"] + t["path_n"]) for t in cands
     ):
         trace["llm_pick"] = {"off_domain": m.group(0)}
-        return {**result, "status": "out_of_scope", "reason": f"'{m.group(0)}'은 인구 통계 범위 밖입니다", "llm_pick": trace["llm_pick"]}
+        return {
+            **result,
+            "status": "out_of_scope",
+            "reason": f"'{m.group(0)}'은 인구 통계 범위 밖입니다",
+            "llm_pick": trace["llm_pick"],
+        }
     start = time.perf_counter()
     try:
         parsed = await _ask(question, cands)
@@ -132,8 +143,13 @@ async def review(
         trace["llm_pick"] = {"error": f"{type(e).__name__}: {e}"}
         return result
     pick = norm_pick(parsed, cand_ids)
-    trace["llm_pick"] = {"raw": parsed, "pick": pick, "ms": round((time.perf_counter() - start) * 1000)}
-    # 거절은 match=none 일 때만. partial(조건이 조금 다른 표)은 안내한다 (실험실·레포 측정: 옛 판·넓은 표를
+    trace["llm_pick"] = {
+        "raw": parsed,
+        "pick": pick,
+        "ms": round((time.perf_counter() - start) * 1000),
+    }
+    # 거절은 match=none 일 때만. partial(조건이 조금 다른 표)은 안내한다 (실험실·레포 측정: 옛
+    # 판·넓은 표를
     # 거절해 생기던 거짓 거절 6건 대응). answerable(구 형식)도 받는다
     match = (parsed or {}).get("match")
     answerable = match != "none" if match else bool((parsed or {}).get("answerable", True))
@@ -154,7 +170,9 @@ async def review(
     if mode == "filter" or (mode == "resolve" and not undecided):
         return {**result, "llm_pick": trace["llm_pick"]}
     picked = by[pick]
-    current = (result.get("family") or {}).get("family_id") or (result.get("table") or {}).get("family_id")
+    current = (result.get("family") or {}).get("family_id") or (result.get("table") or {}).get(
+        "family_id"
+    )
     if picked["family_id"] == current and not undecided:
         return {**result, "llm_pick": trace["llm_pick"]}
     from app.services import search as se  # 순환 참조를 피해 여기서 읽는다
@@ -166,7 +184,8 @@ async def review(
         said = se.norm(synonyms.keyword_text(f"{question} {slots.get('target') or ''}"))
         target = picked.get("target") or "전체"
         if target != "전체" and se.norm(target) not in said:
-            # 질문에 없는 대상('기타', '혼인 귀화자')을 LLM 이 골랐으면 기본값 규칙(전체·계)을 지킨다
+            # 질문에 없는 대상('기타', '혼인 귀화자')을 LLM 이 골랐으면 기본값 규칙(전체·계)을
+            # 지킨다
             return {**result, "llm_pick": {**trace["llm_pick"], "ignored": "질문에 없는 대상"}}
         slots["tbl_id"] = pick
     redone = se.resolve(tables, slots, picked["family_id"], allow_clarify=not undecided)

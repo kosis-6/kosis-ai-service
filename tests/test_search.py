@@ -197,7 +197,9 @@ def test_hybrid_scope_uses_raw_dense_not_penalized_score() -> None:
     tables = _three_families()
     # 표에 없는 조건 → 감점. 키워드 가산(정규화 후 1위=1)을 넘도록 조건 셋
     # 분류 조건은 감점이 작으므로(SOFT_FAIL_PENALTY) 연도 조건(큰 감점)과 함께 건다
-    s = _slots("1990년 돌아가신 쌍둥이", "돌아가신 분", classes=["쌍둥이", "학력", "직업"], year=1990)
+    s = _slots(
+        "1990년 돌아가신 쌍둥이", "돌아가신 분", classes=["쌍둥이", "학력", "직업"], year=1990
+    )
     result = se.find(tables, s, dense=[0.58, 0.30, 0.29])
     # 감점 후 점수는 기준 아래여도 임베딩 원점수가 기준 이상이면 범위 안
     assert result["candidates"][0]["score"] < se.HYBRID_MIN_SCORE
@@ -311,7 +313,9 @@ def test_adapter_scores_match_reference() -> None:
         s = np.array(vs.adapter_scores(q))
         cos = base @ q
         assert int(np.argmax(s)) == 2  # 자기 자신이 가장 가깝다
-        assert abs(s.max() - cos.max()) < 1e-5 and abs(s.min() - cos.min()) < 1e-5  # 범위 = 기본 코사인
+        assert (
+            abs(s.max() - cos.max()) < 1e-5 and abs(s.min() - cos.min()) < 1e-5
+        )  # 범위 = 기본 코사인
         assert vs.scores(base, q) == s.tolist()
     finally:
         vs._adapter = None
@@ -352,7 +356,9 @@ def test_llm_pick_review_switches_family_and_rejects(monkeypatch) -> None:
         raise RuntimeError("timeout")
 
     monkeypatch.setattr(lp, "_ask", boom)
-    assert asyncio.run(lp.review("혼인", dict(base), tables, {}))["table"]["tbl_id"] == "A1"  # 실패면 그대로
+    assert (
+        asyncio.run(lp.review("혼인", dict(base), tables, {}))["table"]["tbl_id"] == "A1"
+    )  # 실패면 그대로
 
 
 def test_target_in_survey_path_passes_and_soft_penalty_is_small() -> None:
@@ -377,7 +383,10 @@ def test_llm_pick_filter_mode_keeps_ranking(monkeypatch) -> None:
     from app.services import llm_pick as lp
 
     tables = se.prepare(
-        [_t("A1", "인구 - 시도", 2015, 2025, "FA", survey_name="조사"), _t("B1", "혼인 - 시도", 2015, 2025, "FB", survey_name="조사")]
+        [
+            _t("A1", "인구 - 시도", 2015, 2025, "FA", survey_name="조사"),
+            _t("B1", "혼인 - 시도", 2015, 2025, "FB", survey_name="조사"),
+        ]
     )
     base = se.find(tables, _slots("통계 자료", "통계 자료"), dense=[0.9, 0.3])
     monkeypatch.setattr(lp.get_settings(), "llm_pick", True, raising=False)
@@ -394,11 +403,14 @@ def test_llm_pick_filter_mode_keeps_ranking(monkeypatch) -> None:
         return {"pick": "none", "answerable": False, "reason": "주제 없음"}
 
     monkeypatch.setattr(lp, "_ask", none)
-    assert asyncio.run(lp.review("집값", dict(base), tables, {}))["status"] == "out_of_scope"  # 거르기는 한다
+    assert (
+        asyncio.run(lp.review("집값", dict(base), tables, {}))["status"] == "out_of_scope"
+    )  # 거르기는 한다
 
 
 def test_choose_matches_member_through_synonyms() -> None:
-    """질문의 일상어('결혼해서 귀화한')가 사전으로 멤버 이름('혼인 귀화자')에 닿으면 되묻지 않고 그 멤버"""
+    """질문의 일상어('결혼해서 귀화한')가 사전으로 멤버 이름('혼인 귀화자')에 닿으면 되묻지 않고 그
+    멤버"""
     family = se.prepare(_naturalized())
     said = se.synonyms.keyword_text("결혼해서 귀화한 외국인")
     if "혼인귀화자" not in se.norm(said):  # 사전에 그 표현이 없으면 이 테스트는 의미 없음
@@ -429,20 +441,32 @@ def test_llm_resolve_mode_settles_clarify_but_keeps_decided_results(monkeypatch)
         return {"pick": "B1", "answerable": True, "reason": "혼인 표"}
 
     monkeypatch.setattr(lp, "_ask", pick_b)
-    assert asyncio.run(lp.review("통계 자료", dict(base), tables, {}))["table"]["tbl_id"] == "A1"  # 확정 결과는 안 바꿈
+    assert (
+        asyncio.run(lp.review("통계 자료", dict(base), tables, {}))["table"]["tbl_id"] == "A1"
+    )  # 확정 결과는 안 바꿈
     amb = {**base, "status": "ambiguous", "table": None, "family": None}
-    assert asyncio.run(lp.review("통계 자료", amb, tables, {}))["status"] == "ambiguous"  # 패밀리 모호는 그대로
+    assert (
+        asyncio.run(lp.review("통계 자료", amb, tables, {}))["status"] == "ambiguous"
+    )  # 패밀리 모호는 그대로
     cla = {**base, "status": "clarify", "table": None, "family": {"family_id": "FA"}}
     out = asyncio.run(lp.review("통계 자료", cla, tables, {}))
-    assert out["status"] in ("ok", "partial_match") and out["table"]["tbl_id"] == "B1"  # 멤버 되묻기는 LLM 이 확정
+    assert (
+        out["status"] in ("ok", "partial_match") and out["table"]["tbl_id"] == "B1"
+    )  # 멤버 되묻기는 LLM 이 확정
 
 
 def test_scope_by_llm_skips_threshold_rejection() -> None:
     tables = se.prepare([_t("A1", "인구 - 시도", 2015, 2025, "FA")])
     s = _slots("앞으로 일할 사람", "일할 사람")
     assert se.find(tables, s, dense=[0.3])["status"] == "out_of_scope"
-    assert se.find(tables, _slots("앞으로 일할 사람", "일할 사람"), dense=[0.3], scope_by_llm=True)["status"] != "out_of_scope"
-    s2 = _slots("안녕", "안녕"); s2["query_type"] = "not_statistics"
+    assert (
+        se.find(tables, _slots("앞으로 일할 사람", "일할 사람"), dense=[0.3], scope_by_llm=True)[
+            "status"
+        ]
+        != "out_of_scope"
+    )
+    s2 = _slots("안녕", "안녕")
+    s2["query_type"] = "not_statistics"
     assert se.find(tables, s2, dense=[0.3], scope_by_llm=True)["status"] != "not_statistics"
 
 
@@ -453,7 +477,9 @@ def test_search_runs_end_to_end_with_stubs(monkeypatch) -> None:
     from app.services import llm_pick as lp
     from app.services import slots as sl
 
-    tables = se.prepare([_t("A1", "인구 - 시도", 2015, 2025, "FA"), _t("B1", "혼인 - 시도", 2015, 2025, "FB")])
+    tables = se.prepare(
+        [_t("A1", "인구 - 시도", 2015, 2025, "FA"), _t("B1", "혼인 - 시도", 2015, 2025, "FB")]
+    )
 
     async def fake_tables():
         return tables
@@ -505,8 +531,13 @@ def test_llm_resolve_ignores_member_not_mentioned(monkeypatch) -> None:
     from app.services import llm_pick as lp
 
     family = se.prepare(_naturalized())
-    base = {"status": "clarify", "slots": _slots("국적 취득한 외국인", "국적 취득자"), "table": None,
-            "family": {"family_id": "F1"}, "candidates": [{"tbl_id": "혼인 귀화자계_old"}, {"tbl_id": "전체계_old"}]}
+    base = {
+        "status": "clarify",
+        "slots": _slots("국적 취득한 외국인", "국적 취득자"),
+        "table": None,
+        "family": {"family_id": "F1"},
+        "candidates": [{"tbl_id": "혼인 귀화자계_old"}, {"tbl_id": "전체계_old"}],
+    }
     monkeypatch.setattr(lp.get_settings(), "llm_pick", True, raising=False)
     monkeypatch.setattr(lp.get_settings(), "llm_pick_mode", "resolve", raising=False)
 
@@ -529,8 +560,23 @@ def test_survey_population_penalty_and_class_via_items() -> None:
     scores2 = {r["table"]["tbl_id"]: r["score"] for r in se.rank(tables, s2, [0.6, 0.6])}
     assert scores2["S"] >= scores2["G"] - 1e-9 or True  # 언급하면 감점 없음 (키워드 차이는 무시)
     # 분류 값이 항목에 있으면 class 통과, 성별은 남자/여자 항목으로도 통과
-    t = se.prepare([_t("A", "행정구역(시군구)별, 성별 인구수", 2015, 2025, "FA",
-                       items=[{"name": "총인구수"}, {"name": "남자인구수"}, {"name": "여자인구수"}, {"name": "미혼"}])])[0]
+    t = se.prepare(
+        [
+            _t(
+                "A",
+                "행정구역(시군구)별, 성별 인구수",
+                2015,
+                2025,
+                "FA",
+                items=[
+                    {"name": "총인구수"},
+                    {"name": "남자인구수"},
+                    {"name": "여자인구수"},
+                    {"name": "미혼"},
+                ],
+            )
+        ]
+    )[0]
     chk = se.check(t, _slots("q", "인구", classes=["성별", "미혼"]))
     assert chk["class:성별"] and chk["class:미혼"]
 
@@ -540,7 +586,9 @@ def test_off_domain_word_rejects_without_llm(monkeypatch) -> None:
 
     from app.services import llm_pick as lp
 
-    tables = se.prepare([_t("A1", "인구동태건수 및 동태율 추이(출생,사망,혼인,이혼)", 1970, 2025, "FA")])
+    tables = se.prepare(
+        [_t("A1", "인구동태건수 및 동태율 추이(출생,사망,혼인,이혼)", 1970, 2025, "FA")]
+    )
     base = se.find(tables, _slots("교통사고로 죽은 사람", "사망"), dense=[0.8])
     monkeypatch.setattr(lp.get_settings(), "llm_pick", True, raising=False)
 
@@ -559,6 +607,7 @@ def test_stale_single_year_table_penalized_when_no_year_asked() -> None:
     s = _slots("노인들은 생활비를 어디서 마련하나요", "노인 생활비")
     scores = {r["table"]["tbl_id"]: r["score"] for r in se.rank(tables, s, [0.6, 0.6])}
     assert scores["N"] > scores["O"]  # 연도 없으면 2005년 단일 표는 감점
-    s2 = _slots("2005년 노인 생활비", "노인 생활비"); s2["conditions"]["year"] = 2005
+    s2 = _slots("2005년 노인 생활비", "노인 생활비")
+    s2["conditions"]["year"] = 2005
     scores2 = {r["table"]["tbl_id"]: r["score"] for r in se.rank(tables, s2, [0.6, 0.6])}
     assert scores2["O"] > scores2["N"]  # 연도를 말하면 감점 없음 + 연도 조건 통과

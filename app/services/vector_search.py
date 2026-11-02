@@ -30,9 +30,12 @@ from app.core.config import get_settings
 logger = logging.getLogger(__name__)
 
 LOCAL_MODEL = "BAAI/bge-m3"
-# 쌍곡 어댑터 (실험실 §49·§56): bge-m3 질문 벡터를 1024→128 선형 + 로렌츠 exp map 으로 옮겨 표 벡터와
-# 거리를 재고, 질문마다 기본 코사인의 [min, max] 범위로 선형 재조정해 융합에 넣는다. 파일이 없으면 코사인만
-# 쓴다. 표 쪽 벡터(base·hyper)는 실험실 문서(V3+분류값)로 만든 것이라 table_embeddings 와 별개로 들고 있다
+# 쌍곡 어댑터 (실험실 §49·§56): bge-m3 질문 벡터를 1024→128 선형 + 로렌츠 exp map 으로 옮겨 표
+# 벡터와
+# 거리를 재고, 질문마다 기본 코사인의 [min, max] 범위로 선형 재조정해 융합에 넣는다. 파일이 없으면
+# 코사인만
+# 쓴다. 표 쪽 벡터(base·hyper)는 실험실 문서(V3+분류값)로 만든 것이라 table_embeddings 와 별개로
+# 들고 있다
 # (2,364 × 1024 + 129, 약 11MB).
 ADAPTER_FILE = "data/embeddings/hyper_adapter.npz"
 _adapter: dict[str, Any] | None = None
@@ -121,7 +124,8 @@ def load_adapter(ids: list[str]) -> bool:
     _adapter = {
         "base": z["base"][order].astype(np.float32),
         "hyper": z["hyper"][order].astype(np.float32),
-        "W": z["W"].astype(np.float32), "b": z["b"].astype(np.float32),
+        "W": z["W"].astype(np.float32),
+        "b": z["b"].astype(np.float32),
         "scale": float(np.exp(float(z["log_scale"]))),
     }
     return True
@@ -149,7 +153,8 @@ def adapter_scores(query: np.ndarray) -> list[float]:
 
 
 def scores(matrix: np.ndarray, query: np.ndarray) -> list[float]:
-    """표마다 질문과의 점수. 어댑터가 있으면 어댑터 점수, 없으면 코사인 유사도(둘 다 길이 1이라 내적)"""
+    """표마다 질문과의 점수. 어댑터가 있으면 어댑터 점수, 없으면 코사인 유사도(둘 다 길이 1이라
+    내적)"""
     if _adapter is not None:
         return adapter_scores(query)
     return (matrix @ query).tolist()

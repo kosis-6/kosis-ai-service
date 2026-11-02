@@ -44,10 +44,13 @@ FIELD_WEIGHTS = {"name": 1.0, "path": 0.6, "meta": 0.4}
 NAME_WEIGHT = 0.3
 PASS_BONUS = 0.08
 FAIL_PENALTY = 0.15
-# 대상·분류·항목·성별은 HCX 추출과 표 메타의 표현 차이로 자주 어긋나는 '부드러운' 조건이라 감점을 작게 둔다
-# (실험실에는 이 판정이 없음. 어댑터 실측 후보 재계산: 팀원 R@1 62→70, 생성 75→82, 개발 65→67, 손해 없음)
+# 대상·분류·항목·성별은 HCX 추출과 표 메타의 표현 차이로 자주 어긋나는 '부드러운' 조건이라 감점을
+# 작게 둔다
+# (실험실에는 이 판정이 없음. 어댑터 실측 후보 재계산: 팀원 R@1 62→70, 생성 75→82, 개발 65→67, 손해
+# 없음)
 SOFT_CHECKS = ("target", "class", "item", "sex", "spouse")
-# 특정 집단만 조사한 통계는 질문에 그 집단 말이 없으면 감점 (개발셋 d57 '평균 몇 살까지 사는지'에 사할린 '결혼 여부' 표,
+# 특정 집단만 조사한 통계는 질문에 그 집단 말이 없으면 감점 (개발셋 d57 '평균 몇 살까지 사는지'에
+# 사할린 '결혼 여부' 표,
 # d79 '동호회 모임 참여'에 사할린 '모임 및 단체 참여' 표가 1위로 오던 문제)
 SURVEY_POPULATION = {
     "영주귀국사할린동포실태조사": ("사할린", "동포"),
@@ -55,7 +58,9 @@ SURVEY_POPULATION = {
 }
 SURVEY_PENALTY = 0.1
 SOFT_FAIL_PENALTY = 0.05
-PUBLISH_LAG = 2  # 상대시점이 가리키는 해가 아직 공표 전이어도 이 햇수 안이면 최신 판을 맞는 표로 본다
+PUBLISH_LAG = (
+    2  # 상대시점이 가리키는 해가 아직 공표 전이어도 이 햇수 안이면 최신 판을 맞는 표로 본다
+)
 
 MIN_SCORE = 0.45  # 1순위 패밀리 점수가 이보다 낮으면 out_of_scope
 AMBIGUOUS_GAP = 0.03  # 1·2순위 패밀리 점수 차가 이보다 작으면 ambiguous
@@ -165,7 +170,8 @@ def age_coverage(name_n: str, class_n: list[str], meta_n: str) -> tuple[int, int
         return (int(m[1]), None)
     if m := re.search(r"(\d+)[~\-](\d+)세", text):
         return (int(m[1]), int(m[2]))
-    # '주요 연령계층별 추계인구(생산연령인구, 고령인구 등)'처럼 연령 축이 있는 표는 전 연령을 담는다.
+    # '주요 연령계층별 추계인구(생산연령인구, 고령인구 등)'처럼 연령 축이 있는 표는 전 연령을
+    # 담는다.
     # 고령자·고령인구·노인은 연령 축 표시가 없을 때만 65세 이상 전용으로 본다
     if "연령" in text or "각세" in text or "연령" in meta_n:
         return (0, None)
@@ -317,7 +323,8 @@ def check(t: dict[str, Any], slots: dict[str, Any]) -> dict[str, bool]:
         last = c["year_end"] or c["year"]
         out["year"] = t["start_year"] <= c["year"] and last <= t["end_year"]
         if not out["year"] and slots.get("time_ref") and last > t["end_year"]:
-            # "작년"·"올해"는 아직 공표 전일 수 있다. 공표 시차(PUBLISH_LAG) 안이면 최신 판을 맞는 표로 본다
+            # "작년"·"올해"는 아직 공표 전일 수 있다. 공표 시차(PUBLISH_LAG) 안이면 최신 판을 맞는
+            # 표로 본다
             out["year"] = t["start_year"] <= c["year"] and last - t["end_year"] <= PUBLISH_LAG
     if c["region_level"]:
         levels = set(t["region_levels"])
@@ -339,14 +346,17 @@ def check(t: dict[str, Any], slots: dict[str, Any]) -> dict[str, bool]:
             key = norm(cls).removesuffix("별")
             # HCX 가 '미혼'처럼 분류 값을 classes 에 넣기도 하므로 항목·표본값(meta_n)도 본다
             ok = any(key in n for n in t["class_n"]) or key in t["name_n"] or key in t["meta_n"]
-        if cls == "성별" and not ok:  # 항목이 남자/여자로 갈라진 표도 성별을 담는다 (주민등록 시군구별 성별 인구수)
+        if (
+            cls == "성별" and not ok
+        ):  # 항목이 남자/여자로 갈라진 표도 성별을 담는다 (주민등록 시군구별 성별 인구수)
             ok = "남자" in t["meta_n"] and "여자" in t["meta_n"]
         out[f"class:{cls}"] = ok
     for item in c["items"]:
         key = norm(item)
         out[f"item:{item}"] = key in t["meta_n"] or key in t["name_n"]
     if (age := slots.get("age")) and t["age_cov"] is not None:
-        # 연령 집단("노인")을 담을 수 있는 표인가: 표의 연령 범위가 집단 범위를 포함해야 한다. 연령 축이 없는 표는 판정하지 않는다
+        # 연령 집단("노인")을 담을 수 있는 표인가: 표의 연령 범위가 집단 범위를 포함해야 한다. 연령
+        # 축이 없는 표는 판정하지 않는다
         lo, hi = t["age_cov"]
         out["age"] = lo <= age["lo"] and (hi is None or (age["hi"] is not None and age["hi"] <= hi))
     if slots.get("projection"):
@@ -362,7 +372,10 @@ def check(t: dict[str, Any], slots: dict[str, Any]) -> dict[str, bool]:
         key = norm(slots["target"])
         # 조사 이름·경로에 있는 대상('사할린 동포', '고령친화')은 그 조사의 모든 표가 담는다
         out["target"] = (
-            key in t["name_n"] or key in t["meta_n"] or key in norm(t["target"] or "") or key in t["path_n"]
+            key in t["name_n"]
+            or key in t["meta_n"]
+            or key in norm(t["target"] or "")
+            or key in t["path_n"]
         )
     return out
 
@@ -509,7 +522,9 @@ def choose(
     if "target" in axes:
         # 대상 슬롯이 패밀리명이어도('한국국적 취득자') 질문 속 멤버 이름('혼인 귀화자')으로 고른다
         # 실험실 §47 멤버 매칭: 질문·대상을 사전(synonyms)으로 넓힌 뒤 멤버 이름과 대조
-        said = norm(synonyms.keyword_text(f"{slots.get('question', '')} {slots.get('target') or ''}"))
+        said = norm(
+            synonyms.keyword_text(f"{slots.get('question', '')} {slots.get('target') or ''}")
+        )
         match = [r for r in rows if r["target"] != "전체" and norm(r["target"]) in said]
         if slots.get("target") == "전체":
             match = [r for r in rows if r["target"] == "전체"]
@@ -572,13 +587,20 @@ def find(
 ) -> dict[str, Any]:
     """슬롯 → 검색 결과 (DB·HCX 없이 동작해서 테스트·실험에 쓴다).
     dense(tables 순서의 임베딩 점수)를 주면 하이브리드, 없으면 키워드만.
-    scope_by_llm: 범위 밖 판정(HCX not_statistics·점수 문턱)을 뒤의 LLM 검토에 맡기고 여기서는 거절하지 않는다
-    (실험실 §61-3: 점수 문턱은 범위 안 질문을 잘못 거르고, 007 거르기가 범위 밖 30/30·거짓 거절 1/102)"""
+    scope_by_llm: 범위 밖 판정(HCX not_statistics·점수 문턱)을 뒤의 LLM 검토에 맡기고 여기서는
+    거절하지 않는다
+    (실험실 §61-3: 점수 문턱은 범위 안 질문을 잘못 거르고, 007 거르기가 범위 밖 30/30·
+    거짓 거절 1/102)"""
     result: dict[str, Any] = {"status": None, "reason": None, "slots": slots, "table": None}
     if slots["query_type"] == "not_statistics" and scope_by_llm and dense is not None:
         slots["query_type"] = "find_table"
         slots.setdefault("fixes", []).append(
-            {"key": "query_type", "from": "not_statistics", "to": "find_table", "reason": "LLM 검토가 범위를 판정"}
+            {
+                "key": "query_type",
+                "from": "not_statistics",
+                "to": "find_table",
+                "reason": "LLM 검토가 범위를 판정",
+            }
         )
     if slots["query_type"] == "not_statistics":
         top_dense = max(dense, default=0.0) if dense else None
@@ -736,7 +758,8 @@ async def search(
     (slots, parsed_at), (dense, embedded_at) = await asyncio.gather(
         timed(slot_parser.extract(question, trace)), timed(dense_scores(question))
     )
-    # 재작성 검색어(HCX search_query)가 있으면 그 임베딩 점수와 평균한다 (실험실 §52: 교체는 손해, 평균만
+    # 재작성 검색어(HCX search_query)가 있으면 그 임베딩 점수와 평균한다 (실험실 §52: 교체는 손해,
+    # 평균만
     # 이득). 슬롯이 온 뒤에야 알 수 있어 임베딩 호출이 한 번 더 든다
     rewrite = (slots.get("search_query") or "").strip()
     if dense is not None and rewrite and rewrite != question.strip():
@@ -745,7 +768,9 @@ async def search(
             dense = [(a + b) / 2 for a, b in zip(dense, dense2, strict=True)]
     ready = max(parsed_at, embedded_at)
     tables = await load_tables()
-    result = find(tables, slots, allow_clarify, dense, scope_by_llm=vector_search.get_settings().llm_pick)
+    result = find(
+        tables, slots, allow_clarify, dense, scope_by_llm=vector_search.get_settings().llm_pick
+    )
     searched = time.perf_counter()
     from app.services import llm_pick  # 검색 뒤 HCX-007 최종 검토
 
