@@ -192,6 +192,30 @@ def split_members(
             continue
         for n in names:
             out.setdefault((survey, name_key(n)), (strip_region(n), region_label(n)))
+    return unify_region_labels(out)
+
+
+# 행정구역 개편으로 권역 이름에만 새로 들어간 시도 (2012 세종특별자치시 출범)
+NEW_SIDO = {"세종"}
+
+
+def unify_region_labels(
+    splits: dict[tuple[str, str], tuple[str, str]],
+) -> dict[tuple[str, str], tuple[str, str]]:
+    """같은 패밀리에서 새로 생긴 시도만 다른 권역 이름을 하나로 맞춘다.
+    '대전·충북·충남'(2010) → '대전·세종·충북·충남'(2015~)
+    연도판마다 권역 표기가 달라 같은 권역이 지역 칸 두 개로 갈리는 것을 막는다 (axes_check).
+    '서울·경기' / '서울·인천·경기'처럼 다른 시도가 다르면 실제로 권역이 바뀐 것이라 두 칸으로 둔다
+    """
+    by_family: dict[tuple[str, str, frozenset[str]], set[str]] = defaultdict(set)
+    for (survey, _), (family, label) in splits.items():
+        parts = frozenset(label.split("·"))
+        by_family[(survey, name_key(family), parts - NEW_SIDO)].add(label)
+    out = {}
+    for (survey, key), (family, label) in splits.items():
+        parts = frozenset(label.split("·"))
+        labels = by_family[(survey, name_key(family), parts - NEW_SIDO)]
+        out[(survey, key)] = (family, max(labels, key=lambda v: (len(v.split("·")), v)))
     return out
 
 
@@ -305,6 +329,21 @@ def build(tables: list[dict[str, Any]]) -> list[dict[str, Any]]:
         r["family_id"], r["family_name"] = ids[k], spellings[k].most_common(1)[0][0]
     for r in rows:
         del r["_variant"]
+    # 판 순서는 패밀리 안의 같은 대상·성별 멤버끼리 다시 매긴다. 권역 이름을 합쳐 이름이 다른 표가
+    # 한 멤버가 될 수 있어서다 (최신 연도를 담은 판 → 기간이 긴 판 → 시작 연도가 이른 판, 규칙 2.4)
+    same_member: dict[tuple[str, Any, Any], list[dict[str, Any]]] = defaultdict(list)
+    for r in rows:
+        same_member[(r["family_id"], r["target"], r["sex"])].append(r)
+    for group in same_member.values():
+        group.sort(
+            key=lambda r: (
+                -by_id[r["tbl_id"]]["end_year"],
+                by_id[r["tbl_id"]]["start_year"],
+                r["tbl_id"],
+            )
+        )
+        for order, r in enumerate(group, start=1):
+            r["edition_order"] = order
     # 대상으로 나뉜 패밀리에 '-대상' 없는 표가 함께 묶이면 그 표가 '전체'
     split_families = {r["family_id"] for r in rows if r["target"] is not None}
     for r in rows:

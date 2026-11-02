@@ -237,3 +237,21 @@ def test_same_period_with_other_structure_is_not_an_edition() -> None:
     assert rows["A75"]["family_id"] == rows["A70"]["family_id"]
     assert rows["B75"]["family_id"] != rows["A75"]["family_id"]
     assert (rows["A75"]["edition_order"], rows["A70"]["edition_order"]) == (1, 2)
+
+
+def test_region_label_with_new_sido_is_one_member() -> None:
+    rows = {
+        r["tbl_id"]: r
+        for r in bf.build(
+            [
+                _shaped("D10", "통근통학 인구(대전,충북,충남)-시군구", 2010),
+                _shaped("S10", "통근통학 인구(서울,인천,경기)-시군구", 2010),
+                _shaped("D20", "통근통학 인구(대전, 세종, 충북, 충남)-시군구", 2020),
+                _shaped("S20", "통근통학 인구(서울, 인천, 경기)-시군구", 2020),
+            ]
+        )
+    }
+    # 세종이 새로 들어간 것만 다른 권역은 한 멤버의 판, 최신 판이 기본
+    assert rows["D10"]["target"] == rows["D20"]["target"] == "대전·세종·충북·충남"
+    assert (rows["D20"]["edition_order"], rows["D10"]["edition_order"]) == (1, 2)
+    assert rows["S10"]["target"] == "서울·인천·경기"
