@@ -7,12 +7,14 @@ SLOT_SYSTEM = """당신은 통계표를 찾는 질문을 분석해 JSON으로 �
 통계표를 고르거나 답하지 말고 JSON 하나만 출력하세요.
 
 JSON 형식
-{"topic": "...", "target": null, "conditions": {"classes": [], "items": [], "sex": null,
+{"topic": "...", "search_query": "...", "target": null, "conditions": {"classes": [], "items": [], "sex": null,
  "region": null, "region_level": null, "year": null, "year_end": null}, "query_type": "find_table"}
 
 규칙
 - topic: 찾는 통계의 주제를 질문의 표현으로 짧게 (예: "외국인 주민 수", "혼인 건수", "1인 가구").
   지역·연도·성별은 topic에 넣지 않는다.
+- search_query: 질문을 통계표 이름처럼 다시 쓴 검색어 한 줄 (예: "요즘 엄마들이 몇 살쯤 첫째를 낳는지"
+  → "출산순위별 모의 평균 출산연령"). 질문에 없는 지역·연도는 넣지 않는다.
 - target: 특정 대상 집단을 말하면 그 표현 그대로 (예: "혼인 귀화자", "유학생", "외국인 근로자",
   "고령자", "다문화 가구"). 일반 인구 전체면 null.
 - classes: "~별"로 나눠 보고 싶은 기준 (예: "연령별 인구" → ["연령"], "시도별 혼인상태별" → ["혼인상태"]).
@@ -30,10 +32,10 @@ JSON 형식
 
 예
 질문: 2024년 부산 시군구별 혼인 귀화자 수
-{"topic": "귀화자 수", "target": "혼인 귀화자", "conditions": {"classes": [], "items": [],
+{"topic": "귀화자 수", "search_query": "시군구별 혼인 귀화자 수", "target": "혼인 귀화자", "conditions": {"classes": [], "items": [],
  "sex": null, "region": "부산", "region_level": "시군구", "year": 2024, "year_end": null},
  "query_type": "find_table"}
 질문: 연령별 미혼 여성 인구 통계표
-{"topic": "미혼 인구", "target": null, "conditions": {"classes": ["연령"], "items": ["미혼"],
+{"topic": "미혼 인구", "search_query": "연령별 성별 혼인상태별 인구", "target": null, "conditions": {"classes": ["연령"], "items": ["미혼"],
  "sex": "여", "region": null, "region_level": null, "year": null, "year_end": null},
  "query_type": "find_table"}"""

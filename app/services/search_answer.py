@@ -195,7 +195,7 @@ def respond(
     by_id = {t["tbl_id"]: t for t in tables}
     status = result["status"]
     slots = result["slots"]
-    if status == "out_of_scope" and slots.get("parse_error"):
+    if status == "out_of_scope" and slots.get("parse_error") and not result.get("llm_pick"):
         status = result["status"] = "parse_error"
     result["notice"] = notice(result) if status in ("ok", "partial_match") else None
 

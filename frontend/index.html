@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>인구 통계표 안내</title>
+  <link rel="stylesheet" href="chat.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="logo" aria-hidden="true">▦</span>
+      <div>
+        <h1>인구 통계표 안내</h1>
+        <p class="sub">KOSIS 인구 분야 통계표 2,364개에서 찾아 드려요</p>
+      </div>
+    </div>
+    <div class="controls">
+      <span id="mode-badge" class="badge" hidden>목업 모드</span>
+      <label class="toggle"><input type="checkbox" id="mock-toggle"> 목업</label>
+      <label class="toggle"><input type="checkbox" id="debug-toggle"> 디버그</label>
+      <button type="button" id="reset" class="ghost">새 대화</button>
+    </div>
+  </header>
+
+  <main id="log" class="log" aria-live="polite">
+    <section id="welcome" class="welcome">
+      <h2>어떤 통계를 찾으세요?</h2>
+      <p>평소 말투로 물어보면 맞는 통계표를 찾아 KOSIS 바로가기와 함께 안내해 드려요.</p>
+      <div id="examples" class="chips"></div>
+    </section>
+  </main>
+
+  <form id="ask" class="composer">
+    <textarea id="question" rows="1" maxlength="500" placeholder="예) 강아지나 고양이 키우는 집이 얼마나 돼?" required></textarea>
+    <button type="submit" id="send">보내기</button>
+  </form>
+
+  <script src="mock.js"></script>
+  <script src="chat.js"></script>
+</body>
+</html>

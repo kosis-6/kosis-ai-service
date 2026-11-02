@@ -124,3 +124,8 @@ def test_handle_retries_rejected_answer_with_previous_question(monkeypatch) -> N
     asked.clear()
     result = asyncio.run(dl.handle("누적 혼인", "S1"))
     assert asked == ["누적 혼인"] and result["turn"] == 0
+
+
+def test_match_member_by_target_part() -> None:
+    asked = [{"axis": "target", "options": ["서울·인천·경기", "부산·울산·경남", "강원"]}]
+    assert dl.match_member("부산", asked) == {"target": "부산·울산·경남"}

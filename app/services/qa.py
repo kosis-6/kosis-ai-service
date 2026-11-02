@@ -25,7 +25,7 @@ from pathlib import Path
 from starlette.concurrency import run_in_threadpool
 
 from app.prompts.qa import PARSE_SYSTEM
-from app.services import analysis, indicators, lookup
+from app.services import agegroup, analysis, indicators, lookup, timeref
 from app.services.hcx_client import HcxClient
 
 MODEL = "HCX-007"
@@ -96,8 +96,7 @@ def _indicator_list():
 GENDER_WORDS = {"여": re.compile(r"여성|여자"), "남": re.compile(r"남성|남자")}
 # 남녀를 함께 묻는 표현 (구성비 질문이면 성별 구성)
 SEX_SPLIT = re.compile(r"남녀|성별|(남성|남자).*(여성|여자)|(여성|여자).*(남성|남자)")
-# 긴 표현부터 찾는다 ("재작년" 안에 "작년"이 있음)
-RELATIVE_YEARS = [("재작년", -2), ("지난해", -1), ("작년", -1), ("올해", 0), ("금년", 0)]
+# 상대시점("작년", "2년 전")은 app.services.timeref 가 검색과 같은 규칙으로 푼다
 NO_REGION_TYPES = {"rank", "other", "parse_error"}
 
 # 연령 구간: "20대", "6~11세", "65세 이상", "15세 미만" (뒤에 '광역시'가 오는 "5대 광역시"는 제외)
@@ -267,6 +266,9 @@ def correct(question, parsed, today=None):
     ages = extract_ages(question)
     if ages:
         parsed["ages"] = ages
+    # "노인"·"청년" 같은 이름은 정의 구간으로 (답변에 기준 고지)
+    elif group := agegroup.resolve(question):
+        parsed["age_group"] = {"expr": group.expr, "range": group.label(), "basis": group.basis}
     if parsed.get("sex") not in (None, "", "계", "남", "여"):  # 예: ["남", "여"]
         fix("sex", "계", "성별 값 정리")
     if parsed.get("level") in ("구", "시군구별", "구별", "군", "시군"):
@@ -336,18 +338,24 @@ def correct(question, parsed, today=None):
             fix("regions", ["전국"], "질문의 전국 표현")
 
     years = {int(y) for y in YEAR.findall(question)}
+    has_abs_year = bool(years)
     single = len(years) == 1 and not SPAN.search(question) and not SINCE.search(question)
     if single and parsed.get("type") not in ("trend", "other", "parse_error"):
         year = years.pop()
         if parsed.get("year") != year:  # HCX가 질문의 연도 대신 최신 연도를 넣은 경우
             fix("year", year, "질문의 연도")
 
-    for word, offset in RELATIVE_YEARS:
-        if word in question and not PREV_YEAR.search(question):
-            year = today.year + offset
-            if kind not in ("trend", "other", "parse_error") and parsed.get("year") != year:
-                fix("year", year, f"'{word}' = {today.year}년 기준")
-            break
+    if not has_abs_year and (ref := timeref.resolve(question, today)):
+        if ref.open_end:  # "3년 전부터" → 그 해부터 최신까지
+            if parsed.get("start_year") != ref.year:
+                fix("start_year", ref.year, ref.describe(today))
+            if parsed.get("end_year"):
+                fix("end_year", None, "'부터'는 최신 연도까지")
+            if kind == "value":
+                fix("type", "trend", "기간의 변화를 물음")
+                kind = "trend"
+        elif kind not in ("trend", "other", "parse_error") and parsed.get("year") != ref.year:
+            fix("year", ref.year, ref.describe(today))
 
     if fixes:
         parsed["corrections"] = fixes
