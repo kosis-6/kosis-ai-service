@@ -21,5 +21,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title=settings.app_name, debug=settings.debug, lifespan=lifespan)
 app.include_router(api_router)
-# 통계표 안내 채팅 화면 (/chat, 목업은 /chat/?mock=1)
-app.mount("/chat", StaticFiles(directory=Path(__file__).parent / "static", html=True), name="chat")
+# 통계표 안내 채팅 화면 (frontend/, /chat, 목업은 /chat/?mock=1)
+# API와 같은 주소로 서빙해 CORS가 필요 없다
+FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
+app.mount("/chat", StaticFiles(directory=FRONTEND_DIR, html=True), name="chat")
