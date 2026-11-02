@@ -1,0 +1,32 @@
+{"id": "x-d09", "q": "혼자 사는 사람이 연령대별로 얼마나 되나요", "gold_tables": ["DT_1PL1502"], "expect": "ok"}
+{"id": "x-d10", "q": "미혼인 1인가구 통계", "gold_tables": ["DT_1PR2002"], "expect": "ok"}
+{"id": "x-d20", "q": "국적별 외국인 입국자 수", "gold_tables": ["DT_091_111_2009_S006", "DT_1B28023", "DT_091_111_2009_S005A", "DT_091_111_2009_S009"], "expect": "ok"}
+{"id": "x-d21", "q": "시도 간 인구 이동 통계", "gold_tables": ["DT_1B26003_A01", "DT_1B26003"], "expect": "ok"}
+{"id": "x-d25", "q": "세종시 이동자 수", "gold_tables": ["DT_1B26B18"], "expect": "ok"}
+{"id": "x-d31", "q": "출퇴근할 때 어떤 교통수단을 쓰는지", "gold_tables": ["DT_1PA2004", "DT_1PA2003"], "expect": "ok"}
+{"id": "x-d41", "q": "청년 실업률 통계", "gold_tables": [], "expect": "out_of_scope"}
+{"id": "x-d48", "q": "이혼하는 부부 중에 어린 자녀가 있는 경우가 몇 퍼센트인지", "gold_tables": ["DT_1B85007"], "expect": "ok"}
+{"id": "x-d50", "q": "신혼부부는 남편이 아내보다 몇 살 많은 경우가 제일 흔한지", "gold_tables": ["DT_1B83A08"], "expect": "clarify"}
+{"id": "x-d53", "q": "재혼하는 사람들은 보통 몇 살인지", "gold_tables": ["DT_1B83A13"], "expect": "clarify"}
+{"id": "x-d54", "q": "외국 여성이랑 결혼하는 한국 남자가 어느 지역에 많은지", "gold_tables": ["DT_1B83A24"], "expect": "ok"}
+{"id": "x-d57", "q": "우리나라 사람들이 평균 몇 살까지 사는지 옛날부터 지금까지", "gold_tables": ["INH_1B8000F_02"], "expect": "ok"}
+{"id": "x-d64", "q": "혼자 산 지 10년 넘은 사람이 얼마나 되나", "gold_tables": ["DT_1PR2017", "DT_1PR2018"], "expect": "ok"}
+{"id": "x-d66", "q": "차 세울 데가 없어서 골목에 대는 집이 얼마나 되나", "gold_tables": ["DT_1PH2008", "DT_1PH2009"], "expect": "ok"}
+{"id": "x-d72", "q": "결혼이나 출산 때문에 일을 그만둔 여성이 몇 명인지", "gold_tables": ["DT_1PQ2002"], "expect": "ok"}
+{"id": "x-d73", "q": "어린애들을 어린이집에 보내는지 할머니가 봐주는지", "gold_tables": ["DT_1PF2017", "DT_1PF2018", "DT_1PF2019"], "expect": "ok"}
+{"id": "x-d78", "q": "눈이 잘 안 보여서 생활이 어려운 사람이 몇 명인지", "gold_tables": ["DT_1PK2001", "DT_1PK2002"], "expect": "ok"}
+{"id": "x-d79", "q": "동호회나 종교 모임 같은 데 참여하는 사람이 얼마나 되나", "gold_tables": ["DT_1PJ2001", "DT_1PJ2002"], "expect": "ok"}
+{"id": "x-d84", "q": "낮에 사람이 몰려서 인구가 늘어나는 도시가 어디인지", "gold_tables": ["DT_1PA2020"], "expect": "ok"}
+{"id": "x-d92", "q": "일 안 하는 청년의 비율이 어느 정도 되나", "gold_tables": ["DT_1PC2002"], "expect": "ok"}
+{"id": "x-d93", "q": "20대 여성 중에 일하는 사람 비율", "gold_tables": ["DT_1PC2002"], "expect": "ok"}
+{"id": "x-d94", "q": "결혼한 여자들 중에 일하는 사람이 가족 형태에 따라 다른지", "gold_tables": ["DT_1PC2023"], "expect": "ok"}
+{"id": "x-d101", "q": "불법체류 외국인이 어느 나라 사람이 제일 많은지", "gold_tables": ["DT_1B040A36"], "expect": "ok"}
+{"id": "x-d110", "q": "들어온 사람보다 나간 사람이 많은 지역이 어디인지", "gold_tables": ["DT_1B26002", "DT_1B26B21"], "expect": "ok"}
+{"id": "x-d125", "q": "정부 지원금 받는 사할린 동포가 얼마나 되나", "gold_tables": ["DT_182001_A047_2025"], "expect": "ok"}
+{"id": "x-d126", "q": "사할린 동포가 차별받은 경험이 있는지", "gold_tables": ["DT_182001_A022_2025"], "expect": "clarify"}
+{"id": "x-d128", "q": "사할린 동포가 복지관이나 지원센터 같은 데를 이용하는지", "gold_tables": ["DT_182001_A045_2025"], "expect": "clarify"}
+{"id": "x-d137", "q": "2010년에 1인가구가 어떤 집에 살았는지 시군구별로", "gold_tables": ["DT_1PL1001"], "expect": "ok"}
+{"id": "x-d141", "q": "결혼한 여성 중에 자녀가 없는 비율을 연령대별로", "gold_tables": ["DT_1PF2001"], "expect": "ok"}
+{"id": "x-d143", "q": "지역별 외국인 주민 중 유학생 비율", "gold_tables": ["DT_110025_A034_A", "TX_11025_A001_A"], "expect": "ok"}
+{"id": "x-d161", "q": "시도별로 몇 살에 결혼하는 사람이 많은지 연령대별 혼인 건수", "gold_tables": ["DT_1B83A33", "DT_1B83A03"], "expect": "ok"}
+{"id": "x-d162", "q": "2005년에 사는 곳에서 다른 시군구로 통근·통학하는 인구를 권역별로 본 표", "gold_tables": ["DT_1T05132"], "expect": "clarify"}

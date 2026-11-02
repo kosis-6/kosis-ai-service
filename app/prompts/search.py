@@ -7,21 +7,14 @@ SLOT_SYSTEM = """당신은 통계표를 찾는 질문을 분석해 JSON으로 �
 통계표를 고르거나 답하지 말고 JSON 하나만 출력하세요.
 
 JSON 형식
-{"topic": "...", "search_queries": ["...", "...", "..."], "target": null, "conditions": {"classes": [], "items": [], "sex": null,
+{"topic": "...", "search_query": "...", "target": null, "conditions": {"classes": [], "items": [], "sex": null,
  "region": null, "region_level": null, "year": null, "year_end": null}, "query_type": "find_table"}
 
 규칙
 - topic: 찾는 통계의 주제를 질문의 표현으로 짧게 (예: "외국인 주민 수", "혼인 건수", "1인 가구").
   지역·연도·성별은 topic에 넣지 않는다.
-- search_queries: 질문을 KOSIS 통계표 이름처럼 다시 쓴 검색어 1~3개. 가장 그럴듯한 해석을 먼저 쓴다
-  (예: "요즘 엄마들이 몇 살쯤 첫째를 낳는지" → "출산순위별 모의 평균 출산연령").
-  질문 문장이나 구어 표현을 그대로 쓰지 말고, 표 이름에 쓰는 통계 용어로 바꾼 "○○별 △△" 꼴의 명사구로
-  쓴다 (청년·노인 같은 집단은 "연령별"로). 질문을 두 가지 이상으로 읽을 수 있으면
-  해석마다 하나씩 쓴다. 질문에 없는 지역·연도는 넣지 않는다.
-  표 이름에 자주 쓰는 말: 이동자수·전입·전출·순이동, 경제활동상태(취업·실업·비경제활동), 종사상지위,
-  세대구성(부부·부부와 자녀·한부모), 가구원수, 점유형태(자가·전세·월세), 거처의 종류(단독주택·아파트),
-  혼인상태(미혼·유배우·사별·이혼), 출생자녀수, 통근통학(이용교통수단·소요시간·통근통학지),
-  체류자격, 현재국적, 교육정도, 활동제약, 사회활동, 장래추계, 고령자, 1인가구, 외국인주민.
+- search_query: 질문을 통계표 이름처럼 다시 쓴 검색어 한 줄 (예: "요즘 엄마들이 몇 살쯤 첫째를 낳는지"
+  → "출산순위별 모의 평균 출산연령"). 질문에 없는 지역·연도는 넣지 않는다.
 - target: 특정 대상 집단을 말하면 그 표현 그대로 (예: "혼인 귀화자", "유학생", "외국인 근로자",
   "고령자", "다문화 가구"). 일반 인구 전체면 null.
 - classes: "~별"로 나눠 보고 싶은 기준 (예: "연령별 인구" → ["연령"], "시도별 혼인상태별" → ["혼인상태"]).
@@ -39,21 +32,13 @@ JSON 형식
 
 예
 질문: 2024년 부산 시군구별 혼인 귀화자 수
-{"topic": "귀화자 수", "search_queries": ["시군구별 혼인 귀화자 수"], "target": "혼인 귀화자", "conditions": {"classes": [], "items": [],
+{"topic": "귀화자 수", "search_query": "시군구별 혼인 귀화자 수", "target": "혼인 귀화자", "conditions": {"classes": [], "items": [],
  "sex": null, "region": "부산", "region_level": "시군구", "year": 2024, "year_end": null},
  "query_type": "find_table"}
 질문: 연령별 미혼 여성 인구 통계표
-{"topic": "미혼 인구", "search_queries": ["연령별 성별 혼인상태별 인구"], "target": null, "conditions": {"classes": ["연령"], "items": ["미혼"],
+{"topic": "미혼 인구", "search_query": "연령별 성별 혼인상태별 인구", "target": null, "conditions": {"classes": ["연령"], "items": ["미혼"],
  "sex": "여", "region": null, "region_level": null, "year": null, "year_end": null},
- "query_type": "find_table"}
-질문: 할머니 할아버지 두 분만 사시는 집이 우리 동네에 얼마나 돼?
-{"topic": "노부부 가구", "search_queries": ["세대구성별 고령자 가구", "세대구성 및 연령별 고령자", "가구주의 연령별 세대구성별 가구"],
- "target": "고령자", "conditions": {"classes": [], "items": [], "sex": null, "region": null, "region_level": "시군구",
- "year": null, "year_end": null}, "query_type": "find_table"}
-질문: 전세 사는 집이 많은 동네가 어디야
-{"topic": "전세 가구", "search_queries": ["점유형태별 가구", "거처의 종류별 점유형태별 가구"], "target": null,
- "conditions": {"classes": [], "items": ["전세"], "sex": null, "region": null, "region_level": "시군구",
- "year": null, "year_end": null}, "query_type": "find_table"}"""
+ "query_type": "find_table"}"""
 
 # 재작성 검색어 전용 (HCX-007, 설정 SEARCH_REWRITER=hcx007). 슬롯 추출 모델(HCX-DASH-002)은 질문을 그대로
 # 옮기는 일이 잦아, 꼬인 질문은 따로 통계 용어로 다시 쓴다
