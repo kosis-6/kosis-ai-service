@@ -1,3 +1,6 @@
+# 프로젝트 이름 고정: Dev Container로 열어도 같은 컨테이너·DB 볼륨(kosis-ai-service_pgdata)을 쓴다
+name: kosis-ai-service
+
 services:
   api:
     build: .
