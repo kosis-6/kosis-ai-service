@@ -1,7 +1,9 @@
-"""터미널에서 챗봇에 질문하기 (레포 API POST /search 를 그대로 호출, 되묻기는 같은 세션으로 이어 답한다).
+"""터미널에서 챗봇에 질문하기.
+API POST /search 를 그대로 호출하고, 되묻기는 같은 세션으로 이어 답한다.
 
 준비: docker compose up -d   (처음이면 --build)
-실행: python -m scripts.chat            # 대화 모드. 빈 줄 또는 q 로 종료 (호스트 파이썬 아무거나, 표준 라이브러리만)
+실행: python -m scripts.chat            # 대화 모드. 빈 줄 또는 q 로 종료
+      (호스트 파이썬 아무거나, 표준 라이브러리만)
       python -m scripts.chat --debug    # 후보 8개·슬롯·007 판정·시간까지 출력
       python -m scripts.chat -q "서울시 1인 가구는 어디에 많이 살아"   # 한 번만
 표준 라이브러리만 쓴다.
@@ -38,8 +40,10 @@ def show(r: dict, debug: bool) -> None:
         print("  보정:", json.dumps(d.get("fixes"), ensure_ascii=False))
     print("  후보 (점수 · 키워드 · 임베딩):")
     for c in (d.get("candidates") or [])[:8]:
+        dense = "-" if c["dense"] is None else f"{c['dense']:.3f}"
         print(
-            f"    {c['score']:.3f} · {c['keyword']:.2f} · {c['dense'] if c['dense'] is None else round(c['dense'], 3)}  {c['tbl_id']} {c['table_name']} [{c.get('edition', '')}]"
+            f"    {c['score']:.3f} · {c['keyword']:.2f} · {dense}  "
+            f"{c['tbl_id']} {c['table_name']} [{c.get('edition', '')}]"
         )
     lp = d.get("llm_pick") or {}
     if lp:
@@ -60,18 +64,16 @@ def main() -> None:
     try:
         urllib.request.urlopen(f"{BASE}/health/search", timeout=10).read()
     except Exception as e:
-        print(
-            f"API 에 연결할 수 없습니다 ({e}). 팀 레포 폴더에서 docker compose up -d 를 먼저 실행하세요."
-        )
+        print(f"API 에 연결할 수 없습니다 ({e}).")
+        print("레포 폴더에서 docker compose up -d 를 먼저 실행하세요.")
         return
     session = None
     if a.question:
         r = post(a.question, None, a.debug)
         show(r, a.debug)
         return
-    print(
-        "질문을 입력하세요 (빈 줄 또는 q 로 종료). 되묻기가 오면 번호나 이름으로 이어서 답하면 됩니다."
-    )
+    print("질문을 입력하세요 (빈 줄 또는 q 로 종료).")
+    print("되묻기가 오면 번호나 이름으로 이어서 답하면 됩니다.")
     while True:
         try:
             q = input("\n> ").strip()
