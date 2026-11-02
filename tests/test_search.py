@@ -682,3 +682,92 @@ def test_embedding_failure_leaves_scope_to_llm(monkeypatch) -> None:
     result = asyncio.run(se.search("쌍태아 출생", trace))
     assert result["retrieval"] == "hybrid"
     assert trace["embedding"] == {"question": True, "rewrite": False}
+
+
+def test_rewrites_take_best_score_per_table(monkeypatch) -> None:
+    """재작성 검색어가 여럿이면 표마다 가장 높은 검색어 점수를 질문 점수와 평균한다"""
+    import asyncio
+
+    from app.services import llm_pick as lp
+
+    tables = se.prepare(
+        [
+            _t("A1", "시도별 순이동자수", 2015, 2025, "FA"),
+            _t("B1", "시도별 출입국자", 2015, 2025, "FB"),
+        ]
+    )
+    scores = {"질문": [0.4, 0.6], "순이동": [0.8, 0.2], "출입국": [0.3, 0.5]}
+    seen = {}
+
+    async def fake_tables():
+        return tables
+
+    async def fake_extract(question, trace=None):
+        slots = _slots(question, question)
+        slots["search_queries"] = ["순이동", "출입국"]
+        return slots
+
+    async def fake_dense(question):
+        return scores[question]
+
+    def fake_find(tables, slots, allow_clarify, dense, scope_by_llm=False):
+        seen["dense"] = dense
+        return {"status": "out_of_scope", "slots": slots}
+
+    monkeypatch.setattr(lp.get_settings(), "llm_pick", False, raising=False)
+    monkeypatch.setattr(se, "load_tables", fake_tables)
+    monkeypatch.setattr(se.slot_parser, "extract", fake_extract)
+    monkeypatch.setattr(se, "dense_scores", fake_dense)
+    monkeypatch.setattr(se, "find", fake_find)
+    trace: dict = {}
+    asyncio.run(se.search("질문", trace))
+    assert [round(v, 3) for v in seen["dense"]] == [0.6, 0.55]
+    assert trace["embedding"] == {"question": True, "rewrite": True}
+
+
+def test_hcx007_rewrite_replaces_slot_queries(monkeypatch) -> None:
+    """SEARCH_REWRITER=hcx007: HCX-007 검색어가 슬롯 검색어를 대신하고, 실패하면 슬롯 것을 쓴다"""
+    import asyncio
+
+    from app.services import llm_pick as lp
+
+    tables = se.prepare([_t("A1", "시도별 순이동자수", 2015, 2025, "FA")])
+    seen = {}
+
+    async def fake_tables():
+        return tables
+
+    async def fake_extract(question, trace=None):
+        slots = _slots(question, question)
+        slots["search_queries"], slots["search_query"] = ["슬롯 검색어"], "슬롯 검색어"
+        return slots
+
+    async def fake_dense(question):
+        seen.setdefault("asked", []).append(question)
+        return [0.5]
+
+    def fake_find(tables, slots, allow_clarify, dense, scope_by_llm=False):
+        return {"status": "out_of_scope", "slots": slots}
+
+    monkeypatch.setattr(lp.get_settings(), "llm_pick", False, raising=False)
+    monkeypatch.setattr(lp.get_settings(), "search_rewriter", "hcx007", raising=False)
+    monkeypatch.setattr(se, "load_tables", fake_tables)
+    monkeypatch.setattr(se.slot_parser, "extract", fake_extract)
+    monkeypatch.setattr(se, "dense_scores", fake_dense)
+    monkeypatch.setattr(se, "find", fake_find)
+
+    async def good_rewrite(question, trace=None):
+        return ["시도별 순이동자수"]
+
+    monkeypatch.setattr(se.slot_parser, "rewrite", good_rewrite)
+    result = asyncio.run(se.search("나간 사람이 많은 곳"))
+    assert seen["asked"] == ["나간 사람이 많은 곳", "시도별 순이동자수"]
+    assert result["slots"]["search_query"] == "시도별 순이동자수"
+
+    async def failed_rewrite(question, trace=None):
+        return []
+
+    seen.clear()
+    monkeypatch.setattr(se.slot_parser, "rewrite", failed_rewrite)
+    asyncio.run(se.search("나간 사람이 많은 곳"))
+    assert seen["asked"] == ["나간 사람이 많은 곳", "슬롯 검색어"]

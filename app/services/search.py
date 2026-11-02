@@ -777,21 +777,37 @@ async def search(
         value = await coro
         return value, time.perf_counter()
 
-    # 슬롯 추출(HCX)과 질문 임베딩은 서로 기다릴 필요가 없어 함께 보낸다
-    (slots, parsed_at), (dense, embedded_at) = await asyncio.gather(
-        timed(slot_parser.extract(question, trace)), timed(dense_scores(question))
+    async def no_rewrite() -> list[str]:
+        return []
+
+    # 슬롯 추출(HCX)·질문 임베딩·재작성(HCX-007, 켠 경우)은 서로 기다릴 필요가 없어 함께 보낸다
+    by_llm = vector_search.get_settings().search_rewriter == "hcx007"
+    (slots, parsed_at), (dense, embedded_at), (llm_queries, rewritten_at) = await asyncio.gather(
+        timed(slot_parser.extract(question, trace)),
+        timed(dense_scores(question)),
+        timed(slot_parser.rewrite(question, trace) if by_llm else no_rewrite()),
     )
-    # 재작성 검색어(HCX search_query)가 있으면 그 임베딩 점수와 평균한다 (실험실 §52: 교체는 손해,
-    # 평균만
-    # 이득). 슬롯이 온 뒤에야 알 수 있어 임베딩 호출이 한 번 더 든다
-    rewrite = (slots.get("search_query") or "").strip()
+    if llm_queries:
+        slots["search_queries"], slots["search_query"] = llm_queries, llm_queries[0]
+    parsed_at = max(parsed_at, rewritten_at)
+    # 재작성 검색어가 있으면 그 임베딩 점수와 평균한다 (실험실 §52: 교체는 손해, 평균만 이득).
+    # 검색어가 여럿(해석이 갈리는 질문)이면 표마다 가장 높은 검색어 점수를 쓴다:
+    # 해석 하나만 맞아도 정답 표가 후보에 들어오게.
+    # 슬롯이 온 뒤에야 알 수 있어 임베딩 호출이 더 든다
+    rewrites = [
+        q.strip()
+        for q in slots.get("search_queries") or [slots.get("search_query") or ""]
+        if q.strip() and q.strip() != question.strip()
+    ]
     # 임베딩이 실패해도 답은 하므로, 측정이 유효한지 볼 수 있게 어느 호출이 실패했는지 남긴다
     trace["embedding"] = {"question": dense is not None, "rewrite": None}
-    if dense is not None and rewrite and rewrite != question.strip():
-        dense2, embedded_at = await timed(dense_scores(rewrite))
-        trace["embedding"]["rewrite"] = dense2 is not None
-        if dense2 is not None:
-            dense = [(a + b) / 2 for a, b in zip(dense, dense2, strict=True)]
+    if dense is not None and rewrites:
+        found, embedded_at = await timed(asyncio.gather(*(dense_scores(q) for q in rewrites)))
+        found = [d for d in found if d is not None]
+        trace["embedding"]["rewrite"] = bool(found)
+        if found:
+            best = [max(scores) for scores in zip(*found, strict=True)]
+            dense = [(a + b) / 2 for a, b in zip(dense, best, strict=True)]
     ready = max(parsed_at, embedded_at)
     tables = await load_tables()
     result = find(

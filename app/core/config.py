@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     # 실험실 §56-4·레포 측정 §66: 최상 설정 위에서 pick 은 팀원셋 −3(형제 멤버로 바꿈), filter 는
     # 손해 없음
     llm_pick_mode: Literal["filter", "pick", "resolve"] = "resolve"
+    # 임베딩 보강용 재작성 검색어를 누가 만드나. slots: 슬롯 추출(HCX-DASH-002)이 같이 만든다 /
+    # hcx007: HCX-007 을 슬롯 추출과 함께 한 번 더 불러 통계 용어로 다시 쓴다 (꼬인 질문 대응)
+    search_rewriter: Literal["slots", "hcx007"] = "slots"
 
     # pipeline/run_all.py가 만드는 전처리 DB (프로젝트 루트 기준 상대 경로)
     duckdb_path: str = "data/processed/kosis.duckdb"

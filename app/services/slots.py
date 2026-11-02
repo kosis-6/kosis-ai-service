@@ -23,11 +23,12 @@ import sys
 from datetime import date
 from typing import Any
 
-from app.prompts.search import SLOT_SYSTEM
+from app.prompts.search import REWRITE_SYSTEM, SLOT_SYSTEM
 from app.services import agegroup, timeref
 from app.services.hcx_client import HcxClient, HcxError
 
 MODEL = "HCX-DASH-002"
+REWRITE_MODEL = "HCX-007"
 QUERY_TYPES = {"find_table", "ambiguous", "not_statistics"}
 REGION_LEVELS = ("시도", "시군구", "읍면동")
 
@@ -123,7 +124,8 @@ def empty_slots(question: str) -> dict[str, Any]:
         "spouse": None,  # '외국인 아내' / '외국인 남편'
         # 연령 집단 이름 ('노인' → {"expr": "노인", "lo": 65, "hi": None, "basis": ...})
         "age": None,
-        "search_query": None,  # HCX 재작성 검색어 (임베딩 평균용)
+        "search_query": None,  # HCX 재작성 검색어 중 첫 번째 (요청 로그·이전 형식 호환)
+        "search_queries": [],  # HCX 재작성 검색어 1~3개 (해석마다 하나, 임베딩 점수 보강용)
         "time_ref": None,  # 상대시점 ('작년' → {"expr": "작년", "year": 2025, "open_end": False})
     }
 
@@ -180,12 +182,51 @@ async def extract(question: str, trace: dict[str, Any] | None = None) -> dict[st
     return correct(question, normalize(question, parsed))
 
 
+async def rewrite(question: str, trace: dict[str, Any] | None = None) -> list[str]:
+    """질문 → 통계표 이름 같은 검색어 1~3개 (HCX-007). 실패하면 빈 목록 (슬롯의 검색어를 쓴다)"""
+    try:
+        result = await HcxClient().chat(
+            REWRITE_MODEL,
+            [
+                {"role": "system", "content": REWRITE_SYSTEM},
+                {"role": "user", "content": question},
+            ],
+            thinking={"effort": "none"},
+            maxCompletionTokens=200,
+            temperature=0.1,
+            responseFormat={
+                "type": "json",
+                "schema": {
+                    "type": "object",
+                    "properties": {"queries": {"type": "array", "items": {"type": "string"}}},
+                    "required": ["queries"],
+                },
+            },
+        )
+    except HcxError as e:
+        if trace is not None:
+            trace["rewrite_raw"] = f"HcxError: {e}"
+        return []
+    if trace is not None:
+        trace["rewrite_raw"] = result.content
+    parsed = _json_object(result.content) or {}
+    return _queries(question, parsed.get("queries"))
+
+
+def _queries(question: str, value: Any) -> list[str]:
+    """검색어 목록 정리: 질문과 같은 것·중복은 빼고 3개까지"""
+    return [q for q in dict.fromkeys(_texts(value)) if q != question.strip()][:3]
+
+
 def normalize(question: str, parsed: dict[str, Any]) -> dict[str, Any]:
     """HCX 출력을 정해진 형식으로 맞춘다 (빠진 키, 잘못된 타입, 빈 문자열 → null)"""
     slots = empty_slots(question)
     cond = parsed.get("conditions") if isinstance(parsed.get("conditions"), dict) else {}
     slots["topic"] = _text(parsed.get("topic")) or question.strip()
-    slots["search_query"] = _text(parsed.get("search_query"))
+    # 예전 형식(search_query 한 줄)도 받는다
+    queries = _queries(question, parsed.get("search_queries") or parsed.get("search_query"))
+    slots["search_queries"] = queries
+    slots["search_query"] = queries[0] if queries else None
     slots["target"] = _text(parsed.get("target"))
     if parsed.get("query_type") in QUERY_TYPES:
         slots["query_type"] = parsed["query_type"]

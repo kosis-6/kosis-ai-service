@@ -32,6 +32,18 @@ def test_normalize_fills_missing_keys_and_drops_bad_values() -> None:
     assert s["query_type"] == "find_table"
 
 
+def test_search_queries() -> None:
+    # 여러 해석을 받되 질문과 같은 것·중복은 빼고 3개까지
+    queries = ["이동자수", "이사 많이 해?", "이동자수", "전입사유별 이동자수", "a", "b"]
+    s = sl.normalize("이사 많이 해?", {"search_queries": queries})
+    assert s["search_queries"] == ["이동자수", "전입사유별 이동자수", "a"]
+    assert s["search_query"] == "이동자수"
+    # 예전 형식(한 줄)도 읽는다
+    s = sl.normalize("질문", {"search_query": "시도별 이동자수"})
+    assert (s["search_queries"], s["search_query"]) == (["시도별 이동자수"], "시도별 이동자수")
+    assert sl.normalize("질문", {})["search_queries"] == []
+
+
 def test_year_only_from_question() -> None:
     # LLM이 추측한 연도는 지운다
     assert _slots("외국인 주민 수", year=2024)["conditions"]["year"] is None
