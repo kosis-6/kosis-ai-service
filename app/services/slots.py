@@ -122,6 +122,7 @@ def empty_slots(question: str) -> dict[str, Any]:
         "exclude": [],  # 빼 달라고 한 단어 ('귀화한 사람 말고' → ['귀화한'])
         "spouse": None,  # '외국인 아내' / '외국인 남편'
         "age": None,  # 연령 집단 이름 ('노인' → {"expr": "노인", "lo": 65, "hi": None, "basis": ...})
+        "search_query": None,  # HCX 재작성 검색어 (임베딩 평균용)
         "time_ref": None,  # 상대시점 ('작년' → {"expr": "작년", "year": 2025, "open_end": False})
     }
 
@@ -183,6 +184,7 @@ def normalize(question: str, parsed: dict[str, Any]) -> dict[str, Any]:
     slots = empty_slots(question)
     cond = parsed.get("conditions") if isinstance(parsed.get("conditions"), dict) else {}
     slots["topic"] = _text(parsed.get("topic")) or question.strip()
+    slots["search_query"] = _text(parsed.get("search_query"))
     slots["target"] = _text(parsed.get("target"))
     if parsed.get("query_type") in QUERY_TYPES:
         slots["query_type"] = parsed["query_type"]

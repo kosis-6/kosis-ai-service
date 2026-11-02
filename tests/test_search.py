@@ -290,3 +290,28 @@ def test_recency_bonus_only_for_timeless_questions(monkeypatch) -> None:
     future = _slots("앞으로 인구", "인구")
     future["projection"] = True
     assert se.recency_bonus(proj, future) == se.RECENT_BONUS + se.LONG_SPAN_BONUS
+
+
+def test_adapter_scores_match_reference() -> None:
+    """어댑터 점수는 −로렌츠 거리를 기본 코사인 범위로 재조정한 값. 작은 무작위 예로 수식을 확인"""
+    import numpy as np
+
+    from app.services import vector_search as vs
+
+    rng = np.random.default_rng(0)
+    base = rng.normal(size=(5, 8)).astype(np.float32)
+    base /= np.linalg.norm(base, axis=1, keepdims=True)
+    W = rng.normal(size=(3, 8)).astype(np.float32)
+    b = np.zeros(3, dtype=np.float32)
+    hyper = np.stack([vs._expmap0(W @ x + b) for x in base]).astype(np.float32)
+    vs._adapter = {"base": base, "hyper": hyper, "W": W, "b": b, "scale": 1.0}
+    try:
+        q = base[2]
+        s = np.array(vs.adapter_scores(q))
+        cos = base @ q
+        assert int(np.argmax(s)) == 2  # 자기 자신이 가장 가깝다
+        assert abs(s.max() - cos.max()) < 1e-5 and abs(s.min() - cos.min()) < 1e-5  # 범위 = 기본 코사인
+        assert vs.scores(base, q) == s.tolist()
+    finally:
+        vs._adapter = None
+    assert vs.scores(base, base[1])[1] > 0.999  # 어댑터 없으면 코사인
