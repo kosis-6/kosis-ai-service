@@ -82,7 +82,7 @@ def match_member(answer: str, asked: list[dict[str, Any]]) -> dict[str, Any] | N
     said = norm(answer)
     picked: dict[str, Any] = {}
 
-    targets = [o for o in options.get("target", []) if o != "전체" and norm(o) in said]
+    targets = search.mentioned_targets(options.get("target", []), said)
     if targets:
         picked["target"] = max(targets, key=len)
     if "sex" in options:
