@@ -21,6 +21,7 @@ expected_status 읽는 법
 실행
   python -m scripts.check_clarify_scenarios              # 실제 검색 (HCX 슬롯 + 임베딩)
   python -m scripts.check_clarify_scenarios --rule-slots # HCX 없이 규칙 슬롯 (빠름, 대화 규칙 점검용)
+  python -m scripts.check_clarify_scenarios --sleep 3    # 턴 사이 3초 쉬기 (HCX 호출 제한 42901 대응)
 """
 
 import argparse
@@ -104,7 +105,9 @@ def options_diff(expected: list[dict[str, Any]] | None, result: dict[str, Any]) 
     return None
 
 
-async def run_one(scenario: dict[str, Any], sessions: MemorySessions) -> dict[str, Any]:
+async def run_one(
+    scenario: dict[str, Any], sessions: MemorySessions, sleep: float = 0.0
+) -> dict[str, Any]:
     sessions.saved.clear()
     turns_out = []
     before: dict[str, Any] | None = None
@@ -113,6 +116,8 @@ async def run_one(scenario: dict[str, Any], sessions: MemorySessions) -> dict[st
         if turn.get("user") is None:
             break
         session = scenario["id"] + turn.get("session", "")
+        if sleep:
+            await asyncio.sleep(sleep)
         result = await dialog.handle(turn["user"], session, turn.get("selections"))
         problems = []
         if not status_ok(turn["expected_status"], result, before):
@@ -200,7 +205,7 @@ def report(runs: list[dict[str, Any]], mode: str) -> str:
     return "\n".join(lines) + "\n"
 
 
-async def main_async(path: Path, rule_slots: bool) -> Path:
+async def main_async(path: Path, rule_slots: bool, sleep: float = 0.0) -> Path:
     sessions = MemorySessions()
     dialog.load_state = sessions.load_state
     dialog.save_state = sessions.save_state
@@ -213,7 +218,7 @@ async def main_async(path: Path, rule_slots: bool) -> Path:
             return search.find(tables, slots, allow_clarify, dense)
 
         dialog.search.search = rule_search
-    runs = [await run_one(s, sessions) for s in read_scenarios(path)]
+    runs = [await run_one(s, sessions, sleep) for s in read_scenarios(path)]
     mode = "규칙 슬롯 (HCX 없음)" if rule_slots else "실제 검색 (HCX 슬롯 + 임베딩)"
     RESULTS.mkdir(parents=True, exist_ok=True)
     out = RESULTS / f"clarify_scenarios_{datetime.now():%Y%m%d}.md"
@@ -231,8 +236,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--file", type=Path, default=SCENARIOS)
     parser.add_argument("--rule-slots", action="store_true", help="HCX 없이 규칙 슬롯으로 검색")
+    parser.add_argument("--sleep", type=float, default=0.0, help="턴 사이 쉬는 초 (HCX 호출 제한 대응)")
     args = parser.parse_args()
-    asyncio.run(main_async(args.file, args.rule_slots))
+    asyncio.run(main_async(args.file, args.rule_slots, args.sleep))
     return 0
 
 
