@@ -1,7 +1,9 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 
 from app.api.router import api_router
 from app.core.config import get_settings
@@ -19,3 +21,5 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title=settings.app_name, debug=settings.debug, lifespan=lifespan)
 app.include_router(api_router)
+# 통계표 안내 채팅 화면 (/chat, 목업은 /chat/?mock=1)
+app.mount("/chat", StaticFiles(directory=Path(__file__).parent / "static", html=True), name="chat")
