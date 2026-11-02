@@ -620,3 +620,65 @@ def test_mentioned_targets_by_part() -> None:
     # 이름 전체가 나오면 부분만 맞은 대상은 고르지 않는다
     assert se.mentioned_targets(["강원", "강원·제주"], se.norm("강원·제주 통근")) == ["강원·제주"]
     assert se.mentioned_targets(targets, se.norm("통근통학 인구")) == []
+
+
+def test_embedding_failure_leaves_scope_to_llm(monkeypatch) -> None:
+    """호출 제한으로 임베딩이 실패해도 정답 후보를 거절하지 않고 LLM 검토에 넘긴다"""
+    import asyncio
+
+    from app.services import llm_pick as lp
+
+    # 표가 하나면 단어 희귀도(IDF)가 0이라 키워드 점수가 안 나온다
+    tables = se.prepare(
+        [
+            _t("A1", "시도별 쌍태아 출생", 2015, 2025, "FA"),
+            _t("B1", "시도별 혼인", 2015, 2025, "FB"),
+            _t("C1", "시도별 이혼", 2015, 2025, "FC"),
+        ]
+    )
+    s = _slots("쌍둥이가 몇 명 태어나는지 조사", "쌍태아 없는말 다른말")
+    # LLM 검토가 꺼져 있으면 키워드 점수 기준 그대로
+    low = _slots("쌍태아 없는말 다른말 또다른말", "쌍태아")
+    assert se.find(tables, low, dense=None)["status"] == "out_of_scope"
+    assert se.find(tables, low, dense=None, scope_by_llm=True)["status"] != "out_of_scope"
+    # 키워드 후보가 아예 없으면 LLM 검토가 켜져 있어도 범위 밖
+    none = _slots("미세먼지", "미세먼지")
+    assert se.find(tables, none, dense=None, scope_by_llm=True)["status"] == "out_of_scope"
+    # HCX not_statistics도 LLM 검토가 판정한다
+    s["query_type"] = "not_statistics"
+    assert se.find(tables, s, dense=None, scope_by_llm=True)["status"] != "not_statistics"
+
+    async def fake_tables():
+        return tables
+
+    async def fake_extract(question, trace=None):
+        slots = _slots(question, question)
+        slots["search_query"] = "쌍태아 출생아 수"
+        return slots
+
+    async def no_dense(question):
+        return None
+
+    async def only_question(question):
+        return None if question == "쌍태아 출생아 수" else [0.9, 0.3, 0.2]
+
+    async def fake_ask(question, cands):
+        return {"pick": "A1", "match": "exact", "reason": "ok"}
+
+    monkeypatch.setattr(lp.get_settings(), "llm_pick", True, raising=False)
+    monkeypatch.setattr(se, "load_tables", fake_tables)
+    monkeypatch.setattr(se.slot_parser, "extract", fake_extract)
+    monkeypatch.setattr(lp, "_ask", fake_ask)
+
+    monkeypatch.setattr(se, "dense_scores", no_dense)
+    trace: dict = {}
+    result = asyncio.run(se.search("쌍태아 출생", trace))
+    assert result["retrieval"] == "keyword" and result["status"] != "out_of_scope"
+    assert trace["embedding"] == {"question": False, "rewrite": None}
+
+    # 재작성 검색어만 실패한 경우도 기록에 남는다
+    monkeypatch.setattr(se, "dense_scores", only_question)
+    trace = {}
+    result = asyncio.run(se.search("쌍태아 출생", trace))
+    assert result["retrieval"] == "hybrid"
+    assert trace["embedding"] == {"question": True, "rewrite": False}
