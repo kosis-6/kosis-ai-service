@@ -266,6 +266,78 @@ def successors(tables: list[dict[str, Any]]) -> tuple[dict[str, str], list[tuple
     return linked, unsure
 
 
+TIMELINE_ALIASES = {"목적지": "통근통학지"}
+
+
+def timeline_key(t: dict[str, Any]) -> tuple | None:
+    """표 이름에서 (조사, 세는 대상, 분류 구성)을 뽑는다. 괄호·지역 꼬리표·분류 순서는 무시."""
+    m = re.match(r"^(.*)별\s*([^/별]+)$", t["table_name"])
+    if not m:
+        return None
+    axes_part, measure = m.groups()
+    measure = re.sub(r"\(.*?\)|-.*$|–.*$|[\s·]", "", measure)
+    axes = set()
+    for a in re.split(r"/|,| 및 ", axes_part):
+        a = re.sub(r"(별|의)$", "", re.sub(r"[\s·]", "", a))
+        if a:
+            axes.add(TIMELINE_ALIASES.get(a, a))
+    return (t["survey_name"], measure, frozenset(axes))
+
+
+def link_timelines(rows: list[dict[str, Any]], by_id: dict[str, dict[str, Any]]) -> int:
+    """같은 조사·같은 대상·같은 분류 구성이고 연도가 이어지는 패밀리를 하나로 합친다.
+    합친 결과 안에 같은 해에 함께 있는 패밀리가 생기면 합치지 않는다."""
+    fam_years: dict[str, set[int]] = defaultdict(set)
+    fam_end: dict[str, int] = defaultdict(int)
+    fam_name: dict[str, str] = {}
+    key_fams: dict[tuple, set[str]] = defaultdict(set)
+    for r in rows:
+        t, fid = by_id[r["tbl_id"]], r["family_id"]
+        if t["start_year"] and t["end_year"]:
+            fam_years[fid].update(range(t["start_year"], t["end_year"] + 1))
+            fam_end[fid] = max(fam_end[fid], t["end_year"])
+        fam_name.setdefault(fid, r["family_name"])
+        k = timeline_key(t)
+        if k:
+            key_fams[k].add(fid)
+
+    def overlaps(fams: list[str]) -> bool:
+        return any(fam_years[a] & fam_years[b] for i, a in enumerate(fams) for b in fams[i + 1:])
+
+    parent: dict[str, str] = {}
+
+    def find(x: str) -> str:
+        while parent.get(x, x) != x:
+            x = parent[x]
+        return x
+
+    for fams in key_fams.values():
+        fams = sorted(fams)
+        if len(fams) >= 2 and not overlaps(fams):
+            for f in fams[1:]:
+                parent[find(f)] = find(fams[0])
+
+    groups: dict[str, list[str]] = defaultdict(list)
+    for f in fam_years:
+        groups[find(f)].append(f)
+
+    remap: dict[str, str] = {}
+    for fams in groups.values():
+        if len(fams) < 2 or overlaps(fams):
+            continue
+        keep = max(fams, key=lambda f: (fam_end[f], f))
+        for f in fams:
+            remap[f] = keep
+
+    for r in rows:
+        if r["family_id"] in remap:
+            keep = remap[r["family_id"]]
+            r["family_id"], r["family_name"] = keep, fam_name[keep]
+    merged = len({f for f, k in remap.items() if f != k})
+    print(f"시계열 연결: 패밀리 {merged}개를 다른 패밀리에 합침")
+    return merged
+
+
 def build(tables: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """tables: tbl_id, survey_name, table_name, start_year, end_year, classifications
     (지역 분할 판정에는 items, path_texts도)를 가진 목록"""
@@ -331,6 +403,7 @@ def build(tables: list[dict[str, Any]]) -> list[dict[str, Any]]:
         del r["_variant"]
     # 판 순서는 패밀리 안의 같은 대상·성별 멤버끼리 다시 매긴다. 권역 이름을 합쳐 이름이 다른 표가
     # 한 멤버가 될 수 있어서다 (최신 연도를 담은 판 → 기간이 긴 판 → 시작 연도가 이른 판, 규칙 2.4)
+    link_timelines(rows, by_id)
     same_member: dict[tuple[str, Any, Any], list[dict[str, Any]]] = defaultdict(list)
     for r in rows:
         same_member[(r["family_id"], r["target"], r["sex"])].append(r)
