@@ -592,7 +592,7 @@ def find(
     (실험실 §61-3: 점수 문턱은 범위 안 질문을 잘못 거르고, 007 거르기가 범위 밖 30/30·
     거짓 거절 1/102)"""
     result: dict[str, Any] = {"status": None, "reason": None, "slots": slots, "table": None}
-    if slots["query_type"] == "not_statistics" and scope_by_llm and dense is not None:
+    if slots["query_type"] == "not_statistics" and scope_by_llm:
         slots["query_type"] = "find_table"
         slots.setdefault("fixes", []).append(
             {
@@ -616,7 +616,9 @@ def find(
     families = fold(ranked)
     if dense is None:
         gap = AMBIGUOUS_GAP
-        in_scope = bool(families) and families[0]["score"] >= MIN_SCORE
+        # LLM 검토가 켜져 있으면 임베딩이 실패한 경로도 하이브리드처럼 범위 판정을 맡긴다.
+        # MIN_SCORE로 거르면 호출 제한(42901) 때 정답이 1위여도 거절로 끝난다 (11/2 측정: 40건)
+        in_scope = bool(families) and (scope_by_llm or families[0]["score"] >= MIN_SCORE)
     else:
         gap = HYBRID_AMBIGUOUS_GAP
         in_scope = bool(families) and (scope_by_llm or max(dense) >= HYBRID_MIN_SCORE)
@@ -762,8 +764,11 @@ async def search(
     # 평균만
     # 이득). 슬롯이 온 뒤에야 알 수 있어 임베딩 호출이 한 번 더 든다
     rewrite = (slots.get("search_query") or "").strip()
+    # 임베딩이 실패해도 답은 하므로, 측정이 유효한지 볼 수 있게 어느 호출이 실패했는지 남긴다
+    trace["embedding"] = {"question": dense is not None, "rewrite": None}
     if dense is not None and rewrite and rewrite != question.strip():
         dense2, embedded_at = await timed(dense_scores(rewrite))
+        trace["embedding"]["rewrite"] = dense2 is not None
         if dense2 is not None:
             dense = [(a + b) / 2 for a, b in zip(dense, dense2, strict=True)]
     ready = max(parsed_at, embedded_at)
