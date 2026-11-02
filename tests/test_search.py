@@ -613,6 +613,15 @@ def test_stale_single_year_table_penalized_when_no_year_asked() -> None:
     assert scores2["O"] > scores2["N"]  # 연도를 말하면 감점 없음 + 연도 조건 통과
 
 
+def test_mentioned_targets_by_part() -> None:
+    targets = ["전체", "병원 및 복지기관", "가게 및 식당", "서울·인천·경기", "강원"]
+    assert se.mentioned_targets(targets, se.norm("병원에서 차별받은 경험")) == ["병원 및 복지기관"]
+    assert se.mentioned_targets(targets, se.norm("인천 통근통학")) == ["서울·인천·경기"]
+    # 이름 전체가 나오면 부분만 맞은 대상은 고르지 않는다
+    assert se.mentioned_targets(["강원", "강원·제주"], se.norm("강원·제주 통근")) == ["강원·제주"]
+    assert se.mentioned_targets(targets, se.norm("통근통학 인구")) == []
+
+
 def test_embedding_failure_leaves_scope_to_llm(monkeypatch) -> None:
     """호출 제한으로 임베딩이 실패해도 정답 후보를 거절하지 않고 LLM 검토에 넘긴다"""
     import asyncio
