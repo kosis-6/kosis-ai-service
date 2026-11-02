@@ -45,4 +45,8 @@ desktop.ini
 *.swp
 
 # 데이터 (KOSIS 수집 결과, 커밋하지 않음)
-data/
+data/*
+# 예외: 쌍곡 어댑터 가중치·표 벡터 (실험실에서 학습, 파이프라인으로 못 만듦, 11MB)
+!data/embeddings/
+data/embeddings/*
+!data/embeddings/hyper_adapter.npz
