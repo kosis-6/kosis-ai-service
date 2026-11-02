@@ -127,3 +127,81 @@ def test_notation_variants_are_editions_of_one_member() -> None:
     # 지역 단위나 다른 낱말이 다르면 합치지 않는다
     assert rows["SGG"]["family_id"] != rows["NEW"]["family_id"]
     assert rows["MOM"]["family_id"] != rows["DAD"]["family_id"]
+
+
+def _shaped(
+    tbl_id: str,
+    name: str,
+    year: int,
+    folder: str = "인구 > 통근통학",
+    classes: tuple[str, ...] = ("성별",),
+    items: tuple[str, ...] = ("인구",),
+) -> dict:
+    return {
+        "tbl_id": tbl_id,
+        "survey_name": "조사",
+        "table_name": name,
+        "start_year": year,
+        "end_year": year,
+        "classifications": [{"id": c, "name": c} for c in classes],
+        "items": [{"name": i} for i in items],
+        "path_texts": [f"{folder} > {name}"],
+    }
+
+
+def test_target_split_without_sex_tag() -> None:
+    rows = {
+        r["tbl_id"]: r
+        for r in bf.build(
+            [
+                _shaped("H", "차별 받은 경험 - 병원 및 복지기관", 2024),
+                _shaped("S", "차별 받은 경험 - 가게 및 식당", 2024),
+                # '-' 뒤가 지역 수준이면 대상이 아니다
+                _shaped("A", "성별 외국인-시도", 2024),
+                _shaped("B", "성별 외국인-시군구", 2024),
+                # 분류 구성이 다르면 앞부분이 같아도 다른 패밀리
+                _shaped("X", "차별 받은 경험 - 동네 주민", 2024, classes=("연령",)),
+            ]
+        )
+    }
+    assert rows["H"]["family_id"] == rows["S"]["family_id"]
+    assert (rows["H"]["family_name"], rows["H"]["target"]) == ("차별 받은 경험", "병원 및 복지기관")
+    assert rows["A"]["family_id"] != rows["B"]["family_id"]
+    assert rows["A"]["target"] is None
+    assert rows["X"]["family_id"] != rows["H"]["family_id"]
+
+
+def test_region_split_members() -> None:
+    rows = {
+        r["tbl_id"]: r
+        for r in bf.build(
+            [
+                _shaped("SU", "통근통학 인구(서울, 인천, 경기)(12세 이상)-시군구", 2020),
+                _shaped("GW", "통근통학 인구(강원)(12세 이상)-시군구", 2020),
+                # 같은 멤버의 다른 판은 기간이 달라도 따라온다
+                _shaped("GW15", "통근통학 인구(강원)(12세이상)-시군구", 2015),
+                # 같은 폴더·구조라도 시도 이름 말고 다른 말이 다르면 묶지 않는다
+                _shaped("M", "혼인상태별 인구", 2020, folder="인구 > 기타"),
+                _shaped("E", "교육정도별 인구", 2020, folder="인구 > 기타"),
+                # 구조가 다르면 시도 이름만 달라도 묶지 않는다
+                _shaped("BS", "통근통학 인구(부산)(12세 이상)-시군구", 2020, items=("인구", "%")),
+            ]
+        )
+    }
+    family = rows["SU"]["family_id"]
+    assert rows["GW"]["family_id"] == rows["GW15"]["family_id"] == family
+    assert rows["SU"]["family_name"] == "통근통학 인구(12세 이상)-시군구"
+    assert (rows["SU"]["target"], rows["GW"]["target"]) == ("서울·인천·경기", "강원")
+    assert rows["M"]["family_id"] != rows["E"]["family_id"]
+    assert rows["BS"]["family_id"] != family
+
+
+def test_strip_region() -> None:
+    assert bf.strip_region("통근·통학 인구(대구,경북-시군구)") == "통근·통학 인구(시군구)"
+    assert bf.strip_region("현거주지/성/목적지별 통근·통학인구(강원도,12세이상)") == (
+        "현거주지/성/목적지별 통근·통학인구(12세이상)"
+    )
+    assert bf.strip_region("서울특별시 총조사인구 총괄(읍면동/성/연령별)") == (
+        "총조사인구 총괄(읍면동/성/연령별)"
+    )
+    assert bf.region_label("통근통학 인구(서울, 인천, 경기)") == "서울·인천·경기"

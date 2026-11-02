@@ -16,8 +16,15 @@
   멤버    표명 끝의 (계)/(남)/(여)로 성별 멤버, 그 앞의 '-대상'으로 대상 멤버를 나눈다.
           '한국국적을 취득한 자-혼인 귀화자(남)' → 패밀리 '한국국적을 취득한 자',
           대상 '혼인 귀화자', 성별 '남'. '-대상'이 없으면 대상 '전체'.
-          이름에 표기가 없는 멤버 후보(같은 폴더·같은 구조, 지역으로 쪼갠 표)는
-          사람이 확인한 뒤 넣는다 (규칙 1.4, 아직 반영 안 함)
+  대상 분할  성별 표기가 없어도 같은 조사 + 같은 분류명 구성 + '-' 앞부분이 같은 표가 둘 이상이면
+          '-' 뒤를 대상으로 본다 (규칙 1.2 ②, scripts/family_check.py R2).
+          '차별 받은 경험 - 병원 및 복지기관' / '- 가게 및 식당' → 패밀리 '차별 받은 경험'
+          '-' 뒤가 지역 단위(시도·시군구·읍면동)면 대상이 아니다
+  지역 분할  같은 조사 + 같은 폴더 + 같은 수록 기간 + 같은 분류명·항목명 구성이고 표명이 시도 이름만
+          다르면 지역 멤버로 본다 (규칙 1.2 ①, family_check.py R3). 지역 이름은 target에 넣는다.
+          '통근통학 인구(서울, 인천, 경기)-시군구' / '(강원)-시군구'
+            → 대상 '서울·인천·경기' / '강원'
+          같은 폴더·구조라도 이름이 시도 이름 말고 다르면('혼인상태별' / '교육정도별') 묶지 않는다
   '-시도'·'-시군구'처럼 지역 수준만 다른 표는 다른 패밀리로 둔다 (stat_tables.region_levels로 판정)
   후속판  이름이 바뀌어 이어지는 표. 표 ID가 옛 표 ID + '_A'이고 같은 조사, 분류 ID 구성이
           같으면 옛 표의 멤버에 판으로 붙인다. 대상 이름은 최신 표 기준.
@@ -51,6 +58,15 @@ EDITION_REVISION = re.compile(r"\((?:신|구)\)")
 SEX_MEMBER = re.compile(r"\((계|남|여)\)")
 SUCCESSOR_ID = re.compile(r"(.+)_A")
 TOTAL_TARGET = "전체"
+# '-' 뒤가 이것뿐이면 대상이 아니라 지역 수준 ('외국인-시군구')
+REGION_LEVEL_SUFFIX = re.compile(r"^\s*(시도|시군구|읍면동)\s*$")
+# 표명 속 시도 이름. 긴 이름을 먼저 맞춘다 ('경기도'가 '경기'보다 먼저)
+SIDO = re.compile(
+    "서울특별시|부산광역시|대구광역시|인천광역시|광주광역시|대전광역시|울산광역시|세종특별자치시|"
+    "경기도|강원특별자치도|강원도|충청북도|충청남도|전북특별자치도|전라북도|전라남도|경상북도|"
+    "경상남도|제주특별자치도|제주도|서울|부산|대구|인천|광주|대전|울산|세종|경기|강원|충북|충남|"
+    "전북|전남|경북|경남|제주"
+)
 
 DDL = """
 DROP TABLE IF EXISTS table_families CASCADE;
@@ -110,6 +126,73 @@ def member_of(name: str) -> tuple[str, str | None, str | None]:
     return family.strip(), target.strip(), sex.group(1)
 
 
+def without_sex(name: str) -> str:
+    return re.sub(r"\s+", " ", SEX_MEMBER.sub("", name)).strip()
+
+
+def strip_region(name: str) -> str:
+    """표명에서 시도 이름을 지운다.
+
+    '통근통학 인구(서울, 인천, 경기)(12세 이상)' → '통근통학 인구(12세 이상)'
+    빈 괄호와 괄호 안에 남은 쉼표·'-'도 지운다 ('(대구,경북-시군구)' → '(시군구)')
+    """
+    n = SIDO.sub("", name)
+    n = re.sub(r"\(\s*[,\s-]*", "(", n)
+    n = re.sub(r"[,\s]*\)", ")", n)
+    n = re.sub(r"\(\s*\)", "", n)
+    return re.sub(r"\s+", " ", n).strip()
+
+
+def region_label(name: str) -> str:
+    """'(서울, 인천, 경기)' → '서울·인천·경기'"""
+    return "·".join(dict.fromkeys(m.group(0) for m in SIDO.finditer(name)))
+
+
+def _names(items: list[dict[str, Any]] | None) -> tuple[str, ...]:
+    return tuple(sorted(i["name"] for i in items or []))
+
+
+def split_members(
+    tables: list[dict[str, Any]], member_name: Any
+) -> dict[tuple[str, str], tuple[str, str]]:
+    """이름에 (계)/(남)/(여)가 없는 대상·지역 멤버 → {(조사, name_key(멤버명)): (패밀리명, 대상)}
+
+    member_name(t): 표의 멤버 이름 (후속판은 옛 표 이름, 판 표기 제거)
+    """
+    out: dict[tuple[str, str], tuple[str, str]] = {}
+
+    # 대상 분할: 같은 조사 + 같은 분류명 구성 + '-' 앞부분
+    by_prefix: dict[tuple[Any, ...], set[str]] = defaultdict(set)
+    for t in tables:
+        name = without_sex(member_name(t))
+        prefix, sep, suffix = name.rpartition("-")
+        if sep and prefix.strip() and not REGION_LEVEL_SUFFIX.match(suffix):
+            key = (t["survey_name"], name_key(prefix), _names(t.get("classifications")))
+            by_prefix[key].add(name)
+    for (survey, _, _), names in by_prefix.items():
+        if len({name_key(n) for n in names}) < 2:
+            continue
+        for n in names:
+            prefix, _, suffix = n.rpartition("-")
+            out[(survey, name_key(n))] = (prefix.strip(), suffix.strip())
+
+    # 지역 분할: 같은 조사·폴더·기간·분류명·항목명, 표명은 시도 이름만 다름
+    by_shape: dict[tuple[Any, ...], set[str]] = defaultdict(set)
+    for t in tables:
+        folder = ((t.get("path_texts") or [""])[0]).rsplit(" > ", 1)[0]
+        key = (t["survey_name"], folder, t["start_year"], t["end_year"],
+               _names(t.get("classifications")), _names(t.get("items")))  # fmt: skip
+        by_shape[key].add(without_sex(member_name(t)))
+    for (survey, *_), names in by_shape.items():
+        if len({name_key(n) for n in names}) < 2 or not all(SIDO.search(n) for n in names):
+            continue
+        if len({name_key(strip_region(n)) for n in names}) != 1:
+            continue
+        for n in names:
+            out.setdefault((survey, name_key(n)), (strip_region(n), region_label(n)))
+    return out
+
+
 def edition_label(start_year: int, end_year: int) -> str:
     return str(start_year) if start_year == end_year else f"{start_year}~{end_year}"
 
@@ -135,7 +218,8 @@ def successors(tables: list[dict[str, Any]]) -> tuple[dict[str, str], list[tuple
 
 
 def build(tables: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """tables: tbl_id, survey_name, table_name, start_year, end_year, classifications를 가진 목록"""
+    """tables: tbl_id, survey_name, table_name, start_year, end_year, classifications
+    (지역 분할 판정에는 items, path_texts도)를 가진 목록"""
     linked, _ = successors(tables)
     by_id = {t["tbl_id"]: t for t in tables}
     # 이름까지 바뀐 경우만 기록 (ID에 '_A'만 붙고 표명이 같은 판은 원래 같은 멤버)
@@ -152,6 +236,7 @@ def build(tables: list[dict[str, Any]]) -> list[dict[str, Any]]:
     members: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     for t in tables:
         members[(t["survey_name"], name_key(anchor_name(t)))].append(t)
+    splits = split_members(tables, anchor_name)
 
     rows = []
     for (survey, _), editions in members.items():
@@ -161,6 +246,9 @@ def build(tables: list[dict[str, Any]]) -> list[dict[str, Any]]:
         family_name, _, sex = member_of(name)
         # 대상 이름은 최신 판 표명 기준 ('국제결혼 이주자' → '결혼이민자')
         target = member_of(edition_name(editions[0]["table_name"]))[1] or member_of(name)[1]
+        split = splits.get((survey, name_key(without_sex(name))))
+        if target is None and split:
+            family_name, target = split
         for order, t in enumerate(editions, start=1):
             rows.append(
                 {
@@ -188,6 +276,11 @@ def build(tables: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for r in rows:
         k = family_key(r)
         r["family_id"], r["family_name"] = ids[k], spellings[k].most_common(1)[0][0]
+    # 대상으로 나뉜 패밀리에 '-대상' 없는 표가 함께 묶이면 그 표가 '전체'
+    split_families = {r["family_id"] for r in rows if r["target"] is not None}
+    for r in rows:
+        if r["target"] is None and r["family_id"] in split_families:
+            r["target"] = TOTAL_TARGET
     return sorted(
         rows, key=lambda r: (r["family_id"], r["target"] or "", r["sex"] or "", r["edition_order"])
     )
@@ -196,7 +289,9 @@ def build(tables: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def report(rows: list[dict[str, Any]], unsure: list[tuple[str, str]] | None = None) -> str:
     size = Counter(r["family_id"] for r in rows)
     multi = {f for f, n in size.items() if n > 1}
-    member_families = {r["family_id"] for r in rows if r["sex"]}
+    member_families = {
+        r["family_id"] for r in rows if r["sex"] or r["target"] not in (None, TOTAL_TARGET)
+    }
     edition_groups = Counter((r["family_id"], r["target"], r["sex"]) for r in rows)
     names = {r["family_id"]: r["family_name"] for r in rows}
     lines = [
@@ -204,7 +299,7 @@ def report(rows: list[dict[str, Any]], unsure: list[tuple[str, str]] | None = No
         f" {sum(size[f] for f in multi)}개 표)",
         f"판이 2개 이상인 멤버: {sum(n > 1 for n in edition_groups.values())}개"
         f" ({sum(n for n in edition_groups.values() if n > 1)}개 표)",
-        f"대상·성별 멤버로 나뉜 패밀리: {len(member_families)}개"
+        f"대상·성별·지역 멤버로 나뉜 패밀리: {len(member_families)}개"
         f" ({sum(size[f] for f in member_families)}개 표)",
         "표가 많은 패밀리: " + ", ".join(f"{names[f]} {n}" for f, n in size.most_common(5)),
         f"이름이 바뀐 후속판 연결: {sum(r['renamed_from'] is not None for r in rows)}개 표",
@@ -241,7 +336,8 @@ def read_tables(url: str) -> list[dict[str, Any]]:
 
     with psycopg.connect(url, row_factory=dict_row) as conn:
         return conn.execute(
-            "SELECT tbl_id, survey_name, table_name, start_year, end_year, classifications"
+            "SELECT tbl_id, survey_name, table_name, start_year, end_year, classifications,"
+            " items, path_texts"
             " FROM stat_tables"
         ).fetchall()
 

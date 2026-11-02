@@ -141,6 +141,24 @@ def norm(value: str) -> str:
     return re.sub(r"[^0-9A-Za-z가-힣]", "", value or "")
 
 
+TARGET_PARTS = re.compile(r"[,·/()]|\s및\s")
+
+
+def mentioned_targets(targets: list[str], said: str) -> list[str]:
+    """said(norm 한 질문·답)에 나온 대상. 대상 이름 전체가 나오면 그것만, 아니면 이름의 부분이
+    나온 대상 ('병원 및 복지기관' ← '병원', '서울·인천·경기' ← '서울'). '전체'는 빼고 본다"""
+    names = [t for t in dict.fromkeys(targets) if t and t != "전체"]
+    whole = [t for t in names if norm(t) in said]
+    if whole:
+        # '강원·제주'가 나왔으면 그 안에 든 '강원'은 고르지 않는다
+        return [t for t in whole if not any(norm(t) in norm(o) and t != o for o in whole)]
+
+    def parts(t: str) -> list[str]:
+        return [p for p in (norm(x) for x in TARGET_PARTS.split(t)) if len(p) >= 2]
+
+    return [t for t in names if any(p in said for p in parts(t))]
+
+
 def prepare(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """검색에 쓸 정규화 문자열을 붙인다"""
     tables = []
@@ -521,11 +539,14 @@ def choose(
 
     if "target" in axes:
         # 대상 슬롯이 패밀리명이어도('한국국적 취득자') 질문 속 멤버 이름('혼인 귀화자')으로 고른다
-        # 실험실 §47 멤버 매칭: 질문·대상을 사전(synonyms)으로 넓힌 뒤 멤버 이름과 대조
+        # 실험실 §47 멤버 매칭: 질문·대상을 사전(synonyms)으로 넓힌 뒤 멤버 이름과 대조.
+        # 지역으로 나뉜 패밀리는 대상 자리에 지역 이름이 있다 ('서울·인천·경기')
         said = norm(
             synonyms.keyword_text(f"{slots.get('question', '')} {slots.get('target') or ''}")
+            + f" {c.get('region') or ''}"
         )
-        match = [r for r in rows if r["target"] != "전체" and norm(r["target"]) in said]
+        named = set(mentioned_targets([r["target"] for r in rows], said))
+        match = [r for r in rows if r["target"] in named]
         if slots.get("target") == "전체":
             match = [r for r in rows if r["target"] == "전체"]
         if not match:
