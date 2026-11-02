@@ -10,6 +10,8 @@
           '성별 외국인 - 시군구' / '성별 외국인-시군구', '통근ㆍ통학' / '통근 통학' (52묶음).
           '및'·'의'·'별'만 다른 표명도 같은 표다 (규칙 1.1 ②, scripts/family_check.py R1).
           '성, 연령 및 직업별 인구'(2010) / '성별/연령별/직업별 인구'(2020)
+          단, 이름이 같아도 수록 기간이 똑같고 분류 구성이 다른 표는 판이 아니라 다른 표로 나눈다
+          ('시도/산업,직업/성별 취업자' / '시도/산업/직업/성별 취업자', 둘 다 1975)
           보여 줄 이름은 최신 판의 표기를 쓴다
           수록 기간으로 구분하고, edition_order 1이 기본 판이다
           (가장 최신 연도를 담은 판 → 그중 기간이 긴 판, 규칙 2.4)
@@ -193,6 +195,29 @@ def split_members(
     return out
 
 
+def separate_same_period(
+    grouped: dict[tuple[str, str], list[dict[str, Any]]],
+) -> dict[tuple[str, str, int], list[dict[str, Any]]]:
+    """같은 멤버로 모인 표 중 수록 기간이 똑같은 표가 있고 분류 구성이 다르면 판이 아니라 다른 표다.
+    분류 구성별로 나눠 다른 패밀리로 둔다 (scripts/edition_check.py B: 기호만 다른 이름).
+    예 (둘 다 1975):
+      '시도/산업(대분류),직업(대분류)/성별 취업자'  분류: 시도·산업직업
+      '시도/산업(대분류)/직업(대분류)/성별 취업자'  분류: 시도·성별·직업
+    """
+    out: dict[tuple[str, str, int], list[dict[str, Any]]] = {}
+    for (survey, key), ts in grouped.items():
+        periods = Counter((t["start_year"], t["end_year"]) for t in ts)
+        shapes: dict[tuple[str, ...], list[dict[str, Any]]] = defaultdict(list)
+        for t in ts:
+            shapes[_names(t.get("classifications"))].append(t)
+        if max(periods.values()) == 1 or len(shapes) == 1:
+            out[(survey, key, 0)] = ts
+            continue
+        for i, shape in enumerate(sorted(shapes)):
+            out[(survey, key, i)] = shapes[shape]
+    return out
+
+
 def edition_label(start_year: int, end_year: int) -> str:
     return str(start_year) if start_year == end_year else f"{start_year}~{end_year}"
 
@@ -233,13 +258,14 @@ def build(tables: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """후속판은 옛 표의 이름으로 (옛 표의 멤버에 붙인다)"""
         return edition_name(by_id[linked.get(t["tbl_id"], t["tbl_id"])]["table_name"])
 
-    members: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     for t in tables:
-        members[(t["survey_name"], name_key(anchor_name(t)))].append(t)
+        grouped[(t["survey_name"], name_key(anchor_name(t)))].append(t)
+    members = separate_same_period(grouped)
     splits = split_members(tables, anchor_name)
 
     rows = []
-    for (survey, _), editions in members.items():
+    for (survey, _, variant), editions in members.items():
         # 최신 연도를 담은 판 → 기간이 긴 판 → 시작 연도가 이른 판 (규칙 2.4)
         editions.sort(key=lambda t: (-t["end_year"], t["start_year"], t["tbl_id"]))
         name = anchor_name(editions[0])
@@ -260,22 +286,25 @@ def build(tables: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "edition_order": order,
                     "edition": edition_label(t["start_year"], t["end_year"]),
                     "renamed_from": renamed.get(t["tbl_id"]),
+                    "_variant": variant,
                 }
             )
 
     # family_id는 조사·패밀리명 순서로 매긴다 (카탈로그가 같으면 같은 번호).
     # 멤버끼리 패밀리명 표기가 다르면 ('취득한 자' / '취득한자') 가장 많이 쓰인 표기로
-    def family_key(r: dict[str, Any]) -> tuple[str, str]:
-        return r["survey_name"], name_key(r["family_name"])
+    def family_key(r: dict[str, Any]) -> tuple[str, str, int]:
+        return r["survey_name"], name_key(r["family_name"]), r["_variant"]
 
     spellings: dict[tuple[str, str], Counter[str]] = defaultdict(Counter)
     for r in rows:
         spellings[family_key(r)][r["family_name"]] += 1
-    keys = sorted(spellings, key=lambda k: (k[0], spellings[k].most_common(1)[0][0]))
+    keys = sorted(spellings, key=lambda k: (k[0], spellings[k].most_common(1)[0][0], k[2]))
     ids = {k: f"FAM_{i:04d}" for i, k in enumerate(keys, start=1)}
     for r in rows:
         k = family_key(r)
         r["family_id"], r["family_name"] = ids[k], spellings[k].most_common(1)[0][0]
+    for r in rows:
+        del r["_variant"]
     # 대상으로 나뉜 패밀리에 '-대상' 없는 표가 함께 묶이면 그 표가 '전체'
     split_families = {r["family_id"] for r in rows if r["target"] is not None}
     for r in rows:

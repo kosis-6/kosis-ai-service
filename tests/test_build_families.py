@@ -205,3 +205,35 @@ def test_strip_region() -> None:
         "총조사인구 총괄(읍면동/성/연령별)"
     )
     assert bf.region_label("통근통학 인구(서울, 인천, 경기)") == "서울·인천·경기"
+
+
+def test_same_period_with_other_structure_is_not_an_edition() -> None:
+    rows = {
+        r["tbl_id"]: r
+        for r in bf.build(
+            [
+                _shaped(
+                    "A75",
+                    "시도/산업(대분류),직업(대분류)/성별 취업자",
+                    1975,
+                    classes=("시도별", "산업직업별"),
+                ),
+                _shaped(
+                    "A70",
+                    "시도/산업(대분류),직업(대분류)/성별 취업자",
+                    1970,
+                    classes=("시도별", "산업직업별"),
+                ),
+                _shaped(
+                    "B75",
+                    "시도/산업(대분류)/직업(대분류)/성별 취업자",
+                    1975,
+                    classes=("시도별", "성별", "직업별"),
+                ),
+            ]
+        )
+    }
+    # 기호만 다른 이름이라도 같은 해에 구조가 다른 표가 둘이면 판이 아니다
+    assert rows["A75"]["family_id"] == rows["A70"]["family_id"]
+    assert rows["B75"]["family_id"] != rows["A75"]["family_id"]
+    assert (rows["A75"]["edition_order"], rows["A70"]["edition_order"]) == (1, 2)
