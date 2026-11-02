@@ -1,4 +1,5 @@
 :root {
+  --logo: #192e27;
   --bg: #f6f7f9;
   --panel: #ffffff;
   --ink: #1f2933;
@@ -19,6 +20,7 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
+    --logo: #e6eaef;
     --bg: #14181d;
     --panel: #1d232a;
     --ink: #e6eaef;
@@ -65,7 +67,14 @@ body {
 }
 
 .brand { display: flex; gap: 10px; align-items: center; }
-.logo { font-size: 26px; color: var(--accent); }
+.logo {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  background: var(--logo);
+  -webkit-mask: url("assets/team-six-logo.png") center / contain no-repeat;
+  mask: url("assets/team-six-logo.png") center / contain no-repeat;
+}
 h1 { margin: 0; font-size: 17px; }
 .sub { margin: 0; font-size: 12.5px; color: var(--muted); }
 
