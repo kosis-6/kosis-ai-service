@@ -13,16 +13,18 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git \
     && rm -rf /var/lib/apt/lists/* \
-    # Windows 바인드 마운트는 파일 소유자가 달라 git이 거부하므로 /app을 신뢰
-    && git config --system --add safe.directory /app
+    # Windows 바인드 마운트는 파일 소유자가 달라 git이 거부하므로 /workspace를 신뢰
+    && git config --system --add safe.directory /workspace
 
-WORKDIR /app
+# 레포와 같은 배치: /workspace/backend, /workspace/frontend
+WORKDIR /workspace/backend
 
 # 의존성만 먼저 설치해 코드가 바뀌어도 이 레이어는 캐시를 재사용
-COPY pyproject.toml uv.lock ./
+COPY backend/pyproject.toml backend/uv.lock ./
 RUN uv sync --frozen --no-install-project
 
-COPY . .
+COPY backend/ ./
+COPY frontend/ ../frontend/
 
 EXPOSE 8000
 
