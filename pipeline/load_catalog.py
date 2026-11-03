@@ -227,11 +227,27 @@ def _item_total(names: list[str]) -> bool:
 # ---- 2. 정제 --------------------------------------------------------------------
 
 
+# KOSIS 메타데이터의 분류 이름 오류 보정: (표 ID, 잘못된 이름에 들어 있는 말) → 올바른 이름
+# 인구총조사 2015년판 3개: 값은 미혼·배우자 있음·사별·이혼인데 분류 이름이 '교육정도별' (KOSIS 화면에서 확인)
+CLASS_NAME_FIXES: dict[tuple[str, str], str] = {
+    ("DT_1PC1503", "교육정도"): "혼인상태별",
+    ("DT_1PC1507", "교육정도"): "혼인상태별",
+    ("DT_1PC1518", "교육정도"): "혼인상태별",
+}
+
+
+def fix_class_name(tbl_id: str, name: str | None) -> str | None:
+    for (tid, wrong), right in CLASS_NAME_FIXES.items():
+        if tid == tbl_id and name and wrong in name:
+            return right
+    return name
+
+
 def clean_record(raw: dict[str, Any]) -> dict[str, Any]:
     classifications = [
         {
             **c,
-            "name": clean_text(c["name"]),
+            "name": fix_class_name(raw["tbl_id"], clean_text(c["name"])),
             "sample_values": [clean_text(v) for v in c.get("sample_values") or []],
         }
         for c in raw["classifications"]
