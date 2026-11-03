@@ -1,0 +1,95 @@
+/* TEAM SIX 공통 토큰·버튼·로고 (Figma 'TEAM SIX · 인구통계 서비스 UI' 변수값) */
+:root {
+  color-scheme: light;
+  --bg: #eaf0e6;
+  --sidebar: #f4f7ef;
+  --workspace: #fbfcf8;
+  --panel: #ffffff;
+  --logo-paper: #f4f3eb; /* Figma 토큰은 #f4f3ec. 로고 PNG 배경과 맞춰 경계선이 보이지 않게 한다 */
+  --ink: #173b2e;
+  --muted: #687c6e;
+  --sage: #5f8970;
+  --line: #e1e9df;
+  --accent: #192e27;
+  --accent-hover: #245941;
+  --accent-mid: #abc9af;
+  --accent-soft: #e7f1e5;
+  --user: #194332;
+  --ok: #2c6847;
+  /* 시안에 없는 오류 상태용 */
+  --bad: #a33a2c;
+  --bad-soft: #f8ebe7;
+  --font: "Noto Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif;
+  --font-brand: "Manrope", var(--font);
+}
+
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+
+html, body { height: 100%; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font);
+  font-size: 14px;
+  line-height: 1.5;
+  letter-spacing: -0.02em;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+
+h1, h2, h3, p { margin: 0; }
+button, input, textarea { font: inherit; letter-spacing: inherit; color: inherit; }
+button { cursor: pointer; }
+a { color: inherit; }
+
+:focus-visible { outline: 2px solid var(--sage); outline-offset: 2px; }
+
+/* SIX / Button: Primary · Secondary · Quiet */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 52px;
+  padding: 0 20px;
+  border: 0;
+  border-radius: 16px;
+  background: transparent;
+  color: var(--ink);
+  font-weight: 500;
+  line-height: 23px;
+  text-decoration: none;
+  white-space: pre;
+  transition: background-color .15s ease;
+}
+.btn.primary { background: var(--accent); color: var(--panel); }
+.btn.primary:hover { background: var(--accent-hover); }
+.btn.primary:disabled { background: var(--accent-mid); cursor: default; }
+.btn.secondary { background: var(--accent-soft); }
+.btn.secondary:hover { background: #dcebd9; }
+.btn.quiet:hover { background: var(--accent-soft); }
+.btn:disabled { cursor: default; }
+.btn.block { display: flex; width: 100%; }
+
+/* SIX / Logo symbol: 원본 이미지를 시안의 잘라내기 비율 그대로 보여 준다 (42:60) */
+.logo {
+  display: block;
+  flex: none;
+  aspect-ratio: 42 / 60;
+  /* 작은 크기는 원본(910px)을 크게 줄일 때 일반 모니터에서 거칠어져서 작은 판을 쓴다 */
+  background: var(--logo-paper) image-set(url("assets/team-six-symbol-small.png") 1x, url("assets/team-six-symbol.png") 2x) 43.44% 29.44% / 212.5% 135.67% no-repeat;
+  border-radius: 13.33%/9.33%;
+}
+
+/* 팀 브랜드 */
+.brand { display: flex; align-items: center; gap: 12px; min-width: 0; color: var(--accent); text-decoration: none; }
+.brand .logo { height: 52px; }
+.brand-text { display: flex; flex-direction: column; gap: 2px; white-space: nowrap; }
+.brand-name { font: 800 20px/30px var(--font-brand); letter-spacing: -0.02em; }
+.brand-tag { font-size: 10px; line-height: 15px; color: var(--muted); }
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}
