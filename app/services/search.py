@@ -103,14 +103,16 @@ HYBRID_AMBIGUOUS_GAP = 0.005
 # ('2005년 연령/성별 인구')가 현행 표('2015~2025')를 이기는 일이 많아(개발셋 '다른 패밀리 1위'
 # 31건의 주된 유형) 최신 판·긴 수록 기간에 가산한다. choose는 패밀리 안에서만 최신 판을
 # 고르므로 패밀리가 다르면 못 잡는다. 값은 팀원 실험실 재현(11/1, 흐름 평균 +2.6p)
-RECENT_END_YEAR = 2023  # 이 해 이후까지 담은 표가 최신 판
+# 이 해 이후까지 담은 표가 최신 판. 인구총조사 표 261개가 2020년이 끝이라 2023으로 두면 최신 판이
+# 2010년 판과 같은 취급을 받았다 (11/2 시뮬레이션: 후보 1위 정답 +19, 잃는 문항 0)
+RECENT_END_YEAR = 2020
 RECENT_BONUS = 0.05
 LONG_SPAN_YEARS = 10  # 수록 기간이 이 이상이면 긴 표 (단일 연도 표가 2,364개 중 1,926개)
 LONG_SPAN_BONUS = 0.05
 # 연도 없는 질문에서 수록이 오래전에 끝난 단일 연도 표 감점 (2005년 10% 표본 블록 등).
 # 최신판 가산은 2023년 이후 표에만 붙어 5년 주기 총조사(최신 2020)는 2005년 표와 동점이었다
 # (개발셋 d12 '노인 생활비': 2005년 65세 표 0.907 > 2020년 60세 표 0.862)
-STALE_YEARS = 15
+STALE_END_YEAR = 2008  # 이 해까지만 담은 단일 연도 표는 감점
 STALE_PENALTY = 0.08  # 0.05 로는 d12 가 0.004 차로 2005년 표에 밀렸다 (v6 측정)
 # 연도 대신 옛날을 가리키는 말이 있으면 가산하지 않는다
 PAST = re.compile(r"옛날|예전|과거|당시|그때|그\s*시절|\d+\s*년대|\d+\s*년\s*전")
@@ -122,6 +124,8 @@ STOPWORDS = {
 # '취득한'·'취득자' → '취득', '국적을' → '국적'. 조사·어미 한 글자만 떼어 본다
 SUFFIXES = ("한", "된", "을", "를", "의", "은", "는", "이", "가", "에", "별", "인", "자")
 MIGRATION = re.compile(r"이동|전입|전출|이주|이사")
+# 대상 집단이 여성뿐인 표 ('기혼여성인구', '부인수'. 카탈로그에 남성뿐인 표는 없다)
+FEMALE_ONLY_TABLE = re.compile(r"여성|부인")
 PROJECTION_TABLE = re.compile(r"추계|장래")
 
 TABLES_SQL = """
@@ -352,7 +356,12 @@ def check(t: dict[str, Any], slots: dict[str, Any]) -> dict[str, bool]:
     sex = c["sex"]
     if sex in ("남", "여"):
         own = "male_only" if sex == "남" else "female_only"
-        out["sex"] = t["sex_coverage"] in ("both", own) or t["sex"] == sex
+        # 여성만 다루는 표는 성별 분류가 없어도 '여' 조건을 만족한다
+        out["sex"] = (
+            t["sex_coverage"] in ("both", own)
+            or t["sex"] == sex
+            or (sex == "여" and bool(FEMALE_ONLY_TABLE.search(t["name_n"])))
+        )
     elif sex == "전체" and t["sex_coverage"] != "none":
         out["sex"] = t["has_total"] is not False
     for cls in c["classes"]:
@@ -436,7 +445,7 @@ def recency_bonus(t: dict[str, Any], slots: dict[str, Any]) -> float:
     if not slots.get("projection") and PROJECTION_TABLE.search(t["survey_name"] + t["name_n"]):
         return 0.0
     long_span = t["end_year"] - t["start_year"] >= LONG_SPAN_YEARS
-    stale = not long_span and t["end_year"] <= RECENT_END_YEAR - STALE_YEARS
+    stale = not long_span and t["end_year"] <= STALE_END_YEAR
     return (
         RECENT_BONUS * (t["end_year"] >= RECENT_END_YEAR)
         + LONG_SPAN_BONUS * long_span
@@ -541,10 +550,10 @@ def choose(
         # 대상 슬롯이 패밀리명이어도('한국국적 취득자') 질문 속 멤버 이름('혼인 귀화자')으로 고른다
         # 실험실 §47 멤버 매칭: 질문·대상을 사전(synonyms)으로 넓힌 뒤 멤버 이름과 대조.
         # 지역으로 나뉜 패밀리는 대상 자리에 지역 이름이 있다 ('서울·인천·경기')
-        said = norm(
-            synonyms.keyword_text(f"{slots.get('question', '')} {slots.get('target') or ''}")
-            + f" {c.get('region') or ''}"
-        )
+        # 원문도 함께 본다. 사전 쪽 글은 '사람' 같은 군더더기 말이 지워져 선택지 이름을
+        # 그대로 답해도('…주고받는 사람') 멤버와 안 맞았다
+        raw = f"{slots.get('question', '')} {slots.get('target') or ''}"
+        said = norm(f"{synonyms.keyword_text(raw)} {raw} {c.get('region') or ''}")
         named = set(mentioned_targets([r["target"] for r in rows], said))
         match = [r for r in rows if r["target"] in named]
         if slots.get("target") == "전체":

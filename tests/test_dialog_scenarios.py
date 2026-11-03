@@ -154,3 +154,22 @@ def test_sessions_do_not_mix(chat) -> None:
     assert chat(TARGET_Q, session="A")["status"] == "clarify"
     assert _table(chat("시도별 혼인", session="B")) == "M1"
     assert chat("혼인 귀화자", session="A")["table"]["tbl_id"].startswith("혼인 귀화자")
+
+
+def test_exact_option_with_filler_word_confirms_member(monkeypatch) -> None:
+    """선택지에 '사람' 같은 군더더기 말이 있어도 이름을 그대로 답하면 바로 확정한다"""
+    tables = se.prepare(
+        [
+            _t("N1", "한국인 이웃 수 - 마주치면 인사하는 사람", 2025, 2025, "FN",
+               family_name="한국인 이웃 수", target="마주치면 인사하는 사람", sex="계"),
+            _t("N2", "한국인 이웃 수 - 도와줄 수 있는 사람", 2025, 2025, "FN",
+               family_name="한국인 이웃 수", target="도와줄 수 있는 사람", sex="계"),
+        ]
+    )  # fmt: skip
+    slots = sl.empty_slots("한국인 이웃이 몇 명이나 있나")
+    first = se.resolve(tables, slots, "FN")
+    assert first["status"] == "clarify"
+    state = {"status": "clarify", "family_id": "FN", "slots": first["slots"],
+             "asked": first["clarify_axes"], "clarify_turns": 0}  # fmt: skip
+    done = dl.follow_up(tables, state, "마주치면 인사하는 사람")
+    assert done["status"] in ("ok", "partial_match") and done["table"]["tbl_id"] == "N1"
