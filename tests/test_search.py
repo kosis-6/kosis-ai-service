@@ -682,3 +682,31 @@ def test_embedding_failure_leaves_scope_to_llm(monkeypatch) -> None:
     result = asyncio.run(se.search("쌍태아 출생", trace))
     assert result["retrieval"] == "hybrid"
     assert trace["embedding"] == {"question": True, "rewrite": False}
+
+
+def test_sex_check_passes_for_single_sex_population_tables() -> None:
+    married = se.prepare(
+        [_t("A", "연령별/출생자녀수별 기혼여성인구(15세이상)-시도", 2020, 2020, "FA")]
+    )[0]
+    husband = se.prepare([_t("B", "시도/남편의 직업/출생아수별 부인수", 2020, 2020, "FB")])[0]
+    plain = se.prepare([_t("C", "시도별 인구", 2020, 2020, "FC")])[0]
+    female = _slots("결혼한 여성", "결혼", sex="여")
+    male = _slots("남자", "결혼", sex="남")
+    assert se.check(married, female)["sex"] is True  # 표가 여성만 다룬다
+    assert se.check(married, male)["sex"] is False  # 반대 성별은 여전히 실패
+    # '남편의 직업'은 분류일 뿐 표의 대상은 부인이다
+    assert se.check(husband, male)["sex"] is False and se.check(husband, female)["sex"] is True
+    assert se.check(plain, female)["sex"] is False  # 성별 표기가 없는 표도 그대로 실패
+
+
+def test_recency_counts_latest_census_as_current() -> None:
+    tables = se.prepare(
+        [
+            _t("OLD", "거처의 종류 및 난방시설별 가구-시도", 2010, 2010, "FO", survey_name="조사"),
+            _t("NEW", "거처의 종류별/난방시설별 가구-시군구", 2020, 2020, "FN", survey_name="조사"),
+        ]
+    )
+    s = _slots("난방시설별 가구", "난방시설별 가구")
+    assert se.recency_bonus(tables[1], s) == se.RECENT_BONUS  # 2020년 판은 최신 판
+    assert se.recency_bonus(tables[0], s) == 0.0
+    assert se.rank(tables, s, dense=[0.62, 0.60])[0]["table"]["tbl_id"] == "NEW"
