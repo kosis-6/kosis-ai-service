@@ -23,12 +23,19 @@
   python -m scripts.family_ablation --llm-pick              # LLM 검토(HCX-007)까지 켬/끔 각각
 슬롯은 eval/results/family_ablation_slots.jsonl 에 저장해 다시 돌릴 때 HCX 를 부르지 않는다
 (--fresh 로 무시).
+LLM 검토 답은 eval/results/family_ablation_review.jsonl 에 저장한다 (--fresh-review 로 무시).
+  - 켬·끔 후보가 같으면 LLM 에 한 번만 묻고 같은 답을 쓴다 → 호출이 줄고, LLM 이 같은 입력에
+    다르게 답해서 생기는 우연한 켬/끔 차이가 없어진다
+  - 저장 키에 모델·시스템 프롬프트·_ask 코드·질문·후보 내용이 들어가므로 프롬프트나 표 정보가
+    바뀌면 옛 답은 저절로 안 쓰인다. 실패한 호출은 저장하지 않는다
 """
 
 import argparse
 import asyncio
 import copy
 import csv
+import hashlib
+import inspect
 import json
 from collections import defaultdict
 from datetime import date
@@ -42,6 +49,7 @@ ROOT = Path(__file__).resolve().parent.parent
 GOLDEN = ROOT / "eval" / "dev_20261102" / "dev_all.jsonl"
 RESULTS = ROOT / "eval" / "results"
 SLOT_CACHE = RESULTS / "family_ablation_slots.jsonl"
+REVIEW_CACHE = RESULTS / "family_ablation_review.jsonl"
 OOS = {"out_of_scope", "not_statistics"}
 
 
@@ -73,12 +81,32 @@ async def get_slots(q: str, rule: bool, sleep: float) -> tuple[dict[str, Any], s
     return slot_parser.correct(q, slot_parser.empty_slots(q)), "rule(HCX 실패)"
 
 
+EMBED_FAILED: list[str] = []  # 다시 시도해도 임베딩을 못 받은 질문 (키워드로만 검색됨)
+
+
+async def dense_retry(text: str) -> list[float] | None:
+    """search.dense_scores 는 서비스용이라 다시 시도 없이 3초 안에 못 받으면 None.
+    배치에서는 호출 제한(42901)·지연이 가끔 생기므로 기다렸다가 다시 시도한다"""
+    for attempt in range(4):
+        dense = await search.dense_scores(text)
+        if dense is not None or search._vectors is None:  # 표 벡터가 없으면 다시 해도 소용없음
+            return dense
+        if attempt == 3:
+            break
+        wait = 5 if attempt == 0 else 25  # 호출 제한은 길게는 1분 창이라 25초씩
+        print(f"    임베딩 실패 → {wait}초 뒤 다시 ({attempt + 1}/3)")
+        await asyncio.sleep(wait)
+    EMBED_FAILED.append(text)
+    print("    임베딩 4번 실패 → 이 질문은 키워드로만 검색")
+    return None
+
+
 async def get_dense(q: str, slots: dict[str, Any]) -> list[float] | None:
     """search.search()와 같게: 질문 임베딩 + 재작성 검색어 임베딩 평균"""
-    dense = await search.dense_scores(q)
+    dense = await dense_retry(q)
     rewrite = (slots.get("search_query") or "").strip()
     if dense is not None and rewrite and rewrite != q.strip():
-        dense2 = await search.dense_scores(rewrite)
+        dense2 = await dense_retry(rewrite)
         if dense2 is not None:
             dense = [(a + b) / 2 for a, b in zip(dense, dense2, strict=True)]
     return dense
@@ -99,15 +127,70 @@ def answered(slots: dict[str, Any], answers: dict[str, Any]) -> dict[str, Any]:
     return s
 
 
+REVIEW_FAILED: list[str] = []  # 다시 시도해도 LLM 검토를 못 받은 문항 (검색 결과 그대로)
+REVIEW_STATS = {"저장된 답": 0, "새로 물음": 0}
+
+
+def install_review_cache(fresh: bool) -> None:
+    """llm_pick._ask 를 저장해 둔 답을 먼저 찾는 함수로 바꾼다 (서비스 코드는 그대로)"""
+    from app.prompts.llm_pick import SYSTEM
+    from app.services import llm_pick
+
+    ask = llm_pick._ask
+    # llm_pick.py 가 조금이라도 바뀌면 옛 답을 쓰지 않는다 (안전한 쪽)
+    version = hashlib.sha1(
+        (llm_pick.MODEL + SYSTEM + inspect.getsource(llm_pick)).encode()
+    ).hexdigest()[:12]
+    saved = {} if fresh else {r["key"]: r["parsed"] for r in read_jsonl(REVIEW_CACHE)}
+
+    async def cached_ask(question: str, cands: list[dict[str, Any]]) -> dict[str, Any] | None:
+        lines = [llm_pick.cand_text(t, i + 1) for i, t in enumerate(cands)]
+        body = question + "\n" + "\n".join(lines)
+        key = version + ":" + hashlib.sha1(body.encode()).hexdigest()
+        if key in saved:
+            REVIEW_STATS["저장된 답"] += 1
+            return saved[key]
+        parsed = await ask(question, cands)  # 실패하면 예외 → 저장하지 않음
+        REVIEW_STATS["새로 물음"] += 1
+        saved[key] = parsed
+        with open(REVIEW_CACHE, "a", encoding="utf-8") as f:
+            row = {"key": key, "q": question, "ids": [t["tbl_id"] for t in cands], "parsed": parsed}
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+        return parsed
+
+    llm_pick._ask = cached_ask
+
+
+async def review_retry(
+    g: dict[str, Any], r: dict[str, Any], tables: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """llm_pick.review 는 실패하면 결과를 그대로 돌려주고 trace 에 error 를 남긴다.
+    HcxClient 재시도(1·3·6초)로는 1분 단위 호출 제한이 안 풀리므로 여기서 길게 기다렸다가 다시"""
+    from app.services import llm_pick
+
+    for attempt in range(4):
+        trace: dict[str, Any] = {}
+        out = await llm_pick.review(g["q"], r, tables, trace)
+        err = (trace.get("llm_pick") or {}).get("error")
+        if not err:
+            return out
+        if attempt == 3:
+            break
+        wait = 30 if attempt == 0 else 60
+        print(f"    검토 실패 ({err[:60]}) → {wait}초 뒤 다시 ({attempt + 1}/3)")
+        await asyncio.sleep(wait)
+    REVIEW_FAILED.append(g["id"])
+    print("    검토 4번 실패 → 이 문항은 검토 없이")
+    return out
+
+
 async def flow(
     g: dict[str, Any], tables: list[dict[str, Any]], slots: dict[str, Any],
     dense: list[float] | None, use_llm: bool,
 ) -> dict[str, Any]:  # fmt: skip
     r = search.find(tables, copy.deepcopy(slots), True, dense)
     if use_llm:
-        from app.services import llm_pick
-
-        r = await llm_pick.review(g["q"], r, tables, {})
+        r = await review_retry(g, r, tables)
     first = r["status"]
     ranked = [c["tbl_id"] for c in r.get("candidates") or []]
     if first == "ambiguous":
@@ -252,6 +335,8 @@ async def main_async(args: argparse.Namespace) -> None:
     golden = read_jsonl(args.golden)
     RESULTS.mkdir(parents=True, exist_ok=True)
     cache = {} if args.fresh or args.rule_slots else {r["id"]: r for r in read_jsonl(SLOT_CACHE)}
+    if args.llm_pick:
+        install_review_cache(args.fresh_review)
     tables_on = await search.load_tables()
     tables_off = family_off(tables_on)
     fam_of = {t["tbl_id"]: t["family_id"] for t in tables_on}
@@ -268,9 +353,9 @@ async def main_async(args: argparse.Namespace) -> None:
             if src == "hcx":
                 with open(SLOT_CACHE, "a", encoding="utf-8") as f:
                     f.write(json.dumps({"id": g["id"], "slots": slots}, ensure_ascii=False) + "\n")
-            if args.sleep:
-                await asyncio.sleep(args.sleep)
         slot_src[src] += 1
+        if args.sleep:
+            await asyncio.sleep(args.sleep)
         dense = await get_dense(g["q"], slots)
         off[g["id"]] = await flow(g, tables_off, slots, dense, args.llm_pick)
         on[g["id"]] = await flow(g, tables_on, slots, dense, args.llm_pick)
@@ -283,6 +368,12 @@ async def main_async(args: argparse.Namespace) -> None:
                 f.write(json.dumps(p, ensure_ascii=False) + "\n")
     text, changed = report(golden, on, off, fam_of, name_of, dict(slot_src), args.llm_pick)
     stem = RESULTS / f"family_ablation_{date.today():%Y%m%d}"
+    if EMBED_FAILED:
+        shown = ", ".join(EMBED_FAILED[:10])
+        text += f"\n> 임베딩 실패(키워드로만 검색): {len(EMBED_FAILED)}건 — {shown}\n"
+    if REVIEW_FAILED:
+        shown = ", ".join(REVIEW_FAILED[:10])
+        text += f"\n> LLM 검토 실패(검토 없이): {len(REVIEW_FAILED)}건 — {shown}\n"
     stem.with_suffix(".md").write_text(text, encoding="utf-8")
     with open(stem.with_suffix(".csv"), "w", encoding="utf-8-sig", newline="") as f:
         w = csv.DictWriter(f, fieldnames=list(changed[0]) if changed else ["id"])
@@ -290,6 +381,9 @@ async def main_async(args: argparse.Namespace) -> None:
         w.writerows(changed)
     print("\n" + text.split("## 패밀리 크기별")[0])
     print(f"→ {stem.with_suffix('.md')} / {stem.with_suffix('.csv')}")
+    print(f"임베딩 끝내 실패: {len(EMBED_FAILED)}건 · 검토 끝내 실패: {len(REVIEW_FAILED)}건")
+    if args.llm_pick:
+        print(f"LLM 검토: {', '.join(f'{k} {v}' for k, v in REVIEW_STATS.items())}")
 
 
 def main() -> None:
@@ -299,6 +393,7 @@ def main() -> None:
     p.add_argument("--llm-pick", action="store_true", help="LLM 검토(HCX-007)까지 켬/끔 각각")
     p.add_argument("--sleep", type=float, default=0.0, help="질문 사이 쉬는 초")
     p.add_argument("--fresh", action="store_true", help="저장된 슬롯을 쓰지 않음")
+    p.add_argument("--fresh-review", action="store_true", help="저장된 LLM 검토 답을 쓰지 않음")
     asyncio.run(main_async(p.parse_args()))
 
 
