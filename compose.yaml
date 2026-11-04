@@ -3,7 +3,10 @@ name: kosis-ai-service
 
 services:
   api:
-    build: .
+    build:
+      # 이미지에 backend/와 frontend/를 함께 넣으므로 컨텍스트는 레포 최상위
+      context: .
+      dockerfile: backend/Dockerfile
     ports:
       - "8000:8000"
     env_file:
@@ -14,9 +17,11 @@ services:
       WATCHFILES_FORCE_POLLING: "true"
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-kosis}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-kosis}
     volumes:
-      - .:/app
+      # 레포 전체를 마운트: frontend/ 서빙과 컨테이너 안 git(.git은 최상위)에 필요
+      - .:/workspace
       # 호스트(macOS/Windows)의 .venv가 컨테이너에서 깨진 인터프리터로 잡히지 않도록 가림
-      - /app/.venv
+      - /workspace/.venv
+      - /workspace/backend/.venv
     depends_on:
       db:
         condition: service_healthy
@@ -34,7 +39,7 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
       # DB 최초 생성 시 한 번만 실행 (확장 설치)
-      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ./backend/docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s

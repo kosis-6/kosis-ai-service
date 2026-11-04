@@ -2,7 +2,7 @@
   "name": "kosis-ai-service",
   "dockerComposeFile": "../compose.yaml",
   "service": "api",
-  "workspaceFolder": "/app",
+  "workspaceFolder": "/workspace",
   "shutdownAction": "stopCompose",
   "features": {
     "ghcr.io/devcontainers/features/git:1": {}
@@ -17,6 +17,8 @@
       "settings": {
         "python.defaultInterpreterPath": "/opt/venv/bin/python",
         "python.testing.pytestEnabled": true,
+        "python.testing.cwd": "/workspace/backend",
+        "terminal.integrated.cwd": "/workspace/backend",
         "[python]": {
           "editor.defaultFormatter": "charliermarsh.ruff",
           "editor.formatOnSave": true

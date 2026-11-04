@@ -44,6 +44,8 @@
 
 ## 개발 환경 세팅
 
+> 레포는 `frontend/`(화면)와 `backend/`(서버·파이프라인·데이터)로 나뉩니다. **이 문서의 `app/`, `pipeline/`, `scripts/`, `data/`, `eval/`, `config/`, `tests/` 경로는 모두 `backend/` 기준**이고, 명령어는 `backend/`에서 실행합니다. `docker compose`는 레포 최상위에서 실행합니다.
+
 Mac / Windows 모두 **Docker로 동일한 환경**에서 실행합니다.
 
 ### 1. 사전 준비
@@ -91,7 +93,7 @@ POSTGRES_PASSWORD=내가_정한_DB_비밀번호
 1. VS Code에서 프로젝트 폴더를 엽니다.
 2. 오른쪽 아래 **"Reopen in Container"** 알림을 클릭합니다.
    (알림이 안 보이면 `Ctrl/Cmd + Shift + P` → `Dev Containers: Reopen in Container`)
-3. 처음에는 이미지 빌드로 몇 분 걸립니다. 완료되면 VS Code가 컨테이너 안에서 열립니다.
+3. 처음에는 이미지 빌드로 몇 분 걸립니다. 완료되면 VS Code가 컨테이너 안에서 열립니다. 레포 전체는 `/workspace`에 있고, 터미널은 `/workspace/backend`에서 열립니다.
 
 컨테이너가 열리면 아래가 **자동으로** 준비됩니다.
 
@@ -110,7 +112,7 @@ KOSIS OpenAPI로 통계표 수치를 받아 `data/` 폴더에 저장합니다.
 
 ### 받을 표 목록
 
-[`scripts/tables.csv`](scripts/tables.csv)에 주제별로 정리되어 있습니다. 표를 추가하려면 이 파일에 한 줄을 추가합니다.
+[`backend/scripts/tables.csv`](backend/scripts/tables.csv)에 주제별로 정리되어 있습니다. 표를 추가하려면 이 파일에 한 줄을 추가합니다.
 
 | 열 | 설명 | 예시 |
 | --- | --- | --- |
@@ -332,7 +334,9 @@ python -m scripts.demo score              # 7회차 전체 pandas 채점 지표�
 
 ```bash
 # 1) 표 임베딩 계산 (내 PC에서, DB 불필요) → data/embeddings/bge-m3__full.npy
+cd backend
 uv run --with sentence-transformers python -m pipeline.build_embeddings --dry-run
+cd ..
 # 2) stat_tables → table_families → table_embeddings 한 번에 적재
 docker compose exec api python -m pipeline.build_search
 # 3) 서버 재시작 (표 정보는 서버가 처음 한 번 읽어 둠)
@@ -403,57 +407,59 @@ docker compose exec api python -m scripts.search_log --session S_abc123  # 한 �
 
 ```
 kosis-ai-service/
-├── app/
-│   ├── main.py              # FastAPI 앱 생성, 라우터 등록 (진입점)
-│   ├── core/
-│   │   ├── config.py        # 환경변수(.env) 설정 관리
-│   │   ├── db.py            # PostgreSQL 연결 (SQLAlchemy 비동기 세션)
-│   │   └── duckdb.py        # 전처리 DB(kosis.duckdb) 읽기 전용 연결
-│   ├── api/
-│   │   ├── router.py        # 모든 라우터를 하나로 모음
-│   │   └── routes/          # 기능별 API 엔드포인트
-│   │       ├── health.py
-│   │       └── ask.py       # POST /ask 질의응답
-│   ├── schemas/             # 요청·응답 모델 (Pydantic)
-│   ├── prompts/             # LLM 프롬프트, 답변 정책(answer_policy.md)
-│   └── services/            # 비즈니스 로직
-│       ├── kosis_client.py  # KOSIS OpenAPI 호출
-│       ├── hcx_client.py    # HCX(CLOVA Studio) 호출
-│       ├── analysis.py      # 증감률·구성비·순위 등 계산 함수
-│       ├── indicators.py    # 계산 지표 조회·추이·비교·순위, 지역 찾기 (DuckDB)
-│       ├── lookup.py        # 조회 지표 (KOSIS 공표 값, facts) 조회·추이·비교·순위·구성비
-│       ├── catalog.py       # 통계표 설명·비교 가능 여부 조회
-│       └── qa.py            # 질문 → 답변 (1~5단계 연결)
-├── pipeline/                # 전처리 DB를 만드는 배치 작업 (서버와 별개)
-├── config/catalog_notes.toml # 통계표 설명·지표 사전 원본
+├── frontend/                # 채팅 화면 (FastAPI가 /chat으로 서빙)
+├── backend/
+│   ├── app/
+│   │   ├── main.py              # FastAPI 앱 생성, 라우터 등록 (진입점)
+│   │   ├── core/
+│   │   │   ├── config.py        # 환경변수(.env) 설정 관리
+│   │   │   ├── db.py            # PostgreSQL 연결 (SQLAlchemy 비동기 세션)
+│   │   │   └── duckdb.py        # 전처리 DB(kosis.duckdb) 읽기 전용 연결
+│   │   ├── api/
+│   │   │   ├── router.py        # 모든 라우터를 하나로 모음
+│   │   │   └── routes/          # 기능별 API 엔드포인트
+│   │   │       ├── health.py
+│   │   │       └── ask.py       # POST /ask 질의응답
+│   │   ├── schemas/             # 요청·응답 모델 (Pydantic)
+│   │   ├── prompts/             # LLM 프롬프트, 답변 정책(answer_policy.md)
+│   │   └── services/            # 비즈니스 로직
+│   │       ├── kosis_client.py  # KOSIS OpenAPI 호출
+│   │       ├── hcx_client.py    # HCX(CLOVA Studio) 호출
+│   │       ├── analysis.py      # 증감률·구성비·순위 등 계산 함수
+│   │       ├── indicators.py    # 계산 지표 조회·추이·비교·순위, 지역 찾기 (DuckDB)
+│   │       ├── lookup.py        # 조회 지표 (KOSIS 공표 값, facts) 조회·추이·비교·순위·구성비
+│   │       ├── catalog.py       # 통계표 설명·비교 가능 여부 조회
+│   │       └── qa.py            # 질문 → 답변 (1~5단계 연결)
+│   ├── pipeline/                # 전처리 DB를 만드는 배치 작업 (서버와 별개)
+│   ├── config/catalog_notes.toml # 통계표 설명·지표 사전 원본
+│   ├── scripts/
+│   │   ├── collect_kosis.py     # KOSIS 통계표 수집
+│   │   ├── collect_report.py    # 수집 결과 표 (표별 수록 기간·행 수·수집 시각)
+│   │   ├── tables.csv           # 수집할 통계표 목록
+│   │   ├── check_hcx.py         # HCX 연결 확인
+│   │   ├── ask.py               # 질의응답 명령줄 실행
+│   │   ├── eval_golden.py       # 골든셋 자동 평가
+│   │   ├── eval_stability.py    # 반복 채점 비교 (HCX 해석 흔들림 측정)
+│   │   ├── eval_replay.py       # 기록된 HCX 해석으로 재생 검증 (HCX 호출 없음)
+│   │   ├── eval_oracle.py       # pandas 정답 재계산 채점 (서비스 코드 미사용)
+│   │   ├── demo.py              # 시연용 명령 (답변 → 정답 대조 → 전체 지표)
+│   │   ├── check_raw.py         # 원본 CSV ↔ 서비스 값 전수 대조 (분자·분모·기간)
+│   │   ├── compare_llm.py       # 전처리 데이터 유무에 따른 HCX 답변 비교 실험
+│   │   ├── clova_eval.py        # 계산을 코드 대신 CLOVA가 할 때 정확도 비교 실험
+│   │   ├── missing_requests.py  # DB에 없는 데이터 요청 집계
+│   │   └── request_log.py       # 요청 로그 보기 (원인 추적)
+│   ├── eval/golden.csv          # 개발셋 골든셋 16문항 (질문 + 정답)
+│   ├── eval/golden_sheet.csv    # 시트 골든셋 60문항 (기대 행동·허용 표)
+│   ├── eval/results/            # 발표·시연용 채점 결과 (0·7회차, pandas 채점), 실전 2 검색 점검
+│   ├── data/                    # 수집한 데이터 (각자 생성, 커밋 X)
+│   ├── tests/                   # pytest 테스트
+│   ├── docker/postgres/init.sql # DB 최초 생성 시 확장(pgvector, pg_trgm) 설치
+│   ├── Dockerfile               # 이미지 정의 (Python 3.12.15 + uv)
+│   ├── pyproject.toml           # 의존성 및 도구 설정
+│   └── uv.lock                  # 의존성 정확한 버전 고정
 ├── docs/                    # 데이터 사전, 작업 기록
-├── scripts/
-│   ├── collect_kosis.py     # KOSIS 통계표 수집
-│   ├── collect_report.py    # 수집 결과 표 (표별 수록 기간·행 수·수집 시각)
-│   ├── tables.csv           # 수집할 통계표 목록
-│   ├── check_hcx.py         # HCX 연결 확인
-│   ├── ask.py               # 질의응답 명령줄 실행
-│   ├── eval_golden.py       # 골든셋 자동 평가
-│   ├── eval_stability.py    # 반복 채점 비교 (HCX 해석 흔들림 측정)
-│   ├── eval_replay.py       # 기록된 HCX 해석으로 재생 검증 (HCX 호출 없음)
-│   ├── eval_oracle.py       # pandas 정답 재계산 채점 (서비스 코드 미사용)
-│   ├── demo.py              # 시연용 명령 (답변 → 정답 대조 → 전체 지표)
-│   ├── check_raw.py         # 원본 CSV ↔ 서비스 값 전수 대조 (분자·분모·기간)
-│   ├── compare_llm.py       # 전처리 데이터 유무에 따른 HCX 답변 비교 실험
-│   ├── clova_eval.py        # 계산을 코드 대신 CLOVA가 할 때 정확도 비교 실험
-│   ├── missing_requests.py  # DB에 없는 데이터 요청 집계
-│   └── request_log.py       # 요청 로그 보기 (원인 추적)
-├── eval/golden.csv          # 개발셋 골든셋 16문항 (질문 + 정답)
-├── eval/golden_sheet.csv    # 시트 골든셋 60문항 (기대 행동·허용 표)
-├── eval/results/            # 발표·시연용 채점 결과 (0·7회차, pandas 채점), 실전 2 검색 점검
-├── data/                    # 수집한 데이터 (각자 생성, 커밋 X)
-├── tests/                   # pytest 테스트
-├── docker/postgres/init.sql # DB 최초 생성 시 확장(pgvector, pg_trgm) 설치
 ├── .devcontainer/           # VS Code 컨테이너 개발 환경 설정
-├── Dockerfile               # 이미지 정의 (Python 3.12.15 + uv)
 ├── compose.yaml             # 로컬 개발용 실행 설정 (api + db)
-├── pyproject.toml           # 의존성 및 도구 설정
-├── uv.lock                  # 의존성 정확한 버전 고정
 └── .env                     # 환경변수 (각자 생성, 커밋 X)
 ```
 
