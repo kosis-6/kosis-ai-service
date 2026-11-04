@@ -408,6 +408,31 @@ def test_llm_pick_filter_mode_keeps_ranking(monkeypatch) -> None:
     )  # 거르기는 한다
 
 
+def test_keyword_text_matches_keys_containing_filler() -> None:
+    """군더더기 말이 든 사전 키도 원문에서 찾는다. 검색어 본문은 정리된 글 그대로"""
+    table = {"우리 동네": "시군구", "몇 명 태어": "출생아수", "동네": "엉뚱한말"}
+    assert se.synonyms.keyword_text("우리 동네 외국인 몇 명", table) == "동네 외국인 시군구"
+    assert se.synonyms.keyword_text("아기가 몇 명 태어났는지", table) == "아기가 태어났 출생아수"
+
+
+def test_keyword_text_ignores_key_across_removed_filler() -> None:
+    """지운 말 양쪽이 붙어 생긴 가짜 표현은 맞지 않는다 ('타는지 시도별' → '타 시도')"""
+    table = {"타 시도": "다른"}
+    assert se.synonyms.keyword_text("버스 타는지 시도별로", table) == "버스 타 시도별로"
+
+
+def test_keyword_text_applies_exclude_when_matching_original() -> None:
+    """원문에서 찾아도 빼 달라고 한 단어의 항목은 넣지 않는다 ('우리 동네'는 그대로 찾음)"""
+    table = {"우리 동네": "시군구", "귀화자": "국적취득"}
+    text = se.synonyms.keyword_text("우리 동네 귀화자 말고", table, exclude=["귀화자"])
+    assert "시군구" in text and "국적취득" not in text
+
+
+def test_question_ending_does_not_fire_dictionary() -> None:
+    """'몇 가구인지'의 어미 '인지'가 인지 능력 항목으로 걸리면 안 된다"""
+    assert "기억하거나" not in se.synonyms.keyword_text("노인만 사는 집이 몇 가구인지")
+
+
 def test_choose_matches_member_through_synonyms() -> None:
     """질문의 일상어('결혼해서 귀화한')가 사전으로 멤버 이름('혼인 귀화자')에 닿으면 되묻지 않고 그
     멤버"""

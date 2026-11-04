@@ -4,9 +4,9 @@ HCX가 요약한 topic·target에서 단어를 뽑으면 지역·분류 단어('
 '돌싱'·'혼자 사는 집' 같은 일상어는 표 이름에 없어 키워드가 표와 만나지 못한다.
 그래서 키워드 검색어는 질문 원문에서 만들고, 사전으로 통계 용어를 질문 뒤에 덧붙인다 (치환이 아님).
 
-  "돌싱이 몇 명인지 알려 줘" → clean → "돌싱이" → expand → "돌싱이 재혼 이혼 혼인상태 …"
+  "돌싱이 몇 명인지 알려 줘" → clean → "돌싱이" → 원문의 사전 용어 추가 → "돌싱이 재혼 이혼 …"
 
-사전 config/synonyms.json = {일상 표현: 통계 용어(공백으로 여러 개)}, 2,965항목.
+사전 config/synonyms.json = {일상 표현: 통계 용어(공백으로 여러 개)}, 약 3천 항목.
   - 팀원 실험실(kosis-search-lab src/synonyms.py)의 주제별 사전 + 손으로 쓴 157항목,
     한 글자 키·오발화 항목 제거 (2026-10-31 최세진 전달, synonyms_all.json)
   - 손으로 쓴 항목은 개발셋·팀원셋 오답을 보고 넣은 것이라 그 두 셋 수치는 낙관적이다.
@@ -50,14 +50,19 @@ def clean_query(question: str) -> str:
 NEGATION_MARKS = ("아닌", "아니고", "아니라", "말고", "빼고", "제외", "않은", "안 ")
 
 
-def expand(q: str, table: dict[str, str] | None = None, exclude: list[str] | None = None) -> str:
-    """질문에 들어 있는 표현을 긴 것부터 찾아 통계 용어를 덧붙인다.
+def expand(
+    q: str,
+    table: dict[str, str] | None = None,
+    exclude: list[str] | None = None,
+    source: str | None = None,
+) -> str:
+    """source(없으면 q)에 들어 있는 표현을 긴 것부터 찾아 통계 용어를 q 뒤에 덧붙인다.
     긴 표현이 맞으면 그 자리를 비워 짧은 표현이 겹쳐 맞지 않게 한다 ('혼자 사는' 뒤 '사는').
     exclude: 빼 달라고 한 단어. 그 단어가 든 항목('귀화자' → 국적취득)은 건너뛴다.
     항목 자체가 부정 표현('귀화자가 아닌' → 한국국적을 가지지 않은 자)이면 그 뜻을 담은
     용어이므로 그대로 쓴다"""
     table = load() if table is None else table
-    rest = q
+    rest = q if source is None else source
     extra: list[str] = []
     for phrase in sorted(table, key=len, reverse=True):
         if phrase in rest:
@@ -77,8 +82,9 @@ def expand(q: str, table: dict[str, str] | None = None, exclude: list[str] | Non
 def keyword_text(
     question: str, table: dict[str, str] | None = None, exclude: list[str] | None = None
 ) -> str:
-    """키워드 검색어: 원문 정리 → 사전 확장"""
-    return expand(clean_query(question), table, exclude)
+    """키워드 검색어: 정리한 질문 + 원문에서 찾은 사전 용어.
+    사전 키에 군더더기 말이 들어 있어('우리 동네', '몇 명 태어') 정리한 글에서 찾으면 안 맞는다"""
+    return expand(clean_query(question), table, exclude, source=question)
 
 
 if __name__ == "__main__":
