@@ -27,7 +27,8 @@ SYNONYMS_PATH = Path(__file__).resolve().parents[2] / "config" / "synonyms.json"
 # 검색에 방해되는 말 (실험실 정규식). 부분 문자열로 지우므로 단어 안에서도 지워진다.
 # 띄어쓰기가 있든 없든 잡는다 ('찾아 줘' = '찾아줘'). '표'는 따로 쓴 것만 ('생명표'는 남김)
 FILLER = re.compile(
-    r"통계표|통계|자료|데이터|현황|찾아\s*줘|찾아\s*주세요|알려\s*줘|알려\s*주세요|알고\s*싶어|"
+    r"(?:제일|가장)\s*(?:최신|최근)|최신(?:\s*(?:데이터|자료|버전|기준))?|최근(?!\s*\d)|"
+    r"(?:통계표|통계|자료|데이터|현황)(?:으로|로|를|을|는|은|가|이|도)?(?![가-힣])|통계표|통계|자료|데이터|현황|찾아\s*줘|찾아\s*주세요|알려\s*줘|알려\s*주세요|알고\s*싶어|"
     r"보여\s*줘|볼\s*수\s*있는|있는\s*표|(?<![가-힣])표(?![가-힣])|"
     r"얼마나|몇\s*명|몇|되나요|하나요|인지|는지|어때|궁금|사람들|사람|퍼센트|비율이|정도|"
     r"어떻게|어디|어느|어떤|제일|가장|보통|요즘|경우|우리|되나|있나|되는|있는|"
@@ -46,23 +47,38 @@ def clean_query(question: str) -> str:
     return " ".join(FILLER.sub(" ", question).split())
 
 
-def expand(q: str, table: dict[str, str] | None = None) -> str:
+NEGATION_MARKS = ("아닌", "아니고", "아니라", "말고", "빼고", "제외", "않은", "안 ")
+
+
+def expand(q: str, table: dict[str, str] | None = None, exclude: list[str] | None = None) -> str:
     """질문에 들어 있는 표현을 긴 것부터 찾아 통계 용어를 덧붙인다.
-    긴 표현이 맞으면 그 자리를 비워 짧은 표현이 겹쳐 맞지 않게 한다 ('혼자 사는' 뒤 '사는')"""
+    긴 표현이 맞으면 그 자리를 비워 짧은 표현이 겹쳐 맞지 않게 한다 ('혼자 사는' 뒤 '사는').
+    exclude: 빼 달라고 한 단어. 그 단어가 든 항목('귀화자' → 국적취득)은 건너뛴다.
+    항목 자체가 부정 표현('귀화자가 아닌' → 한국국적을 가지지 않은 자)이면 그 뜻을 담은
+    용어이므로 그대로 쓴다"""
     table = load() if table is None else table
     rest = q
     extra: list[str] = []
     for phrase in sorted(table, key=len, reverse=True):
         if phrase in rest:
+            if (
+                exclude
+                and not any(m in phrase for m in NEGATION_MARKS)
+                and any(phrase in w or w in phrase for w in exclude)
+            ):
+                rest = rest.replace(phrase, " ")
+                continue
             extra.append(table[phrase])
             rest = rest.replace(phrase, " ")
     terms = list(dict.fromkeys(tok for e in extra for tok in e.split()))
     return q + (" " + " ".join(terms) if terms else "")
 
 
-def keyword_text(question: str, table: dict[str, str] | None = None) -> str:
+def keyword_text(
+    question: str, table: dict[str, str] | None = None, exclude: list[str] | None = None
+) -> str:
     """키워드 검색어: 원문 정리 → 사전 확장"""
-    return expand(clean_query(question), table)
+    return expand(clean_query(question), table, exclude)
 
 
 if __name__ == "__main__":

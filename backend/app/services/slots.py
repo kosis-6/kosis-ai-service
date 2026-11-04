@@ -51,6 +51,12 @@ SIDO = {
     "제주특별자치도": ["제주", "제주도"],
 }
 SIDO_ALIAS = {alias: name for name, aliases in SIDO.items() for alias in [name, *aliases]}
+# '서울시'·'세종시'처럼 광역 지자체 뒤에 '시'만 붙인 말도 시도다
+# ('세종시 2013년 나이별 성별 인구'가 시군구로 잡혀 세종시 특별센서스 표가 '시군구 ✘'로 나오던 문제)
+# '광주시'는 경기도 광주시(시군구)와 겹쳐 넣지 않는다 (광주광역시는 '광주'·'광주광역시'로 잡힌다)
+for _name, _aliases in SIDO.items():
+    if _name.endswith(("특별시", "광역시", "특별자치시")) and _aliases[0] != "광주":
+        SIDO_ALIAS.setdefault(_aliases[0] + "시", _name)
 
 YEAR = re.compile(r"(?<!\d)((?:19|20)\d{2})(?!\d)")
 # '95년', "'05년도". '10년 전', '20년간', '90년생', '80년대', '10년 넘게'는 연도가 아니다
@@ -60,11 +66,24 @@ SHORT_YEAR = re.compile(
 SHORT_YEAR_PIVOT = 50  # 50 미만은 20xx, 이상은 19xx ('45년' → 2045 추계, '95년' → 1995)
 PROJECTION = re.compile(r"앞으로|예측|전망|미래|추계|장래|될까|될지|예상")
 # '귀화한 사람 말고', '외국인 빼고', '서울 제외하고'
+NEGATION_WORDS = r"(?:말고|빼고|빼면|뺀|제외하고|제외한|제외하면|제외|제하고|아닌|아니고|아니라|이외의|이외에|외의)"
 NEGATION = re.compile(
-    r"([가-힣A-Za-z0-9]+(?:\s+[가-힣A-Za-z0-9]+)?)\s*(?:은|는|을|를|이|가)?\s*"
-    r"(?:말고|빼고|제외하고|제외한|제외)"
+    r"([가-힣A-Za-z0-9]+(?:\s+[가-힣A-Za-z0-9]+)?)\s*(?:은|는|을|를|이|가)?\s*" + NEGATION_WORDS
 )
-NEGATION_SKIP = {"사람", "것", "거", "분", "애들", "통계", "표", "자료", "이상", "이하", "미만"}
+# 나열한 것을 한꺼번에 빼는 말: '서울이랑 부산 말고', '서울, 부산, 대구 빼고', '귀화자나 결혼이민자 말고'
+NEG_LINK = r"(?:이랑|랑|하고|과|와|이나|나|및|또는)"
+NEG_LINK_WORDS = {"및", "또는", "그리고", "혹은"}  # 띄어 쓰는 잇는 말
+NEG_CLAUSE_WORDS = {"단", "다만", "하지만", "그런데", "근데", "대신"}  # 앞 문장과 끊는 말
+# 나열 항목 끝에 붙은 잇는 말 ('서울이랑' → '서울'). 떼고 두 글자 이상 남을 때만
+NEG_LINK_TAIL = re.compile(NEG_LINK + r"$")
+# 빼 달라는 말 앞의 단어 중 대상이 아닌 것.
+# '한국'은 '한국국적을 가지지 않은 자' 표명에 있어 빼면 안 된다.
+# 동사 부정('결혼 안 한', '귀화하지 않은', '소화기가 없는')은 같은 축의 반대 값이라 단어를 빼지 않고
+# 사전('결혼 안 한' → 미혼)으로 푼다. 그래서 않은·안 한·없는은 여기 넣지 않는다
+NEGATION_SKIP = {
+    "사람", "것", "거", "분", "애들", "통계", "표", "자료", "이상", "이하", "미만",
+    "한국", "우리나라", "국내", "중에", "중", "그", "이", "저", "다른", "같은",
+}  # fmt: skip
 # 국제결혼 표는 외국인 배우자 쪽으로 나뉜다
 # ('외국인 아내의 국적별 혼인' / '외국인 남편의 국적별 혼인').
 # '외국인 여자와 결혼한 한국 남자' = 외국인 아내. 결혼·이혼 질문에서만 본다
@@ -98,6 +117,12 @@ REGION_CLASS = re.compile(
     r"(?:시도|시군구|읍면동|지역|행정구역|시·도|시·군·구|구|시군|군|읍|면|동)별?"
 )
 AGE = re.compile(r"\d+\s*세")
+# 표에서 고를 값이 아니라 표의 값으로 계산 · 분석할 내용 ('성별 비율', '상위 3개국', '시점별').
+# '증가율' · '평균연령'처럼 그 자체가 항목 이름인 말은 넣지 않는다
+ANALYSIS = re.compile(
+    r"비율|비중|순위|상위\s*\d*\s*(?:개국|개)?|하위\s*\d*\s*(?:개국|개)?|추이|변화|시점별|시계열|"
+    r"가장\s*(?:많은|높은|낮은|적은)"
+)
 # '여성 가구주'는 가구주의 성별 분류이지 성별 조건이 아니다 (검색 규칙 4장)
 HOUSEHOLDER_SEX = re.compile(r"(?:남자|남성|여자|여성)\s*가구주")
 
@@ -120,6 +145,7 @@ def empty_slots(question: str) -> dict[str, Any]:
         "parse_error": False,
         "projection": False,  # 장래 추계를 찾는 질문
         "exclude": [],  # 빼 달라고 한 단어 ('귀화한 사람 말고' → ['귀화한'])
+        "llm_exclude": [],  # HCX 가 준 exclude 원본 (correct 가 검증해 exclude 에 합친다)
         "spouse": None,  # '외국인 아내' / '외국인 남편'
         # 연령 집단 이름 ('노인' → {"expr": "노인", "lo": 65, "hi": None, "basis": ...})
         "age": None,
@@ -187,6 +213,7 @@ def normalize(question: str, parsed: dict[str, Any]) -> dict[str, Any]:
     slots["topic"] = _text(parsed.get("topic")) or question.strip()
     slots["search_query"] = _text(parsed.get("search_query"))
     slots["target"] = _text(parsed.get("target"))
+    slots["llm_exclude"] = _texts(parsed.get("exclude"))  # correct() 가 질문 원문과 대조해 받는다
     if parsed.get("query_type") in QUERY_TYPES:
         slots["query_type"] = parsed["query_type"]
     c = slots["conditions"]
@@ -216,7 +243,9 @@ def correct(question: str, slots: dict[str, Any]) -> dict[str, Any]:
     today = date.today()
     years = sorted({int(y) for y in YEAR.findall(question)} | short_years(question))
     slots["time_ref"] = None
-    if not years and (ref := timeref.resolve(question, today)):
+    if not years and (
+        ref := timeref.recent_period(question, today) or timeref.resolve(question, today)
+    ):
         # 상대시점("작년", "2년 전부터")은 LLM이 아니라 오늘 날짜로 코드가 푼다. 끝이 열린 기간은
         # 최신까지
         years = [ref.year]
@@ -228,7 +257,12 @@ def correct(question: str, slots: dict[str, Any]) -> dict[str, Any]:
         fix("year_end", years[-1] if len(years) > 1 else None, "질문의 기간")
     # 장래 추계: 올해 이후 연도이거나 예측 표현
     slots["projection"] = bool(PROJECTION.search(question) or (years and years[-1] > today.year))
-    slots["exclude"] = negated_words(question)
+    # 빼 달라는 대상: 규칙(negated_words) + HCX exclude 중 질문에 그 낱말이 있고 뒤에 빼는 말이 오는 것
+    rule_words = negated_words(question)
+    llm_words = [w for w in slots.get("llm_exclude") or [] if llm_excluded_ok(question, w)]
+    slots["exclude"] = list(dict.fromkeys(rule_words + [w for w in llm_words if not _covered(w, rule_words)]))
+    if dropped := [w for w in slots.get("llm_exclude") or [] if w not in llm_words]:
+        fixes.append({"key": "exclude", "from": dropped, "to": None, "reason": "질문에 없거나 빼는 말이 뒤따르지 않음"})
     # 연령 집단 이름("노인", "청년")은 법령·통계 정의 사전으로 구간을 정한다. 숫자 구간이 있으면
     # 그쪽이 우선
     age = agegroup.resolve(question)
@@ -260,6 +294,10 @@ def correct(question: str, slots: dict[str, Any]) -> dict[str, Any]:
     region = c["region"]
     if region and region.replace(" ", "") in SIDO_ALIAS:
         fix("region", SIDO_ALIAS[region.replace(" ", "")], "시도 정식 이름")
+    # '서울 말고 시도별 인구': 빼 달라고 한 지역을 HCX 가 지역 슬롯에 넣었으면 지운다
+    excluded_regions = {SIDO_ALIAS.get(w.rstrip("은는을를이가"), w) for w in slots["exclude"]}
+    if c["region"] and c["region"] in excluded_regions:
+        fix("region", None, "빼 달라고 한 지역")
 
     # 지역 수준: '~별' 표현과 지역 이름이 요구하는 수준 중 더 세밀한 쪽 ('부산 구별' → 시군구)
     level = next((lv for lv, pattern in LEVEL_WORDS if pattern.search(question)), None)
@@ -287,6 +325,26 @@ def correct(question: str, slots: dict[str, Any]) -> dict[str, Any]:
         c["items"] = [*c["items"], target]
         fixes.append({"key": "target", "from": target, "to": None, "reason": "연령은 items"})
 
+    # 계산 · 분석 표현은 표의 조건이 아니다 (외부 질문 '상위 3개국 ✘', '성별 비율 ✘', '시점별 ✘').
+    # 빼고 slots["analysis"]에 남겨 답변에 '직접 계산' 안내를 단다. 남는 말이 있으면 그 말만
+    # ('성별 비율' → 분류 '성별')
+    analysis: list[str] = []
+    for key in ("classes", "items"):
+        kept = []
+        for v in c[key]:
+            if not ANALYSIS.search(v):
+                kept.append(v)
+                continue
+            analysis.append(v)
+            rest = re.sub(r"\s+", " ", ANALYSIS.sub(" ", v)).strip(" 의및와과")
+            if rest in ("성별", "성"):
+                if "성별" not in c["classes"]:
+                    c["classes"] = [*c["classes"], "성별"]
+            elif len(re.sub(r"[^가-힣A-Za-z0-9]", "", rest)) >= 2:
+                kept.append(rest)
+        fix(key, kept, "계산 · 분석 표현은 조건이 아님")
+    slots["analysis"] = analysis
+
     # 분류·값 목록: 지역·성별은 위 슬롯이 맡고, 주제 자체는 조건이 아니다
     fix(
         "classes",
@@ -304,20 +362,79 @@ def correct(question: str, slots: dict[str, Any]) -> dict[str, Any]:
 
 
 def short_years(question: str) -> set[int]:
-    """'95년' → 1995, '05년도' → 2005"""
+    """'95년' → 1995, '05년도' → 2005. '최근 10년'·'지난 20년간'은 기간이라 연도가 아니다"""
+    question = timeref.RECENT_N_YEARS.sub(" ", question)
     return {
         (2000 if int(yy) < SHORT_YEAR_PIVOT else 1900) + int(yy)
         for yy in SHORT_YEAR.findall(question)
     }
 
 
+NEG_AFTER = re.compile(NEGATION_WORDS + r"|빼|제외")
+NEG_WINDOW = 20  # 낱말 뒤 이 글자 수 안에 빼는 말이 있어야 HCX exclude 를 받는다
+
+
+def llm_excluded_ok(question: str, word: str) -> bool:
+    """HCX 가 준 exclude 낱말 검증: 질문에 그대로 있고, 그 뒤 가까이에 빼는 말이 온다.
+    연도처럼 LLM 이 질문에 없는 대상을 추측해 넣거나, 찾으려는 대상('귀화자가 아닌 외국인'의
+    '외국인')을 잘못 넣으면 정답 표가 감점되므로 버린다"""
+    w = word.strip()
+    if len(w) < 2 or w in NEGATION_SKIP:
+        return False
+    for m in re.finditer(re.escape(w), question):
+        if NEG_AFTER.search(question[m.end() : m.end() + NEG_WINDOW]):
+            return True
+    return False
+
+
+def _covered(word: str, words: list[str]) -> bool:
+    """규칙이 이미 뺀 낱말과 같은지 ('결혼이민자' ≈ 규칙의 '결혼이민자를')"""
+    return any(r.startswith(word) or word.startswith(r) for r in words)
+
+
+def _strip_link(word: str) -> str:
+    """나열을 잇는 말을 뗀다 ('서울이랑' → '서울', '귀화자나' → '귀화자'). 두 글자 이상 남을 때만"""
+    m = NEG_LINK_TAIL.search(word)
+    return word[: m.start()] if m and m.start() >= 2 else word
+
+
 def negated_words(question: str) -> list[str]:
-    """'귀화한 사람 말고 결혼이민자' → ['귀화한']"""
+    """'귀화한 사람 말고 결혼이민자' → ['귀화한'].
+    나열도 한꺼번에 뺀다: '서울이랑 부산 말고' → ['서울', '부산'], '서울, 부산, 대구 빼고' → 셋 다,
+    '서울 경기 인천 빼고'처럼 띄어 쓴 나열은 모두 시도 이름일 때만 앞으로 늘린다"""
     words = []
-    for phrase in NEGATION.findall(question):
+    for m in NEGATION.finditer(question):
+        phrase = m.group(1).split()
+        # 바로 앞 한두 단어(기존 규칙) 앞으로, 잇는 말·쉼표로 이어진 나열 항목을 거슬러 올라간다
+        before = re.findall(r"[가-힣A-Za-z0-9]+|[,·/]", question[: m.start(1)])
+        regionish = all(_strip_link(w).rstrip("은는을를이가") in SIDO_ALIAS for w in phrase)
+        linked = False
+        # '유학생 및 결혼이민자', '유학생 또는 결혼이민자': 따로 쓴 잇는 말은 쉼표처럼 다룬다
+        if phrase and phrase[0] in NEG_LINK_WORDS:
+            phrase.pop(0)
+            linked = True
+        # '…외국인 주민, 단 유학생은 제외': '단·다만'으로 시작하면 앞 쉼표는 나열이 아니라 문장 경계
+        if phrase and phrase[0] in NEG_CLAUSE_WORDS:
+            phrase.pop(0)
+            before = []
+        while before:
+            tok = before.pop()
+            if tok in ",·/" or tok in NEG_LINK_WORDS:
+                linked = True
+                continue
+            if linked or _strip_link(tok) != tok or (regionish and tok in SIDO_ALIAS):
+                phrase.insert(0, tok)
+                linked = False
+                continue
+            break
+        after = question[m.end() :]
         words += [
-            w for w in phrase.split()
-            if w not in NEGATION_SKIP and len(w) >= 2 and not re.search(r"\d", w)
+            w for w in (_strip_link(w) for w in phrase)
+            if w not in NEGATION_SKIP and len(w) >= 2
+            # 숫자는 빼는 대상이 아니다 ('65세 이상 말고'). 단 '1인가구'·'2인 가구'는 낱말이다
+            and (not re.search(r"\d", w) or re.fullmatch(r"\d+인[가-힣]*", w))
+            # 빼는 말 뒤에 같은 낱말이 또 나오면 공통 수식어다 ('외국인 남편 말고 외국인 아내'의 '외국인')
+            and w.rstrip("은는을를이가") not in after
         ]  # fmt: skip
     return list(dict.fromkeys(words))
 
