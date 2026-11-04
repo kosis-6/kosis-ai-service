@@ -38,6 +38,9 @@ COMPARE_BASE = re.compile(
 )
 # 이어지는 기간: "작년부터", "2년 전부터" → 시작만 정하고 끝은 최신
 FROM = re.compile(r"(부터|이후|이래)")
+# "최근 5년", "지난 10년간", "최근 3개년 동안" → 올해−N 년부터 최신까지 (끝이 열린 기간).
+# 두 자리 연도 규칙이 '최근 10년'을 2010년으로 읽던 문제도 이 표현을 먼저 걷어 내 막는다 (slots.short_years)
+RECENT_N_YEARS = re.compile(r"(최근|최신|지난|요즘)\s*(\d{1,2})\s*(?:개년|년)(?!\s*전)(?:\s*(?:간|동안|사이))?")
 
 
 @dataclass
@@ -62,6 +65,15 @@ def resolve(question: str, today: date | None = None) -> TimeRef | None:
         if (pos := question.find(word)) >= 0:
             tail = question[pos + len(word) : pos + len(word) + 3]
             return TimeRef(word, today.year + offset, open_end=bool(FROM.match(tail.strip())))
+    return None
+
+
+def recent_period(question: str, today: date | None = None) -> TimeRef | None:
+    """'최근 5년' → 올해−5 년부터 최신까지 (검색용). QA 는 자료 마지막 연도 기준으로 따로 센다
+    (qa.RECENT) 그래서 resolve 와 나눠 둔다"""
+    today = today or date.today()
+    if m := RECENT_N_YEARS.search(question):
+        return TimeRef(m.group(0).strip(), today.year - int(m.group(2)), open_end=True)
     return None
 
 

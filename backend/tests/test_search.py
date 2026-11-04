@@ -421,6 +421,13 @@ def test_keyword_text_ignores_key_across_removed_filler() -> None:
     assert se.synonyms.keyword_text("버스 타는지 시도별로", table) == "버스 타 시도별로"
 
 
+def test_keyword_text_applies_exclude_when_matching_original() -> None:
+    """원문에서 찾아도 빼 달라고 한 단어의 항목은 넣지 않는다 ('우리 동네'는 그대로 찾음)"""
+    table = {"우리 동네": "시군구", "귀화자": "국적취득"}
+    text = se.synonyms.keyword_text("우리 동네 귀화자 말고", table, exclude=["귀화자"])
+    assert "시군구" in text and "국적취득" not in text
+
+
 def test_question_ending_does_not_fire_dictionary() -> None:
     """'몇 가구인지'의 어미 '인지'가 인지 능력 항목으로 걸리면 안 된다"""
     assert "기억하거나" not in se.synonyms.keyword_text("노인만 사는 집이 몇 가구인지")
@@ -728,3 +735,277 @@ def test_recency_counts_latest_census_as_current() -> None:
     assert se.recency_bonus(tables[1], s) == se.RECENT_BONUS  # 2020년 판은 최신 판
     assert se.recency_bonus(tables[0], s) == 0.0
     assert se.rank(tables, s, dense=[0.62, 0.60])[0]["table"]["tbl_id"] == "NEW"
+
+
+def test_negation_lists_exclude_every_item() -> None:
+    from app.services import slots as sl
+
+    assert sl.negated_words("서울이랑 부산 말고 시도별 인구") == ["서울", "부산"]
+    assert sl.negated_words("서울, 부산, 대구 빼고 인구") == ["서울", "부산", "대구"]
+    assert sl.negated_words("서울 경기 인천 빼고 인구") == ["서울", "경기", "인천"]
+    assert sl.negated_words("귀화자나 결혼이민자 말고 외국인") == ["귀화자", "결혼이민자"]
+    assert sl.negated_words("유학생 및 결혼이민자를 제외한 외국인") == ["유학생", "결혼이민자를"]
+    assert sl.negated_words("유학생 또는 결혼이민자 말고 외국인") == ["유학생", "결혼이민자"]
+    assert sl.negated_words("서울하고 부산 빼고 인구") == ["서울", "부산"]
+    assert sl.negated_words("서울·부산·대구 제외 시도별 인구") == ["서울", "부산", "대구"]
+    assert sl.negated_words("효과 말고 원인") == ["효과"]  # '과'로 끝나도 두 글자 낱말은 그대로
+    # 띄어 쓴 앞 단어가 시도가 아니면 늘리지 않는다
+    assert sl.negated_words("작년에 한국 귀화자가 아닌 외국인") == ["귀화자가"]
+    # 빼 달라고 한 지역은 지역 슬롯에서도 지운다
+    q = "서울 말고 시도별 인구"
+    s = sl.correct(q, sl.normalize(q, {"topic": "인구", "conditions": {"region": "서울"}}))
+    assert s["conditions"]["region"] is None and s["exclude"] == ["서울"]
+
+
+def test_negation_anin_excludes_word_but_keeps_negated_dictionary_entry() -> None:
+    from app.services import slots as sl
+    from app.services import synonyms
+
+    assert sl.negated_words("작년에 한국 귀화자가 아닌 외국인이 몇 명 있었어") == ["귀화자가"]
+    assert sl.negated_words("외국인 중 유학생 외의 사람") == ["유학생"]
+    assert sl.negated_words("결혼이민자를 뺀 외국인 주민") == ["결혼이민자를"]
+    assert sl.negated_words("아파트가 아니라 단독주택에 사는 가구") == ["아파트가"]
+    # 동사 부정·'없는'은 같은 축의 반대 값이라 단어를 빼지 않는다 (소화기 표를 찾아야 한다)
+    assert sl.negated_words("집에 소화기가 없는 가구가 얼마나 되는지") == []
+    assert sl.negated_words("결혼한 여성 중에 자녀가 없는 비율") == []
+    assert sl.negated_words("혼자 사는 청년 중에 일 안 하는 사람이 몇 명인지") == []
+    text = synonyms.keyword_text("귀화자가 아닌 외국인이 몇 명", exclude=["귀화자가"])
+    assert "한국국적을" in text and "가지지" in text  # 부정 항목은 살아 있다
+    assert "국적취득" not in text  # '귀화자' → 국적취득 항목은 건너뛴다
+    kept = synonyms.keyword_text("주택이 아닌 곳에 사는 가구", exclude=["주택이"])
+    assert "이외의" in kept  # 기존 부정 항목 '주택이 아닌' 도 그대로
+
+
+def test_city_suffix_sido_is_sido_level() -> None:
+    from app.services import slots as sl
+
+    s = sl.empty_slots("세종시 2013년 나이별 성별 인구 알려줘")
+    s["conditions"]["region"] = "세종시"
+    s["conditions"]["classes"] = ["나이", "성별"]
+    s["conditions"]["year"] = 2013
+    out = sl.correct("세종시 2013년 나이별 성별 인구 알려줘", s)
+    assert out["conditions"]["region"] == "세종특별자치시"
+    assert out["conditions"]["region_level"] == "시도"  # '세종시'는 시군구가 아니라 시도
+    s2 = sl.empty_slots("서울시 2025년 초혼율")
+    s2["conditions"]["region"] = "서울시"
+    assert sl.correct("서울시 2025년 초혼율", s2)["conditions"]["region"] == "서울특별시"
+    # '광주시'는 경기도 광주시(시군구)라 광주광역시로 바꾸지 않는다
+    s3 = sl.empty_slots("광주시 인구")
+    s3["conditions"]["region"] = "광주시"
+    out3 = sl.correct("광주시 인구", s3)["conditions"]
+    assert out3["region"] == "광주시" and out3["region_level"] == "시군구"
+
+def test_region_specific_table_passes_region_level_without_axis() -> None:
+    axes = {"classifications": [{"name": "연령별"}, {"name": "성별"}], "region_levels": []}
+    sejong = se.prepare(
+        [_t("S", "연령별 성별 인구", 2013, 2013, "FS", survey_name="세종시 특별센서스", **axes)]
+    )[0]
+    s = _slots("세종시 2013년 나이별 성별 인구", "인구")
+    s["conditions"]["region"] = "세종특별자치시"
+    s["conditions"]["region_level"] = "시도"
+    assert se.check(sejong, s)["region_level"]  # 지역 축은 없지만 조사 자체가 세종시 전용
+    national = se.prepare(
+        [_t("N", "연령별 성별 인구", 2013, 2013, "FN", survey_name="인구총조사", **axes)]
+    )[0]
+    assert not se.check(national, s)["region_level"]  # 전국 표에 시도 축이 없으면 그대로 실패
+
+def test_class_alias_age_words_hit_age_axis() -> None:
+    t = se.prepare(
+        [
+            _t(
+                "A",
+                "연령별 성별 인구",
+                2013,
+                2013,
+                "FA",
+                classes=[{"name": "연령별"}, {"name": "성별"}],
+            )
+        ]
+    )[0]
+    chk = se.check(t, _slots("세종시 나이별 성별 인구", "인구", classes=["나이", "성별"]))
+    assert chk["class:나이"]
+
+
+def test_llm_candidates_one_per_family(monkeypatch) -> None:
+    import asyncio
+
+    from app.services import llm_pick as lp
+
+    # 표가 하나면 단어 희귀도(IDF)가 0이라 키워드 점수가 안 나온다
+    tables = se.prepare(
+        [
+            _t("A1", "시도별 쌍태아 출생", 2015, 2025, "FA"),
+            _t("B1", "시도별 혼인", 2015, 2025, "FB"),
+            _t("C1", "시도별 이혼", 2015, 2025, "FC"),
+        ]
+    )
+    s = _slots("쌍둥이가 몇 명 태어나는지 조사", "쌍태아 없는말 다른말")
+    # LLM 검토가 꺼져 있으면 키워드 점수 기준 그대로
+    low = _slots("쌍태아 없는말 다른말 또다른말", "쌍태아")
+    assert se.find(tables, low, dense=None)["status"] == "out_of_scope"
+    assert se.find(tables, low, dense=None, scope_by_llm=True)["status"] != "out_of_scope"
+    # 키워드 후보가 아예 없으면 LLM 검토가 켜져 있어도 범위 밖
+    none = _slots("미세먼지", "미세먼지")
+    assert se.find(tables, none, dense=None, scope_by_llm=True)["status"] == "out_of_scope"
+    # HCX not_statistics도 LLM 검토가 판정한다
+    s["query_type"] = "not_statistics"
+    assert se.find(tables, s, dense=None, scope_by_llm=True)["status"] != "not_statistics"
+
+    async def fake_tables():
+        return tables
+
+    async def fake_extract(question, trace=None):
+        slots = _slots(question, question)
+        slots["search_query"] = "쌍태아 출생아 수"
+        return slots
+
+    async def no_dense(question):
+        return None
+
+    async def only_question(question):
+        return None if question == "쌍태아 출생아 수" else [0.9, 0.3, 0.2]
+
+    async def fake_ask(question, cands):
+        return {"pick": "A1", "match": "exact", "reason": "ok"}
+
+    monkeypatch.setattr(lp.get_settings(), "llm_pick", True, raising=False)
+    monkeypatch.setattr(se, "load_tables", fake_tables)
+    monkeypatch.setattr(se.slot_parser, "extract", fake_extract)
+    monkeypatch.setattr(lp, "_ask", fake_ask)
+
+    monkeypatch.setattr(se, "dense_scores", no_dense)
+    trace: dict = {}
+    result = asyncio.run(se.search("쌍태아 출생", trace))
+    assert result["retrieval"] == "keyword" and result["status"] != "out_of_scope"
+    assert trace["embedding"] == {"question": False, "rewrite": None}
+
+    # 재작성 검색어만 실패한 경우도 기록에 남는다
+    monkeypatch.setattr(se, "dense_scores", only_question)
+    trace = {}
+    result = asyncio.run(se.search("쌍태아 출생", trace))
+    assert result["retrieval"] == "hybrid"
+    assert trace["embedding"] == {"question": True, "rewrite": False}
+
+
+def test_choose_prefers_edition_with_asked_region_level() -> None:
+    fam = se.prepare(
+        [
+            _t("E1", "주택수 추이", 2000, 2010, "FH", region_levels=["시도", "시군구", "읍면동"]),
+            _t("E2", "주택수 추이", 1990, 2010, "FH", region_levels=["시도", "시군구"]),
+        ]
+    )
+    s = _slots("2000년부터 2010년까지 읍면동마다 집이 몇 채", "주택수")
+    s["conditions"]["year"] = 2000
+    s["conditions"]["year_end"] = 2010
+    s["conditions"]["region_level"] = "읍면동"
+    table, _, _ = se.choose(fam, s)
+    assert table["tbl_id"] == "E1"  # 기간이 긴 E2 가 아니라 읍면동 축이 있는 E1
+
+
+def test_class_alias_age_hits_single_year_age_axis() -> None:
+    t = se.prepare(
+        [
+            _t(
+                "A",
+                "서울특별시 시군구 각세별 이동자수",
+                2001,
+                2025,
+                "FA",
+                classes=[{"name": "각세별"}, {"name": "시군구별"}],
+            )
+        ]
+    )[0]
+    chk = se.check(t, _slots("서울 구별 나이별 전입 전출 인구", "이동자수", classes=["나이"]))
+    assert chk["class:나이"]  # '각세' 축도 연령 축
+
+
+def test_llm_exclude_is_verified_against_question() -> None:
+    from app.services import slots as sl
+
+    def run(q, llm):
+        return sl.correct(q, sl.normalize(q, {"topic": "외국인", "exclude": llm}))
+
+    # 규칙이 못 잡는 표현을 HCX 가 잡으면 받는다
+    s = run("수도권 말고 다른 지역 외국인 주민, 단 유학생은 제외", ["수도권", "유학생"])
+    assert s["exclude"] == ["수도권", "유학생은"]  # '주민'은 앞 문장이라 빼지 않는다
+    s = run("귀화자는 빼고 결혼이민자만", ["귀화자"])
+    assert s["exclude"][:1] == ["귀화자는"] or "귀화자" in s["exclude"]
+    # 질문에 없는 낱말, 찾으려는 대상(뒤에 빼는 말이 없음)은 버린다
+    s = run("한국 귀화자가 아닌 외국인", ["외국인", "중국인"])
+    assert s["exclude"] == ["귀화자가"]
+    assert any(f["key"] == "exclude" for f in s["fixes"])
+    # HCX 가 exclude 를 안 주면 규칙만
+    q = "서울이랑 부산 말고 인구"
+    assert sl.correct(q, sl.normalize(q, {"topic": "인구"}))["exclude"] == ["서울", "부산"]
+
+
+def test_negation_shared_modifier_and_digits() -> None:
+    from app.services import slots as sl
+
+    # 빼는 말 뒤에 또 나오는 낱말은 공통 수식어 ('외국인')
+    assert sl.negated_words("외국인 남편 말고 외국인 아내랑 결혼한 건수") == ["남편"]
+    assert sl.negated_words("1인가구 말고 가구원 수별 가구 수") == ["1인가구"]
+    assert sl.negated_words("65세 이상 노인 말고 청년 인구") == ["노인"]  # 숫자 구간은 빼지 않음
+
+
+def test_contrast_value_is_not_excluded() -> None:
+    house = _t("H", "거처의 종류별 가구", 2015, 2025, "FH", classifications=[{"name": "거처의 종류별", "sample_values": ["아파트", "단독주택", "연립주택"]}])
+    tables = se.prepare([house] + [
+        _t(f"X{i}", f"표{i}", 2020, 2020, f"F{i}", classifications=[{"name": "거처", "sample_values": ["아파트", "단독주택"]}])
+        for i in range(25)
+    ])
+    s = _slots("아파트가 아니라 단독주택 사는 가구 수", "가구")
+    s["exclude"] = ["아파트가"]
+    # 아파트·단독주택이 같은 분류의 값이고 '아파트'가 주로 분류 값으로 쓰이면 빼는 단어로 다루지 않는다
+    assert se.contrast_words(tables, s) == {"아파트가"}
+
+
+def test_choose_skips_excluded_member() -> None:
+    fam = se.prepare(
+        [
+            _t("W", "한국국적을 가지지 않은 자-외국인 근로자(계)", 2015, 2024, "FN", target="외국인 근로자"),
+            _t("D", "한국국적을 가지지 않은 자-외국국적동포(계)", 2015, 2024, "FN", target="외국국적동포"),
+            _t("A", "한국국적을 가지지 않은 자(계)", 2015, 2024, "FN", target="전체"),
+        ]
+    )
+    s = _slots("외국국적동포 말고 외국인 근로자 시군구별", "외국인 근로자")
+    s["exclude"] = ["외국국적동포"]
+    table, _, _ = se.choose(fam, s)
+    assert table["tbl_id"] == "W"  # 질문에 이름이 있어도 빼 달라고 한 멤버는 고르지 않는다
+
+
+def test_item_check_ignores_count_suffix() -> None:
+    # 외부 질문 '읍면동의 총인구수, 가구수, 주택수': 정답 표는 항목이 '총인구 · 가구_계 · 주택_계'
+    full = _t("A", "인구, 가구 및 주택 - 읍면동", 2015, 2025, "FA",
+              items=[{"name": "총인구"}, {"name": "가구_계"}, {"name": "주택_계"}])  # fmt: skip
+    pop = _t("B", "읍면동별 주민등록인구", 2011, 2025, "FB", items=[{"name": "총인구수"}])
+    head = _t("C", "연령별 가구주", 2015, 2025, "FC", items=[{"name": "가구주_계"}])
+    tables = se.prepare([full, pop, head])
+    s = _slots("q", "인구", items=["총인구수", "가구수", "주택수"])
+    assert all(se.check(tables[0], s).values())
+    assert se.check(tables[1], s) == {"item:총인구수": True, "item:가구수": False, "item:주택수": False}
+    # 낱말 단위로만 본다: '가구주'는 '가구'가 아니다
+    assert se.check(tables[2], s)["item:가구수"] is False
+
+
+def test_analysis_words_are_not_conditions() -> None:
+    q = "2025년 각 시도 외국인 상위 3개 국적과 성별 비율"
+    hcx = {"topic": "외국인", "conditions": {"classes": ["국적별"], "items": ["상위 3개국", "성별 비율", "시점별"]}}
+    s = sl.correct(q, sl.normalize(q, hcx))
+    assert s["conditions"]["items"] == []
+    assert "성별" in s["conditions"]["classes"] and "국적별" in s["conditions"]["classes"]
+    assert s["analysis"] == ["상위 3개국", "성별 비율", "시점별"]
+    # 그 자체가 항목 이름인 말은 그대로 둔다
+    s = sl.correct("인구증가율", sl.normalize("인구증가율", {"topic": "인구", "conditions": {"items": ["인구증가율"]}}))
+    assert s["conditions"]["items"] == ["인구증가율"] and s["analysis"] == []
+
+
+def test_sex_condition_accepts_sex_split_items() -> None:
+    # '2025년 대구 남자 인구수': 정답 표는 남녀가 분류 축이 아니라 항목(남자인구수 · 여자인구수)
+    split = _t("A", "행정구역(시군구)별, 성별 인구수", 1992, 2025, "FA",
+               items=[{"name": "총인구수"}, {"name": "남자인구수"}, {"name": "여자인구수"}])  # fmt: skip
+    plain = _t("B", "시군구별 인구", 1992, 2025, "FB", items=[{"name": "총인구수"}])
+    tables = se.prepare([split, plain])
+    assert se.check(tables[0], _slots("q", "인구", sex="남"))["sex"] is True
+    assert se.check(tables[0], _slots("q", "인구", sex="여"))["sex"] is True
+    assert se.check(tables[1], _slots("q", "인구", sex="남"))["sex"] is False

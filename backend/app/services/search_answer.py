@@ -10,6 +10,7 @@ from app.services import notices
 
 CHECK_LABELS = {
     "year": "연도",
+    "period": "요청 기간 일부만",
     "region_level": "지역 수준",
     "sex": "성별",
     "target": "대상",
@@ -174,6 +175,8 @@ def answer_text(result: dict[str, Any], rec: dict[str, Any] | None) -> str:
         lines.append("조건 확인: " + " · ".join(marks))
     if result.get("notice"):
         lines.append(f"확인 필요: {result['notice']}")
+    if slots.get("analysis"):
+        lines.append(f"직접 계산: {', '.join(slots['analysis'])} — 표의 값으로 계산해야 합니다.")
     if "target" in result.get("missing_axes", []) or slots.get("target_default"):
         lines.append("대상을 지정하지 않아 ‘전체’ 표를 안내합니다.")
     others = other_versions(rec["family"])
