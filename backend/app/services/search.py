@@ -32,8 +32,11 @@ from typing import Any
 
 from sqlalchemy import text
 
+from datetime import date
+
 from app.services import slots as slot_parser
-from app.services import synonyms, vector_search
+from app.services import slots as slots_mod
+from app.services import agegroup, synonyms, timeref, vector_search
 
 logger = logging.getLogger(__name__)
 # 앱에 로그 설정이 없어 INFO가 안 보이므로, 서버 시작 메시지는 uvicorn 로그로 낸다
@@ -48,7 +51,21 @@ FAIL_PENALTY = 0.15
 # 작게 둔다
 # (실험실에는 이 판정이 없음. 어댑터 실측 후보 재계산: 팀원 R@1 62→70, 생성 75→82, 개발 65→67, 손해
 # 없음)
-SOFT_CHECKS = ("target", "class", "item", "sex", "spouse")
+SOFT_CHECKS = ("target", "class", "item", "sex", "spouse", "period")
+# 시도 정식 이름 → 짧은 이름 ('세종특별자치시' → '세종').
+# 표명·조사명에 지역이 들어간 표를 찾을 때 쓴다
+REGION_SHORT = {name: aliases[0] for name, aliases in slots_mod.SIDO.items()}
+# 질문 표현 → 표 분류 축 이름
+# ('나이별 성별 인구'의 '나이'가 '연령별' 축에 닿지 않아 '나이 ✘'로 나오던 문제)
+CLASS_ALIAS = {
+    "나이": "연령",
+    "나이대": "연령",
+    "연령대": "연령",
+    "연령층": "연령",
+    "연령계층": "연령",
+    "학력": "교육정도",
+    "국적": "국적",
+}
 # 특정 집단만 조사한 통계는 질문에 그 집단 말이 없으면 감점 (개발셋 d57 '평균 몇 살까지 사는지'에
 # 사할린 '결혼 여부' 표,
 # d79 '동호회 모임 참여'에 사할린 '모임 및 단체 참여' 표가 1위로 오던 문제)
@@ -58,6 +75,9 @@ SURVEY_POPULATION = {
 }
 SURVEY_PENALTY = 0.1
 SOFT_FAIL_PENALTY = 0.05
+# 5년 주기 조사(총조사 등): '최근 N년'에서 그 통계의 최신 판이 올해보다 이 주기 + 공표 시차 안이면
+# 최신까지 담은 표로 본다 (최신 2020년 판이 2021년~ 조건에 엄격 감점되던 문제)
+CENSUS_CYCLE = 5
 PUBLISH_LAG = (
     2  # 상대시점이 가리키는 해가 아직 공표 전이어도 이 햇수 안이면 최신 판을 맞는 표로 본다
 )
@@ -163,6 +183,27 @@ def mentioned_targets(targets: list[str], said: str) -> list[str]:
     return [t for t in names if any(p in said for p in parts(t))]
 
 
+# 항목·값 이름을 낱말로 나눌 때 쓰는 구분자, 낱말 끝에서 떼는 꼬리
+WORD_SPLIT = re.compile(r"[_\s/·,()\[\]–\-]+")
+TOTAL_WORDS = {"계", "합계", "전체", "소계"}
+
+
+def stem(word: str) -> str:
+    """'가구수' → '가구'. 세는 대상 끝의 '수'는 같은 말이다"""
+    w = norm(word)
+    return w[:-1] if len(w) > 2 and w.endswith("수") else w
+
+
+def word_set(names: list[str]) -> set[str]:
+    """이름들을 낱말로 나눠 꼬리를 뗀 집합 ('가구_계' → {'가구'}, '계'는 버린다)"""
+    out = set()
+    for name in names:
+        for part in WORD_SPLIT.split(name or ""):
+            if (w := stem(part)) and w not in TOTAL_WORDS:
+                out.add(w)
+    return out
+
+
 def prepare(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """검색에 쓸 정규화 문자열을 붙인다"""
     tables = []
@@ -181,7 +222,20 @@ def prepare(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             )
         )
         t["age_cov"] = age_coverage(t["name_n"], t["class_n"], t["meta_n"])
+        t["words"] = word_set(
+            [t["table_name"]]
+            + [c["name"] for c in classes]
+            + [v for c in classes for v in c.get("sample_values") or [] if v]
+            + [i["name"] for i in t["items"] or []]
+        )
         tables.append(t)
+    fam_last: dict[str, int] = {}
+    for t in tables:
+        k = t.get("family_id") or t["tbl_id"]
+        if t.get("end_year") is not None:
+            fam_last[k] = max(fam_last.get(k, t["end_year"]), t["end_year"])
+    for t in tables:
+        t["family_last_year"] = fam_last.get(t.get("family_id") or t["tbl_id"], t.get("end_year"))
     return tables
 
 
@@ -266,10 +320,12 @@ def keyword_query(slots: dict[str, Any]) -> str:
     (팀원 키워드 비교 실험 10/31: 팀원셋 흐름 59→65, 생성셋 79→86, 사전까지 넣으면 78·89)
     """
     question = slots.get("question") or slots["topic"]
-    # 빼 달라고 한 말('귀화한 사람 말고')은 사전으로 늘리면 오히려 그 표(국적취득)를 찾는다
-    for word in slots.get("exclude") or []:
-        question = question.replace(word, " ")
-    return synonyms.keyword_text(question)
+    # 빼 달라고 한 말('귀화한 사람 말고', '귀화자가 아닌')은 사전으로 늘리면 오히려 그 표
+    # (국적취득)를 찾는다. 사전은 그 단어가 든 항목을 건너뛰고(부정 항목은 유지), 단어 자체는
+    # query_tokens 가 거른다
+    # '최근 10년'의 '10년'은 시점이지 표 단어가 아니다 ('체류기간 10년 이상' 표에 끌려가던 문제)
+    question = timeref.RECENT_N_YEARS.sub(" ", question)
+    return synonyms.keyword_text(question, exclude=slots.get("exclude") or None)
 
 
 def query_tokens(slots: dict[str, Any], text: str | None = None) -> list[dict[str, Any]]:
@@ -299,6 +355,61 @@ def variants(word: str) -> list[str]:
 
 def _found(variants: list[str], field: str) -> bool:
     return any(v in field for v in variants)
+
+
+_value_index: dict[str, set[str]] | None = None
+_value_index_for: int | None = None
+
+
+def value_index(tables: list[dict[str, Any]]) -> dict[str, set[str]]:
+    """분류 값 → 그 값을 가진 (표, 분류) 열쇠. '아파트'·'단독주택'이 같은 열쇠에 있으면 같은 축의 값"""
+    global _value_index, _value_index_for
+    if _value_index is None or _value_index_for != id(tables):
+        idx: dict[str, set[str]] = {}
+        for t in tables:
+            for c in t.get("classifications") or []:
+                key = f"{t['tbl_id']}|{c.get('id') or c.get('name')}"
+                for v in c.get("sample_values") or []:
+                    if v and (nv := norm(v)):
+                        idx.setdefault(nv, set()).add(key)
+        _value_index, _value_index_for = idx, id(tables)
+    return _value_index
+
+
+VALUE_LIKE_MIN = 20  # 분류 값으로만 나오는 표가 이만큼 이상이고
+VALUE_LIKE_RATIO = 5  # 표 이름에 나오는 표의 이 배 이상이면 '분류 값' 낱말
+_value_like: dict[str, bool] = {}
+
+
+def value_like(tables: list[dict[str, Any]], word: str) -> bool:
+    """표 이름이 아니라 분류 값으로 주로 쓰이는 낱말인가.
+    아파트(표 이름 2 · 값으로만 144)·미혼(3 · 140)은 값, 귀화자(6 · 4)·결혼이민자(5 · 5)·유학생(9 · 3)은
+    따로 있는 표(멤버)라 빼는 대상으로 남긴다"""
+    vs = variants(word)
+    key = f"{id(tables)}|{vs[-1]}"
+    if key not in _value_like:
+        in_name = sum(_found(vs, t["name_n"]) for t in tables)
+        only_value = sum(_found(vs, t["meta_n"]) and not _found(vs, t["name_n"]) for t in tables)
+        _value_like[key] = only_value >= max(VALUE_LIKE_MIN, VALUE_LIKE_RATIO * in_name)
+    return _value_like[key]
+
+
+def contrast_words(tables: list[dict[str, Any]], slots: dict[str, Any]) -> set[str]:
+    """빼는 단어 중, 질문의 다른 단어와 같은 분류 축의 값인 것 ('아파트가 아니라 단독주택'의 '아파트가')"""
+    idx = value_index(tables)
+    words = re.findall(r"[0-9A-Za-z가-힣]+", slots.get("question") or "")
+    out = set()
+    for w in slots.get("exclude") or []:
+        keys = set().union(*(idx.get(v, set()) for v in variants(w)))
+        if not keys or not value_like(tables, w):
+            continue
+        for o in words:
+            if o == w or set(variants(o)) & set(variants(w)) or len(o) < 2:
+                continue
+            if any(keys & idx.get(v, set()) for v in variants(o)):
+                out.add(w)
+                break
+    return out
 
 
 def keyword_scores(tables: list[dict[str, Any]], tokens: list[dict[str, Any]]) -> list[float]:
@@ -343,24 +454,50 @@ def check(t: dict[str, Any], slots: dict[str, Any]) -> dict[str, bool]:
     out: dict[str, bool] = {}
     if c["year"] is not None:
         last = c["year_end"] or c["year"]
+        if (ref := slots.get("time_ref")) and ref.get("open_end") and c["year_end"] is None:
+            # '최근 10년', '3년 전부터': 그 해부터 최신까지 담은 표 (공표 시차는 아래에서 허용)
+            last = date.today().year
         out["year"] = t["start_year"] <= c["year"] and last <= t["end_year"]
         if not out["year"] and slots.get("time_ref") and last > t["end_year"]:
             # "작년"·"올해"는 아직 공표 전일 수 있다. 공표 시차(PUBLISH_LAG) 안이면 최신 판을 맞는
             # 표로 본다
             out["year"] = t["start_year"] <= c["year"] and last - t["end_year"] <= PUBLISH_LAG
+        if (
+            not out["year"]
+            and (ref := slots.get("time_ref")) and ref.get("open_end") and c["year_end"] is None
+            and t.get("end_year") is not None
+            and t["end_year"] >= (t.get("family_last_year") or t["end_year"])
+            and date.today().year - t["end_year"] <= CENSUS_CYCLE + PUBLISH_LAG
+        ):
+            # 그 통계(패밀리)에서 공표된 최신 판이면 최신까지 담은 것으로 본다. 요청 기간을 다 담지
+            # 못하면 엄격 대신 'period' 부드러운 감점 (일부 일치로 답한다)
+            out["year"] = True
+            out["period"] = t["start_year"] <= c["year"] <= t["end_year"]
     if c["region_level"]:
         levels = set(t["region_levels"])
         if MIGRATION.search(slots["topic"]):
             levels |= set(t["prev_region_levels"])
         out["region_level"] = c["region_level"] in levels
+        if not out["region_level"] and c.get("region"):
+            # 표 자체가 그 지역 전용이면(조사명·표명·경로에 지역 이름) 지역 축이 없어도 그 지역을
+            # 담는다 ('세종시 2013년 나이별 성별 인구' → 세종시 특별센서스 '연령별 성별 인구'가
+            # '시군구 ✘'로 나오던 문제)
+            short = norm(REGION_SHORT.get(c["region"], c["region"]))
+            out["region_level"] = bool(short) and (
+                short in t["name_n"] or short in norm(t["survey_name"]) or short in t["path_n"]
+            )
     sex = c["sex"]
     if sex in ("남", "여"):
         own = "male_only" if sex == "남" else "female_only"
         # 여성만 다루는 표는 성별 분류가 없어도 '여' 조건을 만족한다
+        # 항목이 남자 / 여자로 갈라진 표도 그 성별을 담는다 ('2025년 대구 남자 인구수' → 주민등록
+        # '행정구역(시군구)별, 성별 인구수'는 항목이 총인구수 · 남자인구수 · 여자인구수라 sex_coverage 가
+        # none 이어서 성별 ✘ 가 붙던 문제. 분류 '성별' 판정에는 같은 보완이 이미 있었다)
         out["sex"] = (
             t["sex_coverage"] in ("both", own)
             or t["sex"] == sex
             or (sex == "여" and bool(FEMALE_ONLY_TABLE.search(t["name_n"])))
+            or ("남자" if sex == "남" else "여자") in t["meta_n"]
         )
     elif sex == "전체" and t["sex_coverage"] != "none":
         out["sex"] = t["has_total"] is not False
@@ -370,9 +507,12 @@ def check(t: dict[str, Any], slots: dict[str, Any]) -> dict[str, bool]:
         elif cls == "가구주 성별":
             ok = any("가구주" in n and "성" in n for n in t["class_n"])
         else:
-            key = norm(cls).removesuffix("별")
+            key = CLASS_ALIAS.get(norm(cls).removesuffix("별"), norm(cls).removesuffix("별"))
             # HCX 가 '미혼'처럼 분류 값을 classes 에 넣기도 하므로 항목·표본값(meta_n)도 본다
             ok = any(key in n for n in t["class_n"]) or key in t["name_n"] or key in t["meta_n"]
+            if key == "연령" and not ok:
+                # 각세(1세 단위) 축도 연령 축이다 ('서울 구별 나이별 전입 전출' → 서울특별시 시군구 각세별 이동자수)
+                ok = any("각세" in n for n in t["class_n"]) or "각세" in t["name_n"]
         if (
             cls == "성별" and not ok
         ):  # 항목이 남자/여자로 갈라진 표도 성별을 담는다 (주민등록 시군구별 성별 인구수)
@@ -380,7 +520,24 @@ def check(t: dict[str, Any], slots: dict[str, Any]) -> dict[str, bool]:
         out[f"class:{cls}"] = ok
     for item in c["items"]:
         key = norm(item)
-        out[f"item:{item}"] = key in t["meta_n"] or key in t["name_n"]
+        ok = key in t["meta_n"] or key in t["name_n"]
+        if not ok:
+            # '가구수' ↔ '가구_계', '주택수' ↔ '주택_계': 꼬리를 뗀 낱말끼리 같으면 같은 항목.
+            # 부분 문자열이 아니라 낱말 단위로 본다 ('가구'가 '가구주' 표에 걸리지 않게)
+            ok = stem(key) in t.get("words", ())
+        if not ok and (a := agegroup.span(item)) and t["age_cov"] is not None:
+            # '청소년' · '20대' · '30대 이상': 글자가 아니라 표의 연령 범위가 담는지로 본다.
+            # 연령 표현을 뗀 나머지('학령기 이주배경 인구' → '이주배경')도 표에 있어야 한다
+            # ('미성년 자녀 셋 이상'은 자녀 수를 묻는 말이라 연령 축만으로 통과시키지 않는다)
+            lo, hi = t["age_cov"]
+            rest = norm(item.replace(a.expr, " "))
+            for w in ("인구", "이상", "층"):
+                rest = rest.replace(w, "")
+            rest_ok = (
+                not rest or rest in t["name_n"] or rest in t["meta_n"] or stem(rest) in t.get("words", ())
+            )
+            ok = rest_ok and lo <= a.lo and (hi is None or (a.hi is not None and a.hi <= hi))
+        out[f"item:{item}"] = ok
     if (age := slots.get("age")) and t["age_cov"] is not None:
         # 연령 집단("노인")을 담을 수 있는 표인가: 표의 연령 범위가 집단 범위를 포함해야 한다. 연령
         # 축이 없는 표는 판정하지 않는다
@@ -431,8 +588,11 @@ def relevance(keyword: float, name_sim: float, dense: float | None) -> float:
 
 
 def wants_current(slots: dict[str, Any]) -> bool:
-    """연도도, 옛날을 가리키는 말도 없는 질문 → 지금 표를 찾는다"""
+    """연도도, 옛날을 가리키는 말도 없는 질문 → 지금 표를 찾는다.
+    '최근 10년'처럼 최신까지 이어지는 기간도 지금 표를 찾는 것이다"""
     c = slots["conditions"]
+    if (ref := slots.get("time_ref")) and ref.get("open_end") and c["year_end"] is None:
+        return True
     return (
         c["year"] is None and c["year_end"] is None and not PAST.search(slots.get("question", ""))
     )
@@ -470,6 +630,12 @@ def rank(
     tables: list[dict[str, Any]], slots: dict[str, Any], dense: list[float] | None = None
 ) -> list[dict[str, Any]]:
     """dense: tables 순서의 임베딩 점수 (없으면 키워드만)"""
+    if slots.get("exclude"):
+        # 같은 분류 축의 반대 값을 찾는 말('아파트가 아니라 단독주택', '미혼 말고 이혼한')은 그 축을 담은 표가
+        # 답이다. 빼는 단어로 다루면 그 표를 오히려 놓친다 → 빼지 않는다
+        contrast = contrast_words(tables, slots)
+        if contrast:
+            slots = {**slots, "exclude": [w for w in slots["exclude"] if w not in contrast]}
     text = keyword_query(slots)
     tokens = query_tokens(slots, text)
     query = norm(text)
@@ -555,6 +721,10 @@ def choose(
         raw = f"{slots.get('question', '')} {slots.get('target') or ''}"
         said = norm(f"{synonyms.keyword_text(raw)} {raw} {c.get('region') or ''}")
         named = set(mentioned_targets([r["target"] for r in rows], said))
+        # 빼 달라고 한 멤버는 고르지 않는다 ('외국국적동포 말고 외국인 근로자' → 외국국적동포 멤버가
+        # 질문에 이름이 있다고 골리던 문제)
+        excluded = [v for w in slots.get("exclude") or [] for v in variants(w)]
+        named = {n for n in named if not (n and any(v in norm(n) for v in excluded))}
         match = [r for r in rows if r["target"] in named]
         if slots.get("target") == "전체":
             match = [r for r in rows if r["target"] == "전체"]
@@ -571,6 +741,11 @@ def choose(
             match = [r for r in rows if r["sex"] == "계"] or rows
         rows = match
     rows = [r for r in rows if r["edition"] == slots.get("edition")] or rows
+    # 지역 단위를 말한 질문은 그 단위를 가진 판을 우선한다. 없으면 전체에서 고른다
+    # ('2000~2010년 읍면동 주택 수': 읍면동 판(2000~2010) 대신 기간이 긴 시군구 판(1990~2010)을
+    # 고르던 문제, 지연 초안 jy24)
+    if c.get("region_level"):
+        rows = [r for r in rows if c["region_level"] in (r.get("region_levels") or [])] or rows
 
     notes = []
     year = c["year"]
@@ -618,7 +793,8 @@ def find(
     """슬롯 → 검색 결과 (DB·HCX 없이 동작해서 테스트·실험에 쓴다).
     dense(tables 순서의 임베딩 점수)를 주면 하이브리드, 없으면 키워드만.
     scope_by_llm: 범위 밖 판정(HCX not_statistics·점수 문턱)을 뒤의 LLM 검토에 맡기고 여기서는
-    거절하지 않는다
+    거절하지 않는다. 그래서 LLM 검토가 켜진 기본 설정에서는 잡담도 out_of_scope로 나오고,
+    not_statistics 상태는 LLM_PICK=false 일 때만 나온다
     (실험실 §61-3: 점수 문턱은 범위 안 질문을 잘못 거르고, 007 거르기가 범위 밖 30/30·
     거짓 거절 1/102)"""
     result: dict[str, Any] = {"status": None, "reason": None, "slots": slots, "table": None}

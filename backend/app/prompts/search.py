@@ -7,7 +7,7 @@ SLOT_SYSTEM = """당신은 통계표를 찾는 질문을 분석해 JSON으로 �
 통계표를 고르거나 답하지 말고 JSON 하나만 출력하세요.
 
 JSON 형식
-{"topic": "...", "search_query": "...", "target": null, "conditions": {"classes": [], "items": [], "sex": null,
+{"topic": "...", "search_query": "...", "target": null, "exclude": [], "conditions": {"classes": [], "items": [], "sex": null,
  "region": null, "region_level": null, "year": null, "year_end": null}, "query_type": "find_table"}
 
 규칙
@@ -21,6 +21,9 @@ JSON 형식
   지역별·성별은 classes가 아니라 region_level·sex로 쓴다. 단, "성별 인구", "남녀별"처럼
   남녀로 나눠 보려는 경우는 classes에 "성별"을 넣고 sex는 null.
 - items: 찾는 값이 분류의 한 값이면 그 값 (예: "미혼 인구" → ["미혼"], "65세 이상" → ["65세 이상"]).
+- exclude: 질문이 빼 달라고 한 대상을 질문에 쓰인 낱말 그대로 모두 (예: "서울이랑 부산 말고" → ["서울", "부산"],
+  "귀화자는 빼고 결혼이민자만" → ["귀화자"], "단, 유학생은 제외" → ["유학생"]). 찾으려는 대상은 넣지 않는다.
+  "결혼 안 한", "자녀가 없는"처럼 반대 값을 찾는 말은 빼는 대상이 아니다. 없으면 [].
 - sex: 질문이 한 성별만 말하면 "남" 또는 "여", 남녀 합계를 명시하면 "전체". 성별 말이 없으면 null.
 - region: 지역 이름을 말하면 그 표현 그대로 (예: "부산", "해운대구").
   시도와 시군구를 같이 말하면 함께 쓴다 (예: "경기 수원시"). 없으면 null.
@@ -32,10 +35,14 @@ JSON 형식
 
 예
 질문: 2024년 부산 시군구별 혼인 귀화자 수
-{"topic": "귀화자 수", "search_query": "시군구별 혼인 귀화자 수", "target": "혼인 귀화자", "conditions": {"classes": [], "items": [],
+{"topic": "귀화자 수", "search_query": "시군구별 혼인 귀화자 수", "target": "혼인 귀화자", "exclude": [], "conditions": {"classes": [], "items": [],
  "sex": null, "region": "부산", "region_level": "시군구", "year": 2024, "year_end": null},
  "query_type": "find_table"}
 질문: 연령별 미혼 여성 인구 통계표
-{"topic": "미혼 인구", "search_query": "연령별 성별 혼인상태별 인구", "target": null, "conditions": {"classes": ["연령"], "items": ["미혼"],
+{"topic": "미혼 인구", "search_query": "연령별 성별 혼인상태별 인구", "target": null, "exclude": [], "conditions": {"classes": ["연령"], "items": ["미혼"],
  "sex": "여", "region": null, "region_level": null, "year": null, "year_end": null},
+ "query_type": "find_table"}
+질문: 수도권 말고 다른 지역에 사는 외국인 주민 수, 유학생은 빼고
+{"topic": "외국인 주민 수", "search_query": "시도별 외국인주민 현황", "target": "외국인 주민", "exclude": ["수도권", "유학생"], "conditions": {"classes": [], "items": [],
+ "sex": null, "region": null, "region_level": "시도", "year": null, "year_end": null},
  "query_type": "find_table"}"""

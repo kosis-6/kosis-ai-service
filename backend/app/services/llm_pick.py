@@ -1,4 +1,4 @@
-"""검색 뒤 HCX-007 최종 검토 (실전 2, 실험실 §56-4·§61-3): 상위 5 후보 중 질문에 맞는 표 하나를
+"""검색 뒤 HCX-007 최종 검토 (실전 2, 실험실 §56-4·§61-3): 상위 후보(TOP_K개) 중 질문에 맞는 표 하나를
 고르고,
 어느 후보도 질문 주제를 다루지 않으면 범위 밖으로 돌린다.
 
@@ -44,7 +44,7 @@ TOP_K = 8
 OFF_DOMAIN = re.compile(
     r"교통사고|암\s*환자|코로나|질병|환자|관리비|난방비|등록금|월급|임금|소득|집값|매매가|전세가|분양가|"
     r"범죄|자살|목숨을 끊|"
-    r"흡연|담배|음주|의사가|의사 수|병원|병상|빈집|학업중단|진학률|학생 수|학생이 몇"
+    r"흡연|담배|음주|의사가|의사 수|병원|병상|빈집|학업중단|진학률|학생 수|학생이 몇|학급|한 반에"
 )
 
 
@@ -120,9 +120,21 @@ async def review(
         return result
     if result.get("status") not in ("ok", "partial_match", "ambiguous", "clarify"):
         return result
-    cand_ids = [c["tbl_id"] for c in (result.get("candidates") or [])[:TOP_K]]
     by = {t["tbl_id"]: t for t in tables}
-    cands = [by[i] for i in cand_ids if i in by]
+    # 후보는 패밀리당 하나(점수 최고 표)만. 표 단위로 8개를 주면 같은 표의 연도판·지역판이
+    # 자리를 다 차지해('노인 생활비' 후보 10개 중 9개가 생활비원천 표의 판) LLM 이 다른 주제의
+    # 표를 보지 못했다 (§79)
+    cand_ids: list[str] = []
+    seen: set[str] = set()
+    for c in result.get("candidates") or []:
+        t = by.get(c["tbl_id"])
+        if t is None or t["family_id"] in seen:
+            continue
+        seen.add(t["family_id"])
+        cand_ids.append(t["tbl_id"])
+        if len(cand_ids) >= TOP_K:
+            break
+    cands = [by[i] for i in cand_ids]
     if not cands:
         return result
     if (m := OFF_DOMAIN.search(question)) and not any(

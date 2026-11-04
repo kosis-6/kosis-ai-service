@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     # 통계표 검색의 질문 임베딩 (app/services/vector_search.py)
     # clova: CLOVA Studio v2 / local: bge-m3 직접 실행 / off: 키워드 검색만
     embedding_backend: Literal["clova", "local", "off"] = "clova"
-    # 검색 뒤 HCX-007 최종 검토(후보 5개 중 선택·범위 밖 거르기). LLM_PICK=false 로 끈다
+    # 검색 뒤 HCX-007 최종 검토(상위 후보 중 선택·범위 밖 거르기). LLM_PICK=false 로 끈다
     llm_pick: bool = True
     # filter: 범위 밖 거르기만 (후보 교체 없음, 멤버가 안 정해지면 사용자에게 선택지를 준다).
     # pick: 고른 표로 패밀리를 바꾼다. resolve: 멤버 되묻기를 HCX-007이 대신 확정한다.

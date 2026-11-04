@@ -21,7 +21,7 @@ GROUPS = [
         64,
         "생산가능인구 15~64세 (인구총조사 기준)",
     ),
-    (("학령인구", "학령 인구"), 6, 21, "학령인구 6~21세 (교육기본통계 기준)"),
+    (("학령인구", "학령 인구", "학령기"), 6, 21, "학령인구 6~21세 (교육기본통계 기준)"),
     (("영유아",), 0, 5, "영유아 0~5세 (영유아보육법)"),
     (("유소년", "유소년인구"), 0, 14, "유소년인구 0~14세 (인구총조사 기준)"),
     (("어린이", "아동"), 0, 14, "유소년 0~14세로 봄 (아동복지법은 18세 미만)"),
@@ -86,6 +86,26 @@ def resolve(question: str) -> AgeRef | None:
             ):
                 best = (pos, AgeRef(w, lo, hi, basis))
     return best[1] if best else None
+
+
+
+AGE_SPANS = [
+    (re.compile(r"(\d+)\s*대\s*이상"), lambda m: (int(m[1]), None)),
+    (re.compile(r"(\d+)\s*[~\-]\s*(\d+)\s*대"), lambda m: (int(m[1]), int(m[2]) + 9)),
+    (re.compile(r"(\d+)\s*대(?!\s*(광역시|도시))"), lambda m: (int(m[1]), int(m[1]) + 9)),
+    (re.compile(r"(\d+)\s*세\s*이상"), lambda m: (int(m[1]), None)),
+    (re.compile(r"(\d+)\s*[~\-]\s*(\d+)\s*세"), lambda m: (int(m[1]), int(m[2]))),
+    (re.compile(r"(\d+)\s*세\s*(?:미만|이하)"), lambda m: (0, int(m[1]))),
+]
+
+
+def span(text: str) -> AgeRef | None:
+    """'20대', '30대 이상', '15~19세', '청소년' 같은 연령 표현 하나 → 구간. 연령 표현이 아니면 None"""
+    for pat, fn in AGE_SPANS:
+        if m := pat.search(text):
+            lo, hi = fn(m)
+            return AgeRef(m[0], lo, hi, "숫자 구간")
+    return resolve(text)
 
 
 if __name__ == "__main__":
