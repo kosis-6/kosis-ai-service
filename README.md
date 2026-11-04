@@ -36,7 +36,7 @@
 | DB | 담는 것 | 읽기·쓰기 | 만드는 방법 |
 | --- | --- | --- | --- |
 | DuckDB (`data/processed/kosis.duckdb`) | 전처리한 통계 수치, 지역, 통계표 카탈로그 | 서버는 읽기만 | `python pipeline/run_all.py` |
-| PostgreSQL (`compose.yaml`의 `db`) | 통계표 검색용 임베딩(pgvector)·키워드 검색(pg_trgm), 대화 기록, 질의·평가 로그 | 서버가 읽고 씀 | `docker compose up` 시 자동 생성 |
+| PostgreSQL (`compose.yaml`의 `db`) | 통계표 검색용 임베딩(pgvector), 대화 기록, 질의·평가 로그 | 서버가 읽고 씀 | `docker compose up` 시 자동 생성 |
 
 - 통계 수치는 DuckDB에서만 조회합니다. PostgreSQL에 복사하지 않습니다.
 - PostgreSQL은 실전 2(통계표 안내 챗봇)부터 사용합니다. 표 메타데이터(`stat_tables`), 패밀리(`table_families`), 표 임베딩(`table_embeddings`), 대화 상태(`chat_sessions`), 요청 로그(`search_logs`)를 담습니다. 만드는 순서는 [통계표 안내 (실전 2)](#통계표-안내-실전-2)를 보세요.
