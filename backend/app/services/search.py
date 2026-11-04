@@ -618,7 +618,8 @@ def find(
     """슬롯 → 검색 결과 (DB·HCX 없이 동작해서 테스트·실험에 쓴다).
     dense(tables 순서의 임베딩 점수)를 주면 하이브리드, 없으면 키워드만.
     scope_by_llm: 범위 밖 판정(HCX not_statistics·점수 문턱)을 뒤의 LLM 검토에 맡기고 여기서는
-    거절하지 않는다
+    거절하지 않는다. 그래서 LLM 검토가 켜진 기본 설정에서는 잡담도 out_of_scope로 나오고,
+    not_statistics 상태는 LLM_PICK=false 일 때만 나온다
     (실험실 §61-3: 점수 문턱은 범위 안 질문을 잘못 거르고, 007 거르기가 범위 밖 30/30·
     거짓 거절 1/102)"""
     result: dict[str, Any] = {"status": None, "reason": None, "slots": slots, "table": None}
