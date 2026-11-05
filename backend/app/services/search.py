@@ -15,7 +15,7 @@
   6. 상태 판단                       ok / partial_match / clarify / ambiguous / out_of_scope
                                      / not_statistics. 대상이 빠지면 clarify (되묻기, 규칙 2.3 가안)
 
-표 메타데이터(stat_tables + table_families, 2천여 행)는 처음 한 번 읽어 메모리에 둔다.
+표 메타데이터(table_meta + table_families, 2천여 행)는 처음 한 번 읽어 메모리에 둔다.
 표 벡터(table_embeddings)도 함께 읽어 둔다. 되묻기 다음 턴(답 맞추기·세션)은 dialog.py가 맡는다.
 
 실행: python -m app.services.search "2024년 부산 시군구별 혼인 귀화자 수"
@@ -153,7 +153,7 @@ SELECT s.tbl_id, s.org_id, s.table_name, s.survey_name, s.organization, s.period
        s.classifications, s.items, s.start_year, s.end_year, s.region_levels,
        s.prev_region_levels, s.sex_coverage, s.has_total, s.url, s.comments,
        f.family_id, f.family_name, f.target, f.sex, f.edition_order, f.edition, f.renamed_from
-FROM catalog.stat_tables s JOIN catalog.table_families f USING (tbl_id)
+FROM catalog.table_meta s JOIN catalog.table_families f USING (tbl_id)
 """
 
 _tables: list[dict[str, Any]] | None = None

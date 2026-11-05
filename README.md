@@ -34,10 +34,10 @@
 | --- | --- | --- | --- |
 | `raw` | 통계 수치(`facts`), 적재 기록(`load_log`) | 읽기만 | `python pipeline/load_stats.py` |
 | `mart` | 인구(`population`), 지역, 지표 사전 | 읽기만 | `python pipeline/load_stats.py` |
-| `catalog` | 표 메타데이터(`stat_tables`), 패밀리(`table_families`), 표 임베딩(`table_embeddings`), 수치 표의 설명·코드 | 읽기만 | 검색 데이터는 [아래](#1-검색용-데이터-적재), 수치 표 설명은 `python pipeline/load_stats.py` |
+| `catalog` | 표 메타데이터(`table_meta`), 패밀리(`table_families`), 표 임베딩(`table_embeddings`), 수치 표의 설명·코드 | 읽기만 | 검색 데이터는 [아래](#1-검색용-데이터-적재), 수치 표 설명은 `python pipeline/load_stats.py` |
 | `app` | 대화 상태(`chat_sessions`), 요청 로그(`search_logs`) | 읽고 씀 | 처음 저장할 때 자동 생성 |
 
-- `catalog`의 표·코드와 `raw.stat_value`는 `app/models`에 정의하고 Alembic으로 만듭니다(`alembic upgrade head`). 구조를 바꾸면 `alembic revision --autogenerate -m "설명"`으로 마이그레이션을 만듭니다. 나머지 테이블은 아직 모델로 옮기지 않았습니다.
+- `catalog`의 표·코드와 `raw.stat_value`는 `app/models`에 정의하고 Alembic으로 만듭니다. `docker compose up` 때 `alembic upgrade head`가 자동으로 실행됩니다. 구조를 바꾸면 `alembic revision --autogenerate -m "설명"`으로 마이그레이션을 만듭니다. 나머지 테이블은 아직 모델로 옮기지 않았습니다.
 - 서버는 PostgreSQL만 읽습니다. DuckDB(`data/processed/kosis.duckdb`)는 전처리와 검증에만 쓰고, 결과를 `load_stats.py`로 옮깁니다.
 - 통계 수치 조회 연결은 읽기 전용으로 열어 답변 경로에서 수치를 고칠 수 없습니다.
 - `pg_trgm` 확장은 설치되어 있지만 검색에는 쓰지 않습니다. 키워드 점수는 서버 메모리에 올린 표 정보로 계산합니다.
@@ -118,7 +118,7 @@ ruff check .
 cd backend
 uv run --with sentence-transformers python -m pipeline.build_embeddings --dry-run
 cd ..
-# 2) stat_tables → table_families → table_embeddings 한 번에 적재
+# 2) table_meta → table_families → table_embeddings 한 번에 적재
 docker compose exec api python -m pipeline.build_search
 # 3) 서버 재시작 (표 정보는 서버가 처음 한 번 읽어 둠)
 docker compose restart api

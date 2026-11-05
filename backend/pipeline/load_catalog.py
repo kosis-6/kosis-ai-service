@@ -1,10 +1,10 @@
-"""통계표 카탈로그 적재: population_table_catalog_with_meta.jsonl → PostgreSQL stat_tables
+"""통계표 카탈로그 적재: population_table_catalog_with_meta.jsonl → PostgreSQL table_meta
 
 실전 2 기능 정의서 F-01. 카탈로그를 정제하고 검색·조건 검증에 쓸 파생 필드를 붙여 저장한다.
 
 입력: data/catalog/population_table_catalog_with_meta.jsonl
       (scripts/preprocess_population.py → scripts/enrich_catalog_meta.py 결과)
-출력: PostgreSQL stat_tables
+출력: PostgreSQL table_meta
       테이블을 지우지 않고 tbl_id 기준으로 갱신한다 (새 표는 추가, 바뀐 표는 수정,
       카탈로그에서 빠진 표는 삭제). 임베딩·패밀리 같은 테이블이 tbl_id로 이 테이블을
       참조해도 다시 적재할 때 지워지지 않게 하기 위해서다.
@@ -90,10 +90,10 @@ COLUMNS = [
 ]
 JSON_COLUMNS = {"catalog_periods", "paths", "classifications", "items", "comments"}
 
-DROP = "DROP TABLE IF EXISTS catalog.stat_tables CASCADE"
+DROP = "DROP TABLE IF EXISTS catalog.table_meta CASCADE"
 DDL = """
 CREATE SCHEMA IF NOT EXISTS catalog;
-CREATE TABLE IF NOT EXISTS catalog.stat_tables (
+CREATE TABLE IF NOT EXISTS catalog.table_meta (
     tbl_id              text PRIMARY KEY,
     org_id              text NOT NULL,
     organization        text NOT NULL,
@@ -123,8 +123,8 @@ CREATE TABLE IF NOT EXISTS catalog.stat_tables (
     url                 text NOT NULL,
     loaded_at           timestamptz NOT NULL DEFAULT now()
 );
-CREATE INDEX IF NOT EXISTS stat_tables_survey_idx ON catalog.stat_tables (survey_name);
-CREATE INDEX IF NOT EXISTS stat_tables_years_idx ON catalog.stat_tables (start_year, end_year);
+CREATE INDEX IF NOT EXISTS table_meta_survey_idx ON catalog.table_meta (survey_name);
+CREATE INDEX IF NOT EXISTS table_meta_years_idx ON catalog.table_meta (start_year, end_year);
 """
 
 
@@ -344,7 +344,7 @@ def database_url() -> str:
 
 
 def load(records: list[dict[str, Any]], url: str, recreate: bool = False) -> dict[str, int]:
-    """임시 테이블에 COPY한 뒤 tbl_id 기준으로 stat_tables를 갱신한다"""
+    """임시 테이블에 COPY한 뒤 tbl_id 기준으로 table_meta를 갱신한다"""
     import psycopg
     from psycopg.types.json import Jsonb
 
@@ -356,7 +356,7 @@ def load(records: list[dict[str, Any]], url: str, recreate: bool = False) -> dic
             conn.execute(DROP)
         conn.execute(DDL)
         conn.execute(
-            "CREATE TEMP TABLE incoming (LIKE catalog.stat_tables INCLUDING DEFAULTS)"
+            "CREATE TEMP TABLE incoming (LIKE catalog.table_meta INCLUDING DEFAULTS)"
             " ON COMMIT DROP"
         )
         with conn.cursor().copy(f"COPY incoming ({cols}) FROM STDIN") as copy:
@@ -364,15 +364,15 @@ def load(records: list[dict[str, Any]], url: str, recreate: bool = False) -> dic
                 copy.write_row(row)
         # xmax = 0이면 새로 들어간 행, 아니면 기존 행을 고친 것
         upserted = conn.execute(
-            f"""INSERT INTO catalog.stat_tables ({cols}) SELECT {cols} FROM incoming
+            f"""INSERT INTO catalog.table_meta ({cols}) SELECT {cols} FROM incoming
                 ON CONFLICT (tbl_id) DO UPDATE SET {updates}, loaded_at = now()
                 RETURNING xmax = 0"""
         ).fetchall()
         deleted = conn.execute(
-            "DELETE FROM catalog.stat_tables s WHERE NOT EXISTS "
+            "DELETE FROM catalog.table_meta s WHERE NOT EXISTS "
             "(SELECT 1 FROM incoming i WHERE i.tbl_id = s.tbl_id)"
         ).rowcount
-        total = conn.execute("SELECT count(*) FROM catalog.stat_tables").fetchone()[0]
+        total = conn.execute("SELECT count(*) FROM catalog.table_meta").fetchone()[0]
     inserted = sum(1 for (is_new,) in upserted if is_new)
     return {
         "inserted": inserted,
@@ -403,7 +403,7 @@ def main() -> int:
         return 0
     result = load(records, database_url(), recreate=args.recreate)
     print(
-        f"\nstat_tables 적재 완료: {result['total']}행"
+        f"\ntable_meta 적재 완료: {result['total']}행"
         f" (추가 {result['inserted']}, 갱신 {result['updated']}, 삭제 {result['deleted']})"
     )
     return 0

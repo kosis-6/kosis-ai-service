@@ -1,4 +1,4 @@
-"""통계표 패밀리 묶기: stat_tables → table_families, family_axes
+"""통계표 패밀리 묶기: table_meta → table_families, family_axes
 
 실전 2 기능 정의서 F-19 ③④ (검색 규칙 1장). 표를 합치지 않고 패밀리 → 멤버 → 판 관계만 기록한다.
 검색은 표 단위로 하고, 결과를 패밀리로 접은 뒤 멤버·판을 고를 때(F-18) 이 테이블을 쓴다.
@@ -27,7 +27,7 @@
           '통근통학 인구(서울, 인천, 경기)-시군구' / '(강원)-시군구'
             → 대상 '서울·인천·경기' / '강원'
           같은 폴더·구조라도 이름이 시도 이름 말고 다르면('혼인상태별' / '교육정도별') 묶지 않는다
-  '-시도'·'-시군구'처럼 지역 수준만 다른 표는 다른 패밀리로 둔다 (stat_tables.region_levels로 판정)
+  '-시도'·'-시군구'처럼 지역 수준만 다른 표는 다른 패밀리로 둔다 (table_meta.region_levels로 판정)
   후속판  이름이 바뀌어 이어지는 표. 표 ID가 옛 표 ID + '_A'이고 같은 조사, 분류 ID 구성이
           같으면 옛 표의 멤버에 판으로 붙인다. 대상 이름은 최신 표 기준.
           'TX_11025_A017 한국국적을 취득한 자(계)(2006~2015)'
@@ -40,9 +40,9 @@
                   renamed_from(후속판이면 이름이 바뀌기 전 표 ID)
   family_axes     패밀리를 가르는 축(target / sex / edition)과 선택지. 선택지가 2개 이상인 축만
                   (F-14가 질문에 없는 축만 골라 되묻는다)
-  두 테이블 모두 stat_tables에서 다시 만들 수 있으므로 실행할 때마다 새로 만든다.
+  두 테이블 모두 table_meta에서 다시 만들 수 있으므로 실행할 때마다 새로 만든다.
 
-실행 (stat_tables 적재 후, 서버 컨테이너 안)
+실행 (table_meta 적재 후, 서버 컨테이너 안)
   docker compose exec api python -m pipeline.build_families            # 묶기 + 보고
   docker compose exec api python -m pipeline.build_families --dry-run  # DB 없이 카탈로그로 보고만
 """
@@ -74,7 +74,7 @@ DDL = """
 CREATE SCHEMA IF NOT EXISTS catalog;
 DROP TABLE IF EXISTS catalog.table_families CASCADE;
 CREATE TABLE catalog.table_families (
-    tbl_id         text PRIMARY KEY REFERENCES catalog.stat_tables (tbl_id) ON DELETE CASCADE,
+    tbl_id         text PRIMARY KEY REFERENCES catalog.table_meta (tbl_id) ON DELETE CASCADE,
     family_id      text NOT NULL,
     family_name    text NOT NULL,
     target         text,
@@ -94,7 +94,7 @@ WITH options AS (
     UNION ALL
     -- 판은 최신 연도를 담은 판 → 기간이 긴 판 순
     SELECT f.family_id, 'edition', f.edition, min(s.start_year - s.end_year * 10000)
-    FROM catalog.table_families f JOIN catalog.stat_tables s USING (tbl_id)
+    FROM catalog.table_families f JOIN catalog.table_meta s USING (tbl_id)
     GROUP BY f.family_id, f.edition
 )
 SELECT family_id, axis, array_agg(option ORDER BY option <> '전체', sort_key, option) AS options
@@ -482,7 +482,7 @@ def read_tables(url: str) -> list[dict[str, Any]]:
         return conn.execute(
             "SELECT tbl_id, survey_name, table_name, start_year, end_year, classifications,"
             " items, path_texts"
-            " FROM catalog.stat_tables"
+            " FROM catalog.table_meta"
         ).fetchall()
 
 
@@ -502,7 +502,7 @@ def main() -> int:
     url = database_url()
     tables = read_tables(url)
     if not tables:
-        print("stat_tables가 비어 있음. pipeline.load_catalog를 먼저 실행", file=sys.stderr)
+        print("table_meta가 비어 있음. pipeline.load_catalog를 먼저 실행", file=sys.stderr)
         return 1
     rows = build(tables)
     print(report(rows, successors(tables)[1]))
