@@ -18,25 +18,13 @@ class StatValue(Base):
 
     작은 표는 기본 파티션의 해시 묶음에, 큰 표는 전용 파티션에 들어간다. 하위 파티션은 모델에 쓰지
     않는다 (기본 파티션: 마이그레이션 0001, 전용 파티션: load_raw.py).
-    c1~c5에 NULL이 있어 PRIMARY KEY를 둘 수 없으므로 NULLS NOT DISTINCT 고유 인덱스로 중복을 막는다.
+    DB에 PRIMARY KEY·고유 인덱스가 없다. 고유 인덱스가 7억 행에서 수십 GB를 차지해, 중복은
+    load_raw.py가 교체 전에 검사한다. 수치를 쓰는 경로는 load_raw.py 하나여야 한다.
     """
 
     __tablename__ = "stat_value"
     __table_args__ = (
-        Index(
-            "stat_value_key",
-            "tbl_key",
-            "item_key",
-            "period",
-            "prd_se",
-            "c1",
-            "c2",
-            "c3",
-            "c4",
-            "c5",
-            unique=True,
-            postgresql_nulls_not_distinct=True,
-        ),
+        Index("stat_value_lookup", "tbl_key", "item_key", "period", "c1"),
         {"schema": "raw", "postgresql_partition_by": "LIST (tbl_key)"},
     )
     # DB에는 PRIMARY KEY가 없다. ORM이 행을 구분하는 데만 쓴다

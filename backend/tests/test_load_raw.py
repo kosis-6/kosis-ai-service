@@ -5,7 +5,16 @@ from pathlib import Path
 import pytest
 
 from app.models import StatValue
-from pipeline.load_raw import BIG_ROWS, VALUE_COLUMNS, dim_count, is_big, scan_csv, value_rows
+from pipeline.load_raw import (
+    BIG_ROWS,
+    CELL_KEY,
+    VALUE_COLUMNS,
+    dim_count,
+    duplicate_message,
+    is_big,
+    scan_csv,
+    value_rows,
+)
 
 HEADER = (
     "tbl_id,org_id,period,prd_se,item_id,item_nm,c1_id,c1_nm,c1_level,c1_path,"
@@ -64,6 +73,18 @@ def test_dim_count_stops_above_limit() -> None:
 
 def test_copy_columns_match_model() -> None:
     assert set(VALUE_COLUMNS) == {c.name for c in StatValue.__table__.columns}
+
+
+def test_cell_key_covers_every_column_that_identifies_a_cell() -> None:
+    # tbl_key는 표마다 따로 검사하므로 빠지고, 값·부호·단위는 칸을 정하지 않는다
+    assert set(CELL_KEY) == set(VALUE_COLUMNS) - {"tbl_key", "unit_key", "value", "flag"}
+
+
+def test_duplicate_message_shows_cell_and_count() -> None:
+    message = duplicate_message("T", [(7, 2024, "A", 8, None, None, None, None, 2)])
+    assert message.startswith("T: 같은 칸이 중복")
+    assert "item_key=7, period=2024, prd_se=A, c1=8 (2번)" in message
+    assert "c2" not in message
 
 
 def test_is_big_threshold() -> None:

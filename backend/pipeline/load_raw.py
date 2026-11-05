@@ -2,7 +2,8 @@
 
 서비스는 아직 raw.facts를 읽는다. 이 구조는 2,364개 표 적재를 준비하며 크기·속도를 재기 위한 것이다.
 
-표 하나씩 처리하며, 임시 테이블에 넣어 CSV와 행 수·값 합계를 대조한 뒤 한 트랜잭션에서 바꾼다.
+표 하나씩 처리한다: 임시 테이블에 COPY → 중복 검사 → CSV와 행 수·값 합계 대조 → 인덱스 → 교체.
+DB에 고유 인덱스가 없으므로(용량) 이 중복 검사가 중복을 막는 유일한 장치다.
 중간에 실패해도 그 표의 기존 값은 그대로 남고, 끝낸 표는 다시 처리하지 않아도 된다.
 
   큰 표(BIG_ROWS 이상)  전용 파티션을 만들어 통째로 교체. 지우고 넣지 않아 빈 공간이 쌓이지 않는다
@@ -40,6 +41,10 @@ VALUE_COLUMNS = (
 )  # fmt: skip
 
 
+# 칸 하나를 정하는 값. 이 조합이 겹치면 중복이다
+CELL_KEY = ("item_key", "period", "prd_se", "c1", "c2", "c3", "c4", "c5")
+
+
 @dataclass
 class Scan:
     """CSV를 한 번 읽어 얻은 코드 목록과 대조값"""
@@ -60,6 +65,16 @@ def dim_count(header: list[str]) -> int:
     if n > MAX_DIMS:
         raise SystemExit(f"분류가 {n}개입니다. raw.stat_value는 {MAX_DIMS}개까지 담습니다.")
     return n
+
+
+def duplicate_message(name: str, found: list[tuple]) -> str:
+    """중복 칸 예시. 행은 CELL_KEY 순서의 값 + 횟수"""
+    lines = [
+        ", ".join(f"{c}={v}" for c, v in zip(CELL_KEY, r[:-1], strict=True) if v is not None)
+        + f" ({r[-1]}번)"
+        for r in found
+    ]
+    return f"{name}: 같은 칸이 중복되어 교체하지 않습니다. 예시: " + " / ".join(lines)
 
 
 def is_big(row_count: int) -> bool:
@@ -169,6 +184,17 @@ def copy_rows(pg: psycopg.Connection, target: sql.Composable, rows) -> None:
             copy.write_row(row)
 
 
+def check_duplicates(pg: psycopg.Connection, target: sql.Composable, name: str) -> None:
+    """같은 칸이 두 번 들어오면 합계가 틀어지므로 교체하지 않는다. GROUP BY는 NULL끼리 같게 본다"""
+    query = sql.SQL(
+        "SELECT {key}, count(*) FROM {target} GROUP BY {key} HAVING count(*) > 1 LIMIT 5"
+    )
+    key = sql.SQL(", ").join(map(sql.Identifier, CELL_KEY))
+    found = pg.execute(query.format(key=key, target=target)).fetchall()
+    if found:
+        raise SystemExit(duplicate_message(name, found))
+
+
 def check_loaded(pg: psycopg.Connection, target: sql.Composable, scan: Scan, name: str) -> None:
     count, total = pg.execute(
         sql.SQL("SELECT count(*), coalesce(sum(value), 0) FROM {}").format(target)
@@ -190,13 +216,10 @@ def replace_big(pg: psycopg.Connection, tbl_key: int, rows, scan: Scan, name: st
         ).format(new, sql.Literal(tbl_key))
     )
     copy_rows(pg, new, rows)
-    pg.execute(
-        sql.SQL(
-            "CREATE UNIQUE INDEX ON {} (tbl_key, item_key, period, prd_se, c1, c2, c3, c4, c5)"
-            " NULLS NOT DISTINCT"
-        ).format(new)
-    )
+    check_duplicates(pg, new, name)
     check_loaded(pg, new, scan, name)
+    # 부모의 stat_value_lookup과 같은 칸이어야 붙일 때 그 인덱스의 일부가 된다
+    pg.execute(sql.SQL("CREATE INDEX ON {} (tbl_key, item_key, period, c1)").format(new))
     pg.execute(sql.SQL("ANALYZE {}").format(new))
     old = sql.Identifier("raw", part)
     with pg.transaction():
@@ -219,6 +242,7 @@ def replace_small(pg: psycopg.Connection, tbl_key: int, rows, scan: Scan, name: 
         )
         target = sql.Identifier("new_rows")
         copy_rows(pg, target, rows)
+        check_duplicates(pg, target, name)
         check_loaded(pg, target, scan, name)
         pg.execute("DELETE FROM raw.stat_value WHERE tbl_key = %s", [tbl_key])
         part = sql.Identifier("raw", f"stat_value_t{tbl_key}")
