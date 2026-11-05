@@ -11,7 +11,7 @@ from typing import Any
 from sqlalchemy import text
 
 DDL = """
-CREATE TABLE IF NOT EXISTS search_logs (
+CREATE TABLE IF NOT EXISTS app.search_logs (
     id           bigserial PRIMARY KEY,
     created_at   timestamptz NOT NULL DEFAULT now(),
     session_id   text,
@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS search_logs (
 )
 """
 INSERT = """
-INSERT INTO search_logs (session_id, question, status, tbl_id, slots, candidates, response,
+INSERT INTO app.search_logs (session_id, question, status, tbl_id, slots, candidates, response,
                          hcx_raw, timings, elapsed_ms, error)
 VALUES (:session_id, :question, :status, :tbl_id, CAST(:slots AS jsonb),
         CAST(:candidates AS jsonb), CAST(:response AS jsonb), CAST(:hcx_raw AS jsonb),
@@ -58,6 +58,7 @@ async def write(
     recs = (response or {}).get("recommendations") or []
     async with engine.begin() as conn:
         if not _ready:
+            await conn.execute(text("CREATE SCHEMA IF NOT EXISTS app"))
             await conn.execute(text(DDL))
             _ready = True
         await conn.execute(

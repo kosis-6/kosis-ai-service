@@ -71,9 +71,10 @@ SIDO = re.compile(
 )
 
 DDL = """
-DROP TABLE IF EXISTS table_families CASCADE;
-CREATE TABLE table_families (
-    tbl_id         text PRIMARY KEY REFERENCES stat_tables (tbl_id) ON DELETE CASCADE,
+CREATE SCHEMA IF NOT EXISTS catalog;
+DROP TABLE IF EXISTS catalog.table_families CASCADE;
+CREATE TABLE catalog.table_families (
+    tbl_id         text PRIMARY KEY REFERENCES catalog.stat_tables (tbl_id) ON DELETE CASCADE,
     family_id      text NOT NULL,
     family_name    text NOT NULL,
     target         text,
@@ -82,18 +83,19 @@ CREATE TABLE table_families (
     edition        text NOT NULL,
     renamed_from   text
 );
-CREATE INDEX table_families_family_idx ON table_families (family_id);
-CREATE VIEW family_axes AS
+CREATE INDEX table_families_family_idx ON catalog.table_families (family_id);
+CREATE VIEW catalog.family_axes AS
 WITH options AS (
     SELECT family_id, 'target' AS axis, target AS option, min(edition_order) AS sort_key
-    FROM table_families WHERE target IS NOT NULL GROUP BY family_id, target
+    FROM catalog.table_families WHERE target IS NOT NULL GROUP BY family_id, target
     UNION ALL
     SELECT family_id, 'sex', sex, min(edition_order)
-    FROM table_families WHERE sex IS NOT NULL GROUP BY family_id, sex
+    FROM catalog.table_families WHERE sex IS NOT NULL GROUP BY family_id, sex
     UNION ALL
     -- 판은 최신 연도를 담은 판 → 기간이 긴 판 순
     SELECT f.family_id, 'edition', f.edition, min(s.start_year - s.end_year * 10000)
-    FROM table_families f JOIN stat_tables s USING (tbl_id) GROUP BY f.family_id, f.edition
+    FROM catalog.table_families f JOIN catalog.stat_tables s USING (tbl_id)
+    GROUP BY f.family_id, f.edition
 )
 SELECT family_id, axis, array_agg(option ORDER BY option <> '전체', sort_key, option) AS options
 FROM options
@@ -465,10 +467,11 @@ def load(rows: list[dict[str, Any]], url: str) -> int:
     ]
     with psycopg.connect(url) as conn:  # 블록이 끝나면 커밋, 오류면 전부 되돌림
         conn.execute(DDL)
-        with conn.cursor().copy(f"COPY table_families ({', '.join(cols)}) FROM STDIN") as copy:
+        copy_sql = f"COPY catalog.table_families ({', '.join(cols)}) FROM STDIN"
+        with conn.cursor().copy(copy_sql) as copy:
             for r in rows:
                 copy.write_row(tuple(r[c] for c in cols))
-        return conn.execute("SELECT count(*) FROM family_axes").fetchone()[0]
+        return conn.execute("SELECT count(*) FROM catalog.family_axes").fetchone()[0]
 
 
 def read_tables(url: str) -> list[dict[str, Any]]:
@@ -479,7 +482,7 @@ def read_tables(url: str) -> list[dict[str, Any]]:
         return conn.execute(
             "SELECT tbl_id, survey_name, table_name, start_year, end_year, classifications,"
             " items, path_texts"
-            " FROM stat_tables"
+            " FROM catalog.stat_tables"
         ).fetchall()
 
 

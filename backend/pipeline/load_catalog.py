@@ -90,9 +90,10 @@ COLUMNS = [
 ]
 JSON_COLUMNS = {"catalog_periods", "paths", "classifications", "items", "comments"}
 
-DROP = "DROP TABLE IF EXISTS stat_tables CASCADE"
+DROP = "DROP TABLE IF EXISTS catalog.stat_tables CASCADE"
 DDL = """
-CREATE TABLE IF NOT EXISTS stat_tables (
+CREATE SCHEMA IF NOT EXISTS catalog;
+CREATE TABLE IF NOT EXISTS catalog.stat_tables (
     tbl_id              text PRIMARY KEY,
     org_id              text NOT NULL,
     organization        text NOT NULL,
@@ -122,8 +123,8 @@ CREATE TABLE IF NOT EXISTS stat_tables (
     url                 text NOT NULL,
     loaded_at           timestamptz NOT NULL DEFAULT now()
 );
-CREATE INDEX IF NOT EXISTS stat_tables_survey_idx ON stat_tables (survey_name);
-CREATE INDEX IF NOT EXISTS stat_tables_years_idx ON stat_tables (start_year, end_year);
+CREATE INDEX IF NOT EXISTS stat_tables_survey_idx ON catalog.stat_tables (survey_name);
+CREATE INDEX IF NOT EXISTS stat_tables_years_idx ON catalog.stat_tables (start_year, end_year);
 """
 
 
@@ -355,22 +356,23 @@ def load(records: list[dict[str, Any]], url: str, recreate: bool = False) -> dic
             conn.execute(DROP)
         conn.execute(DDL)
         conn.execute(
-            "CREATE TEMP TABLE incoming (LIKE stat_tables INCLUDING DEFAULTS) ON COMMIT DROP"
+            "CREATE TEMP TABLE incoming (LIKE catalog.stat_tables INCLUDING DEFAULTS)"
+            " ON COMMIT DROP"
         )
         with conn.cursor().copy(f"COPY incoming ({cols}) FROM STDIN") as copy:
             for row in rows:
                 copy.write_row(row)
         # xmax = 0이면 새로 들어간 행, 아니면 기존 행을 고친 것
         upserted = conn.execute(
-            f"""INSERT INTO stat_tables ({cols}) SELECT {cols} FROM incoming
+            f"""INSERT INTO catalog.stat_tables ({cols}) SELECT {cols} FROM incoming
                 ON CONFLICT (tbl_id) DO UPDATE SET {updates}, loaded_at = now()
                 RETURNING xmax = 0"""
         ).fetchall()
         deleted = conn.execute(
-            "DELETE FROM stat_tables s WHERE NOT EXISTS "
+            "DELETE FROM catalog.stat_tables s WHERE NOT EXISTS "
             "(SELECT 1 FROM incoming i WHERE i.tbl_id = s.tbl_id)"
         ).rowcount
-        total = conn.execute("SELECT count(*) FROM stat_tables").fetchone()[0]
+        total = conn.execute("SELECT count(*) FROM catalog.stat_tables").fetchone()[0]
     inserted = sum(1 for (is_new,) in upserted if is_new)
     return {
         "inserted": inserted,

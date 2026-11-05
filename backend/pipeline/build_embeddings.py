@@ -39,8 +39,9 @@ DIM = 1024
 BATCH_SIZE = 16
 
 DDL = f"""
-DROP TABLE IF EXISTS table_embeddings;
-CREATE TABLE table_embeddings (
+CREATE SCHEMA IF NOT EXISTS catalog;
+DROP TABLE IF EXISTS catalog.table_embeddings;
+CREATE TABLE catalog.table_embeddings (
     tbl_id     text PRIMARY KEY,
     model      text NOT NULL,
     preset     text NOT NULL,
@@ -125,10 +126,11 @@ def load(
     cols = ["tbl_id", "model", "preset", "document", "embedding"]
     with psycopg.connect(url) as conn:  # 블록이 끝나면 커밋, 오류면 전부 되돌림
         conn.execute(DDL)
-        with conn.cursor().copy(f"COPY table_embeddings ({', '.join(cols)}) FROM STDIN") as copy:
+        copy_sql = f"COPY catalog.table_embeddings ({', '.join(cols)}) FROM STDIN"
+        with conn.cursor().copy(copy_sql) as copy:
             for t, doc, v in zip(tables, docs, vectors, strict=True):
                 copy.write_row((t["tbl_id"], model, preset, doc, vector_literal(v)))
-        return conn.execute("SELECT count(*) FROM table_embeddings").fetchone()[0]
+        return conn.execute("SELECT count(*) FROM catalog.table_embeddings").fetchone()[0]
 
 
 def read_tables(url: str) -> list[dict[str, Any]]:
@@ -138,7 +140,7 @@ def read_tables(url: str) -> list[dict[str, Any]]:
     with psycopg.connect(url, row_factory=dict_row) as conn:
         return conn.execute(
             "SELECT tbl_id, survey_name, table_name, classifications, items, path_texts"
-            " FROM stat_tables ORDER BY tbl_id"
+            " FROM catalog.stat_tables ORDER BY tbl_id"
         ).fetchall()
 
 
