@@ -1,16 +1,48 @@
 # kosis-ai-service
 
-[KOSIS 국가통계포털](https://kosis.kr) 데이터를 AI로 검색·분석하는 서비스입니다. 실전 프로젝트 1·2를 마쳤습니다.
+**통계표를 몰라도 질문 하나로 국가통계를 찾고, 분석하고, 출처까지 확인하는 AI 챗봇입니다.**
 
-- 연구계획서: [Notion](https://app.notion.com/p/likelion/40244860a4f4801b81f3d1b3c1ba1ed3)
+필요한 수치를 얻으려면 [KOSIS 국가통계포털](https://kosis.kr)에서 표를 찾고, 항목과 기간을 고르고, 직접 계산해야 합니다. 이 서비스는 그 과정을 대화 한 번으로 줄입니다.
 
-## 프로젝트 구성
+- **예상 사용자:** 지역별 인구 특성과 변화 추세를 파악해야 하는 복지 정책 담당자
+- **대상 데이터:** 인구 분야 14개 조사, 약 2,364개 통계표
+- **제공 방식:** 웹 채팅
+- **연구계획서:** [Notion](https://app.notion.com/p/likelion/40244860a4f4801b81f3d1b3c1ba1ed3)
 
-| 구분 | 프로젝트 | 핵심 목표 | API |
-| --- | --- | --- | --- |
-| 실전 프로젝트 1 | 통계 수치 요약 서비스 | 통계 수치 분석 및 자연어 요약 | `POST /ask` |
-| 실전 프로젝트 2 | 통계표 안내 챗봇 | 사용자 질의에 적합한 통계표 탐색 및 경로 안내 | `POST /search`, 화면 `/chat` |
-| 종합 프로젝트 | 맞춤형 통계 AI 챗봇 | 통계표 탐색부터 수치 분석·시각화까지 통합 | |
+> 현재 개발 중이며 아직 배포 전입니다. 차트, 연속 대화, 통계표 탐색과 수치 분석의 통합은 구현 예정입니다.
+
+## 이런 질문에 답합니다
+
+| 질문 | 답변 |
+| --- | --- |
+| 2024년 부산 고령인구 비율 알려줘 | 2024년 부산광역시의 고령인구 비율은 23.9%입니다. + 계산식, 출처, KOSIS 통계표 링크 |
+| 돌싱이 몇 명인지 알려줘 | 일상어를 통계 용어로 이해해 ‘인구총조사’의 「성, 연령 및 혼인상태별 인구 - 시군구」 표를 안내 |
+
+## 주요 기능
+
+| 기능 | 설명 |
+| --- | --- |
+| **통계표 탐색** | 일상어 질문에 맞는 표를 찾아 KOSIS 링크로 안내 |
+| **되묻기** | 대상, 성별, 연도가 정해지지 않으면 선택지를 제시 |
+| **수치 분석** | 단순 조회, 추이, 비교, 순위, 비율·구성을 계산해 요약 |
+| **답변 불가 안내** | 데이터로 답할 수 없으면 이유와 가능한 범위를 안내 |
+| **시각화** (예정) | 분석 결과를 차트로 제공 |
+| **연속 대화** (예정) | 앞 질문의 맥락을 이어 조건을 바꿔 질문 |
+
+## 믿고 쓸 수 있도록
+
+- **수치는 코드로 계산합니다.** LLM은 질문 해석과 표 검토에만 쓰고, 답변의 수치는 통계 데이터에서 계산합니다.
+- **출처를 함께 보여 줍니다.** 사용한 통계표와 기준 시점, KOSIS 링크를 답변에 붙입니다.
+- **없는 수치를 만들지 않습니다.** 데이터에 없으면 지어내지 않고 답할 수 없다고 안내합니다.
+- **검증한 데이터만 반영합니다.** 정합성 검사를 통과해야 서비스 데이터를 교체합니다.
+
+## 동작 방식
+
+```text
+질문 → 질의 분석 → 통계표 탐색 → 수치 조회·계산 → 요약·차트 → 답변 + 출처
+                       │
+                       └ 조건이 부족하면 되묻고, 답할 수 없으면 이유와 가능한 범위를 안내
+```
 
 ## 구성원
 
@@ -26,215 +58,9 @@
 - 언어 / 프레임워크: Python 3.12.15, FastAPI
 - 패키지 관리: uv 0.13.3
 - LLM / 임베딩: HyperCLOVA X(HCX-007, HCX-DASH-002), CLOVA Studio 임베딩 v2(bge-m3)
-- DB: PostgreSQL 17 + pgvector 0.8.7
+- DB: PostgreSQL 17 + pgvector 0.8.7, SQLAlchemy, Alembic
 - 실행 환경: Docker, Docker Compose
 - 테스트 / 린트: pytest, ruff
-
-| PostgreSQL 스키마 (`compose.yaml`의 `db`) | 담는 것 | 서버 | 만드는 방법 |
-| --- | --- | --- | --- |
-| `raw` | 통계 수치(`facts`), 적재 기록(`load_log`) | 읽기만 | `python pipeline/run_all.py` |
-| `mart` | 인구(`population`), 지역, 지표 사전 | 읽기만 | `python pipeline/run_all.py` |
-| `catalog` | 표 메타데이터(`table_meta`), 패밀리(`table_families`), 표 임베딩(`table_embeddings`), 수치 표의 설명·코드 | 읽기만 | 검색 데이터는 [아래](#1-검색용-데이터-적재), 수치 표 설명은 `python pipeline/run_all.py` |
-| `app` | 대화 상태(`chat_sessions`), 요청 로그(`search_logs`) | 읽고 씀 | 처음 저장할 때 자동 생성 |
-
-- `catalog`의 표·코드와 `raw.stat_value`는 `app/models`에 정의하고 Alembic으로 만듭니다. `docker compose up` 때 `alembic upgrade head`가 자동으로 실행됩니다. 구조를 바꾸면 `alembic revision --autogenerate -m "설명"`으로 마이그레이션을 만듭니다. 나머지 테이블은 아직 모델로 옮기지 않았습니다.
-- 전처리와 서비스 모두 PostgreSQL 하나만 씁니다. 전처리 결과는 `build` 스키마에서 검증한 뒤 서비스 스키마로 옮깁니다.
-- 통계 수치 조회 연결은 읽기 전용으로 열어 답변 경로에서 수치를 고칠 수 없습니다.
-- `pg_trgm` 확장은 설치되어 있지만 검색에는 쓰지 않습니다. 키워드 점수는 서버 메모리에 올린 표 정보로 계산합니다.
-
-## 개발 환경 세팅
-
-> 레포는 `frontend/`(화면)와 `backend/`(서버·파이프라인·데이터)로 나뉩니다. **이 문서의 `app/`, `pipeline/`, `scripts/`, `data/`, `eval/`, `config/`, `tests/` 경로는 모두 `backend/` 기준**이고, 명령어는 컨테이너 터미널(`/workspace/backend`)에서 실행합니다. `docker compose`는 레포 최상위에서 실행합니다.
-
-### 1. 사전 준비
-
-- [Docker Desktop](https://www.docker.com/products/docker-desktop/) 설치 후 실행
-- Git
-- [VS Code](https://code.visualstudio.com/) + [Dev Containers 확장](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers)
-
-### 2. 환경변수 파일 만들기
-
-프로젝트 최상위 폴더에 `.env` 파일을 만듭니다. `.env`는 **커밋하지 않습니다.**
-
-```
-KOSIS_API_KEY=내가_발급받은_KOSIS_인증키
-HCX_API_KEY=팀장(이정제)에게_전달받은_키
-POSTGRES_PASSWORD=내가_정한_DB_비밀번호
-```
-
-| 변수 | 필수 | 기본값 | 설명 |
-| --- | --- | --- | --- |
-| `KOSIS_API_KEY` | O | (없음) | KOSIS OpenAPI 인증키. [KOSIS 공유서비스](https://kosis.kr/openapi/)의 **활용신청**에서 무료로 발급 |
-| `HCX_API_KEY` | O | (없음) | HyperCLOVA X (CLOVA Studio) API 키 |
-| `POSTGRES_PASSWORD` | O | (없음) | 내 PC에 생성되는 DB 비밀번호 |
-| `POSTGRES_HOST_PORT` | | `5432` | 내 PC에서 DB에 접속하는 포트 (이미 쓰고 있으면 변경) |
-| `EMBEDDING_BACKEND` | | `clova` | 질문 임베딩: `clova` / `local`(bge-m3 직접 실행) / `off`(키워드만) |
-| `LLM_PICK` | | `true` | 검색 뒤 HCX-007 최종 검토 |
-| `LLM_PICK_MODE` | | `filter` | `filter`(범위 밖 거르기만) / `pick`(고른 표로 교체) / `resolve`(멤버 되묻기를 HCX가 확정) |
-
-### 3. 컨테이너로 들어가기
-
-1. VS Code에서 프로젝트 폴더를 열고 **"Reopen in Container"** 를 누릅니다. (알림이 안 보이면 `Ctrl/Cmd + Shift + P` → `Dev Containers: Reopen in Container`)
-2. 처음에는 이미지 빌드로 몇 분 걸립니다. 서버와 DB가 함께 뜨고, 코드를 고치면 서버가 자동으로 재시작됩니다.
-
-| 주소 | 내용 |
-| --- | --- |
-| http://localhost:8000/chat | 통계표 안내 채팅 화면 (`?mock=1` 서버·HCX 없이 목업, `?debug=1` 검색 과정 표시) |
-| http://localhost:8000/docs | API 문서 |
-| http://localhost:8000/health/db | DB 연결 확인 |
-| http://localhost:8000/health/search | 검색 데이터 준비 상태 (`tables` 2364, `retrieval` `hybrid`면 정상) |
-
-### 4. 데이터 준비
-
-**데이터 파일은 GitHub에 올리지 않습니다.** 실전 1은 [전처리 DB 만들기](#1-전처리-db-만들기), 실전 2는 [검색용 데이터 적재](#1-검색용-데이터-적재)를 실행합니다.
-
-### 테스트
-
-```bash
-pytest
-ruff check .
-```
-
-## 통계표 안내 (실전 2)
-
-질문에 맞는 KOSIS 통계표를 찾아 링크로 안내합니다. 수치는 생성하지 않고, 표를 찾지 못하면 범위 밖으로 안내합니다.
-
-| 단계 | 담당 | 내용 |
-| --- | --- | --- |
-| 1. 질의 분석 | HCX-DASH-002 + 코드 (`slots.py`) | 질문 → 주제·대상·연도·지역 수준·성별 슬롯, 코드 보정 |
-| 2. 후보 검색 | 코드 (`search.py`, `synonyms.py`, `vector_search.py`) | 임베딩 점수 + 키워드 점수(일상어 사전으로 확장) |
-| 3. 조건 검증·재순위 | 코드 (`search.py`) | 표마다 연도·지역 수준·성별·분류·대상을 판정해 가감점 |
-| 4. 패밀리 묶기 | 코드 (`search.py`) | 대상·성별·연도 판만 다른 표를 한 자리로 묶음 |
-| 5. 멤버·판 선택 | 코드 (`search.py`, `dialog.py`) | 대상·성별·연도로 표를 정하고, 정해지지 않으면 되묻기 |
-| 6. 최종 검토 | HCX-007 (`llm_pick.py`) | 상위 후보 중 질문 주제를 다루는 표가 없으면 범위 밖으로 판정 |
-| 7. 응답 | 코드 (`search_answer.py`) | 템플릿으로 안내 문장·링크 작성 |
-
-### 1. 검색용 데이터 적재
-
-처음 한 번, 메타데이터가 바뀌면 다시 실행합니다. `data/catalog/population_table_catalog_with_meta.jsonl`이 있어야 합니다.
-
-```bash
-# 1) 표 임베딩 계산 (내 PC에서, 레포 최상위 기준) → data/embeddings/bge-m3__full.npy
-cd backend
-uv run --with sentence-transformers python -m pipeline.build_embeddings --dry-run
-cd ..
-# 2) table_meta → table_families → table_embeddings 한 번에 적재
-docker compose exec api python -m pipeline.build_search
-# 3) 서버 재시작 (표 정보는 서버가 처음 한 번 읽어 둠)
-docker compose restart api
-```
-
-- 1)은 처음에 bge-m3 모델(약 2GB)을 내려받습니다. 어렵다면 2)에 `--model clova-v2`를 붙여 서버에서 CLOVA로 만듭니다 (약 40분, HCX 키 사용량 발생).
-- 패밀리 규칙만 바뀌었으면 `pipeline.build_search --skip-catalog`로 카탈로그 적재를 건너뜁니다.
-- Windows는 WSL2(Ubuntu) 터미널에서 실행합니다.
-
-### 2. 질문하기
-
-```bash
-curl -s -X POST localhost:8000/search -H 'Content-Type: application/json' \
-  -d '{"question": "앞으로 인구가 어떻게 될지 예측", "debug": true}'
-python -m app.services.search "2024년 부산 시군구별 혼인 귀화자 수"   # 명령줄
-```
-
-되묻기에 답할 때는 응답의 `session_id`를 다시 보냅니다. `debug: true`면 후보별 점수와 슬롯 보정 내역이 함께 나오고, `debug.retrieval`이 `keyword`면 표 임베딩이 없거나 질문 임베딩이 실패한 것입니다.
-
-| `status` | 뜻 |
-| --- | --- |
-| `ok` | 표를 찾음 |
-| `partial_match` | 표를 찾았지만 질문 조건 일부가 맞지 않아 함께 고지 |
-| `clarify` | 대상·성별·연도를 정해야 해서 되물음 |
-| `ambiguous` | 후보 패밀리 점수가 비슷해 선택지를 보여 줌 |
-| `out_of_scope` | 범위 안에서 맞는 표를 찾지 못함 |
-| `not_statistics` | 통계표를 찾는 질문이 아님 (`LLM_PICK=false`일 때만. 기본 설정에서는 `out_of_scope`) |
-| `parse_error` | 질문을 이해하지 못함 |
-
-### 3. 요청 로그 보기
-
-틀린 안내가 슬롯 / 검색 / 재순위 / 패밀리·판 선택 중 어디서 생겼는지 가를 때 씁니다.
-
-```bash
-docker compose exec api python -m scripts.search_log                     # 상태별 요약 + 최근 10건
-docker compose exec api python -m scripts.search_log --last 3 --detail   # 후보 10개·HCX 원문·답변까지
-docker compose exec api python -m scripts.search_log --session S_abc123  # 한 대화의 턴 순서대로
-```
-
-### 4. 평가와 결과
-
-개발셋은 `data/팀장전달_2026-11-02_개발셋통합/dev_all.jsonl` 224문항입니다 (범위 안 206, 범위 밖 18, 팀 공유).
-
-```bash
-python -m scripts.family_ablation --golden data/팀장전달_2026-11-02_개발셋통합/dev_all.jsonl --llm-pick   # 패밀리 켬/끔 비교
-python -m scripts.check_search              # 일상어 질문으로 키워드 vs 하이브리드 점검 (골든셋 아님)
-python -m scripts.check_clarify_scenarios   # 되묻기 대화 시나리오 채점
-```
-
-| 지표 (11/3, HCX 슬롯 + LLM 검토) | 결과 |
-| --- | --- |
-| 표 R@1 / R@5 | 82% (168/206) / 93% (192/206) |
-| 흐름 성공 (되묻기까지 거쳐 정답 표 도달) | 84% (174/206) |
-| 되묻기 문항 성공 | 65% (13/20) |
-| 범위 밖 재현율 / 범위 안→밖 오판 | 94% (17/18) / 4건 |
-
-- 기록: `eval/results/family_ablation_20261103.md`
-- 오답을 보고 사전·규칙을 고친 개발셋 결과라, 처음 보는 질문에 대한 성능이 아닙니다.
-- 위 수치는 일상어 사전 수정(원문에서 찾기) 전입니다. 수정 전후를 HCX 없이 규칙 슬롯으로 비교하면 흐름 성공이 177 → 182/206이고, HCX 슬롯 + LLM 검토 기준으로는 다시 재지 않았습니다.
-
-## 수치 요약 (실전 1)
-
-### 1. 전처리 DB 만들기
-
-팀에서 공유받은 원본 zip을 `data/kosis_processed.zip`에 두고 실행합니다. 테이블과 규칙은 [`docs/data_dictionary.md`](docs/data_dictionary.md)에 있습니다.
-
-```bash
-python pipeline/run_all.py   # 압축 해제 → 전처리 → 카탈로그 → 검증 → 서비스 데이터 교체
-```
-
-KOSIS에서 직접 다시 받을 때는 zip 없이 수집 결과를 씁니다. 받을 표 목록은 `scripts/tables.csv`입니다 (20개 표 약 15분).
-
-```bash
-python -m scripts.collect_kosis --list scripts/tables.csv   # KOSIS OpenAPI 수집
-python pipeline/run_all.py --source collect                 # 수집 결과 → 전처리 → 검증 → 서비스 데이터 교체
-```
-
-`build` 스키마에 먼저 만들고 **검증을 모두 통과해야** 한 번에 교체합니다. 실패하면 서비스 데이터는 그대로입니다. 서버가 지표와 지역 일부를 메모리에 두므로 적재 후 `docker compose restart api`로 반영합니다.
-
-### 2. 질문하기
-
-```bash
-curl -X POST localhost:8000/ask -H 'Content-Type: application/json' \
-  -d '{"question": "2025년 서울과 부산 중 고령인구 비율이 높은 지역은?"}'
-python -m scripts.ask -q "최근 5년 부산 인구 변화" --debug   # 명령줄
-```
-
-| 단계 | 담당 | 내용 |
-| --- | --- | --- |
-| 1. 질문 이해 | HCX-007 | 질문 → 유형·지표·지역·연도 JSON |
-| 2~4. 판단·조회·계산 | 코드 (`indicators.py`, `lookup.py`) | 답변 가능 여부 판단, PostgreSQL 조회, 계산 |
-| 5. 답변 생성 | 코드 (`qa.py`) | 템플릿에 계산 결과를 채워 문장 작성, 수치 목록·출처·KOSIS 링크 첨부 |
-
-- 지표는 `config/catalog_notes.toml`의 지표 사전(40개)에 있습니다. 항목을 추가하면 지표가 늘어납니다.
-- 답변 불가일 때는 `status`에 사유(`unknown_indicator`, `missing_region`, `out_of_range` 등)를 담아 다시 질문하는 방법을 안내합니다. 전체 목록은 `app/services/qa.py`의 `REFUSAL_GUIDE`에 있습니다.
-- 요청 기록은 `data/requests/`에 쌓입니다. `python -m scripts.request_log`로 보고, `python -m scripts.missing_requests`로 DB에 없어 답하지 못한 요청을 집계합니다.
-
-### 3. 평가와 결과
-
-```bash
-python -m scripts.eval_golden --golden eval/golden_sheet.csv --round 1 --interval 15   # 시트 60문항 자동 채점 (HCX 호출)
-python -m scripts.eval_oracle data/eval/<채점 결과>.csv   # 답변 속 숫자를 pandas 정답과 대조 (HCX 없음)
-python -m scripts.eval_replay                             # 기록된 HCX 해석으로 회귀 확인 (HCX 없음)
-python -m scripts.check_raw                               # 원본 CSV ↔ 서비스 값 전수 대조
-```
-
-| 평가 | 결과 |
-| --- | --- |
-| 시트 60문항 자동 채점 (기대 행동) | 0회차 19/60 → 8회차 60/60 |
-| pandas 정답 재계산 | 8회차 60/60, 환각 0/11 |
-| 개발셋 16문항 (질의 이해·데이터 정확성) | 8회차 16/16, 11/11 |
-| 원본 CSV ↔ 서비스 값 전수 대조 | 불일치 0 (계산 지표별 15,315개) |
-
-- 기록: `eval/results/`(`golden_r0`, `golden_r7`, `oracle_r7`), 8회차는 `data/eval/golden_r8_20261028_030839.md`
-- 같은 60문항을 보며 고친 결과라, 처음 보는 질문에 대한 성능이 아닙니다.
-- 알려진 한계: 지역을 나열한 질문("경기도, 서울특별시, 인천광역시의 출생아 수")은 첫 지역 값만 답합니다. 합산은 "수도권" 같은 묶음 표현에서만 동작합니다.
 
 ## 프로젝트 구조
 
@@ -246,13 +72,15 @@ kosis-ai-service/
 │   │   ├── main.py          # FastAPI 앱 진입점
 │   │   ├── core/            # 환경변수 설정, DB 연결
 │   │   ├── api/routes/      # API 엔드포인트 (health, ask, search)
+│   │   ├── models/          # 테이블 정의 (SQLAlchemy)
 │   │   ├── schemas/         # 요청·응답 모델
 │   │   ├── prompts/         # LLM 프롬프트, 답변 정책
 │   │   └── services/        # 비즈니스 로직 (검색: search·slots·synonyms·llm_pick·dialog / 수치: qa·indicators·lookup)
-│   ├── pipeline/            # 전처리 DB·검색 데이터를 만드는 배치 작업
+│   ├── migrations/          # 테이블 구조 변경 이력 (Alembic)
+│   ├── pipeline/            # 전처리·적재 배치 작업
 │   ├── config/              # 지표 사전(catalog_notes.toml), 일상어 사전(synonyms.json)
 │   ├── scripts/             # 수집, 평가, 로그 보기, 점검 도구
-│   ├── eval/                # 골든셋, 되묻기 시나리오, 발표용 결과(results/)
+│   ├── eval/                # 골든셋, 되묻기 시나리오, 평가 결과(results/)
 │   ├── data/                # 수집·생성 데이터 (각자 생성, 커밋 X)
 │   ├── tests/               # pytest 테스트
 │   └── docker/postgres/     # DB 최초 생성 시 확장 설치
