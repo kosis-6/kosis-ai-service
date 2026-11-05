@@ -26,16 +26,19 @@
 - 언어 / 프레임워크: Python 3.12.15, FastAPI
 - 패키지 관리: uv 0.13.3
 - LLM / 임베딩: HyperCLOVA X(HCX-007, HCX-DASH-002), CLOVA Studio 임베딩 v2(bge-m3)
-- DB: DuckDB 2.0 (통계 데이터), PostgreSQL 17 + pgvector 0.8.7 (서비스 데이터)
+- DB: PostgreSQL 17 + pgvector 0.8.7 (서비스), DuckDB 2.0 (전처리 도구)
 - 실행 환경: Docker, Docker Compose
 - 테스트 / 린트: pytest, ruff
 
-| DB | 담는 것 | 읽기·쓰기 | 만드는 방법 |
+| PostgreSQL 스키마 (`compose.yaml`의 `db`) | 담는 것 | 서버 | 만드는 방법 |
 | --- | --- | --- | --- |
-| DuckDB (`data/processed/kosis.duckdb`) | 전처리한 통계 수치, 지역, 통계표 카탈로그 | 서버는 읽기만 | `python pipeline/run_all.py` |
-| PostgreSQL (`compose.yaml`의 `db`) | 표 메타데이터(`stat_tables`), 패밀리(`table_families`), 표 임베딩(`table_embeddings`), 대화 상태(`chat_sessions`), 요청 로그(`search_logs`) | 서버가 읽고 씀 | `docker compose up` 시 자동 생성, 검색 데이터는 [아래](#1-검색용-데이터-적재)에서 적재 |
+| `raw` | 통계 수치(`facts`), 적재 기록(`load_log`) | 읽기만 | `python pipeline/load_stats.py` |
+| `mart` | 인구(`population`), 지역, 지표 사전 | 읽기만 | `python pipeline/load_stats.py` |
+| `catalog` | 수치가 있는 표의 설명과 주의사항 | 읽기만 | `python pipeline/load_stats.py` |
+| `public` | 표 메타데이터(`stat_tables`), 패밀리(`table_families`), 표 임베딩(`table_embeddings`), 대화 상태(`chat_sessions`), 요청 로그(`search_logs`) | 읽고 씀 | `docker compose up` 시 자동 생성, 검색 데이터는 [아래](#1-검색용-데이터-적재)에서 적재 |
 
-- 통계 수치는 DuckDB에서만 조회합니다. DuckDB는 한 번에 한 프로세스만 쓸 수 있어서, 요청마다 저장하는 데이터는 PostgreSQL에 둡니다.
+- 서버는 PostgreSQL만 읽습니다. DuckDB(`data/processed/kosis.duckdb`)는 전처리와 검증에만 쓰고, 결과를 `load_stats.py`로 옮깁니다.
+- 통계 수치 조회 연결은 읽기 전용으로 열어 답변 경로에서 수치를 고칠 수 없습니다.
 - `pg_trgm` 확장은 설치되어 있지만 검색에는 쓰지 않습니다. 키워드 점수는 서버 메모리에 올린 표 정보로 계산합니다.
 
 ## 개발 환경 세팅
@@ -182,17 +185,19 @@ python -m scripts.check_clarify_scenarios   # 되묻기 대화 시나리오 채�
 팀에서 공유받은 원본 zip을 `data/kosis_processed.zip`에 두고 실행합니다. 테이블과 규칙은 [`docs/data_dictionary.md`](docs/data_dictionary.md)에 있습니다.
 
 ```bash
-python pipeline/run_all.py   # 압축 해제 → 전처리 → 카탈로그 → 검증 → DB 교체
+python pipeline/run_all.py     # 압축 해제 → 전처리 → 카탈로그 → 검증 → DuckDB 교체
+python pipeline/load_stats.py  # DuckDB → PostgreSQL 적재
 ```
 
 KOSIS에서 직접 다시 받을 때는 zip 없이 수집 결과를 씁니다. 받을 표 목록은 `scripts/tables.csv`입니다 (20개 표 약 15분).
 
 ```bash
 python -m scripts.collect_kosis --list scripts/tables.csv   # KOSIS OpenAPI 수집
-python pipeline/run_all.py --source collect                 # 수집 결과 → 전처리 → 검증 → DB 교체
+python pipeline/run_all.py --source collect                 # 수집 결과 → 전처리 → 검증 → DuckDB 교체
+python pipeline/load_stats.py                               # DuckDB → PostgreSQL 적재
 ```
 
-DB는 임시 파일에 먼저 만들고 **검증을 모두 통과해야** 교체합니다. 교체 후에는 `docker compose restart api`로 반영합니다.
+DuckDB는 임시 파일에 먼저 만들고 **검증을 모두 통과해야** 교체합니다. PostgreSQL은 새 테이블에 넣어 원본과 행 수·값 합계를 대조한 뒤 한 번에 교체합니다. 서버가 지표와 지역 일부를 메모리에 두므로 적재 후 `docker compose restart api`로 반영합니다.
 
 ### 2. 질문하기
 
@@ -205,7 +210,7 @@ python -m scripts.ask -q "최근 5년 부산 인구 변화" --debug   # 명령�
 | 단계 | 담당 | 내용 |
 | --- | --- | --- |
 | 1. 질문 이해 | HCX-007 | 질문 → 유형·지표·지역·연도 JSON |
-| 2~4. 판단·조회·계산 | 코드 (`indicators.py`, `lookup.py`) | 답변 가능 여부 판단, DuckDB 조회, 계산 |
+| 2~4. 판단·조회·계산 | 코드 (`indicators.py`, `lookup.py`) | 답변 가능 여부 판단, PostgreSQL 조회, 계산 |
 | 5. 답변 생성 | 코드 (`qa.py`) | 템플릿에 계산 결과를 채워 문장 작성, 수치 목록·출처·KOSIS 링크 첨부 |
 
 - 지표는 `config/catalog_notes.toml`의 지표 사전(40개)에 있습니다. 항목을 추가하면 지표가 늘어납니다.

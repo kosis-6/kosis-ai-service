@@ -7,7 +7,8 @@
   3. catalog.py       config/catalog_notes.toml → 임시 DB
   4. validate.py      정합성 검증
   5. 교체             검증을 통과한 임시 DB를 kosis.duckdb로 바꾼다.
-                      중간에 실패하면 기존 kosis.duckdb는 그대로 두므로 서비스가 계속 동작한다.
+                      중간에 실패하면 기존 kosis.duckdb는 그대로 둔다.
+  이 파일은 전처리 결과다. 서버가 읽도록 pipeline/load_stats.py로 PostgreSQL에 옮긴다.
   옵션
     --preview   export_preview.py: 엑셀로 열어볼 CSV (data/processed/preview/)
     --share     make_share.py: 팀 공유용 zip (dist/), --preview 포함

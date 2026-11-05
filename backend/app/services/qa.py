@@ -1380,7 +1380,7 @@ async def ask(question):
     parsed = await understand(question, trace)
     trace["understand_ms"] = round((time.perf_counter() - start) * 1000)
     start = time.perf_counter()
-    # DuckDB 조회는 동기 함수라 이벤트 루프를 막지 않도록 스레드에서 실행
+    # 통계 DB 조회는 동기 함수라 이벤트 루프를 막지 않도록 스레드에서 실행
     result = await run_in_threadpool(compute, parsed)
     trace["compute_ms"] = round((time.perf_counter() - start) * 1000)
     return {

@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from app.core.duckdb import rows as db_rows
+from app.core.stats_db import rows as db_rows
 from app.services import indicators, lookup
 
 RAW_DIR = Path("data/processed")

@@ -17,7 +17,7 @@
 import re
 from functools import lru_cache
 
-from app.core.duckdb import rows as _rows
+from app.core.stats_db import rows as _rows
 from app.services import analysis
 from app.services import indicators as ind_mod
 
@@ -191,7 +191,8 @@ def _sum(src, codes, y0, y1, item_key, filters, age_codes, group_dim=None):
                count(*) filter (where not is_missing) as n
         from facts
         where tbl_id = ? and year between ? and ? and {region_sql} and {" and ".join(conds)}
-        group by all
+        group by {"1, 2, 3" if group_dim else "1, 2"}
+        order by {"1, 2, 3" if group_dim else "1, 2"}
     """,
         [src["table"], y0, y1, *region_params, *params],
     )
@@ -460,6 +461,7 @@ def rank(
         from regions r where {where}
           and (r.valid_from is null or r.valid_from <= ?)
           and (r.valid_to is null or r.valid_to >= ?)
+        order by r.region_code
     """,
         [*params, year, year],
     )
