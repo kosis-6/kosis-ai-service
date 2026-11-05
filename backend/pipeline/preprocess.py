@@ -1,7 +1,7 @@
-"""KOSIS 수집 CSV → 정제된 DuckDB 생성
+"""KOSIS 수집 CSV → 정제된 통계 테이블 생성 (PostgreSQL)
 
 입력: data/raw/kosis_zip/processed/*.csv, *.meta.json  (환경변수 KOSIS_RAW_DIR로 변경)
-출력: data/processed/kosis.duckdb  (환경변수 DUCKDB_PATH로 변경)
+출력: PostgreSQL build 스키마 (검증 후 publish_stats.py가 서비스 스키마로 옮긴다)
 
 만들어지는 테이블
   catalog         통계표 목록 (수록 기간, 분류, 추계표 여부)
@@ -14,18 +14,22 @@
 실행: python pipeline/preprocess.py   (가상환경 활성화 후, README 참고. 보통은 run_all.py로 실행)
 """
 
+import csv
 import json
 import os
 import re
+import sys
 from pathlib import Path
 
-import duckdb
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parent.parent
-# run_all.py가 수집 결과 폴더·임시 DB 경로를 넘길 때 환경변수를 쓴다 (절대 경로면 그대로)
+sys.path.insert(0, str(ROOT))
+
+from pipeline.stats_build import Build  # noqa: E402
+
+# run_all.py가 수집 결과 폴더를 넘길 때 환경변수를 쓴다 (절대 경로면 그대로)
 RAW_DIR = ROOT / os.environ.get("KOSIS_RAW_DIR", "data/raw/kosis_zip/processed")
-OUT_PATH = ROOT / os.environ.get("DUCKDB_PATH", "data/processed/kosis.duckdb")
 
 ORG_NAMES = {"101": "국가데이터처 (구 통계청)", "110": "행정안전부"}
 
@@ -217,20 +221,26 @@ def build_catalog(con):
             }
         )
     con.register("catalog_df", pd.DataFrame(rows))
+    con.sql("create table catalog as select * from catalog_df")
     con.sql(
-        "create table catalog as "
-        "select * replace (cast(collected_at as timestamp) as collected_at) from catalog_df"
+        "alter table catalog alter column collected_at type timestamp using collected_at::timestamp"
     )
     con.unregister("catalog_df")
 
 
 def load_raw(con):
     """CSV 20개를 한 번에 읽어 raw 테이블로. 코드값 앞자리 0을 지키려고 전부 문자열로 읽는다."""
-    files = [p.as_posix() for p in sorted(RAW_DIR.glob("*.csv"))]
-    con.sql(f"""
-        create temp table raw as
-        select * from read_csv({files!r}, union_by_name = true, all_varchar = true)
-    """)
+    files = sorted(RAW_DIR.glob("*.csv"))
+    headers = {}
+    for path in files:
+        with path.open(encoding="utf-8-sig", newline="") as f:
+            headers[path] = next(csv.reader(f))
+    # 표마다 분류 칸 수가 달라 모든 칸을 합친 테이블을 만든다
+    columns = list(dict.fromkeys(c for header in headers.values() for c in header))
+    con.sql(f"create temp table raw ({', '.join(f'{c} text' for c in columns)})")
+    for path in files:
+        with path.open(encoding="utf-8-sig", newline="") as f:
+            con.copy_csv("raw", headers[path], f)
     label_sql = " ".join(f"when '{t}' then {col}" for t, col in LABEL_COLUMN.items())
     con.sql("alter table raw add column label varchar")
     con.sql(f"update raw set label = case tbl_id {label_sql} else item_nm end")
@@ -458,7 +468,9 @@ def build_facts(con):
                r.item_id, r.item_nm, r.label,
                m.region_code, m.match_method as region_match,
                r.c1_id, r.c1_nm, r.c2_id, r.c2_nm, r.c3_id, r.c3_nm,
-               case when {placeholder_reason} is null then try_cast(r.value as double) end as value,
+               case when {placeholder_reason} is null
+                         and pg_input_is_valid(r.value, 'double precision')
+                    then r.value::double precision end as value,
                u.clean_unit as unit,
                r.value is null or {placeholder_reason} is not null as is_missing,
                r.value_flag as missing_symbol,
@@ -471,7 +483,8 @@ def build_facts(con):
                     then trim(split_part(r.c1_nm, '(', 1)) end as scenario,
                r.tbl_id in ({proj_list})
                    and r.period::int > {PROJECTION_BASE_YEAR} as is_projection,
-               try_cast(r.last_changed as date) as last_changed
+               case when pg_input_is_valid(r.last_changed, 'date')
+                    then r.last_changed::date end as last_changed
         from raw r
         left join unit_df u
                on u.tbl_id = r.tbl_id and u.item_id = r.item_id
@@ -496,7 +509,7 @@ def build_population(con):
                c1_id as region_code,
                case item_id when 'T2' then '계' when 'T3' then '남' when 'T4' then '여' end as sex,
                case when c2_nm = '계' then null
-                    else regexp_extract(c2_nm, '(\\d+)', 1)::int end as age,
+                    else substring(c2_nm from '(\\d+)')::int end as age,
                c2_nm like '%이상' as is_open_age,
                c2_nm as age_label,
                value::bigint as population
@@ -558,7 +571,7 @@ def print_summary(con):
             select count(*) from (
                 select tbl_id, year, region_code, c1_id, c2_id, c3_id, item_id
                 from facts where region_code is not null
-                group by all having count(*) > 1)""",
+                group by 1, 2, 3, 4, 5, 6, 7 having count(*) > 1) d""",
         "유효 기간 밖 연도에 연결된 행 (장래추계 제외)": f"""
             select count(*) from facts f join regions r using (region_code)
             where f.tbl_id not in ({", ".join(f"'{t}'" for t in PROJECTION_TABLES)})
@@ -583,7 +596,7 @@ def print_summary(con):
         con.sql("""
         select tbl_id, count(*) filter (where is_missing) as missing,
                string_agg(distinct missing_reason, ', ') as reasons
-        from facts group by 1 having missing > 0 order by 1
+        from facts group by 1 having count(*) filter (where is_missing) > 0 order by 1
     """)
         .df()
         .to_string(index=False)
@@ -598,10 +611,8 @@ def print_summary(con):
 def main():
     if not RAW_DIR.exists():
         raise SystemExit(f"원본 폴더가 없습니다: {RAW_DIR}")
-    OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    OUT_PATH.unlink(missing_ok=True)
-
-    con = duckdb.connect(str(OUT_PATH))
+    con = Build()
+    con.reset()
     print("1/5 catalog")
     build_catalog(con)
     print("2/5 raw 읽기")
@@ -615,7 +626,7 @@ def main():
     build_population(con)
     print_summary(con)
     con.close()
-    print(f"\n완료: {OUT_PATH.relative_to(ROOT)}")
+    print("\n완료: build 스키마")
 
 
 if __name__ == "__main__":

@@ -3,12 +3,11 @@
   1. 원본 준비
        --source zip (기본)  data/kosis_processed.zip → data/raw/kosis_zip/  (풀려 있으면 건너뜀)
        --source collect     scripts/collect_kosis.py 수집 결과(data/processed/*.csv)를 그대로 사용
-  2. preprocess.py    CSV → data/processed/kosis.new.duckdb (임시 DB)
-  3. catalog.py       config/catalog_notes.toml → 임시 DB
+  2. preprocess.py    CSV → PostgreSQL build 스키마 (서비스가 읽지 않음)
+  3. catalog.py       config/catalog_notes.toml → build 스키마
   4. validate.py      정합성 검증
-  5. 교체             검증을 통과한 임시 DB를 kosis.duckdb로 바꾼다.
-                      중간에 실패하면 기존 kosis.duckdb는 그대로 둔다.
-  이 파일은 전처리 결과다. 서버가 읽도록 pipeline/load_stats.py로 PostgreSQL에 옮긴다.
+  5. publish_stats.py 검증을 통과한 표를 서비스 스키마(raw, mart, catalog)로 한 번에 옮긴다.
+                      중간에 실패하면 서비스 데이터는 그대로 둔다.
   옵션
     --preview   export_preview.py: 엑셀로 열어볼 CSV (data/processed/preview/)
     --share     make_share.py: 팀 공유용 zip (dist/), --preview 포함
@@ -28,8 +27,6 @@ ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / "pipeline"
 RAW_ZIP = ROOT / "data" / "kosis_processed.zip"
 RAW_DIR = ROOT / "data" / "raw" / "kosis_zip"
-DB_PATH = ROOT / "data" / "processed" / "kosis.duckdb"
-NEW_DB_PATH = DB_PATH.with_name("kosis.new.duckdb")
 # 전처리 입력 CSV 폴더. collect는 수집기 출력 폴더 (zip 안의 CSV와 같은 파일)
 SOURCES = {"zip": RAW_DIR / "processed", "collect": ROOT / "data" / "processed"}
 
@@ -81,12 +78,11 @@ def main():
 
     if args.source == "zip":
         extract_raw()
-    # 서비스가 쓰는 DB를 건드리지 않도록 임시 DB에 만들고 검증한다
-    env = {"KOSIS_RAW_DIR": str(SOURCES[args.source]), "DUCKDB_PATH": str(NEW_DB_PATH)}
-    for script in ["preprocess.py", "catalog.py", "validate.py"]:
+    # 서비스가 읽는 표를 건드리지 않도록 build 스키마에 만들고 검증한 뒤 옮긴다
+    env = {"KOSIS_RAW_DIR": str(SOURCES[args.source])}
+    for script in ["preprocess.py", "catalog.py", "validate.py", "publish_stats.py"]:
         run(script, env)
-    NEW_DB_PATH.replace(DB_PATH)
-    print(f"\n검증 통과: {DB_PATH.relative_to(ROOT)} 교체 (실행 중인 서버는 재시작해야 반영)")
+    print("\n검증 통과: 서비스 데이터 교체 (실행 중인 서버는 재시작해야 반영)")
     if args.preview or args.share:
         run("export_preview.py")
     if args.share:

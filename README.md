@@ -26,19 +26,19 @@
 - 언어 / 프레임워크: Python 3.12.15, FastAPI
 - 패키지 관리: uv 0.13.3
 - LLM / 임베딩: HyperCLOVA X(HCX-007, HCX-DASH-002), CLOVA Studio 임베딩 v2(bge-m3)
-- DB: PostgreSQL 17 + pgvector 0.8.7 (서비스), DuckDB 2.0 (전처리 도구)
+- DB: PostgreSQL 17 + pgvector 0.8.7
 - 실행 환경: Docker, Docker Compose
 - 테스트 / 린트: pytest, ruff
 
 | PostgreSQL 스키마 (`compose.yaml`의 `db`) | 담는 것 | 서버 | 만드는 방법 |
 | --- | --- | --- | --- |
-| `raw` | 통계 수치(`facts`), 적재 기록(`load_log`) | 읽기만 | `python pipeline/load_stats.py` |
-| `mart` | 인구(`population`), 지역, 지표 사전 | 읽기만 | `python pipeline/load_stats.py` |
-| `catalog` | 표 메타데이터(`table_meta`), 패밀리(`table_families`), 표 임베딩(`table_embeddings`), 수치 표의 설명·코드 | 읽기만 | 검색 데이터는 [아래](#1-검색용-데이터-적재), 수치 표 설명은 `python pipeline/load_stats.py` |
+| `raw` | 통계 수치(`facts`), 적재 기록(`load_log`) | 읽기만 | `python pipeline/run_all.py` |
+| `mart` | 인구(`population`), 지역, 지표 사전 | 읽기만 | `python pipeline/run_all.py` |
+| `catalog` | 표 메타데이터(`table_meta`), 패밀리(`table_families`), 표 임베딩(`table_embeddings`), 수치 표의 설명·코드 | 읽기만 | 검색 데이터는 [아래](#1-검색용-데이터-적재), 수치 표 설명은 `python pipeline/run_all.py` |
 | `app` | 대화 상태(`chat_sessions`), 요청 로그(`search_logs`) | 읽고 씀 | 처음 저장할 때 자동 생성 |
 
 - `catalog`의 표·코드와 `raw.stat_value`는 `app/models`에 정의하고 Alembic으로 만듭니다. `docker compose up` 때 `alembic upgrade head`가 자동으로 실행됩니다. 구조를 바꾸면 `alembic revision --autogenerate -m "설명"`으로 마이그레이션을 만듭니다. 나머지 테이블은 아직 모델로 옮기지 않았습니다.
-- 서버는 PostgreSQL만 읽습니다. DuckDB(`data/processed/kosis.duckdb`)는 전처리와 검증에만 쓰고, 결과를 `load_stats.py`로 옮깁니다.
+- 전처리와 서비스 모두 PostgreSQL 하나만 씁니다. 전처리 결과는 `build` 스키마에서 검증한 뒤 서비스 스키마로 옮깁니다.
 - 통계 수치 조회 연결은 읽기 전용으로 열어 답변 경로에서 수치를 고칠 수 없습니다.
 - `pg_trgm` 확장은 설치되어 있지만 검색에는 쓰지 않습니다. 키워드 점수는 서버 메모리에 올린 표 정보로 계산합니다.
 
@@ -186,19 +186,17 @@ python -m scripts.check_clarify_scenarios   # 되묻기 대화 시나리오 채�
 팀에서 공유받은 원본 zip을 `data/kosis_processed.zip`에 두고 실행합니다. 테이블과 규칙은 [`docs/data_dictionary.md`](docs/data_dictionary.md)에 있습니다.
 
 ```bash
-python pipeline/run_all.py     # 압축 해제 → 전처리 → 카탈로그 → 검증 → DuckDB 교체
-python pipeline/load_stats.py  # DuckDB → PostgreSQL 적재
+python pipeline/run_all.py   # 압축 해제 → 전처리 → 카탈로그 → 검증 → 서비스 데이터 교체
 ```
 
 KOSIS에서 직접 다시 받을 때는 zip 없이 수집 결과를 씁니다. 받을 표 목록은 `scripts/tables.csv`입니다 (20개 표 약 15분).
 
 ```bash
 python -m scripts.collect_kosis --list scripts/tables.csv   # KOSIS OpenAPI 수집
-python pipeline/run_all.py --source collect                 # 수집 결과 → 전처리 → 검증 → DuckDB 교체
-python pipeline/load_stats.py                               # DuckDB → PostgreSQL 적재
+python pipeline/run_all.py --source collect                 # 수집 결과 → 전처리 → 검증 → 서비스 데이터 교체
 ```
 
-DuckDB는 임시 파일에 먼저 만들고 **검증을 모두 통과해야** 교체합니다. PostgreSQL은 새 테이블에 넣어 원본과 행 수·값 합계를 대조한 뒤 한 번에 교체합니다. 서버가 지표와 지역 일부를 메모리에 두므로 적재 후 `docker compose restart api`로 반영합니다.
+`build` 스키마에 먼저 만들고 **검증을 모두 통과해야** 한 번에 교체합니다. 실패하면 서비스 데이터는 그대로입니다. 서버가 지표와 지역 일부를 메모리에 두므로 적재 후 `docker compose restart api`로 반영합니다.
 
 ### 2. 질문하기
 

@@ -1,9 +1,10 @@
 from decimal import Decimal
 
+import pandas as pd
 import pytest
 
 from app.core.stats_db import plain, to_driver_sql
-from pipeline.load_stats import pg_type, same_total
+from pipeline.stats_build import column_type, plain_rows
 
 
 def test_to_driver_sql_keeps_percent_literal() -> None:
@@ -29,21 +30,21 @@ def test_plain_removes_decimal(value: object, expected: object, kind: type) -> N
     assert type(got) is kind
 
 
-def test_pg_type_stops_on_unknown_type() -> None:
-    assert pg_type("BIGINT") == "bigint"
-    with pytest.raises(SystemExit):
-        pg_type("HUGEINT")
-
-
 @pytest.mark.parametrize(
-    ("a", "b", "expected"),
+    ("values", "expected"),
     [
-        (1.0, 1.0, True),
-        (1e12, 1e12 + 0.001, True),
-        (1.0, 1.1, False),
-        (None, None, True),
-        (1.0, None, False),
+        (["a", None], "text"),
+        ([1, 2], "bigint"),
+        ([None, 2030], "double precision"),  # 빈 값이 있으면 pandas가 실수로 읽는다
+        ([1.5, None], "double precision"),
+        ([True, False], "boolean"),
+        ([None, None], "text"),
     ],
 )
-def test_same_total(a: float | None, b: float | None, expected: bool) -> None:
-    assert same_total(a, b) is expected
+def test_column_type(values: list, expected: str) -> None:
+    assert column_type(pd.Series(values)) == expected
+
+
+def test_plain_rows_turns_nan_into_none() -> None:
+    frame = pd.DataFrame({"a": [1.5, None], "b": ["x", None]})
+    assert plain_rows(frame) == [[1.5, "x"], [None, None]]

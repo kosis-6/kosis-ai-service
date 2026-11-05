@@ -30,7 +30,7 @@ from psycopg import sql
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from pipeline.load_stats import conninfo  # noqa: E402
+from pipeline.stats_build import conninfo  # noqa: E402
 
 CSV_DIR = ROOT / "data" / "processed"
 BIG_ROWS = 1_000_000

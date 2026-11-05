@@ -1,4 +1,4 @@
-"""전처리 결과(kosis.duckdb) 정합성 검증
+"""전처리 결과(build 스키마) 정합성 검증
 
 검사마다 '규칙을 어긴 행'을 찾는 SQL을 하나씩 둔다.
   결과가 0행 → 통과(PASS), 1행 이상 → 실패(FAIL) + 예시 출력
@@ -10,15 +10,16 @@
 실행: python pipeline/validate.py   (가상환경 활성화 후, README 참고)
 """
 
-import os
 import sys
 from pathlib import Path
 
-import duckdb
 import pandas as pd
+import psycopg
 
 ROOT = Path(__file__).resolve().parent.parent
-DB_PATH = ROOT / os.environ.get("DUCKDB_PATH", "data/processed/kosis.duckdb")
+sys.path.insert(0, str(ROOT))
+
+from pipeline.stats_build import Build  # noqa: E402
 
 # 비율·소수 값을 비교할 때 허용 오차 (발표값 반올림 차이)
 TOLERANCE = 0.01
@@ -51,7 +52,8 @@ CHECKS = [
         select t.year, t.region_code, t.sex, t.population as total, s.age_sum
         from population t
         join (select year, region_code, sex, sum(population) as age_sum
-              from population where age is not null group by all) s using (year, region_code, sex)
+              from population where age is not null group by 1, 2, 3) s
+          using (year, region_code, sex)
         where t.age is null and t.population <> s.age_sum
     """,
     ),
@@ -62,7 +64,7 @@ CHECKS = [
         from population p
         join (select p.year, r.sido_code, p.sex, sum(p.population) as basic_sum
               from population p join regions r using (region_code)
-              where r.is_basic and p.age is null group by all) s
+              where r.is_basic and p.age is null group by 1, 2, 3) s
           on s.year = p.year and s.sido_code = p.region_code and s.sex = p.sex
         where p.age is null and p.population <> s.basic_sum
     """,
@@ -74,7 +76,7 @@ CHECKS = [
         from population n
         join (select p.year, p.sex, sum(p.population) as sido_sum
               from population p join regions r using (region_code)
-              where r.kind = '시도' and p.age is null group by all) s using (year, sex)
+              where r.kind = '시도' and p.age is null group by 1, 2) s using (year, sex)
         where n.region_code = '00' and n.age is null and n.population <> s.sido_sum
     """,
     ),
@@ -82,7 +84,7 @@ CHECKS = [
         "population: 연도·지역마다 0~100세 이상이 빠짐없이 있음 (102개 = 계 + 101개 연령)",
         """
         select year, region_code, sex, count(*) as n
-        from population group by all having count(*) <> 102
+        from population group by 1, 2, 3 having count(*) <> 102
     """,
     ),
     # ---- facts: 통계표 20개 통합 ----------------------------------------------
@@ -148,7 +150,7 @@ CHECKS = [
         from indicator_sources s
         where s.item_ids is not null and not exists (
             select 1 from facts f
-            where f.tbl_id = s.tbl_id and list_contains(string_split(s.item_ids, ','), f.item_id))
+            where f.tbl_id = s.tbl_id and f.item_id = any(string_to_array(s.item_ids, ',')))
     """,
     ),
 ]
@@ -200,16 +202,16 @@ def check_indicator_names(con):
 
 
 def main():
-    if not DB_PATH.exists():
-        raise SystemExit("먼저 pipeline/run_all.py를 실행하세요.")
-    con = duckdb.connect(str(DB_PATH), read_only=True)
+    con = Build()
+    if con.sql("select to_regclass('build.facts')").fetchall()[0][0] is None:
+        raise SystemExit("먼저 pipeline/preprocess.py를 실행하세요.")
 
     results = []  # (이름, 위반 행 DataFrame 또는 list, 추가 설명)
 
     for name, sql in CHECKS:
         try:
             results.append((name, con.sql(sql).df(), ""))
-        except duckdb.CatalogException as e:  # catalog.py를 안 돌려 테이블이 없는 경우
+        except psycopg.errors.UndefinedTable as e:  # catalog.py를 안 돌려 테이블이 없는 경우
             results.append(
                 (name, [{"error": str(e).splitlines()[0]}], "catalog.py를 먼저 실행하세요.")
             )
@@ -238,7 +240,7 @@ def main():
                 "",
             )
         )
-    except duckdb.CatalogException as e:
+    except psycopg.errors.UndefinedTable as e:
         results.append(
             (
                 "카탈로그: 계산 지표 이름 일치",

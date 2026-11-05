@@ -5,7 +5,6 @@ description = "KOSIS 국가통계포털 데이터를 AI로 검색·분석하는 
 requires-python = "==3.12.15"
 dependencies = [
     "alembic>=1.16",
-    "duckdb==2.0.0",
     "fastapi>=0.151.0",
     "httpx>=0.28.1",
     "pandas==3.0.6",

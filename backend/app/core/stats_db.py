@@ -1,6 +1,6 @@
 """통계 수치 DB(PostgreSQL) 읽기 전용 조회.
 
-pipeline/load_stats.py가 적재한 raw·mart·catalog 스키마를 읽는다. search_path로 스키마를 잡으므로
+pipeline/run_all.py가 적재한 raw·mart·catalog 스키마를 읽는다. search_path로 스키마를 잡으므로
 쿼리에는 스키마 이름을 쓰지 않는다 (`select ... from facts`).
 
 연결은 세션 기본값을 읽기 전용으로 열어, 서버의 답변 경로에서 수치를 고칠 수 없게 한다.
@@ -64,7 +64,7 @@ def rows(sql: str, params: Any = ()) -> list[dict[str, Any]]:
             return [{c: plain(v) for c, v in zip(cols, r, strict=True)} for r in cur.fetchall()]
     except psycopg.errors.UndefinedTable as e:
         raise StatsTableMissing(
-            f"통계 테이블이 없습니다. 먼저 python pipeline/load_stats.py를 실행하세요: {e}"
+            f"통계 테이블이 없습니다. 먼저 python pipeline/run_all.py를 실행하세요: {e}"
         ) from e
     finally:
         conn.close()
