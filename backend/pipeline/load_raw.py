@@ -1,4 +1,4 @@
-"""수집한 표(CSV)를 숫자 키 구조로 PostgreSQL에 넣는다 (초안). 구조: pipeline/sql/raw_schema.sql
+"""수집한 표(CSV)를 숫자 키 구조로 PostgreSQL에 넣는다 (초안). 구조: app/models, migrations
 
 서비스는 아직 raw.facts를 읽는다. 이 구조는 2,364개 표 적재를 준비하며 크기·속도를 재기 위한 것이다.
 
@@ -8,7 +8,8 @@
   큰 표(BIG_ROWS 이상)  전용 파티션을 만들어 통째로 교체. 지우고 넣지 않아 빈 공간이 쌓이지 않는다
   작은 표               기본 파티션의 해시 묶음에서 지우고 넣기
 
-실행: python pipeline/load_raw.py                      data/processed의 모든 표
+실행: alembic upgrade head                          테이블이 없으면 먼저
+      python pipeline/load_raw.py                      data/processed의 모든 표
       python pipeline/load_raw.py DT_1B04006 DT_1MR2060  이 표만
 """
 
@@ -31,7 +32,6 @@ sys.path.insert(0, str(ROOT))
 from pipeline.load_stats import conninfo  # noqa: E402
 
 CSV_DIR = ROOT / "data" / "processed"
-SCHEMA_SQL = Path(__file__).parent / "sql" / "raw_schema.sql"
 BIG_ROWS = 1_000_000
 MAX_DIMS = 5
 VALUE_COLUMNS = (
@@ -274,7 +274,8 @@ def main() -> None:
         else sorted(CSV_DIR.glob("*.csv"))
     )
     with psycopg.connect(conninfo(), autocommit=True) as pg:
-        pg.execute(SCHEMA_SQL.read_text(encoding="utf-8"))
+        if pg.execute("SELECT to_regclass('raw.stat_value')").fetchone()[0] is None:
+            raise SystemExit("raw.stat_value가 없습니다. 먼저 alembic upgrade head를 실행하세요.")
         for path in paths:
             load_table(pg, path)
 

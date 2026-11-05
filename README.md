@@ -37,6 +37,7 @@
 | `catalog` | 수치가 있는 표의 설명과 주의사항 | 읽기만 | `python pipeline/load_stats.py` |
 | `public` | 표 메타데이터(`stat_tables`), 패밀리(`table_families`), 표 임베딩(`table_embeddings`), 대화 상태(`chat_sessions`), 요청 로그(`search_logs`) | 읽고 씀 | `docker compose up` 시 자동 생성, 검색 데이터는 [아래](#1-검색용-데이터-적재)에서 적재 |
 
+- `catalog`의 표·코드와 `raw.stat_value`는 `app/models`에 정의하고 Alembic으로 만듭니다(`alembic upgrade head`). 구조를 바꾸면 `alembic revision --autogenerate -m "설명"`으로 마이그레이션을 만듭니다. 나머지 테이블은 아직 모델로 옮기지 않았습니다.
 - 서버는 PostgreSQL만 읽습니다. DuckDB(`data/processed/kosis.duckdb`)는 전처리와 검증에만 쓰고, 결과를 `load_stats.py`로 옮깁니다.
 - 통계 수치 조회 연결은 읽기 전용으로 열어 답변 경로에서 수치를 고칠 수 없습니다.
 - `pg_trgm` 확장은 설치되어 있지만 검색에는 쓰지 않습니다. 키워드 점수는 서버 메모리에 올린 표 정보로 계산합니다.

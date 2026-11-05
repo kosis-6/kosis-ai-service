@@ -4,7 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from pipeline.load_raw import BIG_ROWS, dim_count, is_big, scan_csv, value_rows
+from app.models import StatValue
+from pipeline.load_raw import BIG_ROWS, VALUE_COLUMNS, dim_count, is_big, scan_csv, value_rows
 
 HEADER = (
     "tbl_id,org_id,period,prd_se,item_id,item_nm,c1_id,c1_nm,c1_level,c1_path,"
@@ -59,6 +60,10 @@ def test_dim_count_stops_above_limit() -> None:
     with pytest.raises(SystemExit):
         dim_count(header)
     assert dim_count(header[:5]) == 5
+
+
+def test_copy_columns_match_model() -> None:
+    assert set(VALUE_COLUMNS) == {c.name for c in StatValue.__table__.columns}
 
 
 def test_is_big_threshold() -> None:
