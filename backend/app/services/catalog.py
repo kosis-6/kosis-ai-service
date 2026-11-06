@@ -10,7 +10,7 @@
 import json
 import re
 
-from app.core.duckdb import rows as _rows
+from app.core.stats_db import rows as _rows
 
 
 def _norm(text):
@@ -27,7 +27,7 @@ def find_indicator(text):
                 """
                 select s.tbl_id, c.tbl_nm, s.item_ids, s.level, s.filters, s.start_year, s.end_year
                 from indicator_sources s join catalog c using (tbl_id)
-                where s.indicator = ? order by s.level desc
+                where s.indicator = ? order by s.level desc nulls last
             """,
                 [ind["name"]],
             )

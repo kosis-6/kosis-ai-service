@@ -2,11 +2,11 @@
 
 같은 질문을 세 가지 조건으로 HCX-007에 보내고, 원본 CSV로 직접 계산한 정답과 비교한다.
 
-  service  우리 서비스: HCX 질문 해석 + 전처리 DB(kosis.duckdb) + 코드 계산·템플릿 답변 (qa.ask)
+  service  우리 서비스: HCX 질문 해석 + 전처리 DB(PostgreSQL) + 코드 계산·템플릿 답변 (qa.ask)
   raw      전처리 없이 원본 CSV 행을 프롬프트에 그대로 넣고 HCX가 직접 계산
   none     데이터 없이 질문만 HCX에 보냄
 
-정답: 원본 CSV(data/raw/kosis_zip/)를 pandas로 직접 계산 (전처리·DuckDB를 거치지 않음)
+정답: 원본 CSV(data/raw/kosis_zip/)를 pandas로 직접 계산 (전처리·DB를 거치지 않음)
 결과: data/eval/compare_YYYYMMDD_HHMMSS.{json,md}
 
 실행: python -m scripts.compare_llm               (전체, HCX 약 45회 호출, 수 분 소요)

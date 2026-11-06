@@ -3,7 +3,7 @@ import time
 
 from fastapi import APIRouter, HTTPException
 
-from app.core.duckdb import DuckDBNotFoundError
+from app.core.stats_db import StatsNotLoadedError
 from app.schemas.ask import AskRequest, AskResponse
 from app.services import qa
 from app.services.hcx_client import HcxError
@@ -18,8 +18,8 @@ async def ask(body: AskRequest) -> AskResponse:
     res, error = None, None
     try:
         res = await qa.ask(body.question)
-    except DuckDBNotFoundError as e:
-        error = f"DuckDBNotFoundError: {e}"
+    except StatsNotLoadedError as e:
+        error = f"StatsNotLoadedError: {e}"
         raise HTTPException(status_code=503, detail=str(e)) from e
     except HcxError as e:
         error = f"HcxError: {e}"

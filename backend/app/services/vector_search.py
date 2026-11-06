@@ -40,7 +40,7 @@ LOCAL_MODEL = "BAAI/bge-m3"
 ADAPTER_FILE = "data/embeddings/hyper_adapter.npz"
 _adapter: dict[str, Any] | None = None
 CLOVA_MODEL = "v2"
-VECTORS_SQL = "SELECT tbl_id, embedding::real[] AS embedding FROM table_embeddings"
+VECTORS_SQL = "SELECT tbl_id, embedding::real[] AS embedding FROM catalog.table_embeddings"
 QUERY_TIMEOUT = 3.0  # 초. CLOVA 질문 임베딩 응답은 보통 0.1~0.9초
 CACHE_SIZE = 1000
 
@@ -50,7 +50,8 @@ _cache: OrderedDict[tuple[str, str], np.ndarray] = OrderedDict()
 
 async def load_matrix(conn: Any, ids: list[str]) -> np.ndarray | None:
     """ids 순서대로 표 벡터 행렬. 테이블이 없거나 빠진 표가 있으면 None"""
-    if (await conn.execute(text("SELECT to_regclass('table_embeddings')"))).scalar() is None:
+    found = await conn.execute(text("SELECT to_regclass('catalog.table_embeddings')"))
+    if found.scalar() is None:
         logger.warning("table_embeddings 없음 → 키워드 검색만 (pipeline.build_embeddings 실행)")
         return None
     rows = {r.tbl_id: r.embedding for r in (await conn.execute(text(VECTORS_SQL))).all()}

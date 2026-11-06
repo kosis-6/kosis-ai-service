@@ -1,8 +1,6 @@
 """팀 공유용 전처리 자료 묶기 → dist/kosis_share_YYYYMMDD.zip
 
 담는 것
-  kosis.duckdb           전처리 + 카탈로그 결과 DB
-                         (이것만 있으면 app/services/indicators.py 등을 바로 쓸 수 있음)
   preview/*.csv          엑셀로 열어볼 미리보기
   catalog_notes.toml     통계표 설명서 (DB에 들어간 설명의 원본)
   DATA_README.md         자료 설명 (이 스크립트가 DB 내용을 보고 생성)
@@ -11,14 +9,16 @@ API 키(.env)나 원본 CSV는 담지 않는다.
 실행: python pipeline/run_all.py --share   (검증까지 통과한 뒤 묶기)
 """
 
+import sys
 import zipfile
 from datetime import date
 from pathlib import Path
 
-import duckdb
-
 ROOT = Path(__file__).resolve().parent.parent
-DB_PATH = ROOT / "data" / "processed" / "kosis.duckdb"
+sys.path.insert(0, str(ROOT))
+
+from app.core.stats_db import rows as db_rows  # noqa: E402
+
 PREVIEW_DIR = ROOT / "data" / "processed" / "preview"
 NOTES_PATH = ROOT / "config" / "catalog_notes.toml"
 DIST_DIR = ROOT / "dist"
@@ -41,12 +41,12 @@ TABLE_DESCRIPTIONS = {
 }
 
 
-def build_readme(con):
-    counts = {t: con.sql(f"select count(*) from {t}").fetchall()[0][0] for t in TABLE_DESCRIPTIONS}
-    lo, hi = con.sql("select min(year), max(year) from population").fetchall()[0]
-    n_tables, n_verified = con.sql(
-        "select count(*), count(*) filter (where verified) from table_notes"
-    ).fetchall()[0]
+def build_readme():
+    counts = {t: db_rows(f"select count(*) as n from {t}")[0]["n"] for t in TABLE_DESCRIPTIONS}
+    span = db_rows("select min(year) as lo, max(year) as hi from population")[0]
+    lo, hi = span["lo"], span["hi"]
+    notes = db_rows("select count(*) as n, count(*) filter (where verified) as v from table_notes")
+    n_tables, n_verified = notes[0]["n"], notes[0]["v"]
     rows = "\n".join(f"| `{t}` | {counts[t]:,} | {d} |" for t, d in TABLE_DESCRIPTIONS.items())
     return f"""# KOSIS 인구통계 전처리 자료
 
@@ -58,28 +58,20 @@ def build_readme(con):
 
 | 파일 | 내용 |
 |---|---|
-| `kosis.duckdb` | 전처리 결과 DB. `data/processed/`에 넣으면 서비스 코드에서 바로 사용 |
 | `preview/*.csv` | 엑셀로 열어볼 미리보기 (큰 표는 일부만) |
 | `catalog_notes.toml` | 통계표 설명서 원본 |
 
-## 여는 방법
+## 데이터를 DB에 넣는 방법
 
-Python (가상환경에서 `pip install -r requirements.txt` 후):
+원본 zip을 `data/kosis_processed.zip`에 두고
+컨테이너 안에서 `python pipeline/run_all.py`를 실행합니다.
 
-```python
-import duckdb
-con = duckdb.connect("data/processed/kosis.duckdb", read_only=True)
-con.sql("select * from population where region_code = '11' and year = 2025 and age is null").show()
-```
-
-지표 계산 함수 (프로젝트 루트에서):
+지표 계산 함수 (`backend/`에서):
 
 ```python
 from app.services import indicators
 indicators.compare("고령인구 비율", ["서울", "부산"], 2025)
 ```
-
-DuckDB 2.0 이상이 필요합니다 (이전 버전은 이 DB 파일을 열 수 없음).
 
 ## 테이블
 
@@ -98,17 +90,12 @@ DuckDB 2.0 이상이 필요합니다 (이전 버전은 이 DB 파일을 열 수 
 
 
 def main():
-    if not DB_PATH.exists():
-        raise SystemExit("먼저 pipeline/run_all.py를 실행하세요.")
     DIST_DIR.mkdir(exist_ok=True)
     out = DIST_DIR / f"kosis_share_{date.today():%Y%m%d}.zip"
 
-    con = duckdb.connect(str(DB_PATH), read_only=True)
-    readme = build_readme(con)
-    con.close()
+    readme = build_readme()
 
     with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_DEFLATED) as z:
-        z.write(DB_PATH, "kosis.duckdb")
         z.write(NOTES_PATH, "catalog_notes.toml")
         z.writestr("DATA_README.md", readme)
         for p in sorted(PREVIEW_DIR.glob("*.csv")):

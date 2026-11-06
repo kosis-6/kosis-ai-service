@@ -11,7 +11,7 @@
            - 경로의 공통 앞부분 '주제별통계 > 인구 > '와 마지막 단계(표명과 같음)는 뺀다
            - 주석 요약(대상 정의·기준일)은 아직 넣지 않는다
 
-입력은 load_catalog.clean_record 결과나 stat_tables 행 (table_name, survey_name, classifications,
+입력은 load_catalog.clean_record 결과나 table_meta 행 (table_name, survey_name, classifications,
 items, path_texts 필드가 있으면 된다).
 """
 

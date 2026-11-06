@@ -1,7 +1,7 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from app.core.duckdb import DuckDBNotFoundError
+from app.core.stats_db import StatsNotLoadedError
 from app.main import app
 from app.services import qa
 from app.services.hcx_client import HcxError
@@ -35,7 +35,7 @@ def test_ask_empty_question() -> None:
 @pytest.mark.parametrize(
     ("error", "status_code"),
     [
-        (DuckDBNotFoundError("DB 없음"), 503),
+        (StatsNotLoadedError("DB 없음"), 503),
         (HcxError("42901", "Too many requests", 429), 429),
         (HcxError("40100", "Unauthorized", 401), 502),
     ],

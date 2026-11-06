@@ -43,12 +43,12 @@ def load(
     if session:
         where.append("session_id = %s")
         params.append(session)
-    sql = f"SELECT {COLUMNS} FROM search_logs"
+    sql = f"SELECT {COLUMNS} FROM app.search_logs"
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY id DESC LIMIT %s"
     with psycopg.connect(url, row_factory=dict_row) as conn:
-        if conn.execute("SELECT to_regclass('search_logs')").fetchone()["to_regclass"] is None:
+        if conn.execute("SELECT to_regclass('app.search_logs')").fetchone()["to_regclass"] is None:
             return []
         rows = conn.execute(sql, [*params, last]).fetchall()
     return rows[::-1]

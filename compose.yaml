@@ -24,7 +24,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    # 개발용: 시작할 때 DB 구조를 최신으로 맞춘다. 운영에서는 배포 단계에서 한 번만 실행한다
+    command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
 
   db:
     image: pgvector/pgvector:0.8.7-pg17

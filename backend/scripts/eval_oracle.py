@@ -1,7 +1,7 @@
 """시트 골든셋 정답 재계산 채점: 서비스 코드 없이 pandas로 정답을 직접 계산해 답변 문장과 대조한다
 
 eval_golden.py는 시트 문항에서 행동(답변/명확화/…)·표·출처만 채점해 숫자가 틀려도 통과한다.
-여기서는 kosis.duckdb의 facts·population을 pandas로 읽어 문항마다 정답을 따로 계산하고
+여기서는 PostgreSQL의 facts·population을 pandas로 읽어 문항마다 정답을 따로 계산하고
 (app.services를 쓰지 않음), 채점 결과 CSV의 answer 문장에 정답 값·이름이 있는지 본다.
 
 지표
@@ -29,19 +29,18 @@ import re
 from pathlib import Path
 from typing import Any
 
-import duckdb
 import pandas as pd
 
-DB = Path("data/processed/kosis.duckdb")
+from app.core.stats_db import rows as db_rows
+
 GOLDEN = Path("eval/golden_sheet.csv")
 OUT_DIR = Path("data/eval")
 
-con = duckdb.connect(str(DB), read_only=True)
-FACTS = con.execute(
-    "select tbl_id, year, item_nm, c1_nm, c2_nm, c3_nm, region_code, value, scenario from facts"
-).df()
-POP = con.execute("select year, region_code, sex, age, is_open_age, age_label, population from population").df()
-REGIONS = con.execute("select region_code, region_name, kind, sido_name, last_year from regions").df()
+FACTS = pd.DataFrame(
+    db_rows("select tbl_id, year, item_nm, c1_nm, c2_nm, c3_nm, region_code, value, scenario from facts")
+)
+POP = pd.DataFrame(db_rows("select year, region_code, sex, age, is_open_age, age_label, population from population"))
+REGIONS = pd.DataFrame(db_rows("select region_code, region_name, kind, sido_name, last_year from regions"))
 SIDO = REGIONS[REGIONS.kind == "시도"].set_index("region_code").region_name.to_dict()
 SIDO.pop("12", None)  # 전남광주통합특별시: 수록 연도 없음
 
@@ -633,7 +632,7 @@ def metrics(rows: list[dict[str, Any]], golds: dict[str, dict[str, str]]) -> lis
 
 def report(src: Path, rows: list[dict[str, Any]], golds: dict[str, dict[str, str]]) -> str:
     mark = {True: "○", False: "✗", None: "-"}
-    lines = [f"# 정답 재계산 채점: {src.name}", "", f"- DB: {DB} (pandas로 직접 계산, 서비스 코드 미사용)",
+    lines = [f"# 정답 재계산 채점: {src.name}", "", "- DB: PostgreSQL (pandas로 직접 계산, 서비스 계산 코드 미사용)",
              f"- 문항: {len(rows)}개", "", "## 지표", "", "| 지표 | 값 | 정의 |", "|---|---|---|"]
     lines += [f"| {n} | {v} | {d} |" for n, v, d in metrics(rows, golds)]
     lines += ["", "## 문항별 요약", "", "| id | 점수 | 행동 | 표 | 조건 | 값 | 고지 | 사유 |", "|---|---|---|---|---|---|---|---|"]

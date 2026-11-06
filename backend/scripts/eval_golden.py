@@ -33,8 +33,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from app.core.duckdb import db_path
-from app.core.duckdb import rows as db_rows
+from app.core.stats_db import rows as db_rows
 from app.services import qa
 from app.services.hcx_client import RATE_LIMIT_CODE
 
@@ -297,8 +296,7 @@ def summarize(rows: list[dict[str, Any]]) -> str:
 
 def db_info() -> str:
     """채점에 쓴 DB. 정확도가 바뀐 이유가 코드인지 데이터인지 구분하려고 남긴다"""
-    path = db_path()
-    built = datetime.fromtimestamp(path.stat().st_mtime)
+    log = db_rows("select max(source_built_at) as built from load_log")[0]
     # zip 원본으로 만든 DB는 수집 시각이 없어 catalog에 collected_at 칸 자체가 없다
     has_column = db_rows(
         "select 1 from information_schema.columns"
@@ -308,7 +306,7 @@ def db_info() -> str:
         db_rows("select max(collected_at) as at from catalog")[0]["at"] if has_column else None
     )
     collected_text = f"{collected:%Y-%m-%d %H:%M}" if collected else "기록 없음 (zip 원본)"
-    return f"{path.name} (생성 {built:%Y-%m-%d %H:%M}, 최근 수집 {collected_text})"
+    return f"PostgreSQL (생성 {log['built']:%Y-%m-%d %H:%M}, 최근 수집 {collected_text})"
 
 
 def main() -> None:
