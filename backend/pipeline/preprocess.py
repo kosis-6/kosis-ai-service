@@ -338,6 +338,7 @@ def build_region_map(con):
       sido  : 시도 이름이 같음 (예전 시도 이름 포함)
     같은 경로에 코드가 둘 이상이면(예: 부천시 원미구 41195 → 41192) 후보를 모두 남기고
     facts에서 연도로 하나를 고른다. 연결하지 못하면 unmatched_reason을 남긴다.
+    src_dim은 지역이 들어 있는 분류 칸 번호(c1 → 1)로, 서비스가 raw.stat_value의 그 칸과 연결한다.
     """
     parts = []
     for (tbl_id,) in con.sql("select distinct tbl_id from raw").fetchall():
@@ -345,7 +346,8 @@ def build_region_map(con):
         if col is None:
             continue
         parts.append(f"""
-            select distinct tbl_id, org_id, {col}_id as src_code, {col}_nm as src_name,
+            select distinct tbl_id, org_id, {col[1:]}::smallint as src_dim,
+                   {col}_id as src_code, {col}_nm as src_name,
                    {col}_level as src_level, {col}_path as src_path
             from raw where tbl_id = '{tbl_id}'
         """)
@@ -397,6 +399,7 @@ def build_region_map(con):
         codes, method = candidates(row)
         base = {
             "tbl_id": row.tbl_id,
+            "src_dim": row.src_dim,
             "src_code": row.src_code,
             "src_name": row.src_name,
             "src_path": row.src_path,

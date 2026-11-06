@@ -29,7 +29,13 @@ def test_publishes_after_validation(collect: None, monkeypatch: pytest.MonkeyPat
     run, calls = fake_run()
     monkeypatch.setattr(run_all, "run", run)
     run_all.main()
-    assert scripts(calls) == ["preprocess.py", "catalog.py", "validate.py", "publish_stats.py"]
+    assert scripts(calls) == [
+        "preprocess.py",
+        "catalog.py",
+        "validate.py",
+        "publish_stats.py",
+        "load_raw.py",
+    ]
     assert calls[0][1]["KOSIS_RAW_DIR"] == str(run_all.SOURCES["collect"])
 
 

@@ -1,4 +1,4 @@
-"""조회 지표: KOSIS가 계산해 둔 값을 facts에서 꺼내 답한다 (지표 사전의 method = "lookup")
+"""조회 지표: KOSIS가 계산해 둔 값을 raw.stat_value에서 꺼내 답한다 (지표 사전의 method = "lookup")
 
 계산 지표(indicators.py)와 같은 모양의 결과를 돌려주므로 답변 문장(qa.summary)을 같이 쓴다.
 
@@ -12,11 +12,16 @@
   예) 합계출산율: 전국·시도 DT_1B81A21, 시군구 DT_1B81A23, 1993년 이전 전국은 INH_1B8000F_01
 값 계산: 조건에 맞는 행을 더한다 (예: 셋째 이상 = 3아 + 4아 + ... + 8아 이상).
   den_item_id가 있으면 (값 ÷ 분모) × 100, age_dim이 있으면 질문의 연령 구간에 맞는 행만 더한다.
+
+수치는 raw.stat_value에서 읽는다. 표·항목·분류가 숫자 키로 저장되어 있어서, 지표 사전의
+KOSIS 코드(item_id, c2_id = "00" ...)를 catalog.stat_code의 키로 바꿔 거른다.
+지역은 mart.region_code_map(표의 지역 칸 src_dim, 원래 코드 → 기준 코드, 유효 연도)으로 맞춘다.
 """
 
 import re
 from functools import lru_cache
 
+from app.core.stats_db import StatsTableMissing
 from app.core.stats_db import rows as _rows
 from app.services import analysis
 from app.services import indicators as ind_mod
@@ -88,14 +93,63 @@ def _table(tbl_id):
     }
 
 
+# ---- 코드 → 숫자 키 ----------------------------------------------------------------
+
+
+@lru_cache
+def _tbl_key(tbl_id):
+    r = _rows("select tbl_key from stat_table where tbl_id = ?", [tbl_id])
+    if not r:
+        raise StatsTableMissing(f"{tbl_id} 수치가 raw.stat_value에 적재되지 않았습니다")
+    return r[0]["tbl_key"]
+
+
+@lru_cache
+def _codes(tbl_id, dim_no):
+    """분류 칸(0 = 항목, 1~5 = c1~c5)의 {KOSIS 코드: (코드 키, 이름)}"""
+    return {
+        r["code"]: (r["code_key"], r["name"])
+        for r in _rows(
+            "select code, code_key, name from stat_code where tbl_key = ? and dim_no = ?",
+            [_tbl_key(tbl_id), dim_no],
+        )
+    }
+
+
+def _dim_no(col):
+    """'item_id' → 0, 'c2_id' · 'c2' → 2"""
+    return 0 if col.startswith("item") else int(col[1])
+
+
+def _in(column, tbl_id, dim_no, codes):
+    """코드 목록 → `column in (키...)` 조건. 표에 없는 코드는 맞는 행이 없다"""
+    known = _codes(tbl_id, dim_no)
+    keys = [known[c][0] for c in codes if c in known]
+    if not keys:
+        return "false", []
+    return f"{column} in ({', '.join('?' for _ in keys)})", keys
+
+
+@lru_cache
+def _projection(tbl_id):
+    r = _rows("select is_projection_table from catalog where tbl_id = ?", [tbl_id])
+    return bool(r and r[0]["is_projection_table"])
+
+
+@lru_cache
+def _region_dim(tbl_id):
+    """지역이 들어 있는 분류 칸 번호. 지역 분류가 없는 표면 None"""
+    r = _rows("select min(src_dim) as d from region_code_map where tbl_id = ?", [tbl_id])
+    return r[0]["d"]
+
+
 @lru_cache
 def _item_years(tbl_id, item_ids):
     """항목의 실제 수록 기간 (표 안에서도 항목마다 다를 수 있음, 예: 합계출산율은 1993년부터)"""
-    marks = ", ".join("?" for _ in item_ids)
+    cond, keys = _in("item_key", tbl_id, 0, item_ids)
     r = _rows(
-        "select min(year) as lo, max(year) as hi from facts"
-        f" where tbl_id = ? and item_id in ({marks})",
-        [tbl_id, *item_ids],
+        f"select min(period) as lo, max(period) as hi from stat_value where tbl_key = ? and {cond}",
+        [_tbl_key(tbl_id), *keys],
     )[0]
     return r["lo"], r["hi"]
 
@@ -124,14 +178,7 @@ def parse_age(text):
 
 @lru_cache
 def _dim_labels(tbl_id, dim):
-    return tuple(
-        (r["id"], r["nm"])
-        for r in _rows(
-            f"select distinct {dim}_id as id, {dim}_nm as nm from facts"
-            " where tbl_id = ? order by 1",
-            [tbl_id],
-        )
-    )
+    return tuple(sorted((code, name) for code, (_, name) in _codes(tbl_id, _dim_no(dim)).items()))
 
 
 def _age_codes(src, band):
@@ -161,44 +208,62 @@ def _age_codes(src, band):
 
 
 def _conds(src, item_key, filters, age_codes):
+    """지표 사전의 코드 조건 → stat_value 칸 조건 (SQL 조각 목록, 값 목록)"""
+    tbl = src["table"]
     items = src.get(item_key) or src.get("item_id")
-    items = items if isinstance(items, list) else [items]
-    conds = [f"item_id in ({', '.join('?' for _ in items)})"]
-    params = list(items)
-    for col, val in filters.items():
-        vals = val if isinstance(val, list) else [val]
-        conds.append(f"{col} in ({', '.join('?' for _ in vals)})")
-        params += vals
+    pairs = [("v.item_key", 0, items)]
+    pairs += [(f"v.c{_dim_no(col)}", _dim_no(col), val) for col, val in filters.items()]
     if src.get("age_dim") and age_codes is not None:
-        conds.append(f"{src['age_dim']}_id in ({', '.join('?' for _ in age_codes)})")
-        params += age_codes
+        pairs.append((f"v.c{_dim_no(src['age_dim'])}", _dim_no(src["age_dim"]), age_codes))
+    conds, params = [], []
+    for column, dim_no, val in pairs:
+        cond, keys = _in(column, tbl, dim_no, val if isinstance(val, list) else [val])
+        conds.append(cond)
+        params += keys
     return conds, params
 
 
 def _sum(src, codes, y0, y1, item_key, filters, age_codes, group_dim=None):
-    """조건에 맞는 행의 합 {(연도, 지역 코드[, 분류 코드]): 값}. 모두 결측이면 None"""
+    """조건에 맞는 행의 합 {(연도, 지역 코드[, 분류 코드]): 값}. 모두 결측이면 None
+
+    지역 코드는 region_code_map으로 맞춘다. 같은 원래 코드가 연도에 따라 다른 기준 코드가 되므로
+    (예: 부천 원미구 2015년 41195, 2024년 41192) 그 연도에 유효한 대응만 쓴다.
+    장래추계는 추계 당시 행정구역 기준이라 유효 연도를 보지 않는다."""
+    tbl = src["table"]
     conds, params = _conds(src, item_key, filters, age_codes)
-    if src.get("national_only"):
-        region_sql, region_params = "region_code is null", []
+    region_dim = _region_dim(tbl)
+    if src.get("national_only") or region_dim is None:
+        region_sql, region_params, rc = "", [], "'00'"
     else:
-        region_sql = f"region_code in ({', '.join('?' for _ in codes)})"
-        region_params = list(codes)
-    part = f", {group_dim}_id as part" if group_dim else ""
+        valid = (
+            "true"
+            if _projection(tbl)
+            else "(m.valid_from is null or v.period >= m.valid_from)"
+            " and (m.valid_to is null or v.period <= m.valid_to)"
+        )
+        region_sql = f"""
+        join stat_code k on k.code_key = v.c{region_dim}
+        join region_code_map m on m.tbl_id = ? and m.src_dim = ? and m.src_code = k.code
+              and m.region_code in ({", ".join("?" for _ in codes)}) and {valid}"""
+        region_params, rc = [tbl, region_dim, *codes], "m.region_code"
+    part = f", v.c{_dim_no(group_dim)} as part" if group_dim else ""
+    # 값은 numeric으로 저장된다. 계산·반올림이 예전(double precision)과 같도록 float로 돌려준다
+    groups = "1, 2, 3" if group_dim else "1, 2"
     rows = _rows(
         f"""
-        select year, coalesce(region_code, '00') as rc{part},
-               sum(value) filter (where not is_missing) as v,
-               count(*) filter (where not is_missing) as n
-        from facts
-        where tbl_id = ? and year between ? and ? and {region_sql} and {" and ".join(conds)}
-        group by {"1, 2, 3" if group_dim else "1, 2"}
-        order by {"1, 2, 3" if group_dim else "1, 2"}
+        select v.period as year, {rc} as rc{part}, sum(v.value)::float8 as v, count(v.value) as n
+        from stat_value v{region_sql}
+        where v.tbl_key = ? and v.period between ? and ? and {" and ".join(conds)}
+        group by {groups}
+        order by {groups}
     """,
-        [src["table"], y0, y1, *region_params, *params],
+        [*region_params, _tbl_key(tbl), y0, y1, *params],
     )
+    if group_dim:
+        code_of = {key: code for code, (key, _) in _codes(tbl, _dim_no(group_dim)).items()}
 
     def key(r):
-        return (r["year"], r["rc"], r["part"]) if group_dim else (r["year"], r["rc"])
+        return (r["year"], r["rc"], code_of[r["part"]]) if group_dim else (r["year"], r["rc"])
 
     return {key(r): (r["v"] if r["n"] else None) for r in rows}
 
@@ -538,9 +603,12 @@ def composition(spec, region, year, sex="계", ages=None, top=None):
         p["share"] = round(shares[p["label"]], 2)
     if not src.get("parts"):
         parts.sort(key=lambda p: -p["count"])
+    item_cond, item_keys = _in("v.item_key", src["table"], 0, [_items(src)[0]])
     unit = _rows(
-        "select any_value(unit) as u from facts where tbl_id = ? and item_id = ?",
-        [src["table"], _items(src)[0]],
+        "select mode() within group (order by u.name) as u"
+        " from stat_value v join stat_unit u using (unit_key)"
+        f" where v.tbl_key = ? and {item_cond}",
+        [_tbl_key(src["table"]), *item_keys],
     )[0]["u"]
     subject = label + re.sub(r"\s*구성$", "", spec["name"])
     return _base(
@@ -571,11 +639,11 @@ def _labels():
     """수집한 통계표의 표 이름·항목·분류 이름 (지역 분류 c1은 뺀다) → [(표 ID, 표 이름, 이름)]"""
     rows = _rows(
         """
-        select distinct f.tbl_id, c.tbl_nm, f.label
-        from (select tbl_id, item_nm as label from facts
-              union select tbl_id, c2_nm from facts where c2_nm is not null
-              union select tbl_id, c3_nm from facts where c3_nm is not null) f
+        select distinct t.tbl_id, c.tbl_nm, k.name as label
+        from stat_code k
+        join stat_table t using (tbl_key)
         join catalog c using (tbl_id)
+        where k.dim_no in (0, 2, 3)
         union select tbl_id, tbl_nm, tbl_nm from catalog
     """
     )
