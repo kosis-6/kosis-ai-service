@@ -1,6 +1,6 @@
 # 통계표 설명서 (카탈로그 보강)
 #
-# 사람이 읽고 고치는 파일. src/catalog.py가 읽어서 kosis.duckdb에 넣는다.
+# 사람이 읽고 고치는 파일. pipeline/catalog.py가 읽어서 PostgreSQL에 넣는다.
 #
 #   [groups.*]      비교 그룹: 같은 그룹끼리만 값을 직접 비교할 수 있다 (답변 불가 사례 3)
 #   [tables.*]      표마다 원래 조사 이름, 기준 시점, 대상, 비교 그룹

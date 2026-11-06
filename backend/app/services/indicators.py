@@ -28,8 +28,8 @@ import tomllib
 from functools import lru_cache
 from pathlib import Path
 
-from app.core.duckdb import CatalogException
-from app.core.duckdb import rows as _rows
+from app.core.stats_db import StatsTableMissing
+from app.core.stats_db import rows as _rows
 from app.services import analysis
 
 POP_TABLE = "DT_1B04006"
@@ -241,7 +241,7 @@ def _catalog_rows(sql, params=()):
     """catalog.py가 만든 테이블 조회. catalog.py를 아직 안 돌렸으면 빈 목록"""
     try:
         return _rows(sql, params)
-    except CatalogException:
+    except StatsTableMissing:
         return []
 
 
@@ -441,6 +441,7 @@ def resolve_region(name, year=None, sigungu=False):
             """
             select region_code, region_name, kind, sido_code, sido_name, valid_from, valid_to
             from regions where kind = '시군구' and region_name in (?, ?)
+            order by region_code
         """,
             [short + "시", short + "군"],
         )
@@ -669,6 +670,7 @@ def rank(indicator, year, level="시도", sido=None, top=None, ascending=False, 
         select distinct r.region_code, r.region_name, r.kind, r.sido_name
         from regions r join population p on p.region_code = r.region_code and p.year = ?
         where {where}
+        order by r.region_code
     """,
         [year, *params],
     )

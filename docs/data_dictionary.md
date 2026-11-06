@@ -1,10 +1,10 @@
 # 데이터 사전
 
-KOSIS 원본 통계표 20개를 전처리해 만든 DB(`data/processed/kosis.duckdb`)의 구성과 사용법.
+KOSIS 원본 통계표 20개를 전처리해 만든 DB의 구성과 사용법. 전처리는 PostgreSQL의 `build` 스키마에서 실행하고, 검증을 통과하면 `raw`, `mart`, `catalog` 스키마로 옮긴다.
 
 - 원본: `data/raw/kosis_zip/processed/*.csv` (+ 표마다 `.meta.json`). `--source collect`로 실행하면 수집기 출력 `data/processed/*.csv` (zip 안의 CSV와 같은 파일)
-- 결과: `data/processed/kosis.duckdb` (DuckDB 파일 하나, 테이블 15개)
-- 만드는 코드: `pipeline/run_all.py` → `preprocess.py` → `catalog.py` → `validate.py`
+- 결과: PostgreSQL 테이블 14개 (`raw.facts`, `mart.population` 등)
+- 만드는 코드: `pipeline/run_all.py` → `preprocess.py` → `catalog.py` → `validate.py` → `publish_stats.py`
 - `data/`는 git에 올리지 않는다. 받는 방법은 팀 공유 zip(`dist/`) 또는 원본 zip을 `data/kosis_processed.zip`에 두고 `python pipeline/run_all.py`
 
 ---
@@ -80,7 +80,7 @@ config/catalog_notes.toml ──(catalog.py)──▶ 설명 테이블: indicato
 
 ---
 
-## 3. 테이블 15개
+## 3. 테이블 14개
 
 | 종류 | 테이블 | 행 수 | 내용 |
 |---|---|---|---|
@@ -247,10 +247,10 @@ config/catalog_notes.toml ──(catalog.py)──▶ 설명 테이블: indicato
 
 ## 7. 조회 예시
 
-컨테이너 터미널에서 실행한다.
+컨테이너 밖(레포 최상위)에서 실행한다.
 
 ```bash
-python -c "import duckdb; print(duckdb.connect('data/processed/kosis.duckdb', read_only=True).sql(\"<SQL>\"))"
+docker compose exec db psql -U kosis -d kosis -c "SET search_path = raw, mart, catalog; <SQL>"
 ```
 
 ```sql

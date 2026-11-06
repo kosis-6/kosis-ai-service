@@ -1,4 +1,4 @@
-"""원본 CSV ↔ 서비스(DuckDB) 값 대조: 같은 분자·분모·기간으로 계산하는지 전수 확인 (멘토링 질문 2)
+"""원본 CSV ↔ 서비스(PostgreSQL) 값 대조: 같은 분자·분모·기간으로 계산하는지 전수 확인 (멘토링 질문 2)
 
 전처리·서비스 코드를 쓰지 않고 수집 원본 CSV(data/processed/<표ID>.csv)를 pandas로 직접 읽어
 지표를 다시 계산한 뒤, 서비스가 실제로 쓰는 함수의 값과 비교한다.
@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from app.core.duckdb import rows as db_rows
+from app.core.stats_db import rows as db_rows
 from app.services import indicators, lookup
 
 RAW_DIR = Path("data/processed")

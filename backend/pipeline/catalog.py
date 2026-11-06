@@ -1,4 +1,4 @@
-"""카탈로그 보강: config/catalog_notes.toml → kosis.duckdb
+"""카탈로그 보강: config/catalog_notes.toml → build 스키마
 
 하위 태스크 2(답변 가능 판단)·3(표 선택)에서 쓰는 설명 정보를 DB에 넣는다.
 
@@ -13,23 +13,24 @@
 
 조회 함수(find_indicator, table_info, comparable)는 서비스 코드인 app/services/catalog.py에 있다.
 
-실행 순서: preprocess.py → catalog.py → validate.py
-  (preprocess.py가 DB를 새로 만들기 때문에 catalog.py를 다시 실행해야 함)
+실행 순서: preprocess.py → catalog.py → validate.py → publish_stats.py
+  (preprocess.py가 build 스키마를 새로 만들기 때문에 catalog.py를 다시 실행해야 함)
 실행: python pipeline/catalog.py   (가상환경 활성화 후, README 참고. 보통은 run_all.py로 실행)
 """
 
 import json
-import os
 import re
 import sys
 import tomllib
 from pathlib import Path
 
-import duckdb
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parent.parent
-DB_PATH = ROOT / os.environ.get("DUCKDB_PATH", "data/processed/kosis.duckdb")
+sys.path.insert(0, str(ROOT))
+
+from pipeline.stats_build import Build  # noqa: E402
+
 NOTES_PATH = ROOT / "config" / "catalog_notes.toml"
 
 
@@ -121,10 +122,7 @@ def build(con, notes):
         ("indicator_sources_raw", sources),
     ]:
         con.sql(f"drop table if exists {name}")
-        df = pd.DataFrame(rows)
-        con.register("tmp_df", df)
-        con.sql(f"create table {name} as select * from tmp_df")
-        con.unregister("tmp_df")
+        con.register(name, pd.DataFrame(rows), temp=False)
 
     # 지표 출처에 수록 기간 붙이기
     con.sql("drop table if exists indicator_sources")
@@ -204,10 +202,10 @@ def check(con, notes):
 
 
 def main():
-    if not DB_PATH.exists():
+    con = Build()
+    if con.sql("select to_regclass('build.facts')").fetchall()[0][0] is None:
         raise SystemExit("먼저 pipeline/preprocess.py를 실행하세요.")
     notes = load_notes()
-    con = duckdb.connect(str(DB_PATH))
     issues = check(con, notes)
     build(con, notes)
     n_tables, n_verified = con.sql(
@@ -227,21 +225,6 @@ def main():
     print("\n".join(f"  - {i}" for i in issues) if issues else "  문제 없음")
     print("\n[확인이 필요한 항목 (check)]")
     print(checks.to_string(index=False))
-
-    # 조회 함수 예시: 서비스 코드(app/)를 불러오려면 프로젝트 루트가 경로에 있어야 함
-    sys.path.insert(0, str(ROOT))
-    from app.services.catalog import comparable, find_indicator
-
-    print("\n[예시] find_indicator('출산율')")
-    print(json.dumps(find_indicator("출산율"), ensure_ascii=False, indent=2))
-    for a, b in [
-        ("DT_1B04006", "DT_1MR2060"),
-        ("DT_1B04006", "DT_1BPB002"),
-        ("DT_1B04006", "DT_1B8000H"),
-        ("DT_1B8000H", "DT_1BB0006"),
-    ]:
-        print(f"\n[예시] comparable({a}, {b})")
-        print(json.dumps(comparable(a, b), ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

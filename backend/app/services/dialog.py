@@ -32,7 +32,7 @@ FEMALE = re.compile(r"여자|여성|여(?![가-힣])")
 TOTAL = re.compile(r"전체|합계|(?<![가-힣])계(?![가-힣])")
 
 DDL = """
-CREATE TABLE IF NOT EXISTS chat_sessions (
+CREATE TABLE IF NOT EXISTS app.chat_sessions (
     session_id     text PRIMARY KEY,
     status         text,
     family_id      text,
@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
 )
 """
 UPSERT = """
-INSERT INTO chat_sessions (session_id, status, family_id, slots, asked, clarify_turns)
+INSERT INTO app.chat_sessions (session_id, status, family_id, slots, asked, clarify_turns)
 VALUES (:session_id, :status, :family_id, CAST(:slots AS jsonb), CAST(:asked AS jsonb), :turns)
 ON CONFLICT (session_id) DO UPDATE SET
     status = EXCLUDED.status, family_id = EXCLUDED.family_id, slots = EXCLUDED.slots,
@@ -179,7 +179,8 @@ async def load_state(session_id: str) -> dict[str, Any] | None:
         row = (
             (
                 await conn.execute(
-                    text("SELECT * FROM chat_sessions WHERE session_id = :id"), {"id": session_id}
+                    text("SELECT * FROM app.chat_sessions WHERE session_id = :id"),
+                    {"id": session_id},
                 )
             )
             .mappings()
@@ -210,6 +211,7 @@ async def save_state(session_id: str, result: dict[str, Any], turns: int) -> Non
 async def _ensure(conn: Any) -> None:
     global _ready
     if not _ready:
+        await conn.execute(text("CREATE SCHEMA IF NOT EXISTS app"))
         await conn.execute(text(DDL))
         _ready = True
 
