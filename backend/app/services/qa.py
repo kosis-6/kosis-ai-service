@@ -556,11 +556,14 @@ def _read_question(question, parsed, fix):
         and lookup.kind_of(sp) == "count"
         and "전국" in question
         and PCT_ASK.search(question)
-        and parsed.get("type") == "value"
+        and parsed.get("type") in ("value", "compare")
     ):
         regions = [r for r in parsed.get("regions") or [] if r != "전국"]
         regions = regions or [r for r in indicators.find_regions(question) if r != "전국"]
-        if regions:
+        # "전국 외국인 주민 자녀 중 서울 아이들 비중"을 전국·서울 비교로 읽어도 비중으로 바꾼다
+        if regions and (parsed["type"] == "value" or len(regions) == 1):
+            if parsed["type"] == "compare":
+                fix("type", "value", "전국 중 한 지역의 비중을 물음")
             fix("regions", regions[:1], "전국 대비 비중")
             parsed["share_of"] = "전국"
 
@@ -940,13 +943,26 @@ def _ro(word):
     return word + "로"
 
 
-def _val(v, unit):
-    """문장 속 값. 설명형 단위(예: "유소년인구 100명당 명")는 뜻풀이 문장으로 따로 쓰므로 뺀다"""
+def _val(v, unit, full=False):
+    """문장 속 값. 설명형 단위(예: "인구 1000명당 건")는 목록에서 반복되지 않게 숫자만 쓴다.
+    full이면 단위를 풀어 쓴다: "인구 1,000명당 5.4건", "가임여성 1명당 0.799명" """
     if v is None:
         return "자료 없음"
     if isinstance(v, float) and v.is_integer():
         v = int(v)
-    return f"{v:,}" if " " in unit else f"{v:,}{unit}"
+    if " " not in unit:
+        return f"{v:,}{unit}"
+    if full and "당 " in unit:
+        base, tail = unit.rsplit("당 ", 1)
+        base = re.sub(r"\d{4,}", lambda m: f"{int(m[0]):,}", base)
+        return f"{base}당 {v:,}{tail}"
+    return f"{v:,}"
+
+
+def _tail(unit):
+    """설명형 단위의 끝 단위 ("인구 1000명당 건" → "건").
+    앞에서 단위를 풀어 쓴 뒤 이어 쓰는 값에 붙인다"""
+    return unit.rsplit("당 ", 1)[1] if " " in unit and "당 " in unit else unit
 
 
 def _meaning(name, v):
@@ -973,10 +989,10 @@ def _value_text(r):
     name, unit = _subject(r), r.get("unit", "")
     if r["value"] is None:
         return f"{r['year']}년 {r['region']}의 {_josa(name, '은는')} 자료가 없습니다."
-    text = (
-        f"{r['year']}년 {r['region']}의 {_josa(name, '은는')} {_val(r['value'], unit)}입니다."
-        + _meaning(r["indicator"], r["value"])
-    )
+    meaning = _meaning(r["indicator"], r["value"])
+    # 뜻풀이 문장이 있으면 단위는 거기서 설명한다
+    value = _val(r["value"], unit, full=not meaning)
+    text = f"{r['year']}년 {r['region']}의 {_josa(name, '은는')} {value}입니다." + meaning
     negative = NEGATIVE_MEANING.get(r["indicator"])
     if negative and r["value"] < 0:
         text += " " + negative.format(value=f"{-r['value']:,}")
@@ -996,8 +1012,8 @@ def _trend_text(r):
     name, unit, c = _subject(r), r.get("unit", ""), r["change"]
     first, last = r["series"][0]["value"], r["series"][-1]["value"]
     text = (
-        f"{r['region']}의 {_josa(name, '은는')} {c['from_year']}년 {_val(first, unit)}, "
-        f"{c['to_year']}년 {_val(last, unit)}입니다. "
+        f"{r['region']}의 {_josa(name, '은는')} {c['from_year']}년 {_val(first, unit, full=True)}, "
+        f"{c['to_year']}년 {_val(last, _tail(unit))}입니다. "
     )
     if c["diff"] == 0:
         return text + f"{c['from_year']}년과 같습니다."
@@ -1215,7 +1231,7 @@ def _split_text(r):
             hi, lo = (a, b) if vals[0] > vals[1] else (b, a)
             gap = round(abs(vals[0] - vals[1]), 3)
             unit = lookup.diff_unit({"unit": hi["unit"], "kind": hi.get("kind")})
-            text += f" {_josa(hi['indicator'], '이가')} {_val(gap, unit)} 더 높습니다."
+            text += f" {_josa(hi['indicator'], '이가')} {_val(gap, unit, full=True)} 더 높습니다."
     return text
 
 
