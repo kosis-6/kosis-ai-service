@@ -15,7 +15,7 @@ from app.models import Base
 if context.config.config_file_name:
     fileConfig(context.config.config_file_name)
 
-MANAGED_SCHEMAS = {"catalog", "raw"}
+MANAGED_SCHEMAS = {"app", "catalog", "raw"}
 
 
 def include_name(name, type_, parent_names):

@@ -2,8 +2,18 @@
 alembic revision --autogenerate -m "설명" → 생성된 파일 확인 → alembic upgrade head
 """
 
+from app.models.app import User
 from app.models.base import Base
 from app.models.catalog import StatCode, StatDimension, StatTable, StatUnit
 from app.models.raw import StatLoad, StatValue
 
-__all__ = ["Base", "StatCode", "StatDimension", "StatLoad", "StatTable", "StatUnit", "StatValue"]
+__all__ = [
+    "Base",
+    "StatCode",
+    "StatDimension",
+    "StatLoad",
+    "StatTable",
+    "StatUnit",
+    "StatValue",
+    "User",
+]
