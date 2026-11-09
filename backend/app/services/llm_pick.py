@@ -48,10 +48,21 @@ OFF_DOMAIN = re.compile(
 )
 
 
+CAND_VALUES = 12  # 후보 설명에 보여 줄 분류 값 개수 (넘으면 '외 N개')
+
+
+def class_values_text(c: dict[str, Any]) -> str:
+    """분류 값 요약. 하위 단계 값('청각' 등)도 보이도록 전체 값(values)을 우선 쓴다"""
+    values = c.get("values") or c.get("sample_values") or []
+    text = ", ".join(values[:CAND_VALUES])
+    if len(values) > CAND_VALUES:
+        text += f" 외 {len(values) - CAND_VALUES}개"
+    return text
+
+
 def cand_text(t: dict[str, Any], i: int) -> str:
     cls = "; ".join(
-        f"{c['name']}({', '.join((c.get('sample_values') or [])[:4])})"
-        for c in (t["classifications"] or [])[:4]
+        f"{c['name']}({class_values_text(c)})" for c in (t["classifications"] or [])[:4]
     )
     items = ", ".join(x["name"] for x in (t["items"] or [])[:8])
     return (

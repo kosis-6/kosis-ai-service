@@ -105,3 +105,10 @@ def test_clean_record_and_check() -> None:
     errors = lc.check([rec, rec])
     assert any("중복" in e for e in errors)
     assert any("표 수" in e for e in errors)
+
+
+def test_sex_info_reads_child_values() -> None:
+    # '총인구' 아래에만 남자·여자가 있는 분류(DT_1IN6601 등)도 성별 분류로 본다
+    c = {"name": "성연령배우관계학력별", "sample_values": ["총인구", "배우관계"],
+         "values": ["총인구", "남자", "여자", "배우관계"]}
+    assert lc.sex_info("표", [c], []) == ("class", "both", True)
