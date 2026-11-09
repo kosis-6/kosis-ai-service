@@ -22,10 +22,12 @@ import time
 from datetime import date, datetime
 from pathlib import Path
 
+from sqlalchemy.exc import SQLAlchemyError
 from starlette.concurrency import run_in_threadpool
 
+from app.core.stats_db import StatsTableMissing
 from app.prompts.qa import PARSE_SYSTEM
-from app.services import agegroup, analysis, indicators, lookup, timeref
+from app.services import agegroup, analysis, indicators, load_queue, lookup, timeref
 from app.services.hcx_client import HcxClient
 
 MODEL = "HCX-007"
@@ -556,17 +558,21 @@ def _read_question(question, parsed, fix):
         and lookup.kind_of(sp) == "count"
         and "전국" in question
         and PCT_ASK.search(question)
-        and parsed.get("type") == "value"
+        and parsed.get("type") in ("value", "compare")
     ):
         regions = [r for r in parsed.get("regions") or [] if r != "전국"]
         regions = regions or [r for r in indicators.find_regions(question) if r != "전국"]
-        if regions:
+        # "전국 외국인 주민 자녀 중 서울 아이들 비중"을 전국·서울 비교로 읽어도 비중으로 바꾼다
+        if regions and (parsed["type"] == "value" or len(regions) == 1):
+            if parsed["type"] == "compare":
+                fix("type", "value", "전국 중 한 지역의 비중을 물음")
             fix("regions", regions[:1], "전국 대비 비중")
             parsed["share_of"] = "전국"
 
 
 def compute(q):
     """2~4단계: 질문 분석 결과 → indicators.py(계산 지표)·lookup.py(조회 지표) 결과"""
+    lookup.refresh_if_reloaded()  # 적재 프로세스가 표를 새로 넣었으면 표 정보 캐시를 비운다
     kind = q.get("type")
     ind = q.get("indicator") or ""
     regions = q.get("regions") or []
@@ -919,6 +925,9 @@ REFUSAL_GUIDE = {
     "out_of_range": "수록 기간 안의 연도로 다시 질문해 주세요.",
     "region_not_in_year": "그 지역이 있던 연도로 다시 질문해 주세요.",
     "missing_data": "다른 연도나 지역으로 질문해 주세요.",
+    "data_loading": (
+        "몇 분 뒤 다시 질문해 주세요. 그 전에는 아래 KOSIS 통계표에서 직접 볼 수 있습니다."
+    ),
     "error": "",
 }
 
@@ -940,13 +949,26 @@ def _ro(word):
     return word + "로"
 
 
-def _val(v, unit):
-    """문장 속 값. 설명형 단위(예: "유소년인구 100명당 명")는 뜻풀이 문장으로 따로 쓰므로 뺀다"""
+def _val(v, unit, full=False):
+    """문장 속 값. 설명형 단위(예: "인구 1000명당 건")는 목록에서 반복되지 않게 숫자만 쓴다.
+    full이면 단위를 풀어 쓴다: "인구 1,000명당 5.4건", "가임여성 1명당 0.799명" """
     if v is None:
         return "자료 없음"
     if isinstance(v, float) and v.is_integer():
         v = int(v)
-    return f"{v:,}" if " " in unit else f"{v:,}{unit}"
+    if " " not in unit:
+        return f"{v:,}{unit}"
+    if full and "당 " in unit:
+        base, tail = unit.rsplit("당 ", 1)
+        base = re.sub(r"\d{4,}", lambda m: f"{int(m[0]):,}", base)
+        return f"{base}당 {v:,}{tail}"
+    return f"{v:,}"
+
+
+def _tail(unit):
+    """설명형 단위의 끝 단위 ("인구 1000명당 건" → "건").
+    앞에서 단위를 풀어 쓴 뒤 이어 쓰는 값에 붙인다"""
+    return unit.rsplit("당 ", 1)[1] if " " in unit and "당 " in unit else unit
 
 
 def _meaning(name, v):
@@ -973,10 +995,10 @@ def _value_text(r):
     name, unit = _subject(r), r.get("unit", "")
     if r["value"] is None:
         return f"{r['year']}년 {r['region']}의 {_josa(name, '은는')} 자료가 없습니다."
-    text = (
-        f"{r['year']}년 {r['region']}의 {_josa(name, '은는')} {_val(r['value'], unit)}입니다."
-        + _meaning(r["indicator"], r["value"])
-    )
+    meaning = _meaning(r["indicator"], r["value"])
+    # 뜻풀이 문장이 있으면 단위는 거기서 설명한다
+    value = _val(r["value"], unit, full=not meaning)
+    text = f"{r['year']}년 {r['region']}의 {_josa(name, '은는')} {value}입니다." + meaning
     negative = NEGATIVE_MEANING.get(r["indicator"])
     if negative and r["value"] < 0:
         text += " " + negative.format(value=f"{-r['value']:,}")
@@ -996,8 +1018,8 @@ def _trend_text(r):
     name, unit, c = _subject(r), r.get("unit", ""), r["change"]
     first, last = r["series"][0]["value"], r["series"][-1]["value"]
     text = (
-        f"{r['region']}의 {_josa(name, '은는')} {c['from_year']}년 {_val(first, unit)}, "
-        f"{c['to_year']}년 {_val(last, unit)}입니다. "
+        f"{r['region']}의 {_josa(name, '은는')} {c['from_year']}년 {_val(first, unit, full=True)}, "
+        f"{c['to_year']}년 {_val(last, _tail(unit))}입니다. "
     )
     if c["diff"] == 0:
         return text + f"{c['from_year']}년과 같습니다."
@@ -1215,7 +1237,7 @@ def _split_text(r):
             hi, lo = (a, b) if vals[0] > vals[1] else (b, a)
             gap = round(abs(vals[0] - vals[1]), 3)
             unit = lookup.diff_unit({"unit": hi["unit"], "kind": hi.get("kind")})
-            text += f" {_josa(hi['indicator'], '이가')} {_val(gap, unit)} 더 높습니다."
+            text += f" {_josa(hi['indicator'], '이가')} {_val(gap, unit, full=True)} 더 높습니다."
     return text
 
 
@@ -1371,6 +1393,32 @@ def sources(result):
     ]
 
 
+async def _loading_result(error):
+    """수치가 아직 적재되지 않은 표: 적재 대기열에 넣고 data_loading으로 답한다
+
+    표를 알 수 없거나(DB 자체가 비어 있음) 대기열에 넣지 못하면 원래 오류를 그대로 올린다
+    (/ask가 503으로 답함). 넣지도 못했는데 "준비 중"이라고 답하지 않기 위해서다.
+    """
+    if not error.tbl_id:
+        raise error
+    try:
+        info = await load_queue.table_info(error.tbl_id)
+        job = await load_queue.enqueue(error.tbl_id, "question")
+    except (load_queue.UnknownTable, SQLAlchemyError):
+        raise error from None
+    return {
+        "status": "data_loading",
+        "reason": (
+            f"이 질문에 필요한 통계표({info['name']})는 처음 요청되어 데이터를 준비하고 있습니다."
+        ),
+        "tbl_id": error.tbl_id,
+        "source": info["source"],
+        "basis": "KOSIS 국가통계포털",
+        "url": info["url"],
+        "job": {"id": job["id"], "status": job["status"]},
+    }
+
+
 async def ask(question):
     """질문 하나를 끝까지 처리. status, answer, parsed, result, sources, trace를 반환한다.
     status: ok 또는 답변 불가 사유 (indicators.py 결과의 status)
@@ -1381,7 +1429,10 @@ async def ask(question):
     trace["understand_ms"] = round((time.perf_counter() - start) * 1000)
     start = time.perf_counter()
     # 통계 DB 조회는 동기 함수라 이벤트 루프를 막지 않도록 스레드에서 실행
-    result = await run_in_threadpool(compute, parsed)
+    try:
+        result = await run_in_threadpool(compute, parsed)
+    except StatsTableMissing as e:
+        result = await _loading_result(e)
     trace["compute_ms"] = round((time.perf_counter() - start) * 1000)
     return {
         "status": result.get("status"),
@@ -1399,7 +1450,13 @@ async def ask(question):
 # 모든 요청은 따로 남겨, 틀린 답이 질문 해석(HCX·보정) 문제인지 조회·계산 문제인지 추적한다
 # (scripts/request_log.py)
 
-DATA_GAP = {"unknown_indicator", "out_of_range", "region_not_in_year", "missing_data"}
+DATA_GAP = {
+    "unknown_indicator",
+    "out_of_range",
+    "region_not_in_year",
+    "missing_data",
+    "data_loading",
+}
 REQUESTS_DIR = Path(__file__).resolve().parents[2] / "data" / "requests"
 MISSING_LOG = REQUESTS_DIR / "missing.jsonl"
 REQUEST_LOG = REQUESTS_DIR / "requests.jsonl"

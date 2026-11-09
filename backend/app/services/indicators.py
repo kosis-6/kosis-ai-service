@@ -112,6 +112,11 @@ def _data_years():
     return r["lo"], r["hi"]
 
 
+def spec_tables():
+    """지표 사전이 쓰는 통계표 ID (서버 시작 시 적재 안 된 표를 적재 대기열에 넣을 때 씀)"""
+    return sorted({src["table"] for s in specs().values() for src in s.get("sources") or []})
+
+
 @lru_cache
 def specs():
     """지표 사전 (config/catalog_notes.toml의 [[indicators]]) → {지표 이름: 정의}

@@ -21,6 +21,11 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql+psycopg://kosis@localhost:5432/kosis"
 
+    # 로그인 토큰(JWT) 서명 키. 32자 이상, 비어 있으면 로그인 API가 503을 돌려준다
+    # 만들기: python -c "import secrets; print(secrets.token_urlsafe(48))"
+    jwt_secret_key: str = ""
+    access_token_minutes: int = 60
+
     # 통계표 검색의 질문 임베딩 (app/services/vector_search.py)
     # clova: CLOVA Studio v2 / local: bge-m3 직접 실행 / off: 키워드 검색만
     embedding_backend: Literal["clova", "local", "off"] = "clova"

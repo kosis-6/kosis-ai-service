@@ -364,3 +364,26 @@ def test_region_list_scope_from_question() -> None:
         TODAY,
     )
     assert (p["type"], p["sido"], p["regions"]) == ("rank", "서울", [])
+
+
+def test_share_of_nation_read_as_compare() -> None:
+    # "전국 ~ 중 서울 비중"을 HCX가 전국·서울 비교로 읽은 경우 (골든셋 s44, 10회차)
+    p = qa.correct(
+        "2025년 전국 출생아 중 서울 아이들 비중은 얼마예요?",
+        parsed(type="compare", indicator="출생아 수", regions=["전국", "서울"], year=2025),
+        TODAY,
+    )
+    assert p["type"] == "value"
+    assert p["regions"] == ["서울"]
+    assert p["share_of"] == "전국"
+
+
+def test_compare_two_regions_with_nation_stays_compare() -> None:
+    # 전국 말고 지역이 둘이면 비중이 아니라 비교로 둔다
+    p = qa.correct(
+        "2025년 출생아 수 서울이랑 부산 비율을 전국과 비교해 주세요",
+        parsed(type="compare", indicator="출생아 수", regions=["전국", "서울", "부산"], year=2025),
+        TODAY,
+    )
+    assert p["type"] == "compare"
+    assert "share_of" not in p

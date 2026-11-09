@@ -27,6 +27,31 @@ services:
     # 개발용: 시작할 때 DB 구조를 최신으로 맞춘다. 운영에서는 배포 단계에서 한 번만 실행한다
     command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
 
+  # 통계표 적재 프로세스 (app.load_jobs 대기열 처리). 기본으로는 뜨지 않는다:
+  #   docker compose --profile worker up -d worker
+  # 받아 둔 표는 backend/data/tables/에 {표ID}.csv(.gz) + .meta.json으로 둔다
+  worker:
+    profiles: ["worker"]
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-kosis}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-kosis}
+    volumes:
+      - .:/workspace
+      - /workspace/backend/.venv
+    depends_on:
+      db:
+        condition: service_healthy
+      # DB 구조(마이그레이션)는 api가 시작할 때 맞춘다
+      api:
+        condition: service_started
+    restart: unless-stopped
+    command: python -m pipeline.load_worker
+
   db:
     image: pgvector/pgvector:0.8.7-pg17
     environment:
