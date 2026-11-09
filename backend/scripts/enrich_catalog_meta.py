@@ -285,6 +285,11 @@ def build(records: list[dict[str, Any]]) -> tuple[int, int, int]:
     return ok, missing, commented
 
 
+def missing_cache(records: list[dict[str, Any]]) -> list[str]:
+    """분류·항목 캐시가 없는 표. --offline에서 하나라도 있으면 결과 파일을 만들지 않는다"""
+    return [r["tbl_id"] for r in records if not cache_path(r["org_id"], r["tbl_id"]).exists()]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="통계표 카탈로그에 분류·항목·주석 메타데이터 추가")
     parser.add_argument("--limit", type=int, help="앞에서부터 N개 표만 처리 (시험용)")
@@ -299,6 +304,14 @@ def main() -> None:
         records = [json.loads(line) for line in stream if line.strip()]
     if args.limit:
         records = records[: args.limit]
+    if args.offline and (missing := missing_cache(records)):
+        # 캐시 없이 만들면 그 표들이 분류·항목 없이 기존 결과 파일을 덮어쓴다
+        # (meta_cache는 git에 없어서 받아 둔 사람 PC에만 있다)
+        raise SystemExit(
+            f"캐시 없는 표 {len(missing)}개 ({', '.join(missing[:5])} …):"
+            " 결과 파일을 바꾸지 않았습니다.\n"
+            "meta_cache가 있는 PC에서 실행하거나, 공유받은 결과 파일을 data/catalog/에 넣으세요."
+        )
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     CMMT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
