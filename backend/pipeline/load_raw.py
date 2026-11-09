@@ -1,6 +1,6 @@
 """수집한 표(CSV)를 숫자 키 구조로 PostgreSQL에 넣는다 (초안). 구조: app/models, migrations
 
-서비스는 아직 raw.facts를 읽는다. 이 구조는 2,364개 표 적재를 준비하며 크기·속도를 재기 위한 것이다.
+조회 지표(app/services/lookup.py)가 이 수치를 읽는다. run_all.py가 검증·교체 뒤 마지막에 실행한다.
 
 표 하나씩 처리한다: 임시 테이블에 COPY → 중복 검사 → CSV와 행 수·값 합계 대조 → 인덱스 → 교체.
 DB에 고유 인덱스가 없으므로(용량) 이 중복 검사가 중복을 막는 유일한 장치다.
@@ -10,13 +10,14 @@ DB에 고유 인덱스가 없으므로(용량) 이 중복 검사가 중복을 �
   작은 표               기본 파티션의 해시 묶음에서 지우고 넣기
 
 실행: alembic upgrade head                          테이블이 없으면 먼저
-      python pipeline/load_raw.py                      data/processed의 모든 표
+      python pipeline/load_raw.py                      data/processed(KOSIS_RAW_DIR)의 모든 표
       python pipeline/load_raw.py DT_1B04006 DT_1MR2060  이 표만
 """
 
 import argparse
 import csv
 import json
+import os
 import sys
 import time
 from dataclasses import dataclass, field
@@ -32,7 +33,8 @@ sys.path.insert(0, str(ROOT))
 
 from pipeline.stats_build import conninfo  # noqa: E402
 
-CSV_DIR = ROOT / "data" / "processed"
+# run_all.py가 원본 폴더를 넘길 때 환경변수를 쓴다 (절대 경로면 그대로)
+CSV_DIR = ROOT / os.environ.get("KOSIS_RAW_DIR", "data/processed")
 BIG_ROWS = 1_000_000
 MAX_DIMS = 5
 VALUE_COLUMNS = (

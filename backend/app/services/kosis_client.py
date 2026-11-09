@@ -1,8 +1,16 @@
+import re
 from typing import Any
 
 import httpx
 
 from app.core.config import get_settings
+
+_API_KEY = re.compile(r"(apiKey=)[^&\s\"']+")
+
+
+def mask_key(text: str) -> str:
+    """요청 주소의 apiKey 값을 가린다. 오류 메시지·로그에 키가 남지 않게 한다"""
+    return _API_KEY.sub(r"\1***", text)
 
 
 class KosisClient:
@@ -20,5 +28,11 @@ class KosisClient:
         query = {"apiKey": self.api_key, "format": "json", "jsonVD": "Y", **(params or {})}
         async with httpx.AsyncClient(base_url=self.base_url, timeout=self.timeout) as client:
             response = await client.get(path, params=query)
-            response.raise_for_status()
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as e:
+                # httpx 오류 메시지에는 요청 주소 전체(apiKey 포함)가 들어간다
+                raise httpx.HTTPStatusError(
+                    mask_key(str(e)), request=e.request, response=e.response
+                ) from None
             return response.json()

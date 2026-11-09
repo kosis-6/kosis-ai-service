@@ -95,6 +95,25 @@ def test_summary_aging_index_meaning() -> None:
     )
 
 
+def test_summary_value_spells_out_rate_unit() -> None:
+    r = {**VALUE, "indicator": "조혼인율", "unit": "인구 1000명당 건", "sex": "계", "value": 3.8}
+    assert qa.summary(r) == "2025년 부산광역시의 조혼인율은 인구 1,000명당 3.8건입니다."
+
+
+def test_summary_trend_spells_out_rate_unit() -> None:
+    r = {
+        **TREND,
+        "indicator": "조혼인율",
+        "unit": "인구 1000명당 건",
+        "series": [{"year": 2015, "value": 5.4}, {"year": 2020, "value": 3.8}],
+        "change": {"from_year": 2015, "to_year": 2020, "diff": -1.6, "diff_unit": "건"},
+    }
+    assert qa.summary(r).startswith(
+        "대구광역시의 조혼인율은 2015년 인구 1,000명당 5.4건, 2020년 3.8건입니다. "
+        "2015년 대비 1.6건 감소했습니다."
+    )
+
+
 def test_summary_compare_two() -> None:
     r = {
         "status": "ok",
