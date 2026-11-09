@@ -250,6 +250,7 @@ def clean_record(raw: dict[str, Any]) -> dict[str, Any]:
             **c,
             "name": fix_class_name(raw["tbl_id"], clean_text(c["name"])),
             "sample_values": [clean_text(v) for v in c.get("sample_values") or []],
+            "values": [clean_text(v) for v in c.get("values") or []],
         }
         for c in raw["classifications"]
     ]

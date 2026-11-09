@@ -146,6 +146,8 @@ def summarize_axis(obj_id: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
         "level_names": region_level_names(rows, depths) if is_region else None,
         "value_count": len(rows),
         "sample_values": top[:SAMPLE_SIZE],
+        # 조건 확인용 전체 값 (하위 단계 포함, 개수 제한 없음). 검색 순위는 sample_values만 쓴다
+        "values": list(dict.fromkeys(str(r["ITM_NM"]).strip() for r in rows)),
     }
 
 

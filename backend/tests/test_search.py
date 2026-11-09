@@ -1009,3 +1009,30 @@ def test_sex_condition_accepts_sex_split_items() -> None:
     assert se.check(tables[0], _slots("q", "인구", sex="남"))["sex"] is True
     assert se.check(tables[0], _slots("q", "인구", sex="여"))["sex"] is True
     assert se.check(tables[1], _slots("q", "인구", sex="남"))["sex"] is False
+
+
+def test_check_uses_all_values_but_ranking_does_not() -> None:
+    # 장애유형 축이 '합계'만 sample_values에 남은 표: 조건 확인은 values(전체 값)로 통과해야 한다
+    classes = [{"name": "장애유형별", "sample_values": ["합계"], "values": ["합계", "지체", "청각"]}]
+    t = se.prepare([_t("A", "장애유형별 장애인 인구", 2015, 2024, "FA", classifications=classes)])[0]
+    assert se.check(t, _slots("q", "장애인", items=["청각"])) == {"item:청각": True}
+    # 값이 적은 분류(30개 이하)는 하위 값도 검색 순위(meta_n)에 쓴다
+    assert "청각" in t["meta_n"]
+    # 값이 많은 분류(지역·성씨)는 대표 값만 쓴다
+    many = [{"name": "성씨별", "sample_values": ["김"], "values": ["김"] + [f"성{i}" for i in range(40)]}]
+    t2 = se.prepare([_t("B", "성씨별 인구", 2015, 2024, "FB", classifications=many)])[0]
+    assert "성39" not in t2["meta_n"] and "성39" in t2["values_n"]
+
+
+def test_compound_word_splits_into_class_value() -> None:
+    # '청각장애인'은 어느 표에도 그대로 없지만 '청각'(장애유형 값) + '장애인'으로 나누면 맞는 표가 높다
+    classes = [{"name": "장애유형별", "sample_values": ["합계"], "values": ["합계", "지체", "청각"]}]
+    tables = se.prepare(
+        [
+            _t("A", "연령 및 성별 장애인 인구", 2015, 2024, "FA", survey_name="조사"),
+            _t("B", "장애유형별 장애인 인구", 2015, 2024, "FB", survey_name="조사",
+               classifications=classes),
+        ]
+    )
+    a, b = se.keyword_scores(tables, se.query_tokens(_slots("청각장애인 수", "청각장애인 수")))
+    assert b > a

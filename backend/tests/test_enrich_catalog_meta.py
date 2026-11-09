@@ -91,3 +91,14 @@ def test_clean_comments_drops_blank_and_separator_lines() -> None:
         "주1) 18세이상 내국인 대상\nㅇ 용어 정비 : 노후기간 → 건축 경과연수\n[총인구] 외국인 포함"
     )
     assert ecm.clean_comments([]) == {"comments": [], "comment_text": ""}
+
+
+def test_values_keep_child_values() -> None:
+    # 장애유형처럼 '합계' 아래에 값이 달린 분류: sample_values는 상위 값만, values는 전체를 남긴다
+    rows = [_row("B", "장애유형별", "0", "합계", OBJ_ID_SN="2")] + [
+        _row("B", "장애유형별", str(i), name, OBJ_ID_SN="2", UP_ITM_ID="0")
+        for i, name in enumerate(["지체", "시각", "청각"], start=1)
+    ]
+    axis = ecm.summarize_axis("B", rows)
+    assert axis["sample_values"] == ["합계"]
+    assert axis["values"] == ["합계", "지체", "시각", "청각"]
