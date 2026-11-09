@@ -105,7 +105,7 @@ def _table(tbl_id):
 def _tbl_key(tbl_id):
     r = _rows("select tbl_key from stat_table where tbl_id = ?", [tbl_id])
     if not r:
-        raise StatsTableMissing(f"{tbl_id} 수치가 raw.stat_value에 적재되지 않았습니다")
+        raise StatsTableMissing(f"{tbl_id} 수치가 raw.stat_value에 적재되지 않았습니다", tbl_id)
     return r[0]["tbl_key"]
 
 

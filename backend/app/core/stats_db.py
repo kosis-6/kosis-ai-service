@@ -24,7 +24,12 @@ class StatsNotLoadedError(RuntimeError):
 
 
 class StatsTableMissing(StatsNotLoadedError):
-    """조회한 테이블이 없다"""
+    """조회한 테이블이 없다. tbl_id가 있으면 그 통계표의 수치가 아직 적재되지 않은 것
+    (qa.ask가 적재 대기열에 넣고 data_loading으로 답한다)"""
+
+    def __init__(self, message: str, tbl_id: str | None = None) -> None:
+        super().__init__(message)
+        self.tbl_id = tbl_id
 
 
 @lru_cache

@@ -113,6 +113,11 @@ def _data_years():
 
 
 @lru_cache
+def spec_tables():
+    """지표 사전이 쓰는 통계표 ID (서버 시작 시 적재 안 된 표를 적재 대기열에 넣을 때 씀)"""
+    return sorted({src["table"] for s in specs().values() for src in s.get("sources") or []})
+
+
 def specs():
     """지표 사전 (config/catalog_notes.toml의 [[indicators]]) → {지표 이름: 정의}
     서버가 DB를 다시 만들지 않아도 지표·별칭 추가가 바로 반영되도록 파일에서 직접 읽는다"""

@@ -22,10 +22,12 @@ import time
 from datetime import date, datetime
 from pathlib import Path
 
+from sqlalchemy.exc import SQLAlchemyError
 from starlette.concurrency import run_in_threadpool
 
+from app.core.stats_db import StatsTableMissing
 from app.prompts.qa import PARSE_SYSTEM
-from app.services import agegroup, analysis, indicators, lookup, timeref
+from app.services import agegroup, analysis, indicators, load_queue, lookup, timeref
 from app.services.hcx_client import HcxClient
 
 MODEL = "HCX-007"
@@ -922,6 +924,9 @@ REFUSAL_GUIDE = {
     "out_of_range": "수록 기간 안의 연도로 다시 질문해 주세요.",
     "region_not_in_year": "그 지역이 있던 연도로 다시 질문해 주세요.",
     "missing_data": "다른 연도나 지역으로 질문해 주세요.",
+    "data_loading": (
+        "몇 분 뒤 다시 질문해 주세요. 그 전에는 아래 KOSIS 통계표에서 직접 볼 수 있습니다."
+    ),
     "error": "",
 }
 
@@ -1387,6 +1392,32 @@ def sources(result):
     ]
 
 
+async def _loading_result(error):
+    """수치가 아직 적재되지 않은 표: 적재 대기열에 넣고 data_loading으로 답한다
+
+    표를 알 수 없거나(DB 자체가 비어 있음) 대기열에 넣지 못하면 원래 오류를 그대로 올린다
+    (/ask가 503으로 답함). 넣지도 못했는데 "준비 중"이라고 답하지 않기 위해서다.
+    """
+    if not error.tbl_id:
+        raise error
+    try:
+        info = await load_queue.table_info(error.tbl_id)
+        job = await load_queue.enqueue(error.tbl_id, "question")
+    except (load_queue.UnknownTable, SQLAlchemyError):
+        raise error from None
+    return {
+        "status": "data_loading",
+        "reason": (
+            f"이 질문에 필요한 통계표({info['name']})는 처음 요청되어 데이터를 준비하고 있습니다."
+        ),
+        "tbl_id": error.tbl_id,
+        "source": info["source"],
+        "basis": "KOSIS 국가통계포털",
+        "url": info["url"],
+        "job": {"id": job["id"], "status": job["status"]},
+    }
+
+
 async def ask(question):
     """질문 하나를 끝까지 처리. status, answer, parsed, result, sources, trace를 반환한다.
     status: ok 또는 답변 불가 사유 (indicators.py 결과의 status)
@@ -1397,7 +1428,10 @@ async def ask(question):
     trace["understand_ms"] = round((time.perf_counter() - start) * 1000)
     start = time.perf_counter()
     # 통계 DB 조회는 동기 함수라 이벤트 루프를 막지 않도록 스레드에서 실행
-    result = await run_in_threadpool(compute, parsed)
+    try:
+        result = await run_in_threadpool(compute, parsed)
+    except StatsTableMissing as e:
+        result = await _loading_result(e)
     trace["compute_ms"] = round((time.perf_counter() - start) * 1000)
     return {
         "status": result.get("status"),
@@ -1415,7 +1449,13 @@ async def ask(question):
 # 모든 요청은 따로 남겨, 틀린 답이 질문 해석(HCX·보정) 문제인지 조회·계산 문제인지 추적한다
 # (scripts/request_log.py)
 
-DATA_GAP = {"unknown_indicator", "out_of_range", "region_not_in_year", "missing_data"}
+DATA_GAP = {
+    "unknown_indicator",
+    "out_of_range",
+    "region_not_in_year",
+    "missing_data",
+    "data_loading",
+}
 REQUESTS_DIR = Path(__file__).resolve().parents[2] / "data" / "requests"
 MISSING_LOG = REQUESTS_DIR / "missing.jsonl"
 REQUEST_LOG = REQUESTS_DIR / "requests.jsonl"
