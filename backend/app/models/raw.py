@@ -7,7 +7,7 @@
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import CHAR, DateTime, ForeignKey, Index, SmallInteger, func
+from sqlalchemy import DateTime, ForeignKey, Index, SmallInteger, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
@@ -41,7 +41,8 @@ class StatValue(Base):
     c4: Mapped[int | None]
     c5: Mapped[int | None]
     unit_key: Mapped[int | None] = mapped_column(SmallInteger)
-    prd_se: Mapped[str] = mapped_column(CHAR(1))
+    # 수록주기 코드. 대부분 한 글자(A 년, M 월, Q 분기, F 다년 …)지만 부정기는 'IR'
+    prd_se: Mapped[str] = mapped_column(String(2))
     value: Mapped[Decimal | None]
     flag: Mapped[str | None]
 
