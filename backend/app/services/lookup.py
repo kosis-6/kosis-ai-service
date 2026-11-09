@@ -16,6 +16,7 @@
 수치는 raw.stat_value에서 읽는다. 표·항목·분류가 숫자 키로 저장되어 있어서, 지표 사전의
 KOSIS 코드(item_id, c2_id = "00" ...)를 catalog.stat_code의 키로 바꿔 거른다.
 지역은 mart.region_code_map(표의 지역 칸 src_dim, 원래 코드 → 기준 코드, 유효 연도)으로 맞춘다.
+한 표에 연·월·분기 자료가 함께 적재될 수 있어 연 단위 시점(YEARLY)만 읽는다.
 """
 
 import re
@@ -29,6 +30,10 @@ from app.services import indicators as ind_mod
 LEVELS = {"전국": 0, "시도": 1, "시군구": 2}
 REGION_LEVEL = {"전국": "전국", "시도": "시도", "시군구": "시군구", "일반구": "시군구"}
 DIFF_UNIT = {"count": None, "ratio": "%p", "index": "포인트"}
+# 연 단위 시점의 KOSIS 수록주기 코드 (A 연간, F 다년 예: 5년 주기 인구총조사). 시점이 연도 4자리다.
+# 월(M)·분기(Q)·반년(H)은 시점이 202401처럼 달라 연도 범위·합계에 섞이면 안 된다.
+# 부정기(IR)는 시점 형식을 확인하지 않아 아직 뺀다
+YEARLY = "prd_se in ('A', 'F')"
 SEX_WORDS = {"남": "남자", "여": "여자"}
 # 분류 이름 → 연령 구간 (끝이 None이면 그 나이 이상)
 AGE_NAMES = [
@@ -148,7 +153,8 @@ def _item_years(tbl_id, item_ids):
     """항목의 실제 수록 기간 (표 안에서도 항목마다 다를 수 있음, 예: 합계출산율은 1993년부터)"""
     cond, keys = _in("item_key", tbl_id, 0, item_ids)
     r = _rows(
-        f"select min(period) as lo, max(period) as hi from stat_value where tbl_key = ? and {cond}",
+        "select min(period) as lo, max(period) as hi from stat_value"
+        f" where tbl_key = ? and {YEARLY} and {cond}",
         [_tbl_key(tbl_id), *keys],
     )[0]
     return r["lo"], r["hi"]
@@ -253,7 +259,8 @@ def _sum(src, codes, y0, y1, item_key, filters, age_codes, group_dim=None):
         f"""
         select v.period as year, {rc} as rc{part}, sum(v.value)::float8 as v, count(v.value) as n
         from stat_value v{region_sql}
-        where v.tbl_key = ? and v.period between ? and ? and {" and ".join(conds)}
+        where v.tbl_key = ? and v.{YEARLY} and v.period between ? and ?
+              and {" and ".join(conds)}
         group by {groups}
         order by {groups}
     """,
@@ -607,7 +614,7 @@ def composition(spec, region, year, sex="계", ages=None, top=None):
     unit = _rows(
         "select mode() within group (order by u.name) as u"
         " from stat_value v join stat_unit u using (unit_key)"
-        f" where v.tbl_key = ? and {item_cond}",
+        f" where v.tbl_key = ? and v.{YEARLY} and {item_cond}",
         [_tbl_key(src["table"]), *item_keys],
     )[0]["u"]
     subject = label + re.sub(r"\s*구성$", "", spec["name"])
