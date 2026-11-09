@@ -572,6 +572,7 @@ def _read_question(question, parsed, fix):
 
 def compute(q):
     """2~4단계: 질문 분석 결과 → indicators.py(계산 지표)·lookup.py(조회 지표) 결과"""
+    lookup.refresh_if_reloaded()  # 적재 프로세스가 표를 새로 넣었으면 표 정보 캐시를 비운다
     kind = q.get("type")
     ind = q.get("indicator") or ""
     regions = q.get("regions") or []

@@ -17,12 +17,17 @@
 KOSIS 코드(item_id, c2_id = "00" ...)를 catalog.stat_code의 키로 바꿔 거른다.
 지역은 mart.region_code_map(표의 지역 칸 src_dim, 원래 코드 → 기준 코드, 유효 연도)으로 맞춘다.
 한 표에 연·월·분기 자료가 함께 적재될 수 있어 연 단위 시점(YEARLY)만 읽는다.
+
+표 정보(키·코드·수록 기간·지역 칸)는 프로세스 메모리에 캐시한다. 적재 프로세스가 표를 새로 넣거나
+교체하면 refresh_if_reloaded()가 이를 알아채고 캐시를 비운다 (qa.compute가 질문마다 부름).
 """
 
 import re
+import threading
+import time
 from functools import lru_cache
 
-from app.core.stats_db import StatsTableMissing
+from app.core.stats_db import StatsNotLoadedError, StatsTableMissing
 from app.core.stats_db import rows as _rows
 from app.services import analysis
 from app.services import indicators as ind_mod
@@ -655,6 +660,65 @@ def _labels():
     """
     )
     return tuple((r["tbl_id"], r["tbl_nm"], ind_mod._norm(r["label"])) for r in rows)
+
+
+# ---- 캐시 갱신 -----------------------------------------------------------------------------
+
+# 표가 다시 적재되면 바뀔 수 있는 캐시 (지표 사전 파일을 읽는 indicators.specs는 해당 없음)
+TABLE_CACHES = (
+    _table,
+    _tbl_key,
+    _codes,
+    _projection,
+    _region_dim,
+    _item_years,
+    _dim_labels,
+    _labels,
+)
+CHECK_EVERY = 30.0  # 초. 질문마다 DB를 보지 않도록 이 간격으로만 확인한다
+_reload = {"checked_at": None, "version": None}
+_reload_lock = threading.Lock()
+
+
+def _load_version():
+    """적재 상태가 바뀌면 달라지는 값: 적재된 표 수, 마지막 적재 시각, 마지막으로 끝난 적재 작업
+
+    load_table은 수치를 바꾼 뒤 stat_load를 쓰고, 적재 프로세스는 지역 매핑 같은 적재 후 단계까지
+    끝나야 작업을 done으로 바꾼다. 둘 다 보아, 적재 후 단계 전에 읽은 캐시도 다시 읽게 한다.
+    """
+    r = _rows(
+        """
+        select (select count(*) from stat_load) as n,
+               (select max(loaded_at) from stat_load) as loaded_at,
+               (select max(finished_at) from app.load_jobs where status = 'done') as job_done_at
+    """
+    )[0]
+    return r["n"], r["loaded_at"], r["job_done_at"]
+
+
+def refresh_if_reloaded(now=None):
+    """표가 새로 적재·교체됐으면 표 정보 캐시를 비운다. 비웠으면 True
+
+    처음 부를 때는 기준값만 기록한다 (캐시가 아직 비어 있음). DB에 연결할 수 없으면 건너뛰고,
+    실제 조회에서 원래 오류가 나게 둔다.
+    """
+    now = time.monotonic() if now is None else now
+    with _reload_lock:
+        last = _reload["checked_at"]
+        if last is not None and now - last < CHECK_EVERY:
+            return False
+        _reload["checked_at"] = now
+    try:
+        version = _load_version()
+    except StatsNotLoadedError:
+        return False
+    with _reload_lock:
+        changed = _reload["version"] is not None and version != _reload["version"]
+        _reload["version"] = version
+    if changed:
+        for cached in TABLE_CACHES:
+            cached.cache_clear()
+    return changed
 
 
 def data_gap(term):
