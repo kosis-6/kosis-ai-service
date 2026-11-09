@@ -5,7 +5,7 @@
 
   - 적재 여부는 raw.stat_load로만 판단한다. stat_value에 일부 칸만 있는 상태를 만들지 않는다
   - 같은 표의 대기·진행 중 작업은 하나뿐이다. 다시 요청되면 requested_count만 올린다
-  - 대기열에 넣기만 하고 꺼내 처리하지 않는다 (적재 프로세스 쪽 약속은 LoadJob 모델 설명 참고)
+  - 대기열에 넣기만 하고 꺼내 처리하지 않는다 (꺼내 적재하는 쪽: pipeline/load_worker.py)
 """
 
 from typing import Any, Literal
@@ -14,8 +14,8 @@ from sqlalchemy import text
 
 from app.core.db import SessionLocal
 
-Reason = Literal["question", "indicator", "update"]
-PRIORITY: dict[str, int] = {"question": 0, "indicator": 1, "update": 2}
+Reason = Literal["question", "indicator", "update", "manual"]
+PRIORITY: dict[str, int] = {"question": 0, "indicator": 1, "manual": 1, "update": 2}
 KOSIS_URL = "https://kosis.kr/statHtml/statHtml.do?orgId={org_id}&tblId={tbl_id}"
 
 
@@ -110,7 +110,8 @@ async def overview(limit: int = 20) -> dict[str, Any]:
         )
         queued = await s.execute(
             text(
-                "select id, tbl_id, reason, priority, requested_count, requested_at"
+                "select id, tbl_id, reason, status, priority, requested_count, requested_at,"
+                " run_after, attempts, error"
                 " from app.load_jobs where status in ('queued', 'running')"
                 " order by status desc, priority, requested_at limit :n"
             ),

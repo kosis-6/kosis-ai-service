@@ -50,7 +50,8 @@ class LoadJob(Base):
             "status in ('queued', 'running', 'done', 'failed')", name="load_jobs_status_check"
         ),
         CheckConstraint(
-            "reason in ('question', 'indicator', 'update')", name="load_jobs_reason_check"
+            "reason in ('question', 'indicator', 'update', 'manual')",
+            name="load_jobs_reason_check",
         ),
         Index(
             "load_jobs_active_tbl",
@@ -67,7 +68,7 @@ class LoadJob(Base):
     org_id: Mapped[str]
     reason: Mapped[str]
     status: Mapped[str] = mapped_column(server_default=text("'queued'"))
-    # 작을수록 먼저: 질문 0, 지표 사전 1, 갱신 2
+    # 작을수록 먼저: 질문 0, 지표 사전·수동 등록 1, 갱신 2
     priority: Mapped[int] = mapped_column(SmallInteger)
     requested_count: Mapped[int] = mapped_column(server_default=text("1"))
     requested_at: Mapped[datetime] = mapped_column(
@@ -78,5 +79,7 @@ class LoadJob(Base):
     )
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # 일시 오류로 다시 시도할 때 이 시각 전에는 꺼내지 않는다
+    run_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     attempts: Mapped[int] = mapped_column(server_default=text("0"))
     error: Mapped[str | None]
