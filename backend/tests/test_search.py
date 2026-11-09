@@ -1026,7 +1026,9 @@ def test_check_uses_all_values_but_ranking_does_not() -> None:
 
 def test_compound_word_splits_into_class_value() -> None:
     # '청각장애인'은 어느 표에도 그대로 없지만 '청각'(장애유형 값) + '장애인'으로 나누면 맞는 표가 높다
-    classes = [{"name": "장애유형별", "sample_values": ["합계"], "values": ["합계", "지체", "청각"]}]
+    classes = [
+        {"name": "장애유형별", "sample_values": ["합계"], "values": ["합계", "지체", "청각"]}
+    ]
     tables = se.prepare(
         [
             _t("A", "연령 및 성별 장애인 인구", 2015, 2024, "FA", survey_name="조사"),
@@ -1036,3 +1038,21 @@ def test_compound_word_splits_into_class_value() -> None:
     )
     a, b = se.keyword_scores(tables, se.query_tokens(_slots("청각장애인 수", "청각장애인 수")))
     assert b > a
+
+
+def test_many_values_match_whole_value_only() -> None:
+    # 값이 많은 분류(시군구)는 값 하나와 같을 때만 조건을 채운다.
+    # 이어 붙인 글자에서 찾으면 '고령'이 '고령군', '영양'이 '영양군'에 걸려 조건 경고가 빠졌다
+    regions = ["전국", "서울특별시", "중구"] + [f"지역{i}" for i in range(40)]
+    regions += ["경상북도", "고령군", "영양군"]
+    cls = [{"name": "행정구역별", "sample_values": ["전국", "서울특별시"], "values": regions}]
+    t = se.prepare([_t("A", "시군구별 인구", 2015, 2024, "FA", classifications=cls)])[0]
+    assert se.check(t, _slots("q", "인구", items=["고령"])) == {"item:고령": False}
+    assert se.check(t, _slots("q", "인구", items=["영양"])) == {"item:영양": False}
+    # 값 하나와 같으면 큰 분류에서도 찾는다
+    assert se.check(t, _slots("q", "인구", items=["고령군"])) == {"item:고령군": True}
+    # 앞 값의 끝과 뒤 값의 처음이 이어져도 걸리지 않는다 ('미' + '혼')
+    names = ["김", "미", "혼"] + [f"성{i}" for i in range(40)]
+    sn = [{"name": "성씨별", "sample_values": ["김"], "values": names}]
+    t2 = se.prepare([_t("B", "성씨별 인구", 2015, 2024, "FB", classifications=sn)])[0]
+    assert se.check(t2, _slots("q", "인구", items=["미혼"])) == {"item:미혼": False}
