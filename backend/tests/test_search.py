@@ -1056,3 +1056,19 @@ def test_many_values_match_whole_value_only() -> None:
     sn = [{"name": "성씨별", "sample_values": ["김"], "values": names}]
     t2 = se.prepare([_t("B", "성씨별 인구", 2015, 2024, "FB", classifications=sn)])[0]
     assert se.check(t2, _slots("q", "인구", items=["미혼"])) == {"item:미혼": False}
+
+
+def test_many_values_match_parts_split_by_symbols() -> None:
+    # 값이 많은 분류도 괄호·마침표로 나뉜 조각과 같으면 조건을 채운다.
+    # 값 전체와 같을 때만 보면 '자살'이 '고의적 자해(자살)(X60-X84)'를 놓쳐 맞는 표가 감점됐다
+    causes = [f"원인{i}" for i in range(40)] + ["고의적 자해(자살)(X60-X84)"]
+    cls = [{"name": "사망원인별", "sample_values": ["계"], "values": causes}]
+    t = se.prepare([_t("A", "사망원인별 사망자수", 2015, 2024, "FA", classifications=cls)])[0]
+    assert se.check(t, _slots("q", "사망자", items=["자살"])) == {"item:자살": True}
+    assert se.check(t, _slots("q", "사망자", items=["고의적 자해"])) == {"item:고의적 자해": True}
+    industries = [f"업종{i}" for i in range(40)] + ["C.제조업(10~34)"]
+    cls2 = [{"name": "산업별", "sample_values": ["전체"], "values": industries}]
+    t2 = se.prepare([_t("B", "산업별 종사자", 2015, 2024, "FB", classifications=cls2)])[0]
+    assert se.check(t2, _slots("q", "종사자", items=["제조업"])) == {"item:제조업": True}
+    # 띄어쓰기에서는 나누지 않는다: '고령군'에 '고령'이 걸리지 않는 것은 그대로
+    assert se.value_keys("경상북도 고령군") == {"경상북도고령군"}

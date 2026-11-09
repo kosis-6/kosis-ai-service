@@ -215,6 +215,18 @@ def rank_values(c: dict[str, Any]) -> list[str]:
     return c.get("sample_values") or []
 
 
+VALUE_PARTS = re.compile(r"[^0-9A-Za-z가-힣\s]+")
+
+
+def value_keys(value: str) -> set[str]:
+    """값 하나로 조건을 채울 수 있는 말: 값 전체 + 기호(괄호·마침표 등)로 나눈 조각.
+    '고의적 자해(자살)(X60-X84)' → 고의적자해자살X60X84, 고의적자해, 자살, X60, X84
+    띄어쓰기에서는 나누지 않는다 ('고령군'은 '고령'이 되지 않는다)"""
+    keys = {norm(value)} | {norm(part) for part in VALUE_PARTS.split(value)}
+    keys.discard("")
+    return keys
+
+
 def has_value(t: dict[str, Any], key: str) -> bool:
     """항목·표본값(meta_n)에 있거나, 값이 많은 분류의 값 하나와 같은가"""
     return key in t["meta_n"] or key in t.get("values_n", ())
@@ -238,8 +250,9 @@ def prepare(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             )
         )
         # 조건 확인 전용: 값이 많은 분류(지역·성씨)의 전체 값. 값이 적은 분류는 이미 meta_n에 있다.
-        # 이어 붙인 글자에서 찾으면 '고령'이 '고령군'에 걸리므로 값 하나와 같을 때만 본다
-        t["values_n"] = {norm(v) for c in classes for v in c.get("values") or [] if norm(v)}
+        # 이어 붙인 글자에서 찾으면 '고령'이 '고령군'에 걸리므로 값(또는 괄호 안 등 조각)과
+        # 같을 때만 본다 (value_keys)
+        t["values_n"] = {k for c in classes for v in c.get("values") or [] for k in value_keys(v)}
         t["age_cov"] = age_coverage(t["name_n"], t["class_n"], t["meta_n"])
         t["words"] = word_set(
             [t["table_name"]]
