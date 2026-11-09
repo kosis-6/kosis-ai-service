@@ -100,3 +100,12 @@ def test_fail_requeues_transient_and_fails_others() -> None:
     assert "run_after = now() + %s" in pg.sql[-1][0]
     assert w.fail(pg, _job(attempts=1), ValueError("합계가 다릅니다")) == "failed"
     assert pg.sql[-1][1][0] == "ValueError: 합계가 다릅니다"
+
+
+def test_error_message_hides_kosis_key() -> None:
+    pg = FakePg()
+    url = "https://kosis.kr/openapi/x.do?apiKey=SECRET123%3D&format=json"
+    w.fail(pg, _job(attempts=3), httpx.ConnectError(f"실패 {url}"))
+    saved = pg.sql[-1][1][0]
+    assert "SECRET123" not in saved
+    assert "apiKey=***&format=json" in saved

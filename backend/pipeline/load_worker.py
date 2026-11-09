@@ -114,7 +114,10 @@ def retry_delay(error: BaseException, attempts: int) -> timedelta | None:
 
 def fail(pg: psycopg.Connection, job: Job, error: BaseException) -> str:
     """일시 오류면 queued로 되돌려 나중에 다시, 아니면 failed. 반환: 바뀐 상태"""
-    message = f"{type(error).__name__}: {error}".replace("\n", " ")[:1000]
+    from app.services.kosis_client import mask_key
+
+    # 오류 내용은 관리자 API로 보이므로 KOSIS 키가 들어 있으면 가린다
+    message = mask_key(f"{type(error).__name__}: {error}".replace("\n", " "))[:1000]
     delay = retry_delay(error, job.attempts)
     if delay is None:
         pg.execute(
