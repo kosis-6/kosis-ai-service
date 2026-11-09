@@ -176,7 +176,8 @@ def sex_info(
     """(sex_source, sex_coverage, has_total). 분류 → 항목 → 표 이름 순으로 본다"""
     for c in classifications:
         if is_sex_class(c["name"]):
-            values = {v.strip() for v in c.get("sample_values") or []}
+            # 하위 단계에만 남자·여자가 있는 분류('총인구' 아래 남자·여자)도 보도록 전체 값(values)을 쓴다
+            values = {v.strip() for v in c.get("values") or c.get("sample_values") or []}
             sex_coverage = coverage(bool(values & MALE), bool(values & FEMALE))
             # '성연령배우관계학력별'처럼 이름에 '성'이 있어도 값에 남/여가 없으면 성별 분류가 아니다
             if sex_coverage != "none":
