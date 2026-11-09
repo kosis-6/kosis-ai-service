@@ -1,3 +1,6 @@
+import json
+import sys
+
 import pytest
 
 from scripts import enrich_catalog_meta as ecm
@@ -102,3 +105,27 @@ def test_values_keep_child_values() -> None:
     axis = ecm.summarize_axis("B", rows)
     assert axis["sample_values"] == ["합계"]
     assert axis["values"] == ["합계", "지체", "시각", "청각"]
+
+
+def test_offline_without_cache_keeps_output(tmp_path, monkeypatch) -> None:
+    # 캐시가 없는 PC에서 --offline을 돌려도 기존 결과 파일을 빈 분류로 덮어쓰지 않는다
+    catalog = tmp_path / "catalog.jsonl"
+    catalog.write_text(
+        '{"org_id": "101", "tbl_id": "DT_A"}\n{"org_id": "101", "tbl_id": "DT_B"}\n',
+        encoding="utf-8",
+    )
+    output = tmp_path / "with_meta.jsonl"
+    output.write_text("기존 결과\n", encoding="utf-8")
+    cache = tmp_path / "meta_cache"
+    cache.mkdir()
+    (cache / "101_DT_A.json").write_text(json.dumps(ROWS), encoding="utf-8")
+    monkeypatch.setattr(ecm, "CATALOG", catalog)
+    monkeypatch.setattr(ecm, "OUTPUT", output)
+    monkeypatch.setattr(ecm, "CACHE_DIR", cache)
+    monkeypatch.setattr(ecm, "CMMT_CACHE_DIR", tmp_path / "cmmt_cache")
+    monkeypatch.setattr(sys, "argv", ["enrich_catalog_meta", "--offline"])
+
+    with pytest.raises(SystemExit, match="캐시 없는 표 1개"):
+        ecm.main()
+    assert output.read_text(encoding="utf-8") == "기존 결과\n"
+    assert ecm.missing_cache([{"org_id": "101", "tbl_id": "DT_A"}]) == []
