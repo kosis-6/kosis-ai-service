@@ -215,6 +215,11 @@ def rank_values(c: dict[str, Any]) -> list[str]:
     return c.get("sample_values") or []
 
 
+def has_value(t: dict[str, Any], key: str) -> bool:
+    """항목·표본값(meta_n)에 있거나, 값이 많은 분류의 값 하나와 같은가"""
+    return key in t["meta_n"] or key in t.get("values_n", ())
+
+
 def prepare(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """검색에 쓸 정규화 문자열을 붙인다"""
     tables = []
@@ -232,10 +237,9 @@ def prepare(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 + [i["name"] for i in t["items"] or []]
             )
         )
-        # 조건 확인 전용: 분류의 전체 값(하위 단계 포함). 검색 순위(meta_n)에는 넣지 않는다
-        t["values_n"] = t["meta_n"] + norm(
-            " ".join(v for c in classes for v in c.get("values") or [] if v)
-        )
+        # 조건 확인 전용: 값이 많은 분류(지역·성씨)의 전체 값. 값이 적은 분류는 이미 meta_n에 있다.
+        # 이어 붙인 글자에서 찾으면 '고령'이 '고령군'에 걸리므로 값 하나와 같을 때만 본다
+        t["values_n"] = {norm(v) for c in classes for v in c.get("values") or [] if norm(v)}
         t["age_cov"] = age_coverage(t["name_n"], t["class_n"], t["meta_n"])
         t["words"] = word_set(
             [t["table_name"]]
@@ -543,7 +547,7 @@ def check(t: dict[str, Any], slots: dict[str, Any]) -> dict[str, bool]:
             t["sex_coverage"] in ("both", own)
             or t["sex"] == sex
             or (sex == "여" and bool(FEMALE_ONLY_TABLE.search(t["name_n"])))
-            or ("남자" if sex == "남" else "여자") in t.get("values_n", t["meta_n"])
+            or has_value(t, "남자" if sex == "남" else "여자")
         )
     elif sex == "전체" and t["sex_coverage"] != "none":
         out["sex"] = t["has_total"] is not False
@@ -555,18 +559,18 @@ def check(t: dict[str, Any], slots: dict[str, Any]) -> dict[str, bool]:
         else:
             key = CLASS_ALIAS.get(norm(cls).removesuffix("별"), norm(cls).removesuffix("별"))
             # HCX 가 '미혼'처럼 분류 값을 classes 에 넣기도 하므로 항목·표본값(meta_n)도 본다
-            ok = any(key in n for n in t["class_n"]) or key in t["name_n"] or key in t.get("values_n", t["meta_n"])
+            ok = any(key in n for n in t["class_n"]) or key in t["name_n"] or has_value(t, key)
             if key == "연령" and not ok:
                 # 각세(1세 단위) 축도 연령 축이다 ('서울 구별 나이별 전입 전출' → 서울특별시 시군구 각세별 이동자수)
                 ok = any("각세" in n for n in t["class_n"]) or "각세" in t["name_n"]
         if (
             cls == "성별" and not ok
         ):  # 항목이 남자/여자로 갈라진 표도 성별을 담는다 (주민등록 시군구별 성별 인구수)
-            ok = "남자" in t.get("values_n", t["meta_n"]) and "여자" in t.get("values_n", t["meta_n"])
+            ok = has_value(t, "남자") and has_value(t, "여자")
         out[f"class:{cls}"] = ok
     for item in c["items"]:
         key = norm(item)
-        ok = key in t.get("values_n", t["meta_n"]) or key in t["name_n"]
+        ok = has_value(t, key) or key in t["name_n"]
         if not ok:
             # '가구수' ↔ '가구_계', '주택수' ↔ '주택_계': 꼬리를 뗀 낱말끼리 같으면 같은 항목.
             # 부분 문자열이 아니라 낱말 단위로 본다 ('가구'가 '가구주' 표에 걸리지 않게)
@@ -580,7 +584,10 @@ def check(t: dict[str, Any], slots: dict[str, Any]) -> dict[str, bool]:
             for w in ("인구", "이상", "층"):
                 rest = rest.replace(w, "")
             rest_ok = (
-                not rest or rest in t["name_n"] or rest in t.get("values_n", t["meta_n"]) or stem(rest) in t.get("words", ())
+                not rest
+                or rest in t["name_n"]
+                or has_value(t, rest)
+                or stem(rest) in t.get("words", ())
             )
             ok = rest_ok and lo <= a.lo and (hi is None or (a.hi is not None and a.hi <= hi))
         out[f"item:{item}"] = ok
@@ -603,7 +610,7 @@ def check(t: dict[str, Any], slots: dict[str, Any]) -> dict[str, bool]:
         # 조사 이름·경로에 있는 대상('사할린 동포', '고령친화')은 그 조사의 모든 표가 담는다
         out["target"] = (
             key in t["name_n"]
-            or key in t.get("values_n", t["meta_n"])
+            or has_value(t, key)
             or key in norm(t["target"] or "")
             or key in t["path_n"]
         )
