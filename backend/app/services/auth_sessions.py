@@ -8,8 +8,10 @@
   로그아웃          그 줄을 끊는다(revoked_at)
 
 Refresh Token 모양: "{줄 id}.{비밀 값}". DB에는 비밀 값의 SHA-256만 둔다.
-새 토큰을 받을 때마다 비밀 값도 바뀐다. 이미 쓴(예전) 비밀 값이 다시 오면 누가 훔쳐 쓴 것으로 보고
+새 토큰을 받을 때마다 비밀 값도 바뀐다. 바로 전 비밀 값이 다시 오면 누가 훔쳐 쓴 것으로 보고
 그 줄을 끊는다 (진짜 사용자와 훔친 사람 모두 다시 로그인해야 한다).
+아무 값이나 맞지 않으면 401만 주고 줄은 그대로 둔다: 줄 id는 짐작할 수 있어서, 틀린 값만으로
+끊으면 누구든 남의 로그인을 끊을 수 있다.
 
 판단(check_refresh, access_ok, rotate)은 DB를 모르는 함수로 두고,
 저장(get, create, save, revoke_all)만 DB를 쓴다. 테스트는 저장 함수만 바꿔 끼운다.
@@ -60,6 +62,7 @@ def rotate(row: UserSession, at: datetime) -> tuple[str, str]:
     """새 Refresh Token 비밀 값과 새 Access Token 번호를 만들어 줄에 넣는다.
     예전 비밀 값과 예전 Access Token은 이때부터 못 쓴다. 쓸 때마다 만료를 14일 뒤로 민다"""
     secret, jti = secrets.token_urlsafe(32), secrets.token_urlsafe(16)
+    row.prev_refresh_hash = getattr(row, "refresh_hash", None)
     row.refresh_hash = _hash(secret)
     row.access_jti = jti
     row.last_used_at = at
@@ -68,16 +71,20 @@ def rotate(row: UserSession, at: datetime) -> tuple[str, str]:
 
 
 def check_refresh(row: UserSession | None, secret: str, at: datetime) -> str:
-    """ok / missing(없는 줄) / revoked(끊김) / expired / reused(예전 비밀 값이 다시 옴)"""
+    """ok / missing(없는 줄) / revoked(끊김) / expired / reused(바로 전 비밀 값이 다시 옴, 탈취) /
+    wrong(맞는 값이 아님. 줄은 끊지 않는다)"""
     if row is None:
         return "missing"
     if row.revoked_at is not None:
         return "revoked"
     if at >= row.expires_at:
         return "expired"
-    if not hmac.compare_digest(row.refresh_hash, _hash(secret)):
+    given = _hash(secret)
+    if hmac.compare_digest(row.refresh_hash, given):
+        return "ok"
+    if row.prev_refresh_hash and hmac.compare_digest(row.prev_refresh_hash, given):
         return "reused"
-    return "ok"
+    return "wrong"
 
 
 def access_ok(row: UserSession | None, claims: AccessClaims, at: datetime) -> bool:

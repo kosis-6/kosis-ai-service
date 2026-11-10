@@ -221,7 +221,7 @@ async def refresh(
     at = auth_sessions.now()
     row = await auth_sessions.get(session, sid)
     result = auth_sessions.check_refresh(row, secret, at)
-    if result == "reused":  # 이미 쓴 Refresh Token: 훔쳐 간 것으로 보고 이 로그인을 끊는다
+    if result == "reused":  # 바로 전 Refresh Token: 훔쳐 간 것으로 보고 이 로그인을 끊는다
         row.revoked_at = at
         await auth_sessions.save(session, row)
     user = await users.get(session, row.user_id) if result == "ok" else None

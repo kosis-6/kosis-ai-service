@@ -623,3 +623,11 @@ def test_logout_cuts_this_login_only(db) -> None:
     assert client.get("/auth/me", headers=_auth(laptop)).status_code == 401
 
     assert client.post("/auth/logout").status_code == 204  # 이미 로그아웃해도 204
+
+
+def test_wrong_refresh_secret_does_not_cut_login(db, logins) -> None:
+    """남의 로그인 줄 번호에 아무 값이나 붙여 보내도 그 로그인은 끊기지 않는다 (번호는 짐작 가능)"""
+    access = _signup("a@b.co")
+    assert _refresh("1.guessed-value").status_code == 401
+    assert logins[1].revoked_at is None
+    assert client.get("/auth/me", headers=_auth(access)).status_code == 200
