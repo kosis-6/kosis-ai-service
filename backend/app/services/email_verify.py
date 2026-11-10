@@ -24,6 +24,7 @@ import secrets
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import delete as sql_delete
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import secret_key
@@ -97,6 +98,22 @@ async def get(session: AsyncSession, email: str) -> EmailVerification | None:
 async def save(session: AsyncSession, row: EmailVerification) -> None:
     session.add(row)
     await session.commit()
+
+
+async def use_attempt(session: AsyncSession, email: str) -> int | None:
+    """확인 시도 한 번을 DB에서 한 번에 센다 → 센 뒤의 횟수. 이미 MAX_ATTEMPTS번이면 None.
+    읽고 더해 저장하면 동시에 보낸 요청이 모두 0을 읽어 5번 넘게 넣어 볼 수 있다"""
+    used = await session.scalar(
+        update(EmailVerification)
+        .where(
+            EmailVerification.email == email.lower(),
+            EmailVerification.attempts < MAX_ATTEMPTS,
+        )
+        .values(attempts=EmailVerification.attempts + 1)
+        .returning(EmailVerification.attempts)
+    )
+    await session.commit()
+    return used
 
 
 async def delete(session: AsyncSession, email: str) -> None:

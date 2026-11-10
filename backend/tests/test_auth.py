@@ -80,8 +80,16 @@ def codes(monkeypatch: pytest.MonkeyPatch) -> dict:
     async def delete(session, email):
         rows.pop(email.lower(), None)
 
+    async def use_attempt(session, email):
+        row = rows.get(email.lower())
+        if row is None or row.attempts >= email_verify.MAX_ATTEMPTS:
+            return None
+        row.attempts += 1
+        return row.attempts
+
     monkeypatch.setattr(email_verify, "get", lambda session, e: _async(rows.get(e.lower())))
     monkeypatch.setattr(email_verify, "save", save)
+    monkeypatch.setattr(email_verify, "use_attempt", use_attempt)
     monkeypatch.setattr(email_verify, "delete", delete)
     return rows
 
@@ -105,7 +113,7 @@ def logins(monkeypatch: pytest.MonkeyPatch) -> dict[int, SimpleNamespace]:
             if row.user_id == user_id and row.revoked_at is None:
                 row.revoked_at = at
 
-    monkeypatch.setattr(auth_sessions, "get", lambda session, i: _async(rows.get(i)))
+    monkeypatch.setattr(auth_sessions, "get", lambda session, i, lock=False: _async(rows.get(i)))
     monkeypatch.setattr(auth_sessions, "create", create)
     monkeypatch.setattr(auth_sessions, "save", save)
     monkeypatch.setattr(auth_sessions, "revoke_all", revoke_all)
@@ -555,7 +563,7 @@ def test_login_sets_refresh_cookie(db) -> None:
     assert "refresh_token" not in r.json()  # 본문에는 Access Token만
 
 
-def test_refresh_rotates_and_cuts_old_access_token(db, logins) -> None:
+def test_refresh_rotates_and_cuts_old_access_token(db, logins, clock) -> None:
     old_access = _signup("a@b.co")
     old_refresh = client.cookies["refresh_token"]
 
@@ -568,7 +576,9 @@ def test_refresh_rotates_and_cuts_old_access_token(db, logins) -> None:
     assert client.get("/auth/me", headers=_auth(new_access)).status_code == 200
     assert old_refresh.split(".")[1] not in str(vars(logins[1]))  # 원래 값은 두지 않는다
 
-    # 이미 쓴 Refresh Token이 다시 오면 훔쳐 간 것으로 보고 그 로그인을 통째로 끊는다
+    # 이미 쓴 Refresh Token이 (동시 요청으로 볼 시간이 지나) 다시 오면
+    # 훔쳐 간 것으로 보고 그 로그인을 통째로 끊는다
+    clock.at += timedelta(seconds=auth_sessions.REUSE_GRACE_SECONDS)
     reused = _refresh(old_refresh)
     assert reused.status_code == 401
     assert 'refresh_token=""' in reused.headers["set-cookie"]  # 쿠키도 지운다
@@ -631,3 +641,44 @@ def test_wrong_refresh_secret_does_not_cut_login(db, logins) -> None:
     assert _refresh("1.guessed-value").status_code == 401
     assert logins[1].revoked_at is None
     assert client.get("/auth/me", headers=_auth(access)).status_code == 200
+
+
+def test_email_code_attempts_are_counted_in_db(db, codes) -> None:
+    """동시에 보낸 요청이 모두 '아직 0번 틀림'을 읽어도 확인은 DB에서 센 5번까지만 한다"""
+    client.post("/auth/email-code", json={"email": "a@b.co"})
+    code = _sent_code()
+    stale = SimpleNamespace(**vars(codes["a@b.co"]))  # 동시 요청이 먼저 읽어 둔 줄 (0번)
+    codes["a@b.co"].attempts = email_verify.MAX_ATTEMPTS  # 그사이 다른 요청들이 5번을 씀
+    real = codes["a@b.co"]
+    email_verify.get = lambda session, e: _async(stale)  # monkeypatch가 테스트 뒤 되돌린다
+    r = client.post("/auth/email-code/verify", json={"email": "a@b.co", "code": code})
+    assert r.status_code == 400 and "다시 받아" in r.json()["detail"]  # 맞는 번호여도 막힌다
+    assert real.verified_at is None
+
+
+def test_refresh_twice_at_once_keeps_login(db, logins, clock) -> None:
+    """탭 두 개가 같은 쿠키로 동시에 새 토큰을 받으면 뒤 요청도 끊기지 않는다"""
+    _signup("a@b.co")
+    old_refresh = client.cookies["refresh_token"]
+    first = _refresh(old_refresh)
+    assert first.status_code == 200
+    new_refresh = first.headers["set-cookie"].split(";")[0].split("=", 1)[1]
+
+    second = _refresh(old_refresh)  # 앞 요청이 바꾼 직후 예전 쿠키로 온 요청
+    assert second.status_code == 200
+    assert "set-cookie" not in second.headers  # 앞 요청이 준 새 쿠키를 그대로 쓴다
+    assert logins[1].revoked_at is None
+    for r in (first, second):  # 두 탭의 Access Token 모두 쓸 수 있다
+        assert client.get("/auth/me", headers=_auth(r.json()["access_token"])).status_code == 200
+    assert _refresh(new_refresh).status_code == 200
+
+
+def test_logout_with_old_access_token_still_cuts_login(db, logins) -> None:
+    """다른 탭이 새 토큰을 받아 지난 번호가 된 Access Token으로 로그아웃해도 쿠키로 끊는다"""
+    old_access = _signup("a@b.co")
+    assert _refresh().status_code == 200
+    cookie = client.cookies["refresh_token"]
+    r = client.post("/auth/logout", headers=_auth(old_access))
+    assert r.status_code == 204
+    assert logins[1].revoked_at is not None
+    assert _refresh(cookie).status_code == 401

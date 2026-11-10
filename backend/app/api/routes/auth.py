@@ -138,10 +138,13 @@ async def verify_email_code(body: EmailCodeVerify, session: Session) -> EmailVer
     row = await email_verify.get(session, body.email)
     at = email_verify.now()
     result = email_verify.check(row, body.code, at)
+    if result in ("ok", "wrong"):
+        # 맞든 틀리든 확인 한 번을 DB에서 먼저 센다. 동시에 여러 번 보내도 5번까지만 확인한다
+        used = await email_verify.use_attempt(session, body.email)
+        if used is None:
+            raise HTTPException(status_code=400, detail=CODE_ERRORS["too_many"])
     if result == "wrong":
-        row.attempts += 1
-        await email_verify.save(session, row)
-        left = email_verify.MAX_ATTEMPTS - row.attempts
+        left = email_verify.MAX_ATTEMPTS - used
         detail = (
             f"인증번호가 맞지 않습니다. ({left}번 더 시도할 수 있습니다)"
             if left > 0
@@ -213,20 +216,29 @@ async def refresh(
 ) -> Token | JSONResponse:
     """Access Token이 만료됐을 때(401) 부른다. 로그인 때 받은 Refresh Token 쿠키를 브라우저가
     자동으로 보낸다. Access Token·Refresh Token을 둘 다 새로 주고, 예전 Access Token은 바로 끊긴다.
-    401이면 다시 로그인해야 한다 (쿠키 없음·만료·로그아웃함·이미 쓴 Refresh Token)"""
+    401이면 다시 로그인해야 한다 (쿠키 없음·만료·로그아웃함·이미 쓴 Refresh Token)
+    탭 여러 개가 동시에 불러도 끊기지 않는다: 먼저 온 요청만 토큰을 바꾸고, 바로 뒤(30초 안)에
+    예전 쿠키로 온 요청은 쿠키를 바꾸지 않고 지금 Access Token만 받는다"""
     parsed = auth_sessions.parse_refresh(refresh_token)
     if parsed is None:
         return _refresh_failed()
     sid, secret = parsed
     at = auth_sessions.now()
-    row = await auth_sessions.get(session, sid)
+    # 잠근다: 동시에 온 요청은 앞 요청이 토큰을 바꿔 커밋한 뒤에 바뀐 줄을 읽는다
+    row = await auth_sessions.get(session, sid, lock=True)
     result = auth_sessions.check_refresh(row, secret, at)
     if result == "reused":  # 바로 전 Refresh Token: 훔쳐 간 것으로 보고 이 로그인을 끊는다
         row.revoked_at = at
         await auth_sessions.save(session, row)
-    user = await users.get(session, row.user_id) if result == "ok" else None
+    user = await users.get(session, row.user_id) if result in ("ok", "grace") else None
     if user is None or not user.is_active:
         return _refresh_failed()
+    if result == "grace":
+        # 앞 요청이 이미 새 쿠키를 보냈다. 쿠키는 그대로 두고 그 로그인의 지금 Access Token을 준다
+        return Token(
+            access_token=create_access_token(user.id, row.id, row.access_jti, user.token_version),
+            expires_in=get_settings().access_token_minutes * 60,
+        )
     new_secret, jti = auth_sessions.rotate(row, at)
     await auth_sessions.save(session, row)
     return _issue(response, user, row, new_secret, jti)
@@ -245,14 +257,15 @@ async def logout(
     at = auth_sessions.now()
     claims = decode_access_token(token) if token else None
     parsed = auth_sessions.parse_refresh(refresh_token)
+    row, ok = None, False
     if claims:
         row = await auth_sessions.get(session, claims.session_id)
         ok = auth_sessions.access_ok(row, claims, at)
-    elif parsed:
+    # Access Token이 지난 번호여도(다른 탭이 새로 받음) 쿠키가 맞으면 끊는다.
+    # 쿠키만 지우고 끝내면 서버의 로그인은 14일 동안 살아 있다
+    if not ok and parsed:
         row = await auth_sessions.get(session, parsed[0])
-        ok = auth_sessions.check_refresh(row, parsed[1], at) == "ok"
-    else:
-        row, ok = None, False
+        ok = auth_sessions.check_refresh(row, parsed[1], at) in ("ok", "grace")
     if ok:
         row.revoked_at = at
         await auth_sessions.save(session, row)

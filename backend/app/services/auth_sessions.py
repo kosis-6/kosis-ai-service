@@ -10,6 +10,9 @@
 Refresh Token 모양: "{줄 id}.{비밀 값}". DB에는 비밀 값의 SHA-256만 둔다.
 새 토큰을 받을 때마다 비밀 값도 바뀐다. 바로 전 비밀 값이 다시 오면 누가 훔쳐 쓴 것으로 보고
 그 줄을 끊는다 (진짜 사용자와 훔친 사람 모두 다시 로그인해야 한다).
+단 새 값을 준 지 REUSE_GRACE_SECONDS 안이면 끊지 않는다: 탭 두 개가 동시에 새 토큰을 받으면
+뒤 요청이 바로 전 값을 들고 온다. 이때는 Refresh Token은 그대로 두고 지금 Access Token만 준다.
+동시에 온 요청이 같은 줄을 함께 고치지 않도록 새 토큰을 받을 때 줄을 잠근다(get(lock=True)).
 아무 값이나 맞지 않으면 401만 주고 줄은 그대로 둔다: 줄 id는 짐작할 수 있어서, 틀린 값만으로
 끊으면 누구든 남의 로그인을 끊을 수 있다.
 
@@ -31,6 +34,8 @@ from app.models.app import UserSession
 
 COOKIE = "refresh_token"
 COOKIE_PATH = "/auth"  # /auth/refresh, /auth/logout 에만 쿠키가 실린다
+# 새 Refresh Token을 준 뒤 이 시간 안에 바로 전 값이 오면 탈취가 아니라 동시 요청으로 본다
+REUSE_GRACE_SECONDS = 30
 
 
 def now() -> datetime:
@@ -72,6 +77,7 @@ def rotate(row: UserSession, at: datetime) -> tuple[str, str]:
 
 def check_refresh(row: UserSession | None, secret: str, at: datetime) -> str:
     """ok / missing(없는 줄) / revoked(끊김) / expired / reused(바로 전 비밀 값이 다시 옴, 탈취) /
+    grace(바로 전 비밀 값이지만 새 값을 준 지 REUSE_GRACE_SECONDS 안. 동시 요청) /
     wrong(맞는 값이 아님. 줄은 끊지 않는다)"""
     if row is None:
         return "missing"
@@ -83,6 +89,8 @@ def check_refresh(row: UserSession | None, secret: str, at: datetime) -> str:
     if hmac.compare_digest(row.refresh_hash, given):
         return "ok"
     if row.prev_refresh_hash and hmac.compare_digest(row.prev_refresh_hash, given):
+        if at - row.last_used_at < timedelta(seconds=REUSE_GRACE_SECONDS):
+            return "grace"
         return "reused"
     return "wrong"
 
@@ -98,7 +106,12 @@ def access_ok(row: UserSession | None, claims: AccessClaims, at: datetime) -> bo
     )
 
 
-async def get(session: AsyncSession, session_id: int) -> UserSession | None:
+async def get(session: AsyncSession, session_id: int, lock: bool = False) -> UserSession | None:
+    """lock=True면 이 요청이 커밋할 때까지 다른 요청이 같은 줄을 읽어 고치지 못하게 잠근다"""
+    if lock:
+        return await session.get(
+            UserSession, session_id, with_for_update=True, populate_existing=True
+        )
     return await session.get(UserSession, session_id)
 
 
