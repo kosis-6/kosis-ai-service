@@ -3,17 +3,19 @@ import time
 
 from fastapi import APIRouter, HTTPException
 
+from app.api.deps import OptionalUser
 from app.core.stats_db import StatsNotLoadedError
 from app.schemas.ask import AskRequest, AskResponse
 from app.services import qa
 from app.services.hcx_client import HcxError
 
-router = APIRouter(tags=["ask"])
+router = APIRouter(tags=["질문 답변"])
 logger = logging.getLogger(__name__)
 
 
-@router.post("/ask")
-async def ask(body: AskRequest) -> AskResponse:
+@router.post("/ask", summary="질문에 답하기")
+async def ask(body: AskRequest, user: OptionalUser) -> AskResponse:
+    """로그인 없이도 쓸 수 있다. 로그인하면 기록에 사용자 id가 남는다"""
     start = time.perf_counter()
     res, error = None, None
     try:
@@ -35,7 +37,7 @@ async def ask(body: AskRequest) -> AskResponse:
         # 평가 스크립트(qa.ask 직접 호출)는 기록하지 않고, 실제 사용자 질문만 남긴다
         elapsed_ms = round((time.perf_counter() - start) * 1000)
         try:
-            qa.log_request(body.question, res, error, elapsed_ms)
+            qa.log_request(body.question, res, error, elapsed_ms, user_id=user.id if user else None)
             if res is not None:
                 qa.log_missing(body.question, res)
         except OSError:  # 기록 실패가 답변을 막지 않게
