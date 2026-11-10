@@ -96,6 +96,10 @@ def resolve(question: str) -> AgeRef | None:
 AGE_SPANS = [
     (re.compile(r"(\d+)\s*대\s*이상"), lambda m: (int(m[1]), None)),
     (re.compile(r"(\d+)\s*[~\-]\s*(\d+)\s*대"), lambda m: (int(m[1]), int(m[2]) + 9)),
+    # "20대 초반" = 20~23세, "중반" = 24~26세, "후반" = 27~29세
+    (re.compile(r"(\d+)\s*대\s*초반"), lambda m: (int(m[1]), int(m[1]) + 3)),
+    (re.compile(r"(\d+)\s*대\s*중반"), lambda m: (int(m[1]) + 4, int(m[1]) + 6)),
+    (re.compile(r"(\d+)\s*대\s*후반"), lambda m: (int(m[1]) + 7, int(m[1]) + 9)),
     (re.compile(r"(\d+)\s*대(?!\s*(광역시|도시))"), lambda m: (int(m[1]), int(m[1]) + 9)),
     (re.compile(r"(\d+)\s*세\s*이상"), lambda m: (int(m[1]), None)),
     (re.compile(r"(\d+)\s*[~\-]\s*(\d+)\s*세"), lambda m: (int(m[1]), int(m[2]))),
