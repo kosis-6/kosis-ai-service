@@ -427,7 +427,8 @@ def resolve_region(name, year=None, sigungu=False):
     """
     key = _norm(name)
     found = _rows(sql.format(extra=""), [key, key])
-    for suffix in ("시", "군"):  # "안산" → 안산시, "고성" → 고성군
+    # "안산" → 안산시, "고성" → 고성군, "강남" → 강남구 (같은 이름이 여럿이면 아래에서 되묻는다)
+    for suffix in ("시", "군", "구"):
         if not found and not key.endswith(("시", "군", "구", "도")):
             found = _rows(sql.format(extra=""), [key + suffix, key + suffix])
 
@@ -439,6 +440,13 @@ def resolve_region(name, year=None, sigungu=False):
             found = _rows(
                 sql.format(extra="and r.sido_code = ?"), [rest, rest, sido["region_code"]]
             )
+            # "경기 광주" → 경기도 광주시, "서울 강남" → 서울특별시 강남구
+            for suffix in ("시", "군", "구"):
+                if not found and not rest.endswith(("시", "군", "구")):
+                    found = _rows(
+                        sql.format(extra="and r.sido_code = ?"),
+                        [rest + suffix, rest + suffix, sido["region_code"]],
+                    )
 
     if sigungu and len(found) == 1 and found[0]["kind"] == "시도":
         short = _norm(name)
