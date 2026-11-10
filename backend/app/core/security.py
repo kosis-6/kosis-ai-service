@@ -28,7 +28,8 @@ def verify_password(password: str, password_hash: str | None) -> bool:
     return _hasher.verify(password, password_hash)
 
 
-def _secret() -> str:
+def secret_key() -> str:
+    """로그인 토큰 서명 키. 이메일 인증번호 HMAC에도 같은 키를 쓴다"""
     key = get_settings().jwt_secret_key
     if len(key) < 32:
         raise AuthNotConfigured(
@@ -37,16 +38,21 @@ def _secret() -> str:
     return key
 
 
-def create_access_token(user_id: int, minutes: int | None = None) -> str:
+def create_access_token(user_id: int, minutes: int | None = None, version: int = 0) -> str:
+    """version은 사용자의 token_version. 사용자 번호가 올라가면 이 토큰은 더 쓸 수 없다"""
     now = datetime.now(UTC)
     exp = now + timedelta(minutes=minutes or get_settings().access_token_minutes)
-    return jwt.encode({"sub": str(user_id), "iat": now, "exp": exp}, _secret(), ALGORITHM)
+    payload = {"sub": str(user_id), "ver": version, "iat": now, "exp": exp}
+    return jwt.encode(payload, secret_key(), ALGORITHM)
 
 
-def decode_access_token(token: str) -> int | None:
-    """서명이 맞고 만료되지 않았으면 사용자 id, 아니면 None"""
+def decode_access_token(token: str) -> tuple[int, int] | None:
+    """서명이 맞고 만료되지 않았으면 (사용자 id, 토큰 번호), 아니면 None.
+    번호가 없는 토큰(번호를 넣기 전에 발급)은 0으로 본다"""
     try:
-        payload = jwt.decode(token, _secret(), algorithms=[ALGORITHM], options={"require": ["exp"]})
-        return int(payload["sub"])
-    except (jwt.InvalidTokenError, KeyError, ValueError):
+        payload = jwt.decode(
+            token, secret_key(), algorithms=[ALGORITHM], options={"require": ["exp"]}
+        )
+        return int(payload["sub"]), int(payload.get("ver", 0))
+    except (jwt.InvalidTokenError, KeyError, ValueError, TypeError):
         return None

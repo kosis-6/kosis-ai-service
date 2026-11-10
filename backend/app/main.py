@@ -11,6 +11,7 @@ from app.api.router import api_router
 from app.core.config import get_settings
 from app.core.security import AuthNotConfigured
 from app.services import indicators, load_queue, search
+from app.services.mailer import MailNotConfigured
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +43,8 @@ app.include_router(api_router)
 
 
 @app.exception_handler(AuthNotConfigured)
-async def auth_not_configured(request: Request, exc: AuthNotConfigured) -> JSONResponse:
+@app.exception_handler(MailNotConfigured)
+async def not_configured(request: Request, exc: RuntimeError) -> JSONResponse:
     return JSONResponse(status_code=503, content={"detail": str(exc)})
 
 

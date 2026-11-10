@@ -1489,8 +1489,9 @@ def log_missing(question, res, path=None):
     return True
 
 
-def log_request(question, res=None, error=None, elapsed_ms=None, path=None):
-    """모든 /ask 요청을 한 줄(JSON)로 남긴다. 실패한 요청(res 없음)은 error에 원인
+def log_request(question, res=None, error=None, elapsed_ms=None, path=None, user_id=None):
+    """모든 /ask 요청을 한 줄(JSON)로 남긴다. 실패한 요청(res 없음)은 error에 원인.
+    user_id는 로그인한 사용자 id (손님이면 None)
 
     단계별로 보면 원인을 나눌 수 있다:
       hcx_raw     HCX가 돌려준 원문 (JSON을 못 읽었으면 여기서 원인 확인)
@@ -1501,6 +1502,7 @@ def log_request(question, res=None, error=None, elapsed_ms=None, path=None):
     trace = res.get("trace") or {}
     record = {
         "at": _now(),
+        "user_id": user_id,
         "question": question,
         "status": res.get("status"),
         "error": error,

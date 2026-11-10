@@ -1,6 +1,8 @@
-"""라우터 공통 의존성: 로그인 사용자, 관리자
+"""라우터 공통 의존성: 로그인 사용자, 선택 로그인, 관리자
 
-로그인이 필요한 API는 인자에 `user: CurrentUser`, 관리자 전용은 `user: AdminUser`를 넣는다.
+- 로그인이 필요한 API: 인자에 `user: CurrentUser`
+- 로그인 없이도 쓰지만 로그인하면 사용자를 알고 싶은 API(/ask, /search): `user: OptionalUser`
+- 관리자 전용: `user: AdminUser`
 """
 
 from typing import Annotated
@@ -16,23 +18,52 @@ from app.services import users
 
 # Swagger(/docs)의 Authorize 버튼이 이 주소로 로그인한다
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token")
+# 토큰이 없어도 401을 내지 않는다 (선택 로그인)
+optional_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token", auto_error=False)
 
 Session = Annotated[AsyncSession, Depends(get_session)]
 
+UNAUTHORIZED = HTTPException(
+    status_code=status.HTTP_401_UNAUTHORIZED,
+    detail="로그인이 필요합니다.",
+    headers={"WWW-Authenticate": "Bearer"},
+)
+
+
+async def user_from_token(token: str, session: AsyncSession) -> User | None:
+    """토큰이 맞고, 사용자가 있고, 정지되지 않았고, 토큰 번호가 지금 번호와 같으면 사용자"""
+    decoded = decode_access_token(token)
+    if decoded is None:
+        return None
+    user_id, version = decoded
+    user = await users.get(session, user_id)
+    if user is None or not user.is_active or user.token_version != version:
+        return None
+    return user
+
 
 async def get_current_user(token: Annotated[str, Depends(oauth2_scheme)], session: Session) -> User:
-    user_id = decode_access_token(token)
-    user = await users.get(session, user_id) if user_id is not None else None
-    if user is None or not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="로그인이 필요합니다.",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+    user = await user_from_token(token, session)
+    if user is None:
+        raise UNAUTHORIZED
+    return user
+
+
+async def get_optional_user(
+    token: Annotated[str | None, Depends(optional_scheme)], session: Session
+) -> User | None:
+    """토큰이 없으면 손님(None). 토큰을 보냈는데 틀렸거나 만료됐으면 401:
+    조용히 손님으로 바꾸면 화면은 로그인한 줄 아는데 기록이 사용자와 연결되지 않는다"""
+    if not token:
+        return None
+    user = await user_from_token(token, session)
+    if user is None:
+        raise UNAUTHORIZED
     return user
 
 
 CurrentUser = Annotated[User, Depends(get_current_user)]
+OptionalUser = Annotated[User | None, Depends(get_optional_user)]
 
 
 async def require_admin(user: CurrentUser) -> User:

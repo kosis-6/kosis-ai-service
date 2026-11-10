@@ -26,6 +26,16 @@ class Settings(BaseSettings):
     jwt_secret_key: str = ""
     access_token_minutes: int = 60
 
+    # 회원가입 이메일 인증번호 메일 (app/services/mailer.py)
+    # smtp: 실제로 보낸다 (Gmail은 앱 비밀번호, 배포는 AWS SES SMTP 등)
+    # console: 보내지 않고 서버 로그에 인증번호를 찍는다 (개발용. 배포에서는 쓰지 않는다)
+    mail_backend: Literal["smtp", "console"] = "console"
+    smtp_host: str = ""
+    smtp_port: int = 587  # 587: STARTTLS, 465: SSL
+    smtp_user: str = ""
+    smtp_password: str = ""
+    mail_from: str = ""  # 비우면 smtp_user
+
     # 통계표 검색의 질문 임베딩 (app/services/vector_search.py)
     # clova: CLOVA Studio v2 / local: bge-m3 직접 실행 / off: 키워드 검색만
     embedding_backend: Literal["clova", "local", "off"] = "clova"

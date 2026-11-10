@@ -31,9 +31,31 @@ class User(Base):
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
     email: Mapped[str] = mapped_column(unique=True)
     password_hash: Mapped[str]
+    # 화면 표시용 닉네임. 같은 닉네임도 된다. 0011 전에 가입한 계정은 비어 있다
+    nickname: Mapped[str | None]
     is_active: Mapped[bool] = mapped_column(server_default=true())
     is_admin: Mapped[bool] = mapped_column(server_default=false())
+    # 토큰에 넣는 번호. 비밀번호 변경·계정 정지 때 1 올려 그 전 토큰을 끊는다
+    token_version: Mapped[int] = mapped_column(server_default=text("0"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class EmailVerification(Base):
+    """회원가입 이메일 인증번호. 이메일마다 마지막으로 보낸 번호 하나만 둔다
+
+    번호는 그대로 두지 않고 HMAC 값만 둔다. 확인에 성공하면 verified_at을 채우고,
+    가입이 끝나면 지운다.
+    """
+
+    __tablename__ = "email_verifications"
+    __table_args__ = {"schema": "app"}
+
+    email: Mapped[str] = mapped_column(primary_key=True)
+    code_hash: Mapped[str]
+    attempts: Mapped[int] = mapped_column(SmallInteger, server_default=text("0"))
+    sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class LoadJob(Base):
