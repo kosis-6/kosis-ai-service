@@ -13,7 +13,7 @@ router = APIRouter(tags=["질문 답변"])
 logger = logging.getLogger(__name__)
 
 
-@router.post("/ask", summary="질문에 답하기 (실전 1)")
+@router.post("/ask", summary="질문에 답하기")
 async def ask(body: AskRequest, user: OptionalUser) -> AskResponse:
     """로그인 없이도 쓸 수 있다. 로그인하면 기록에 사용자 id가 남는다"""
     start = time.perf_counter()

@@ -12,9 +12,9 @@ router = APIRouter(tags=["통계표 검색"])
 logger = logging.getLogger(__name__)
 
 
-@router.post("/search", summary="통계표 안내 (실전 2)")
+@router.post("/search", summary="통계표 안내")
 async def search_tables(body: SearchRequest, user: OptionalUser) -> SearchResponse:
-    """질문 → 통계표 안내 (실전 2). 실전 1의 POST /ask와는 따로 동작한다.
+    """질문에 맞는 통계표를 안내한다. 고를 것이 있으면 선택지를 돌려준다.
     로그인 없이도 쓸 수 있고, 로그인하면 기록에 사용자 id가 남는다"""
     start = time.perf_counter()
     session_id = body.session_id or f"S_{uuid4().hex[:12]}"
