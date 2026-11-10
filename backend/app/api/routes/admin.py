@@ -12,10 +12,10 @@ from app.api.deps import AdminUser, Session
 from app.schemas.auth import UserAdminRead, UserList, UserUpdate
 from app.services import load_queue, users
 
-router = APIRouter(prefix="/admin", tags=["admin"])
+router = APIRouter(prefix="/admin", tags=["관리자"])
 
 
-@router.get("/load-jobs")
+@router.get("/load-jobs", summary="통계표 적재 대기열")
 async def load_jobs(
     user: AdminUser, limit: int = Query(default=20, ge=1, le=200)
 ) -> dict[str, Any]:
@@ -23,7 +23,7 @@ async def load_jobs(
     return await load_queue.overview(limit)
 
 
-@router.get("/users")
+@router.get("/users", summary="사용자 목록")
 async def list_users(
     user: AdminUser,
     session: Session,
@@ -35,7 +35,7 @@ async def list_users(
     return UserList(total=total, users=[UserAdminRead.model_validate(u) for u in rows])
 
 
-@router.patch("/users/{user_id}")
+@router.patch("/users/{user_id}", summary="사용자 정지·복구, 관리자 지정")
 async def update_user(
     user_id: int, body: UserUpdate, admin: AdminUser, session: Session
 ) -> UserAdminRead:

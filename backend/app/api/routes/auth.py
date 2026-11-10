@@ -31,7 +31,7 @@ from app.schemas.auth import (
 )
 from app.services import email_verify, mailer, users
 
-router = APIRouter(prefix="/auth", tags=["auth"])
+router = APIRouter(prefix="/auth", tags=["로그인·회원가입"])
 
 # 인증번호 메일: 같은 IP에서 1시간에 10통까지 (남의 메일함에 메일을 쏟아붓는 것을 막는다)
 code_sends = login_limit.LoginLimiter(max_failures=10, window=60 * 60)
@@ -59,7 +59,7 @@ def _token(user: User) -> Token:
     )
 
 
-@router.post("/email-code", status_code=status.HTTP_202_ACCEPTED)
+@router.post("/email-code", summary="① 인증번호 받기", status_code=status.HTTP_202_ACCEPTED)
 async def send_email_code(
     body: EmailCodeRequest, request: Request, session: Session
 ) -> EmailCodeSent:
@@ -100,7 +100,7 @@ async def send_email_code(
     )
 
 
-@router.post("/email-code/verify")
+@router.post("/email-code/verify", summary="② 인증번호 확인")
 async def verify_email_code(body: EmailCodeVerify, session: Session) -> EmailVerified:
     """받은 인증번호를 확인한다. 맞으면 30분 안에 가입해야 한다. 5번 틀리면 다시 받아야 한다"""
     row = await email_verify.get(session, body.email)
@@ -123,7 +123,7 @@ async def verify_email_code(body: EmailCodeVerify, session: Session) -> EmailVer
     return EmailVerified(expires_in=email_verify.VERIFIED_MINUTES * 60)
 
 
-@router.post("/register", status_code=status.HTTP_201_CREATED)
+@router.post("/register", summary="③ 회원가입", status_code=status.HTTP_201_CREATED)
 async def register(body: UserCreate, session: Session) -> UserRead:
     """이메일 인증을 마친 뒤 30분 안에 가입한다.
     비밀번호: 6~20자, 영문(대소문자 상관없음)·숫자·특수기호를 모두 포함
@@ -139,7 +139,7 @@ async def register(body: UserCreate, session: Session) -> UserRead:
     return UserRead.model_validate(user)
 
 
-@router.post("/token")
+@router.post("/token", summary="로그인")
 async def login(
     form: Annotated[OAuth2PasswordRequestForm, Depends()], request: Request, session: Session
 ) -> Token:
@@ -165,19 +165,19 @@ async def login(
     return _token(user)
 
 
-@router.get("/me")
+@router.get("/me", summary="내 정보")
 async def me(user: CurrentUser) -> UserRead:
     return UserRead.model_validate(user)
 
 
-@router.patch("/me")
+@router.patch("/me", summary="닉네임 바꾸기")
 async def update_me(body: ProfileUpdate, user: CurrentUser, session: Session) -> UserRead:
     """내 닉네임을 바꾼다"""
     user = await users.set_nickname(session, user, body.nickname)
     return UserRead.model_validate(user)
 
 
-@router.post("/password")
+@router.post("/password", summary="비밀번호 바꾸기")
 async def change_password(body: PasswordChange, user: CurrentUser, session: Session) -> Token:
     """지금 비밀번호를 확인하고 새 비밀번호로 바꾼다.
     다른 기기에 남은 예전 토큰은 끊기고, 이 요청에는 새 토큰을 돌려준다"""

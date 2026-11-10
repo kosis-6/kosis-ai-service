@@ -9,11 +9,11 @@ from app.schemas.ask import AskRequest, AskResponse
 from app.services import qa
 from app.services.hcx_client import HcxError
 
-router = APIRouter(tags=["ask"])
+router = APIRouter(tags=["질문 답변"])
 logger = logging.getLogger(__name__)
 
 
-@router.post("/ask")
+@router.post("/ask", summary="질문에 답하기 (실전 1)")
 async def ask(body: AskRequest, user: OptionalUser) -> AskResponse:
     """로그인 없이도 쓸 수 있다. 로그인하면 기록에 사용자 id가 남는다"""
     start = time.perf_counter()
