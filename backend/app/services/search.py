@@ -253,7 +253,9 @@ def prepare(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         # 이어 붙인 글자에서 찾으면 '고령'이 '고령군'에 걸리므로 값(또는 괄호 안 등 조각)과
         # 같을 때만 본다 (value_keys)
         t["values_n"] = {k for c in classes for v in c.get("values") or [] for k in value_keys(v)}
-        t["age_cov"] = age_coverage(t["name_n"], t["class_n"], t["meta_n"])
+        t["age_cov"] = age_coverage(
+            t["name_n"], t["class_n"], t["meta_n"], t.get("table_name") or ""
+        )
         t["words"] = word_set(
             [t["table_name"]]
             + [c["name"] for c in classes]
@@ -271,8 +273,24 @@ def prepare(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return tables
 
 
-def age_coverage(name_n: str, class_n: list[str], meta_n: str) -> tuple[int, int | None] | None:
+# 표 이름 원문의 연령 구간 ('(만 7세~만 12세이하)', '20~39세'). name_n 은 '~'가 지워져
+# 아래 '(\d+)[~\-](\d+)세' 가 어느 표에도 맞지 않던 문제
+RAW_AGE_RANGE = re.compile(r"(\d+)\s*세?\s*[~\-]\s*(?:만\s*)?(\d+)\s*세")
+
+
+OUR_PLACE = re.compile(r"우리\s*(?:구|군|시|동네)|동네")
+SIDO_PREFIX = re.compile(
+    r"(서울특별시|부산광역시|대구광역시|인천광역시|광주광역시|대전광역시|울산광역시|세종특별자치시|경기도|강원(?:특별자치)?도|"
+    r"충청북도|충청남도|전라북도|전북특별자치도|전라남도|경상북도|경상남도|제주특별자치도)\s*"
+)
+
+
+def age_coverage(
+    name_n: str, class_n: list[str], meta_n: str, raw_name: str = ""
+) -> tuple[int, int | None] | None:
     """표가 담는 연령 범위. 연령 축이 없으면 None, 있으면 (시작, 끝 또는 None=이상)"""
+    if m := RAW_AGE_RANGE.search(raw_name):
+        return (int(m[1]), int(m[2]))
     text = name_n + " " + " ".join(class_n)
     if m := re.search(r"(\d+)세이상", text):
         return (int(m[1]), None)
@@ -506,6 +524,69 @@ def keyword_scores(tables: list[dict[str, Any]], tokens: list[dict[str, Any]]) -
             )
         scores.append(s / total)
     return scores
+
+
+# HCX 가 질문 말을 분류 축 이름으로 바꿔 넣는 경우('나이별' → '연령')에 근거로 받아 줄 질문 표현
+CLASS_SAID = {
+    "연령": re.compile(r"나이|연령|살|세|\d+\s*대|어린|노인|청년|청소년|고령|아동|유아|미성년"),
+    "성별": re.compile(r"남|여|성별"),
+    "교육정도": re.compile(r"학력|교육|졸업|학교|대학|대졸|고졸|나온"),
+}
+
+
+def ground_conditions(slots: dict[str, Any]) -> dict[str, Any]:
+    """HCX 가 추측해 넣은 분류·항목 단어 중 사용자가 말하지 않은 것은 조건에서 뺀다.
+
+    근거: 질문 원문, 사전으로 늘린 검색어, 연령 표현(규칙이 해석), 분류 축 별칭.
+    실행마다 HCX 가 다른 단어('돌싱' → 이혼·사별, '어떤 집' → 거주형태)를 넣어 조건 확인 가감점이
+    표 순위와 ✔/✘ 를 흔들던 문제. 뺀 단어는 slots['dropped_conditions'] 에 남긴다.
+    """
+    c = slots.get("conditions") or {}
+    if not (c.get("classes") or c.get("items")):
+        return slots
+    question = slots.get("question") or ""
+    said = norm(question)
+    text = norm(keyword_query(slots))
+
+    age_said = bool(CLASS_SAID["연령"].search(question)) or agegroup.span(question) is not None
+
+    def seen(w: str) -> bool:
+        return w in said or w in text or stem(w) in said
+
+    def grounded(word: str, kind: str) -> bool:
+        key = norm(word).removesuffix("별")
+        if not key:
+            return False
+        if seen(key):
+            return True
+        # '전입 인구' ← '전입 · 전출 인구': 낱말마다 질문에 있으면 인정
+        parts = [norm(w).removesuffix("별") for w in re.split(r"[\s·/,_]+", word)]
+        parts = [w for w in parts if len(w) >= 2]
+        if len(parts) > 1 and all(seen(w) for w in parts):
+            return True
+        if kind == "class":
+            # '성별'은 '별'을 떼면 '성'이 되므로 뗀 것 · 안 뗀 것 둘 다 본다
+            axis = next(
+                (a for k in (norm(word), key) if (a := CLASS_ALIAS.get(k, k)) in CLASS_SAID), key
+            )
+            if axis == "연령" and age_said:
+                return True
+            if (pat := CLASS_SAID.get(axis)) and pat.search(question):
+                return True
+        # 연령 표현('20대', '35세')은 질문에 나이 말이 있으면 규칙 해석으로 본다 ('서른다섯 살')
+        return age_said and (
+            agegroup.span(word) is not None or bool(re.search(r"\d+\s*(세|살|대)", word))
+        )
+
+    dropped = []
+    for kind, field in (("class", "classes"), ("item", "items")):
+        keep = []
+        for w in c.get(field) or []:
+            (keep if grounded(w, kind) else dropped).append(w)
+        c[field] = keep
+    if dropped:
+        slots["dropped_conditions"] = dropped
+    return slots
 
 
 # ---- 3. 조건 검증 ---------------------------------------------------------------
@@ -924,6 +1005,29 @@ def find(
         for f in families[1:TOP_FAMILIES]
     ]
     result["other_families"] = others
+    # '우리 구로 이사 오는'처럼 지역 이름 없이 '우리 구 · 동네'라고 했는데 1위가 시도 전용 표
+    # ('서울특별시 시군구 각세별 이동자수')면, 같은 꼴의 시도별 표를 선택지로 되묻는다
+    # (답 '부산' → 부산 표)
+    if (
+        allow_clarify
+        and not slots["conditions"].get("region")
+        and OUR_PLACE.search(slots.get("question") or "")
+        and (sido := SIDO_PREFIX.match(top["table"]["table_name"]))
+    ):
+        shape = top["table"]["table_name"][sido.end():].strip()
+        same = [
+            f
+            for f in families[:30]
+            if (m := SIDO_PREFIX.match(f["table"]["table_name"]))
+            and f["table"]["table_name"][m.end() :].strip() == shape
+        ]
+        if len(same) > 1:
+            result["options"] = [
+                {"family_id": f["table"]["family_id"], "family_name": f["table"]["family_name"],
+                 "score": round(f["score"], 3), **_brief(f["table"])}
+                for f in same[:17]
+            ]  # fmt: skip
+            return {**result, "status": "ambiguous", "reason": "어느 지역인지 알려 주세요"}
     if len(families) > 1 and top["score"] - families[1]["score"] < gap:
         close = [o for o in others if top["score"] - o["score"] < gap]
         result["options"] = [
@@ -1043,6 +1147,7 @@ async def search(
         trace["embedding"]["rewrite"] = dense2 is not None
         if dense2 is not None:
             dense = [(a + b) / 2 for a, b in zip(dense, dense2, strict=True)]
+    ground_conditions(slots)  # 추측 단어 거르기
     ready = max(parsed_at, embedded_at)
     tables = await load_tables()
     result = find(

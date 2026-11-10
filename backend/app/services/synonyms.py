@@ -42,9 +42,47 @@ def load(path: Path = SYNONYMS_PATH) -> dict[str, str]:
         return json.load(f)
 
 
+# Kiwi 형태소 분석으로 어절 끝 조사 · 어미를 떼고, 기능어만인 어절은 버린다
+try:
+    from kiwipiepy import Kiwi
+
+    _KIWI = Kiwi()
+except Exception:  # noqa: BLE001  설치 안 됐으면 정규식만
+    _KIWI = None
+# 이 품사로만 된 어절은 검색어가 아니다 (부사 · 접속부사 · 관형사 · 감탄사 · 보조용언 · 의존명사)
+KIWI_DROP = {"MAG", "MAJ", "MM", "IC", "VX", "NNB"}
+KIWI_NOUNISH = ("NN", "NR", "NP", "XR", "SN", "SL", "SH", "XP")
+
+
+def kiwi_clean(text: str) -> str:
+    """문장 전체를 한 번에 분석(문맥)한 뒤 어절마다: 명사로 시작하면 끝의 조사 · 어미만 떼고,
+    용언(동사 · 형용사)으로 시작하거나 기능어만인 어절은 버린다
+    (용언의 뜻은 사전이 원문에서 잡는다)"""
+    if _KIWI is None:
+        return text
+    toks = _KIWI.tokenize(text)
+    out = []
+    for m in re.finditer(r"\S+", text):
+        ws, we = m.span()
+        mine = [t for t in toks if ws <= t.start < we]
+        content = [
+            t
+            for t in mine
+            if not (t.tag.startswith(("J", "E", "S")) and t.tag not in ("SN", "SL", "SH"))
+            and t.tag != "VCP"
+        ]
+        if not content or all(t.tag in KIWI_DROP for t in content):
+            continue
+        if not mine[0].tag.startswith(KIWI_NOUNISH):
+            continue
+        out.append(text[ws: max(t.start + t.len for t in content)])
+    return " ".join(out)
+
+
 def clean_query(question: str) -> str:
-    """군더더기 말을 공백으로 바꾸고 공백을 하나로"""
-    return " ".join(FILLER.sub(" ", question).split())
+    """군더더기 말을 공백으로 바꾸고 공백을 하나로, 이어서 Kiwi 로 조사 · 어미 · 기능어 제거"""
+    words = FILLER.sub(" ", kiwi_clean(question)).split()
+    return " ".join(w for w in words if (len(w) > 1 or w.isdigit()) and w != "1년")
 
 
 NEGATION_MARKS = ("아닌", "아니고", "아니라", "말고", "빼고", "제외", "않은", "안 ")

@@ -124,8 +124,8 @@ def _three_families() -> list[dict]:
 
 def test_hybrid_finds_table_without_keyword() -> None:
     tables = _three_families()
-    s = _slots("돌아가신 분 수", "돌아가신 분 수")
-    # 키워드만으로는 '돌아가신'이 표명에 없어 찾지 못한다
+    s = _slots("고인이 된 분 수", "고인이 된 분 수")
+    # 키워드만으로는 '고인'이 표명에도 사전에도 없어 찾지 못한다
     assert se.find(tables, s)["status"] == "out_of_scope"
     result = se.find(tables, s, dense=[0.62, 0.40, 0.35])
     assert result["retrieval"] == "hybrid"
@@ -220,14 +220,15 @@ def test_keyword_query_from_question_with_synonyms() -> None:
     # HCX 요약(topic)이 아니라 원문에서: '시군구별'이 남고, 일상어에 통계 용어가 붙는다
     s = _slots("시군구별로 혼자 사는 사람이 몇 명인지", "1인 가구 수")
     q = se.keyword_query(s)
-    assert "시군구별로" in q and "1인가구" in q
+    assert "시군구별" in q and "1인가구" in q
+    assert "시군구별로" not in q and "사는" not in q  # 조사·어미·용언은 Kiwi가 뗀다
     assert "몇" not in q and "인지" not in q  # 군더더기 말은 지운다
 
     # 띄어쓰기가 있든 없든 지운다 (코드 리뷰 10/31). 단어 끝의 '표'('생명표')는 남긴다
     def kq(question: str) -> str:
         return se.keyword_query(_slots(question, question))
 
-    assert kq("시군구별 외국인 수 찾아줘").startswith("시군구별 외국인 수")
+    assert kq("시군구별 외국인 수 찾아줘").startswith("시군구별 외국인")  # 한 글자 '수'는 뺀다
     assert "찾아" not in kq("시군구별 외국인 수 찾아줘")
     assert kq("볼수있는 표 알려주세요") == ""
     assert kq("출산율 알고싶어").startswith("출산율") and "알고" not in kq("출산율 알고싶어")
@@ -412,13 +413,13 @@ def test_keyword_text_matches_keys_containing_filler() -> None:
     """군더더기 말이 든 사전 키도 원문에서 찾는다. 검색어 본문은 정리된 글 그대로"""
     table = {"우리 동네": "시군구", "몇 명 태어": "출생아수", "동네": "엉뚱한말"}
     assert se.synonyms.keyword_text("우리 동네 외국인 몇 명", table) == "동네 외국인 시군구"
-    assert se.synonyms.keyword_text("아기가 몇 명 태어났는지", table) == "아기가 태어났 출생아수"
+    assert se.synonyms.keyword_text("아기가 몇 명 태어났는지", table) == "아기 출생아수"
 
 
 def test_keyword_text_ignores_key_across_removed_filler() -> None:
     """지운 말 양쪽이 붙어 생긴 가짜 표현은 맞지 않는다 ('타는지 시도별' → '타 시도')"""
     table = {"타 시도": "다른"}
-    assert se.synonyms.keyword_text("버스 타는지 시도별로", table) == "버스 타 시도별로"
+    assert se.synonyms.keyword_text("버스 타는지 시도별로", table) == "버스 시도별"
 
 
 def test_keyword_text_applies_exclude_when_matching_original() -> None:
@@ -1072,3 +1073,46 @@ def test_many_values_match_parts_split_by_symbols() -> None:
     assert se.check(t2, _slots("q", "종사자", items=["제조업"])) == {"item:제조업": True}
     # 띄어쓰기에서는 나누지 않는다: '고령군'에 '고령'이 걸리지 않는 것은 그대로
     assert se.value_keys("경상북도 고령군") == {"경상북도고령군"}
+
+
+# HCX 가 추측해 넣은 분류·항목 단어 거르기
+def _gslots(q, classes=(), items=()):
+    return {
+        "question": q,
+        "topic": q,
+        "exclude": [],
+        "conditions": {
+            "classes": list(classes),
+            "items": list(items),
+            "sex": None,
+            "region": None,
+            "region_level": None,
+            "year": None,
+            "year_end": None,
+        },
+    }
+
+
+def test_ground_conditions_drops_guessed_words():
+    q = "2010년에 1인가구가 어떤 집에 살았는지 시군구별로"
+    s = se.ground_conditions(_gslots(q, ["거주형태"], ["시군구"]))
+    assert s["conditions"]["classes"] == [] and s["conditions"]["items"] == ["시군구"]
+    assert s["dropped_conditions"] == ["거주형태"]
+
+
+def test_ground_conditions_keeps_said_words():
+    q = "서울 구별 나이별 전입 전출 인구"
+    s = se.ground_conditions(_gslots(q, ["나이"], ["전입 인구", "전출 인구"]))
+    assert s["conditions"]["classes"] == ["나이"]
+    assert s["conditions"]["items"] == ["전입 인구", "전출 인구"]
+    assert "dropped_conditions" not in s
+
+
+def test_ground_conditions_keeps_age_and_education_axes():
+    s = se.ground_conditions(_gslots("중년에 혼자 사는 남자가 얼마나 되나", ["연령", "성별"]))
+    assert s["conditions"]["classes"] == ["연령", "성별"]
+    q = "구별로 서른다섯 살 미혼 남자가 몇 명인지"
+    s = se.ground_conditions(_gslots(q, [], ["35세", "미혼"]))
+    assert s["conditions"]["items"] == ["35세", "미혼"]
+    s = se.ground_conditions(_gslots("대학 나온 사람이 결혼을 더 많이 하는지", ["학력"], ["결혼"]))
+    assert s["conditions"]["classes"] == ["학력"]
