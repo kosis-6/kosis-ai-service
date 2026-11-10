@@ -99,7 +99,9 @@ AGE_SPANS = [
     (re.compile(r"(\d+)\s*대(?!\s*(광역시|도시))"), lambda m: (int(m[1]), int(m[1]) + 9)),
     (re.compile(r"(\d+)\s*세\s*이상"), lambda m: (int(m[1]), None)),
     (re.compile(r"(\d+)\s*[~\-]\s*(\d+)\s*세"), lambda m: (int(m[1]), int(m[2]))),
-    (re.compile(r"(\d+)\s*세\s*(?:미만|이하)"), lambda m: (0, int(m[1]))),
+    # 미만은 그 나이를 빼고(15세 미만 = 0~14세), 이하는 넣는다(15세 이하 = 0~15세)
+    (re.compile(r"(\d+)\s*세\s*미만"), lambda m: (0, int(m[1]) - 1)),
+    (re.compile(r"(\d+)\s*세\s*이하"), lambda m: (0, int(m[1]))),
 ]
 
 
