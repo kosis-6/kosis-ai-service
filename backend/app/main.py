@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from app.api.router import api_router
 from app.core.config import get_settings
 from app.core.security import AuthNotConfigured
+from app.core.security_headers import SecurityHeadersMiddleware
 from app.services import indicators, load_queue, search
 from app.services.mailer import MailNotConfigured
 
@@ -90,6 +91,7 @@ def _korean_openapi() -> dict:
 
 
 app.openapi = _korean_openapi  # type: ignore[method-assign]
+app.add_middleware(SecurityHeadersMiddleware)
 app.include_router(api_router)
 
 
