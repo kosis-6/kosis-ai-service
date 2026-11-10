@@ -103,7 +103,7 @@ LEVEL_WORDS = [
         "시군구",
         re.compile(
             r"시군구|시·군·구|(?<![가-힣])(?:구|시군|군)별|(?<![가-힣])(?:구|군)\s*단위"
-            r"|우리\s*(?:구|군)(?![가-힣])|동네"
+            r"|우리\s*(?:구|군)(?:(?![가-힣])|(?=(?:로|에서|에|는|은|의|가|를|도)(?![가-힣])))|동네"
         ),
     ),
     ("시도", re.compile(r"시도|시·도")),
@@ -294,6 +294,15 @@ def correct(question: str, slots: dict[str, Any]) -> dict[str, Any]:
     region = c["region"]
     if region and region.replace(" ", "") in SIDO_ALIAS:
         fix("region", SIDO_ALIAS[region.replace(" ", "")], "시도 정식 이름")
+    # '우리 구로 이사 오는': '구로'는 '우리 구' + 조사 '로'다. HCX 가 '구로'(구로구)로
+    # 읽으면 지운다 (질문에 '구로구'가 따로 있으면 그대로)
+    if (
+        c["region"]
+        and (m := OUR_DISTRICT.search(question))
+        and c["region"].replace(" ", "") in (m[1] + (m[2] or ""), m[1])
+        and f"{c['region']}구" not in question
+    ):
+        fix("region", None, "'우리 구'의 조사를 지역 이름으로 읽음")
     # '서울 말고 시도별 인구': 빼 달라고 한 지역을 HCX 가 지역 슬롯에 넣었으면 지운다
     excluded_regions = {SIDO_ALIAS.get(w.rstrip("은는을를이가"), w) for w in slots["exclude"]}
     if c["region"] and c["region"] in excluded_regions:
@@ -447,6 +456,9 @@ def spouse_of(question: str) -> str | None:
     if wife == husband:  # 둘 다 없거나 둘 다 있으면 정하지 않는다
         return None
     return "외국인 아내" if wife else "외국인 남편"
+
+
+OUR_DISTRICT = re.compile(r"우리\s*(구|군)(로|에서|에|는|은|의|가|를|도)?(?![가-힣])")
 
 
 def _level_of(region: str) -> str | None:

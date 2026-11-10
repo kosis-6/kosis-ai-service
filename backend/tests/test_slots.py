@@ -155,3 +155,26 @@ def test_negation_and_spouse() -> None:
     # 결혼·이혼 질문이 아니면 그냥 성별
     s = _slots("외국인 여자 수")
     assert (s["spouse"], s["conditions"]["sex"]) == (None, "여")
+
+
+# '우리 구로' · 학생 단어
+def test_our_district_particle_is_not_guro():
+    import copy
+    base = {"topic": "이사", "search_query": None, "target": None, "exclude": [], "llm_exclude": [],
+            "query_type": "find_table",
+            "conditions": {"classes": [], "items": [], "sex": None, "region": "구로",
+                           "region_level": None, "year": None, "year_end": None}}
+    out = sl.correct("우리 구로 이사 오는 사람들 나이", copy.deepcopy(base))
+    assert out["conditions"]["region"] is None and out["conditions"]["region_level"] == "시군구"
+    b2 = copy.deepcopy(base)
+    b2["conditions"]["region"] = "구로구"
+    assert sl.correct("구로구로 이사 오는 사람", b2)["conditions"]["region"] == "구로구"
+
+
+def test_student_words():
+    from app.services import agegroup, llm_pick
+    assert llm_pick.OFF_DOMAIN.search("대학생 수") is None
+    assert llm_pick.OFF_DOMAIN.search("고등학생 수") is None
+    assert llm_pick.OFF_DOMAIN.search("한 반에 학생 수")
+    a = agegroup.resolve("초등학생인 다문화 가정 아이")
+    assert (a.lo, a.hi) == (7, 12)
