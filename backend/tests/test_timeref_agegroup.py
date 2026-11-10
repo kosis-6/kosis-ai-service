@@ -137,6 +137,9 @@ def test_age_span_and_item_check() -> None:
     assert (agegroup.span("30대 이상").lo, agegroup.span("30대 이상").hi) == (30, None)
     assert agegroup.span("청소년").lo == 9
     assert agegroup.span("가구수") is None
+    assert (agegroup.span("15세 미만").lo, agegroup.span("15세 미만").hi) == (0, 14)
+    assert (agegroup.span("15세 이하").lo, agegroup.span("15세 이하").hi) == (0, 15)
+    assert (agegroup.span("20대 후반").lo, agegroup.span("20대 후반").hi) == (27, 29)
     base = {"tbl_id": "A", "survey_name": "인구총조사", "organization": "", "period": "", "url": "",
             "path_texts": ["주제별통계 > 인구 > 미혼모"], "start_year": 2015, "end_year": 2025,
             "region_levels": ["시도"], "prev_region_levels": [], "sex_coverage": "none", "has_total": None,

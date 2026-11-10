@@ -169,6 +169,13 @@ def test_extract_ages() -> None:
     assert qa.extract_ages("서울로 이사 온 20대랑 30대") == [[20, 29], [30, 39]]
     assert qa.extract_ages("65세 이상 인구") == [[65, None]]
     assert qa.extract_ages("2024년 다문화 혼인 건수를 5대 광역시끼리") == []
+    assert qa.extract_ages("15세 미만 인구") == [[0, 14]]
+    assert qa.extract_ages("15세 이하 인구") == [[0, 15]]
+    assert qa.extract_ages("60대 이상 인구") == [[60, None]]
+    assert qa.extract_ages("20~30대 인구") == [[20, 39]]
+    assert qa.extract_ages("20대 후반 남자") == [[27, 29]]
+    assert qa.extract_ages("30대 초반과 40대 중반") == [[30, 33], [44, 46]]
+    assert qa.extract_ages("20대(20~29세) 인구") == [[20, 29]]
 
 
 def test_ratio_indicator_for_count_question_is_refused() -> None:

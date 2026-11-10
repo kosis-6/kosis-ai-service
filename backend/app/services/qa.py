@@ -105,6 +105,12 @@ NO_REGION_TYPES = {"rank", "other", "parse_error"}
 AGE_RANGE = re.compile(r"(?:만\s*)?(\d+)\s*세?\s*[~\-]\s*(\d+)\s*세")
 AGE_OVER = re.compile(r"(?:만\s*)?(\d+)\s*세\s*이상")
 AGE_UNDER = re.compile(r"(?:만\s*)?(\d+)\s*세\s*미만")
+AGE_UNDER_EQ = re.compile(r"(?:만\s*)?(\d+)\s*세\s*이하")
+# "60대 이상", "20~30대", "20대 후반"
+AGE_DECADE_OVER = re.compile(r"(\d+)\s*대\s*이상")
+AGE_DECADE_RANGE = re.compile(r"(\d+)\s*[~\-]\s*(\d+)\s*대(?!\s*(광역시|도시))")
+AGE_DECADE_PART = re.compile(r"(\d+)\s*대\s*(초반|중반|후반)")
+DECADE_PART = {"초반": (0, 3), "중반": (4, 6), "후반": (7, 9)}
 AGE_DECADE = re.compile(r"(\d+)\s*대(?!\s*(광역시|도시))")
 # 여러 지역 묶음
 # "충청도"는 묶음이 아니라 충북·충남 중 어디인지 되묻는다 (indicators.AMBIGUOUS_NAMES)
@@ -200,17 +206,35 @@ STATS_WORDS = re.compile(
 
 def extract_ages(question):
     """질문 속 연령 구간 → [[시작, 끝 또는 None], ...] (나온 순서, 중복 제거)"""
-    found = []
+    found, covered = [], []
+
+    def add(m, band):
+        # 앞에서 더 구체적인 표현으로 이미 읽은 자리면 건너뛴다 ("60대 이상"의 "60대")
+        if not any(a < m.end() and m.start() < b for a, b in covered):
+            covered.append(m.span())
+            found.append((m.start(), band))
+
     for m in AGE_RANGE.finditer(question):
-        found.append((m.start(), [int(m[1]), int(m[2])]))
+        add(m, [int(m[1]), int(m[2])])
     for m in AGE_OVER.finditer(question):
-        found.append((m.start(), [int(m[1]), None]))
+        add(m, [int(m[1]), None])
     for m in AGE_UNDER.finditer(question):
-        found.append((m.start(), [0, int(m[1]) - 1]))
-    covered = [m.span() for p in (AGE_RANGE, AGE_OVER, AGE_UNDER) for m in p.finditer(question)]
+        add(m, [0, int(m[1]) - 1])
+    for m in AGE_UNDER_EQ.finditer(question):
+        add(m, [0, int(m[1])])
+    for m in AGE_DECADE_RANGE.finditer(question):
+        if int(m[1]) % 10 == 0 and int(m[2]) % 10 == 0:
+            add(m, [int(m[1]), int(m[2]) + 9])
+    for m in AGE_DECADE_OVER.finditer(question):
+        if int(m[1]) % 10 == 0:
+            add(m, [int(m[1]), None])
+    for m in AGE_DECADE_PART.finditer(question):
+        if int(m[1]) % 10 == 0:
+            lo, hi = DECADE_PART[m[2]]
+            add(m, [int(m[1]) + lo, int(m[1]) + hi])
     for m in AGE_DECADE.finditer(question):
-        if int(m[1]) % 10 == 0 and not any(a <= m.start() < b for a, b in covered):
-            found.append((m.start(), [int(m[1]), int(m[1]) + 9]))
+        if int(m[1]) % 10 == 0:
+            add(m, [int(m[1]), int(m[1]) + 9])
     bands = []
     for _, band in sorted(found, key=lambda x: x[0]):
         if band not in bands:
