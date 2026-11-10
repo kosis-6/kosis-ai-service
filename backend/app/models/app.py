@@ -9,6 +9,7 @@ from sqlalchemy import (
     BigInteger,
     CheckConstraint,
     DateTime,
+    ForeignKey,
     Identity,
     Index,
     SmallInteger,
@@ -38,6 +39,27 @@ class User(Base):
     # 토큰에 넣는 번호. 비밀번호 변경·계정 정지 때 1 올려 그 전 토큰을 끊는다
     token_version: Mapped[int] = mapped_column(server_default=text("0"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class UserSession(Base):
+    """로그인 한 번(기기 하나)에 줄 하나. Refresh Token 보관과 예전 Access Token 막기를 함께 한다
+
+    - refresh_hash: Refresh Token 비밀 부분의 SHA-256. 원래 값은 두지 않는다
+    - access_jti: 지금 쓸 수 있는 Access Token 번호. 새 토큰을 받으면 바뀌어 예전 토큰은 못 쓴다
+    - revoked_at: 로그아웃·비밀번호 변경·계정 정지·Refresh Token 재사용 감지로 끊은 시각
+    """
+
+    __tablename__ = "user_sessions"
+    __table_args__ = (Index("user_sessions_user", "user_id"), {"schema": "app"})
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("app.users.id", ondelete="CASCADE"))
+    refresh_hash: Mapped[str]
+    access_jti: Mapped[str]
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_used_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class EmailVerification(Base):

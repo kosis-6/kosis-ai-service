@@ -1,6 +1,7 @@
 """비밀번호 해시와 로그인 토큰(JWT). DB를 모르는 순수 함수만 둔다"""
 
 from datetime import UTC, datetime, timedelta
+from typing import NamedTuple
 
 import jwt
 from pwdlib import PasswordHash
@@ -38,21 +39,44 @@ def secret_key() -> str:
     return key
 
 
-def create_access_token(user_id: int, minutes: int | None = None, version: int = 0) -> str:
-    """version은 사용자의 token_version. 사용자 번호가 올라가면 이 토큰은 더 쓸 수 없다"""
+class AccessClaims(NamedTuple):
+    user_id: int
+    version: int  # 사용자의 token_version
+    session_id: int  # app.user_sessions.id (어느 로그인에서 받은 토큰인지)
+    jti: str  # 토큰 번호. 그 로그인의 access_jti와 같아야 쓸 수 있다
+
+
+def create_access_token(
+    user_id: int, session_id: int, jti: str, version: int = 0, minutes: int | None = None
+) -> str:
     now = datetime.now(UTC)
     exp = now + timedelta(minutes=minutes or get_settings().access_token_minutes)
-    payload = {"sub": str(user_id), "ver": version, "iat": now, "exp": exp}
+    payload = {
+        "sub": str(user_id),
+        "sid": session_id,
+        "jti": jti,
+        "ver": version,
+        "iat": now,
+        "exp": exp,
+    }
     return jwt.encode(payload, secret_key(), ALGORITHM)
 
 
-def decode_access_token(token: str) -> tuple[int, int] | None:
-    """서명이 맞고 만료되지 않았으면 (사용자 id, 토큰 번호), 아니면 None.
-    번호가 없는 토큰(번호를 넣기 전에 발급)은 0으로 본다"""
+def decode_access_token(token: str) -> AccessClaims | None:
+    """서명이 맞고 만료되지 않았으면 토큰 내용, 아니면 None.
+    로그인 기록(sid, jti)이 없는 토큰(Refresh Token을 넣기 전에 발급)은 받지 않는다"""
     try:
         payload = jwt.decode(
-            token, secret_key(), algorithms=[ALGORITHM], options={"require": ["exp"]}
+            token,
+            secret_key(),
+            algorithms=[ALGORITHM],
+            options={"require": ["exp", "sub", "sid", "jti"]},
         )
-        return int(payload["sub"]), int(payload.get("ver", 0))
+        return AccessClaims(
+            int(payload["sub"]),
+            int(payload.get("ver", 0)),
+            int(payload["sid"]),
+            str(payload["jti"]),
+        )
     except (jwt.InvalidTokenError, KeyError, ValueError, TypeError):
         return None

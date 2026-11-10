@@ -1,6 +1,7 @@
 """로그인: 해시·토큰 함수, 회원가입(이메일 인증·비밀번호 규칙), /auth API, 선택 로그인,
-시도 횟수 제한, 관리자 사용자 관리
-(DB 대신 services.users와 email_verify의 저장 함수를 바꿔 끼우고, 메일은 보내지 않고 모은다)
+시도 횟수 제한, 관리자 사용자 관리, Refresh Token·로그아웃
+(DB 대신 services.users와 email_verify·auth_sessions의 저장 함수를 바꿔 끼우고,
+메일은 보내지 않고 모은다)
 """
 
 import asyncio
@@ -18,7 +19,7 @@ from app.core.config import get_settings
 from app.core.db import get_session
 from app.main import app
 from app.schemas.auth import nickname_problem, password_problem
-from app.services import email_verify, mailer, users
+from app.services import auth_sessions, email_verify, mailer, users
 
 SECRET = "test-secret-key-that-is-long-enough-0123456789"
 
@@ -48,6 +49,7 @@ class Clock:
 def clock(monkeypatch: pytest.MonkeyPatch) -> Clock:
     c = Clock()
     monkeypatch.setattr(email_verify, "now", c)
+    monkeypatch.setattr(auth_sessions, "now", c)
     return c
 
 
@@ -85,7 +87,34 @@ def codes(monkeypatch: pytest.MonkeyPatch) -> dict:
 
 
 @pytest.fixture
-def db(monkeypatch: pytest.MonkeyPatch, codes, outbox, clock) -> dict[int, SimpleNamespace]:
+def logins(monkeypatch: pytest.MonkeyPatch) -> dict[int, SimpleNamespace]:
+    """로그인 기록(app.user_sessions) 대신 id → 줄 사전. 판단 함수(rotate 등)는 그대로 쓴다"""
+    rows: dict[int, SimpleNamespace] = {}
+
+    async def create(session, user_id, at):
+        row = SimpleNamespace(id=len(rows) + 1, user_id=user_id, revoked_at=None)
+        secret, jti = auth_sessions.rotate(row, at)
+        rows[row.id] = row
+        return row, secret, jti
+
+    async def save(session, row):
+        rows[row.id] = row
+
+    async def revoke_all(session, user_id, at):
+        for row in rows.values():
+            if row.user_id == user_id and row.revoked_at is None:
+                row.revoked_at = at
+
+    monkeypatch.setattr(auth_sessions, "get", lambda session, i: _async(rows.get(i)))
+    monkeypatch.setattr(auth_sessions, "create", create)
+    monkeypatch.setattr(auth_sessions, "save", save)
+    monkeypatch.setattr(auth_sessions, "revoke_all", revoke_all)
+    client.cookies.clear()  # 앞 테스트의 Refresh Token 쿠키가 남지 않게
+    return rows
+
+
+@pytest.fixture
+def db(monkeypatch: pytest.MonkeyPatch, codes, outbox, clock, logins) -> dict[int, SimpleNamespace]:
     """이메일 → 사용자 대신 id → 사용자 사전. users 모듈 함수만 바꾸고 라우터는 그대로 쓴다"""
     rows: dict[int, SimpleNamespace] = {}
 
@@ -196,16 +225,17 @@ def test_password_hash_roundtrip() -> None:
 
 
 def test_token_roundtrip_and_rejects_bad_tokens() -> None:
-    token = security.create_access_token(7, version=3)
-    assert security.decode_access_token(token) == (7, 3)
+    token = security.create_access_token(7, 2, "jti-1", version=3)
+    assert security.decode_access_token(token) == security.AccessClaims(7, 3, 2, "jti-1")
     assert security.decode_access_token(token + "x") is None
-    assert security.decode_access_token(security.create_access_token(7, minutes=-1)) is None
+    expired = security.create_access_token(7, 2, "jti-1", minutes=-1)
+    assert security.decode_access_token(expired) is None
 
 
 def test_short_secret_is_not_configured(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(get_settings(), "jwt_secret_key", "short")
     with pytest.raises(security.AuthNotConfigured):
-        security.create_access_token(1)
+        security.create_access_token(1, 1, "jti")
 
 
 def test_register_login_me(db) -> None:
@@ -275,16 +305,18 @@ def test_require_admin() -> None:
     assert e.value.status_code == 403
 
 
-def test_token_without_version_is_version_zero() -> None:
-    """번호를 넣기 전에 발급한 토큰도 번호 0으로 읽는다 (배포 직후 로그인이 끊기지 않게)"""
+def test_token_without_login_record_is_rejected() -> None:
+    """Refresh Token을 넣기 전에 발급한 토큰(sid, jti 없음)은 받지 않는다. 다시 로그인하면 된다"""
     import jwt
 
-    old = jwt.encode({"sub": "7", "exp": datetime.now(UTC).timestamp() + 60}, SECRET, "HS256")
-    assert security.decode_access_token(old) == (7, 0)
+    exp = datetime.now(UTC).timestamp() + 60
+    old = jwt.encode({"sub": "7", "ver": 0, "exp": exp}, SECRET, "HS256")
+    assert security.decode_access_token(old) is None
 
 
 def test_change_password_cuts_old_tokens(db) -> None:
-    old = _signup("a@b.co")
+    other_device = _signup("a@b.co")
+    old = _login("a@b.co", PW).json()["access_token"]
     body = {"current_password": PW, "new_password": "new-pass-1"}
 
     wrong = client.post(
@@ -299,7 +331,9 @@ def test_change_password_cuts_old_tokens(db) -> None:
     assert r.status_code == 200
     new = r.json()["access_token"]
     assert client.get("/auth/me", headers=_auth(old)).status_code == 401  # 예전 토큰은 끊김
+    assert client.get("/auth/me", headers=_auth(other_device)).status_code == 401  # 다른 기기도
     assert client.get("/auth/me", headers=_auth(new)).status_code == 200
+    assert client.post("/auth/refresh").status_code == 200  # 새로 받은 쿠키로 계속 쓸 수 있다
     assert _login("a@b.co", PW).status_code == 401
     assert _login("a@b.co", "new-pass-1").status_code == 200
 
@@ -349,7 +383,7 @@ def test_optional_user(db) -> None:
     assert asyncio.run(get_optional_user(token, None)).email == "a@b.co"
 
 
-def test_admin_lists_and_updates_users(db) -> None:
+def test_admin_lists_and_updates_users(db, logins) -> None:
     admin_token = _signup("admin@b.co")
     db[1].is_admin = True
     user_token = _signup("user@b.co")
@@ -368,6 +402,7 @@ def test_admin_lists_and_updates_users(db) -> None:
     client.patch("/admin/users/2", json={"is_active": True}, headers=_auth(admin_token))
     assert client.get("/auth/me", headers=_auth(user_token)).status_code == 401
     assert _login("user@b.co", PW).status_code == 200
+    assert logins[2].revoked_at is not None  # 정지 전 로그인 줄은 끊김
 
     promote = client.patch("/admin/users/2", json={"is_admin": True}, headers=_auth(admin_token))
     assert promote.json()["is_admin"] is True
@@ -498,3 +533,93 @@ def test_nickname_rule_and_change(db) -> None:
     r = client.patch("/auth/me", json={"nickname": "새이름"}, headers=_auth(token))
     assert r.status_code == 200 and r.json()["nickname"] == "새이름"
     assert client.get("/auth/me", headers=_auth(token)).json()["nickname"] == "새이름"
+
+
+def _refresh(cookie: str | None = None):
+    """cookie를 주면 쿠키 저장소 대신 그 Refresh Token을 보낸다"""
+    if cookie is None:
+        return client.post("/auth/refresh")
+    client.cookies.clear()
+    return client.post("/auth/refresh", headers={"Cookie": f"refresh_token={cookie}"})
+
+
+def test_login_sets_refresh_cookie(db) -> None:
+    _register("a@b.co")
+    r = _login("a@b.co", PW)
+    assert r.status_code == 200
+    assert r.json()["expires_in"] == 15 * 60
+    cookie = r.headers["set-cookie"]
+    assert cookie.startswith("refresh_token=1.")
+    for part in ("HttpOnly", "Path=/auth", "SameSite=strict", "Max-Age=1209600"):
+        assert part in cookie
+    assert "refresh_token" not in r.json()  # 본문에는 Access Token만
+
+
+def test_refresh_rotates_and_cuts_old_access_token(db, logins) -> None:
+    old_access = _signup("a@b.co")
+    old_refresh = client.cookies["refresh_token"]
+
+    r = _refresh()
+    assert r.status_code == 200
+    new_access = r.json()["access_token"]
+    new_refresh = client.cookies["refresh_token"]
+    assert new_refresh != old_refresh
+    assert client.get("/auth/me", headers=_auth(old_access)).status_code == 401  # 예전 토큰 막힘
+    assert client.get("/auth/me", headers=_auth(new_access)).status_code == 200
+    assert old_refresh.split(".")[1] not in str(vars(logins[1]))  # 원래 값은 두지 않는다
+
+    # 이미 쓴 Refresh Token이 다시 오면 훔쳐 간 것으로 보고 그 로그인을 통째로 끊는다
+    reused = _refresh(old_refresh)
+    assert reused.status_code == 401
+    assert 'refresh_token=""' in reused.headers["set-cookie"]  # 쿠키도 지운다
+    assert logins[1].revoked_at is not None
+    assert client.get("/auth/me", headers=_auth(new_access)).status_code == 401
+    assert _refresh(new_refresh).status_code == 401
+
+
+def test_refresh_fails_without_valid_cookie(db, clock) -> None:
+    assert _refresh().status_code == 401  # 쿠키 없음
+    assert _refresh("garbage").status_code == 401
+    assert _refresh("99.nope").status_code == 401  # 없는 로그인
+    access = _signup("a@b.co")
+    cookie = client.cookies["refresh_token"]
+
+    clock.at += timedelta(days=15)  # 14일 동안 안 씀
+    assert _refresh(cookie).status_code == 401
+    assert client.get("/auth/me", headers=_auth(access)).status_code == 401
+
+
+def test_refresh_extends_while_used(db, clock) -> None:
+    _signup("a@b.co")
+    for _ in range(3):  # 10일마다 새로 받으면 14일이 지나도 계속 쓸 수 있다
+        clock.at += timedelta(days=10)
+        assert _refresh().status_code == 200
+
+
+def test_refresh_fails_for_stopped_user(db) -> None:
+    _signup("a@b.co")
+    db[1].is_active = False
+    assert _refresh().status_code == 401
+
+
+def test_logout_cuts_this_login_only(db) -> None:
+    phone = _signup("a@b.co")
+    phone_cookie = client.cookies["refresh_token"]
+    laptop = _login("a@b.co", PW).json()["access_token"]
+    laptop_cookie = client.cookies["refresh_token"]
+
+    client.cookies.clear()
+    r = client.post("/auth/logout", headers=_auth(phone))
+    assert r.status_code == 204
+    assert client.get("/auth/me", headers=_auth(phone)).status_code == 401
+    assert _refresh(phone_cookie).status_code == 401
+    assert client.get("/auth/me", headers=_auth(laptop)).status_code == 200  # 다른 기기는 그대로
+
+    # Access Token이 만료돼도 쿠키만으로 로그아웃할 수 있다
+    client.cookies.clear()
+    client.cookies.set("refresh_token", laptop_cookie)
+    r = client.post("/auth/logout")
+    assert r.status_code == 204 and 'refresh_token=""' in r.headers["set-cookie"]
+    assert client.get("/auth/me", headers=_auth(laptop)).status_code == 401
+
+    assert client.post("/auth/logout").status_code == 204  # 이미 로그아웃해도 204

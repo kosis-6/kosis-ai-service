@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from app.api.deps import AdminUser, Session
 from app.schemas.auth import UserAdminRead, UserList, UserUpdate
-from app.services import load_queue, users
+from app.services import auth_sessions, load_queue, users
 
 router = APIRouter(prefix="/admin", tags=["관리자"])
 
@@ -50,4 +50,6 @@ async def update_user(
             status_code=400, detail="자기 계정은 정지하거나 관리자 권한을 뺄 수 없습니다."
         )
     target = await users.update(session, target, body.is_active, body.is_admin)
+    if body.is_active is False:  # 정지한 사용자의 로그인을 모두 끊는다
+        await auth_sessions.revoke_all(session, target.id, auth_sessions.now())
     return UserAdminRead.model_validate(target)

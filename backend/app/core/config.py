@@ -24,7 +24,11 @@ class Settings(BaseSettings):
     # 로그인 토큰(JWT) 서명 키. 32자 이상, 비어 있으면 로그인 API가 503을 돌려준다
     # 만들기: python -c "import secrets; print(secrets.token_urlsafe(48))"
     jwt_secret_key: str = ""
-    access_token_minutes: int = 60
+    # Access Token은 짧게, Refresh Token(HttpOnly 쿠키, 서버는 app.user_sessions에 해시만)은 길게
+    access_token_minutes: int = 15
+    refresh_token_days: int = 14  # 마지막으로 새 토큰을 받은 뒤 이 기간 안 쓰면 다시 로그인
+    # Refresh Token 쿠키를 HTTPS에서만 보낸다. 로컬(http://127.0.0.1)은 false, 배포(https)는 true
+    cookie_secure: bool = False
 
     # 회원가입 이메일 인증번호 메일 (app/services/mailer.py)
     # smtp: 실제로 보낸다 (Gmail은 앱 비밀번호, 배포는 AWS SES SMTP 등)

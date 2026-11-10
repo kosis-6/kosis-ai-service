@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.db import get_session
 from app.core.security import decode_access_token
 from app.models.app import User
-from app.services import users
+from app.services import auth_sessions, users
 
 # Swagger(/docs)의 Authorize 버튼이 이 주소로 로그인한다
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token")
@@ -31,13 +31,16 @@ UNAUTHORIZED = HTTPException(
 
 
 async def user_from_token(token: str, session: AsyncSession) -> User | None:
-    """토큰이 맞고, 사용자가 있고, 정지되지 않았고, 토큰 번호가 지금 번호와 같으면 사용자"""
-    decoded = decode_access_token(token)
-    if decoded is None:
+    """토큰이 맞고, 사용자가 있고, 정지되지 않았고, 토큰 번호가 지금 번호와 같고,
+    그 로그인(app.user_sessions)이 끊기지 않았고 이 토큰이 그 로그인의 지금 토큰이면 사용자"""
+    claims = decode_access_token(token)
+    if claims is None:
         return None
-    user_id, version = decoded
-    user = await users.get(session, user_id)
-    if user is None or not user.is_active or user.token_version != version:
+    user = await users.get(session, claims.user_id)
+    if user is None or not user.is_active or user.token_version != claims.version:
+        return None
+    row = await auth_sessions.get(session, claims.session_id)
+    if not auth_sessions.access_ok(row, claims, auth_sessions.now()):
         return None
     return user
 
