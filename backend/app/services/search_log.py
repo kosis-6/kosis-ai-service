@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS app.search_logs (
     id           bigserial PRIMARY KEY,
     created_at   timestamptz NOT NULL DEFAULT now(),
     session_id   text,
+    user_id      bigint,
     question     text NOT NULL,
     status       text,
     tbl_id       text,
@@ -27,10 +28,12 @@ CREATE TABLE IF NOT EXISTS app.search_logs (
     error        text
 )
 """
+# 사용자 id 칸을 더하기 전에 만든 테이블에도 칸을 붙인다 (손님 질문은 NULL)
+ADD_USER_ID = "ALTER TABLE app.search_logs ADD COLUMN IF NOT EXISTS user_id bigint"
 INSERT = """
-INSERT INTO app.search_logs (session_id, question, status, tbl_id, slots, candidates, response,
-                         hcx_raw, timings, elapsed_ms, error)
-VALUES (:session_id, :question, :status, :tbl_id, CAST(:slots AS jsonb),
+INSERT INTO app.search_logs (session_id, user_id, question, status, tbl_id, slots, candidates,
+                             response, hcx_raw, timings, elapsed_ms, error)
+VALUES (:session_id, :user_id, :question, :status, :tbl_id, CAST(:slots AS jsonb),
         CAST(:candidates AS jsonb), CAST(:response AS jsonb), CAST(:hcx_raw AS jsonb),
         CAST(:timings AS jsonb), :elapsed_ms, :error)
 """
@@ -50,6 +53,7 @@ async def write(
     trace: dict[str, Any] | None = None,
     elapsed_ms: int | None = None,
     error: str | None = None,
+    user_id: int | None = None,
 ) -> None:
     global _ready
     from app.core.db import engine
@@ -60,11 +64,13 @@ async def write(
         if not _ready:
             await conn.execute(text("CREATE SCHEMA IF NOT EXISTS app"))
             await conn.execute(text(DDL))
+            await conn.execute(text(ADD_USER_ID))
             _ready = True
         await conn.execute(
             text(INSERT),
             {
                 "session_id": session_id,
+                "user_id": user_id,
                 "question": question,
                 "status": (response or {}).get("status"),
                 "tbl_id": recs[0]["tbl_id"] if recs else None,
