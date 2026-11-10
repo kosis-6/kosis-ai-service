@@ -500,6 +500,8 @@ def build_facts(con):
               and (r.tbl_id in ({proj_list}) or (
                    (m.valid_from is null or r.period::int >= m.valid_from)
                    and (m.valid_to is null or r.period::int <= m.valid_to)))
+        -- 연 단위 자료만 (월·분기 자료가 섞이면 같은 year에 값이 여러 개 생김, lookup.py의 YEARLY와 같은 기준)
+        where r.prd_se in ('A', 'F')
     """)
     con.unregister("unit_df")
 
