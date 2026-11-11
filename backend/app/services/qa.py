@@ -179,6 +179,7 @@ RECENT = timeref.RECENT_N_YEARS
 SPAN = re.compile(r"((?:19|20)\d{2})\s*년?\s*(대비|부터|에서)\s*((?:19|20)\d{2})\s*년")
 YEAR = re.compile(r"((?:19|20)\d{2})\s*년")
 SINCE = re.compile(r"((?:19|20)\d{2})\s*년\s*(이후|이래|부터)(?!.*까지)")
+UNTIL = re.compile(r"((?:19|20)\d{2})\s*년\s*까지")
 NATIONWIDE = re.compile(r"전국|우리나라|대한민국|한국\s*(전체|의|은|는)|국내\s*(전체)?")
 CAUSAL = re.compile(r"효과가?\s*(있|없|컸)|효과적|원인|왜\s|영향을?\s*(줬|주|미쳤|끼쳤)")
 # "가장 많이 빠져나간 시군구", "합계출산율이 가장 높은 시도" → 순위
@@ -524,9 +525,12 @@ def _read_question(question, parsed, fix):
     if ask_followup.FROM_PAST.search(question) and not SPAN.search(question):
         # "과거부터 지금까지 합계출산율 추이" → 수록 기간 전체 추이
         asked["from_start"] = True
-        for key in ("start_year", "end_year"):
-            if parsed.get(key):
-                fix(key, None, "'과거부터'는 수록 기간 전체")
+        if parsed.get("start_year"):
+            fix("start_year", None, "'과거부터'는 수록 첫해부터")
+        # 끝은 질문에 "2010년까지"가 있으면 그 해, 없으면 최신 (HCX가 넣은 끝 연도는 지운다)
+        until = int(m[1]) if (m := UNTIL.search(question)) else None
+        if parsed.get("end_year") != until:
+            fix("end_year", until, "질문의 끝 연도" if until else "'과거부터'는 최신까지")
         if kind != "trend":
             fix("type", "trend", "과거부터의 변화를 물음")
             kind = "trend"
@@ -734,6 +738,8 @@ def _compute_population(q, ind, kind, regions, year, sex, ages, hi):
         return indicators.value(ind, regions[0], year, sex, ages)
     if kind == "trend":
         start, end = q.get("start_year") or hi - 5, q.get("end_year") or hi
+        if (q.get("asked") or {}).get("from_start") and not q.get("start_year"):
+            start = indicators._data_years()[0]  # "과거부터" → 수록 첫해부터
         return indicators.trend(ind, regions[0], start, end, sex, ages)
     if kind == "compare":
         return indicators.compare(ind, regions, year, sex, ages)

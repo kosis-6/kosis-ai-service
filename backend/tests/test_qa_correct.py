@@ -418,3 +418,36 @@ def test_from_past_is_whole_period_trend() -> None:
     )
     assert p["type"] == "trend" and p["asked"]["from_start"] is True
     assert p.get("start_year") is None
+
+
+def test_from_past_keeps_end_year_in_question() -> None:
+    # "과거부터 2010년까지" → 시작만 수록 첫해, 끝은 질문의 2010년
+    p = qa.correct(
+        "과거부터 2010년까지 전국 합계출산율 추이",
+        parsed(type="trend", indicator="합계출산율", regions=["전국"], start_year=1970),
+        TODAY,
+    )
+    assert p["asked"]["from_start"] is True
+    assert p.get("start_year") is None and p["end_year"] == 2010
+
+
+def test_from_past_drops_guessed_end_year() -> None:
+    # 질문에 끝 연도가 없으면 HCX가 넣은 끝 연도를 지우고 최신까지
+    p = qa.correct(
+        "과거부터 지금까지 전국 합계출산율 추이",
+        parsed(type="trend", indicator="합계출산율", regions=["전국"], end_year=2020),
+        TODAY,
+    )
+    assert p.get("end_year") is None
+
+
+def test_from_past_computed_indicator_starts_at_first_year(monkeypatch) -> None:
+    # 계산 지표(총인구 등)도 "과거부터"면 주민등록인구 수록 첫해부터 (전에는 최근 6년만)
+    calls = []
+    monkeypatch.setattr(indicators, "_data_years", lambda: (2008, 2025))
+    monkeypatch.setattr(indicators, "trend", lambda ind, reg, a, b, *rest: calls.append((a, b)))
+    q = {"type": "trend", "asked": {"from_start": True}, "start_year": None, "end_year": None}
+    qa._compute_population(q, "총인구", "trend", ["서울특별시"], 2025, "계", None, 2025)
+    q = {"type": "trend", "asked": {}, "start_year": None, "end_year": None}
+    qa._compute_population(q, "총인구", "trend", ["서울특별시"], 2025, "계", None, 2025)
+    assert calls == [(2008, 2025), (2020, 2025)]
