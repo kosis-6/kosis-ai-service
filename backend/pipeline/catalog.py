@@ -42,6 +42,13 @@ def _as_list(v):
     return v if isinstance(v, list) else [v]
 
 
+def base_sources(ind):
+    """서비스 기본 표(전처리 대상)를 쓰는 출처.
+    years가 있는 출처는 과거 연도용 표로, 질문이 그 연도를 물을 때 받는다
+    (app/services/table_cache.py). 기본 표가 아니라서 여기 검사·indicator_sources에서 뺀다"""
+    return [s for s in ind["sources"] if not s.get("years")]
+
+
 def load_notes():
     with open(NOTES_PATH, "rb") as f:
         return tomllib.load(f)
@@ -101,7 +108,7 @@ def build(con, notes):
                 "projection_c3": proj.get("c3_id"),
             }
         )
-        for s in ind["sources"]:
+        for s in base_sources(ind):
             sources.append(
                 {
                     "indicator": ind["name"],
@@ -169,7 +176,7 @@ def check(con, notes):
                     f"별칭 '{alias}'이(가) '{seen[key]}'와 '{ind['name']}' 두 지표에 있음"
                 )
             seen[key] = ind["name"]
-        for s in ind["sources"]:
+        for s in base_sources(ind):
             if s["table"] not in data_tables:
                 issues.append(f"{ind['name']}: 데이터에 없는 표 {s['table']}")
                 continue
