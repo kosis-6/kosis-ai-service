@@ -29,6 +29,7 @@ from app.core.stats_db import StatsTableMissing
 from app.prompts.qa import PARSE_SYSTEM
 from app.services import (
     agegroup,
+    ask_followup,
     analysis,
     indicators,
     load_queue,
@@ -1259,6 +1260,8 @@ def _refusal_text(r):
         return (
             f"{what} 아직 지원하지 않는 지표입니다. {gap}아래 지원 지표로 다시 질문해 주세요."
         )
+    if status == "missing_year":
+        return f"{r['reason']} {ask_followup.guide(r)}"
     guide = REFUSAL_GUIDE.get(status, "")
     if status == "unknown_region" and r.get("alternative"):
         guide = f"속한 시군구({r['alternative']})로 다시 질문해 주세요."
@@ -1446,6 +1449,45 @@ def sources(result):
     ]
 
 
+RECENT_WORDS = re.compile(r"최근|최신|현재|요즘|지금|올해|금년")
+
+
+async def _refresh_recent(question, parsed, trace):
+    """최근·최신을 묻는 조회 지표 질문: 쓰는 표마다 KOSIS에 새 연도가 올라왔는지
+    확인(하루 한 번)하고 있으면 다시 받는다 (table_cache.refresh_if_stale). 바로 못 받으면 갱신 작업을 대기열에 넣고
+    지금 자료로 답하면서 그 사실을 주의사항으로 돌려준다.
+
+    계산 지표(총인구 등)는 전처리로 만든 mart.population을 읽어 표를 다시 받아도 반영되지 않으므로
+    확인하지 않는다."""
+    if not RECENT_WORDS.search(question):
+        return []
+    sp = indicators.spec(parsed.get("indicator") or "")
+    if sp is None or sp["method"] != "lookup":
+        return []
+    notes, steps = [], trace.setdefault("refreshed", [])
+    for tbl_id in dict.fromkeys(s["table"] for s in sp["sources"] if not s.get("years")):
+        try:
+            info = await load_queue.table_info(tbl_id)
+        except (load_queue.UnknownTable, SQLAlchemyError):
+            continue
+        step = {"tbl_id": tbl_id}
+        outcome = await table_cache.refresh_if_stale(tbl_id, info["org_id"], step)
+        step["refresh"] = outcome
+        steps.append(step)
+        if outcome in ("too_big", "failed", "timeout", "disabled") and step.get(
+            "refresh_kosis_year"
+        ):
+            try:
+                await load_queue.enqueue(tbl_id, "update")
+            except SQLAlchemyError:
+                continue
+            notes.append(
+                f"KOSIS에 {step['refresh_kosis_year']}년 자료가 새로 있어 받고 있습니다. "
+                f"지금은 {step['refresh_db_year']}년까지 자료로 답합니다"
+            )
+    return notes
+
+
 MAX_FETCH = 3  # 질문 하나에서 바로 받는 표 수 상한 (지표 하나가 표 여러 개를 쓸 수 있음)
 
 
@@ -1512,9 +1554,16 @@ async def ask(question):
     parsed = await understand(question, trace)
     trace["understand_ms"] = round((time.perf_counter() - start) * 1000)
     start = time.perf_counter()
-    # 통계 DB 조회는 동기 함수라 이벤트 루프를 막지 않도록 스레드에서 실행.
-    # 적재 안 된 표는 바로 받아 넣고 다시 계산한다 (받는 시간도 compute_ms에 들어감, fetched 참고)
-    result = await _compute_fetching(parsed, trace)
+    if ask_followup.needs_year(question):
+        # "과거와 최근 비교"처럼 연도 없이 과거만 말하면 계산하지 않고 되묻는다
+        result = await run_in_threadpool(ask_followup.missing_year, parsed)
+    else:
+        notes = await _refresh_recent(question, parsed, trace)
+        # 통계 DB 조회는 동기 함수라 이벤트 루프를 막지 않도록 스레드에서 실행.
+        # 적재 안 된 표는 바로 받아 넣고 다시 계산한다 (받는 시간도 compute_ms에 들어감)
+        result = await _compute_fetching(parsed, trace)
+        if notes and result.get("status") == "ok":
+            result["notes"] = list(result.get("notes") or []) + notes
     trace["compute_ms"] = round((time.perf_counter() - start) * 1000)
     return {
         "status": result.get("status"),
@@ -1599,4 +1648,6 @@ def log_request(question, res=None, error=None, elapsed_ms=None, path=None, user
     }
     if trace.get("fetched"):
         record["fetched"] = trace["fetched"]
+    if trace.get("refreshed"):  # 최근·최신 질문에서 KOSIS 새 연도를 확인한 결과
+        record["refreshed"] = trace["refreshed"]
     _append(path or REQUEST_LOG, record)

@@ -9,6 +9,11 @@ class AskRequest(BaseModel):
         max_length=500,
         examples=["2025년 서울과 부산 중 고령인구 비율이 높은 지역은?"],
     )
+    session_id: str | None = Field(
+        default=None,
+        description="연도 되묻기(missing_year)에 답할 때 응답의 session_id를 그대로 보낸다."
+        " 그러면 '2000년'처럼 짧은 답을 앞 질문과 합쳐 답한다",
+    )
 
 
 class Source(BaseModel):
@@ -24,3 +29,11 @@ class AskResponse(BaseModel):
     parsed: dict[str, Any] = Field(description="1단계 질문 분석 결과")
     result: dict[str, Any] = Field(description="2~4단계 계산 결과")
     sources: list[Source] = Field(description="답변에 쓴 통계표")
+    session_id: str | None = Field(
+        default=None,
+        description="대화 id. 연도를 되물었을 때(status = missing_year) 다음 요청에 함께 보낸다",
+    )
+    question: str | None = Field(
+        default=None,
+        description="실제로 답한 질문 (되묻기 답을 앞 질문과 합친 경우 합친 질문)",
+    )

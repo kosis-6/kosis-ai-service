@@ -94,27 +94,33 @@ async def fetch_now(tbl_id: str, org_id: str, trace: dict | None = None) -> Outc
         return "disabled"
     start = time.perf_counter()
     async with _lock(tbl_id):
-        try:
-            outcome = await _fetch(tbl_id, org_id, trace)
-        except TimeoutError:
-            outcome = "timeout"
-        except (Exception, SystemExit) as e:  # load_raw는 검증 실패에 SystemExit을 쓴다
-            from app.services.kosis_client import mask_key
-
-            trace["fetch_error"] = mask_key(f"{type(e).__name__}: {e}")[:300]
-            logger.warning("%s: 바로 받기 실패 → 대기열: %s", tbl_id, trace["fetch_error"])
-            outcome = "failed"
+        outcome = await _guarded_fetch(tbl_id, org_id, trace, force=False)
     trace["fetch_ms"] = round((time.perf_counter() - start) * 1000)
     trace["fetch"] = outcome
     return outcome
 
 
-async def _fetch(tbl_id: str, org_id: str, trace: dict) -> Outcome:
+async def _guarded_fetch(tbl_id: str, org_id: str, trace: dict, force: bool) -> Outcome:
+    """_fetch의 오류를 결과값으로 바꾼다 (KOSIS 키가 오류 문구에 남지 않게 가린다)"""
+    try:
+        return await _fetch(tbl_id, org_id, trace, force)
+    except TimeoutError:
+        return "timeout"
+    except (Exception, SystemExit) as e:  # load_raw는 검증 실패에 SystemExit을 쓴다
+        from app.services.kosis_client import mask_key
+
+        trace["fetch_error"] = mask_key(f"{type(e).__name__}: {e}")[:300]
+        logger.warning("%s: 바로 받기 실패 → 대기열: %s", tbl_id, trace["fetch_error"])
+        return "failed"
+
+
+async def _fetch(tbl_id: str, org_id: str, trace: dict, force: bool = False) -> Outcome:
+    """force: 이미 적재된 표도 다시 받는다 (KOSIS에 새 연도가 올라온 경우, refresh_if_stale)"""
     from app.services import load_queue, lookup
     from pipeline import load_worker
 
     # 잠금을 기다리는 동안 다른 질문이 넣었을 수 있다
-    if tbl_id in await load_queue.loaded([tbl_id]):
+    if not force and tbl_id in await load_queue.loaded([tbl_id]):
         return "loaded"
     table_dir = load_worker.TABLE_DIR
     # 시간 제한은 받는 단계에만 건다. 적재는 스레드에서 돌아 중간에 멈출 수 없으므로 끝까지 기다린다
@@ -147,3 +153,99 @@ async def _download(tbl_id: str, org_id: str, trace: dict, table_dir) -> bool:
         meta=meta, limiter=limiter, pause=0,
     )  # fmt: skip
     return True
+
+
+# ---- 최신 갱신 확인 ("최근·최신" 질문) -----------------------------------------------------
+
+REFRESH_EVERY = 24 * 3600.0  # 초. 표마다 KOSIS 수록 기간을 하루에 한 번만 확인한다
+_checked: dict[str, float] = {}  # 표 → 마지막으로 확인한 시각 (time.monotonic)
+
+Refresh = Literal["fresh", "skipped", "loaded", "too_big", "failed", "timeout", "disabled"]
+
+
+async def refresh_if_stale(tbl_id: str, org_id: str, trace: dict | None = None) -> Refresh:
+    """KOSIS에 DB보다 새 연도가 올라와 있으면 표를 다시 받아 교체한다
+
+    fresh     DB가 최신 (KOSIS 마지막 연도 ≤ DB 마지막 연도)
+    skipped   오늘 이미 확인함, 또는 아직 적재 안 된 표 (계산 중 바로 받기가 맡는다)
+    loaded    새 연도까지 다시 받아 교체함
+    too_big · failed · timeout · disabled
+              교체 못 함 → 질문 처리가 갱신 작업(update)을 대기열에 넣고 지금 있는 자료로 답한다
+    trace: refresh_db_year, refresh_kosis_year (+ fetch_* 칸)
+    """
+    trace = trace if trace is not None else {}
+    now = time.monotonic()
+    last = _checked.get(tbl_id)
+    if last is not None and now - last < REFRESH_EVERY:
+        return "skipped"
+    _checked[tbl_id] = now
+    async with _lock(tbl_id):
+        try:
+            db_year = await _db_last_year(tbl_id)
+            if db_year is None:
+                return "skipped"
+            kosis_year = await _kosis_last_year(tbl_id, org_id)
+        except Exception as e:  # noqa: BLE001 - 확인 실패가 답변을 막지 않게
+            from app.services.kosis_client import mask_key
+
+            trace["refresh_error"] = mask_key(f"{type(e).__name__}: {e}")[:300]
+            logger.warning("%s: 최신 연도 확인 실패: %s", tbl_id, trace["refresh_error"])
+            return "failed"
+        trace["refresh_db_year"], trace["refresh_kosis_year"] = db_year, kosis_year
+        if kosis_year is None or kosis_year <= db_year:
+            return "fresh"
+        if INLINE_MAX_REQUESTS <= 0:
+            return "disabled"
+        logger.info(
+            "%s: KOSIS에 %d년 자료가 있어 다시 받습니다 (DB %d년)", tbl_id, kosis_year, db_year
+        )
+        return await _guarded_fetch(tbl_id, org_id, trace, force=True)
+
+
+async def _db_last_year(tbl_id: str) -> int | None:
+    """적재된 표의 마지막 연 단위 시점 (월·분기 행은 빼고). 적재 안 됐으면 None"""
+    from sqlalchemy import text
+
+    from app.core.db import SessionLocal
+
+    async with SessionLocal() as s:
+        key = (
+            await s.execute(
+                text(
+                    "select t.tbl_key from catalog.stat_table t"
+                    " join raw.stat_load l using (tbl_key) where t.tbl_id = :t"
+                ),
+                {"t": tbl_id},
+            )
+        ).scalar()
+        if key is None:
+            return None
+        # 표 키를 값으로 넘겨야 그 표의 파티션만 읽는다 (조인으로 거르면 4억 행 전체를 훑어 16초)
+        return (
+            await s.execute(
+                text(
+                    "select max(period) from raw.stat_value"
+                    " where tbl_key = :k and prd_se in ('A', 'F')"
+                ),
+                {"k": key},
+            )
+        ).scalar()
+
+
+async def _kosis_last_year(tbl_id: str, org_id: str) -> int | None:
+    """KOSIS 수록 기간 중 연 단위(년·다년) 주기의 마지막 연도. 연 단위 주기가 없으면 None"""
+    from app.services.kosis_client import KosisClient
+    from scripts.collect_all import period_code
+    from scripts.collect_kosis import call
+
+    await _rate_limiter().wait()
+    periods = await call(
+        KosisClient(timeout=INLINE_TIMEOUT),
+        "/statisticsData.do",
+        {"method": "getMeta", "orgId": org_id, "tblId": tbl_id, "type": "PRD"},
+        pause=0,
+    )
+    years = [
+        int(str(p["END_PRD_DE"])[:4]) for p in periods if period_code(p["PRD_SE"]) in ("Y", "F")
+    ]
+    return max(years) if years else None
