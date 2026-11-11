@@ -306,7 +306,16 @@ def _fetch(src, codes, y0, y1, age_codes=None):
         return num
     den_filters = src.get("den_filters") or src.get("filters", {})
     den = _sum(src, codes, y0, y1, "den_item_id", den_filters, age_codes)
-    return {k: (v / den[k] * 100 if v is not None and den.get(k) else None) for k, v in num.items()}
+    return {
+        k: (analysis.share(v, den[k]) if v is not None and den.get(k) else None)
+        for k, v in num.items()
+    }
+
+
+def _diff(base, current, spec):
+    """차이: 비율 지표는 %p (analysis.point_change), 그 밖은 증감량 (analysis.change)"""
+    fn = analysis.point_change if kind_of(spec) == "ratio" else analysis.change
+    return fn(base, current)
 
 
 def _round(v, spec):
@@ -554,7 +563,7 @@ def trend(spec, region, start_year, end_year, sex="계", ages=None):
     change = {
         "from_year": series[0]["year"],
         "to_year": series[-1]["year"],
-        "diff": _round(last - first, spec),
+        "diff": _round(_diff(first, last, spec), spec),
         "diff_unit": diff_unit(spec),
     }
     if k == "count" and first:
@@ -590,7 +599,7 @@ def compare(spec, regions, year, sex="계", ages=None):
     in_order = [v["value"] for v in values]
     values.sort(key=lambda x: (x["value"] is None, -(x["value"] or 0)))
     valid = [x for x in values if x["value"] is not None]
-    gap = valid[0]["value"] - valid[-1]["value"] if len(valid) >= 2 else None
+    gap = _diff(valid[-1]["value"], valid[0]["value"], spec) if len(valid) >= 2 else None
     out = _base(
         spec,
         src,
@@ -608,7 +617,7 @@ def compare(spec, regions, year, sex="계", ages=None):
         out["ratio"] = {
             "a": regs[0]["display"],
             "b": regs[1]["display"],
-            "value": round(in_order[0] / in_order[1], 2),
+            "value": round(analysis.times(in_order[0], in_order[1]), 2),
         }
     return out
 
@@ -648,9 +657,7 @@ def rank(
         v = vals.get((year, reg["region_code"]))
         if v is not None:
             items.append({"region": ind_mod._display(reg), "value": _round(v, spec)})
-    items.sort(key=lambda x: x["value"], reverse=not ascending)
-    for i, it in enumerate(items, 1):
-        it["rank"] = i
+    items = analysis.rank_rows(items, descending=not ascending)  # 같은 값은 같은 순위
     out = _base(
         spec,
         src,

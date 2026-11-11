@@ -919,7 +919,7 @@ def _share_of(result, sp, year, sex, ages):
         result["share"] = {
             "base": "전국",
             "base_value": total["value"],
-            "value": round(result["value"] / total["value"] * 100, 2),
+            "value": round(analysis.share(result["value"], total["value"]), 2),
         }
     return result
 

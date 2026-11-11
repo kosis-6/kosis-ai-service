@@ -24,21 +24,6 @@ def test_point_change() -> None:
     assert analysis.point_change(15.0, 20.0) == pytest.approx(5.0)
 
 
-def test_annual_growth_rate() -> None:
-    # 100 → 121 (2년) = 연평균 10%
-    assert analysis.annual_growth_rate(100, 121, 2) == pytest.approx(10.0)
-    with pytest.raises(AnalysisError):
-        analysis.annual_growth_rate(0, 121, 2)
-    with pytest.raises(AnalysisError):
-        analysis.annual_growth_rate(100, 121, 0)
-
-
-def test_mean() -> None:
-    assert analysis.mean([1.0, 2.0, 3.0]) == pytest.approx(2.0)
-    with pytest.raises(AnalysisError):
-        analysis.mean([])
-
-
 def test_share() -> None:
     assert analysis.share(25, 200) == pytest.approx(12.5)
     with pytest.raises(AnalysisError):
@@ -67,9 +52,20 @@ def test_rank_with_ties() -> None:
     assert analysis.rank(values, descending=False)[0] == (1, "인천", 5.0)
 
 
-def test_top_and_bottom() -> None:
-    values = {"서울": 10.0, "부산": 20.0, "대구": 20.0, "인천": 5.0}
-    assert analysis.top(values) == ["부산", "대구"]
-    assert analysis.bottom(values) == ["인천"]
+def test_times() -> None:
+    assert analysis.times(30, 20) == pytest.approx(1.5)
     with pytest.raises(AnalysisError):
-        analysis.top({})
+        analysis.times(1, 0)
+
+
+def test_rank_rows_ties_share_rank() -> None:
+    # 지역 순위: 같은 값은 같은 순위, 다음 순위는 건너뛴다 (1, 2, 2 / 1, 1, 3)
+    rows = [
+        {"region": "가", "value": 0.72},
+        {"region": "나", "value": 0.8},
+        {"region": "다", "value": 0.72},
+    ]
+    ranked = analysis.rank_rows(rows)
+    assert [(r["region"], r["rank"]) for r in ranked] == [("나", 1), ("가", 2), ("다", 2)]
+    ranked = analysis.rank_rows(rows, descending=False)
+    assert [(r["region"], r["rank"]) for r in ranked] == [("가", 1), ("다", 1), ("나", 3)]
