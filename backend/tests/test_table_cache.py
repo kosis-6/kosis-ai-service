@@ -3,6 +3,7 @@
 """
 
 import asyncio
+import contextlib
 
 import pytest
 
@@ -67,6 +68,12 @@ def kosis(monkeypatch: pytest.MonkeyPatch, tmp_path) -> dict:
     monkeypatch.setattr(table_cache, "INLINE_TIMEOUT", 5.0)
     monkeypatch.setattr(table_cache, "_locks", {})
     monkeypatch.setattr(table_cache, "_limiter", None)  # asyncio.run마다 새 이벤트 루프
+
+    @contextlib.asynccontextmanager
+    async def db_lock(tbl_id):  # 적재 프로세스와 함께 쓰는 잠금. state["worker"]면 그쪽이 받는 중
+        yield not state.get("worker")
+
+    monkeypatch.setattr(table_cache, "_db_lock", db_lock)
     return state
 
 
@@ -119,6 +126,13 @@ def test_already_loaded_table_is_not_fetched_again(kosis) -> None:
     kosis["loaded"].add(TBL)
     assert asyncio.run(table_cache.fetch_now(TBL, "101")) == "loaded"
     assert kosis["downloads"] == 0
+
+
+def test_table_being_loaded_by_worker_is_not_fetched(kosis) -> None:
+    """적재 프로세스가 같은 표를 받는 중이면 같은 파일을 두 곳에서 쓰지 않게 받지 않는다"""
+    kosis["worker"] = True
+    assert asyncio.run(table_cache.fetch_now("T", "101")) == "busy"
+    assert kosis["downloads"] == 0 and kosis["loads"] == []
 
 
 def test_disabled(kosis, monkeypatch) -> None:

@@ -13,6 +13,8 @@
 약속 (load_queue.py, load_worker.py와 함께 지킨다)
   - 적재 여부는 raw.stat_load로만 판단한다. 다 받고 검증을 통과해야 stat_value가 바뀐다
   - 같은 표를 여러 질문이 동시에 요청하면 한 번만 받는다 (표마다 잠금)
+  - 적재 프로세스가 같은 표를 받는 중이면 받지 않고 "busy" (프로세스 사이 잠금,
+    load_worker.LOCK_PREFIX). 같은 {tbl_id}.csv와 _work/{tbl_id}/를 두 곳에서 쓰지 않는다
   - 받다가 실패하거나 INLINE_TIMEOUT을 넘기면 "failed"·"timeout". 질문 처리는 대기열로 넘긴다.
     받던 조각은 TABLE_DIR/_work에 남아 적재 프로세스가 이어 받는다
   - KOSIS 호출은 분당 PER_MINUTE회까지 (적재 프로세스 100회와 합쳐 KOSIS 제한 200회 아래)
@@ -23,6 +25,7 @@
 """
 
 import asyncio
+import contextlib
 import logging
 import os
 import time
@@ -36,7 +39,7 @@ PER_MINUTE = 90  # 메타 요청까지 포함한 서비스 몫 (적재 프로세
 BURST = 12  # 쉬고 있었으면 이만큼은 바로 보낸다 (표 하나: 메타 3 + 데이터 최대 8 = 11)
 PER_TABLE = 4  # 표 하나 안에서 동시에 보내는 요청 수
 
-Outcome = Literal["loaded", "too_big", "failed", "timeout", "disabled"]
+Outcome = Literal["loaded", "too_big", "failed", "timeout", "disabled", "busy"]
 
 
 class TokenBucket:
@@ -88,6 +91,7 @@ async def fetch_now(tbl_id: str, org_id: str, trace: dict | None = None) -> Outc
     failed    KOSIS 오류·검증 실패 → 대기열 (적재 프로세스가 다시 시도하고 실패를 기록한다)
     timeout   INLINE_TIMEOUT 초과 → 대기열 (받은 조각부터 이어 받는다)
     disabled  INLINE_MAX_REQUESTS=0
+    busy      적재 프로세스가 같은 표를 받는 중 → 대기열 (이미 들어 있는 작업의 요청 수만 오른다)
     """
     trace = trace if trace is not None else {}
     if INLINE_MAX_REQUESTS <= 0:
@@ -100,10 +104,38 @@ async def fetch_now(tbl_id: str, org_id: str, trace: dict | None = None) -> Outc
     return outcome
 
 
+@contextlib.asynccontextmanager
+async def _db_lock(tbl_id: str):
+    """적재 프로세스와 함께 쓰는 표 잠금을 기다리지 않고 잡아 본다. 잡았으면 True
+
+    잠금은 연결에 붙으므로 끝날 때 풀고, 풀지 못하면 연결을 버린다 (풀에 잠금이 남지 않게)"""
+    from sqlalchemy import text
+
+    from app.core.db import engine
+    from pipeline.load_worker import LOCK_PREFIX
+
+    key = {"k": LOCK_PREFIX + tbl_id}
+    async with engine.connect() as conn:
+        got = await conn.scalar(text("select pg_try_advisory_lock(hashtext(:k))"), key)
+        try:
+            yield bool(got)
+        finally:
+            if got:
+                try:
+                    await conn.scalar(text("select pg_advisory_unlock(hashtext(:k))"), key)
+                    await conn.commit()
+                except Exception:  # noqa: BLE001
+                    await conn.invalidate()
+
+
 async def _guarded_fetch(tbl_id: str, org_id: str, trace: dict, force: bool) -> Outcome:
     """_fetch의 오류를 결과값으로 바꾼다 (KOSIS 키가 오류 문구에 남지 않게 가린다)"""
     try:
-        return await _fetch(tbl_id, org_id, trace, force)
+        async with _db_lock(tbl_id) as got:
+            if not got:
+                logger.info("%s: 적재 프로세스가 받는 중이라 바로 받지 않음", tbl_id)
+                return "busy"
+            return await _fetch(tbl_id, org_id, trace, force)
     except TimeoutError:
         return "timeout"
     except (Exception, SystemExit) as e:  # load_raw는 검증 실패에 SystemExit을 쓴다
@@ -160,7 +192,7 @@ async def _download(tbl_id: str, org_id: str, trace: dict, table_dir) -> bool:
 REFRESH_EVERY = 24 * 3600.0  # 초. 표마다 KOSIS 수록 기간을 하루에 한 번만 확인한다
 _checked: dict[str, float] = {}  # 표 → 마지막으로 확인한 시각 (time.monotonic)
 
-Refresh = Literal["fresh", "skipped", "loaded", "too_big", "failed", "timeout", "disabled"]
+Refresh = Literal["fresh", "skipped", "loaded", "too_big", "failed", "timeout", "disabled", "busy"]
 
 
 async def refresh_if_stale(tbl_id: str, org_id: str, trace: dict | None = None) -> Refresh:
@@ -174,32 +206,44 @@ async def refresh_if_stale(tbl_id: str, org_id: str, trace: dict | None = None) 
     trace: refresh_db_year, refresh_kosis_year (+ fetch_* 칸)
     """
     trace = trace if trace is not None else {}
-    now = time.monotonic()
-    last = _checked.get(tbl_id)
-    if last is not None and now - last < REFRESH_EVERY:
+    if _checked_today(tbl_id):
         return "skipped"
-    _checked[tbl_id] = now
     async with _lock(tbl_id):
-        try:
-            db_year = await _db_last_year(tbl_id)
-            if db_year is None:
-                return "skipped"
-            kosis_year = await _kosis_last_year(tbl_id, org_id)
-        except Exception as e:  # noqa: BLE001 - 확인 실패가 답변을 막지 않게
-            from app.services.kosis_client import mask_key
+        if _checked_today(tbl_id):  # 잠금을 기다리는 동안 다른 질문이 확인함
+            return "skipped"
+        outcome = await _check_and_refresh(tbl_id, org_id, trace)
+        # KOSIS 확인 자체가 실패하면 다음 질문에서 다시 본다. 확인은 됐지만 바로 못 받은 경우는
+        # 대기열의 갱신 작업이 맡으므로 그날은 다시 보지 않는다
+        if "refresh_error" not in trace:
+            _checked[tbl_id] = time.monotonic()
+        return outcome
 
-            trace["refresh_error"] = mask_key(f"{type(e).__name__}: {e}")[:300]
-            logger.warning("%s: 최신 연도 확인 실패: %s", tbl_id, trace["refresh_error"])
-            return "failed"
-        trace["refresh_db_year"], trace["refresh_kosis_year"] = db_year, kosis_year
-        if kosis_year is None or kosis_year <= db_year:
-            return "fresh"
-        if INLINE_MAX_REQUESTS <= 0:
-            return "disabled"
-        logger.info(
-            "%s: KOSIS에 %d년 자료가 있어 다시 받습니다 (DB %d년)", tbl_id, kosis_year, db_year
-        )
-        return await _guarded_fetch(tbl_id, org_id, trace, force=True)
+
+def _checked_today(tbl_id: str) -> bool:
+    last = _checked.get(tbl_id)
+    return last is not None and time.monotonic() - last < REFRESH_EVERY
+
+
+async def _check_and_refresh(tbl_id: str, org_id: str, trace: dict) -> Refresh:
+    """DB와 KOSIS의 마지막 연도를 비교해 KOSIS가 새로우면 다시 받는다 (refresh_if_stale)"""
+    try:
+        db_year = await _db_last_year(tbl_id)
+        if db_year is None:
+            return "skipped"
+        kosis_year = await _kosis_last_year(tbl_id, org_id)
+    except Exception as e:  # noqa: BLE001 - 확인 실패가 답변을 막지 않게
+        from app.services.kosis_client import mask_key
+
+        trace["refresh_error"] = mask_key(f"{type(e).__name__}: {e}")[:300]
+        logger.warning("%s: 최신 연도 확인 실패: %s", tbl_id, trace["refresh_error"])
+        return "failed"
+    trace["refresh_db_year"], trace["refresh_kosis_year"] = db_year, kosis_year
+    if kosis_year is None or kosis_year <= db_year:
+        return "fresh"
+    if INLINE_MAX_REQUESTS <= 0:
+        return "disabled"
+    logger.info("%s: KOSIS에 %d년 자료가 있어 다시 받습니다 (DB %d년)", tbl_id, kosis_year, db_year)
+    return await _guarded_fetch(tbl_id, org_id, trace, force=True)
 
 
 async def _db_last_year(tbl_id: str) -> int | None:

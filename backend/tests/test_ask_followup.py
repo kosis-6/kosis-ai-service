@@ -31,6 +31,9 @@ def test_vague_past_without_year_is_asked_back(question) -> None:
         "최근 10년 과거 추이",  # 최근 N년
         "최근 서울 인구수",  # 최근·최신은 되묻지 않는다
         "서울 인구수는?",  # 시점 표현 없음 → 가장 최근
+        "과거 5년간 출생아 수 추이",  # 과거 N년 = 최근 N년
+        "과거 10년 동안 서울 인구 변화",
+        "과거부터 지금까지 합계출산율 추이",  # 수록 기간 전체
     ],
 )
 def test_explicit_or_recent_is_not_asked_back(question) -> None:
@@ -44,13 +47,25 @@ def test_explicit_or_recent_is_not_asked_back(question) -> None:
         ("예전보다 출생아 수 늘었어?", "2000년", "2000년보다 출생아 수 늘었어?"),
         ("옛날이랑 지금 미혼 비율", "'95년", "1995년이랑 지금 미혼 비율"),
         ("과거와 최근 비교", "2000년이랑 2010년", "과거와 최근 비교 (2000년이랑 2010년)"),
+        ("과거와 최근 비교", "2000년, 2010년", "과거와 최근 비교 (2000년, 2010년)"),
+        ("과거와 최근 비교", "2000년이요", "2000년과 최근 비교"),
     ],
 )
 def test_reply_is_merged_into_pending_question(pending, reply, merged) -> None:
     assert ask_followup.merge(pending, reply) == merged
 
 
-@pytest.mark.parametrize("reply", ["응", "부산 2010년 출생아 수 알려줘 그리고 서울도 같이 보여줘"])
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "응",
+        "부산 2010년 출생아 수 알려줘 그리고 서울도 같이 보여줘",
+        # 짧고 연도가 있어도 연도·조사 말고 다른 말이 남으면 새 질문
+        "2020년 출생아 수",
+        "아니 됐고 2024년 혼인 건수",
+        "작년 서울 인구",
+    ],
+)
 def test_non_year_or_long_reply_is_a_new_question(reply) -> None:
     assert ask_followup.merge("과거와 최근 인구수 비교해줘", reply) is None
 
@@ -134,6 +149,17 @@ def test_vague_past_question_is_not_computed(ask_env) -> None:
     assert res["status"] == "missing_year" and ask_env["computed"] == 0
 
 
+def test_unknown_indicator_is_not_asked_back(ask_env, monkeypatch) -> None:
+    """지표 사전에 없는 지표는 연도를 되묻지 않고 계산(지원하지 않는 지표 안내)으로 간다"""
+
+    async def understand(question, trace=None):
+        return {"type": "compare", "indicator": "반려동물 수", "regions": ["전국"]}
+
+    monkeypatch.setattr(qa, "understand", understand)
+    asyncio.run(qa.ask("과거와 최근 반려동물 수 비교해줘"))
+    assert ask_env["computed"] == 1
+
+
 def test_recent_question_checks_kosis_for_newer_year(ask_env) -> None:
     res = asyncio.run(qa.ask("최근 평균 초혼연령은?"))
     assert ask_env["refresh"] == ["DT_1B83A05"] and ask_env["queued"] == []
@@ -145,7 +171,7 @@ def test_question_without_recent_word_is_not_checked(ask_env) -> None:
     assert ask_env["refresh"] == []
 
 
-@pytest.mark.parametrize("outcome", ["too_big", "failed", "timeout"])
+@pytest.mark.parametrize("outcome", ["too_big", "failed", "timeout", "busy"])
 def test_newer_year_not_fetched_now_is_queued_as_update(ask_env, outcome) -> None:
     ask_env["outcome"] = outcome
     res = asyncio.run(qa.ask("최신 평균 초혼연령"))
@@ -220,6 +246,33 @@ def test_kosis_check_failure_does_not_raise(stale, monkeypatch) -> None:
     trace = {}
     assert asyncio.run(table_cache.refresh_if_stale("T", "101", trace)) == "failed"
     assert "SECRET" not in trace["refresh_error"]
+
+
+def test_failed_check_is_retried_next_question(stale, monkeypatch) -> None:
+    """KOSIS 확인이 잠깐 실패해도 하루를 기다리지 않고 다음 질문에서 다시 확인한다"""
+    calls = []
+
+    async def flaky(tbl_id, org_id):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("일시 오류")
+        return 2024
+
+    monkeypatch.setattr(table_cache, "_kosis_last_year", flaky)
+    assert asyncio.run(table_cache.refresh_if_stale("T", "101")) == "failed"
+    assert asyncio.run(table_cache.refresh_if_stale("T", "101")) == "fresh"
+    assert asyncio.run(table_cache.refresh_if_stale("T", "101")) == "skipped"
+
+
+def test_newer_year_not_fetched_now_is_still_checked_once(stale, monkeypatch) -> None:
+    """새 연도를 확인했지만 바로 못 받으면(대기열이 맡음) 그날은 다시 확인하지 않는다"""
+
+    async def busy(tbl_id, org_id, trace, force):
+        return "busy"
+
+    monkeypatch.setattr(table_cache, "_guarded_fetch", busy)
+    assert asyncio.run(table_cache.refresh_if_stale("T", "101")) == "busy"
+    assert asyncio.run(table_cache.refresh_if_stale("T", "101")) == "skipped"
 
 
 # ---- /ask 대화 이어 받기 ------------------------------------------------------------------

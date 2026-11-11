@@ -22,10 +22,18 @@ from sqlalchemy import text
 from app.services import slots, timeref
 
 VAGUE_PAST = re.compile(r"과거|예전|옛날|옛적")
+# "과거부터 지금까지 합계출산율 추이" → 되묻지 않고 수록 기간 전체 추이 (qa.correct의 from_start)
+FROM_PAST = re.compile(r"(과거|예전|옛날|옛적)\s*부터")
 VAGUE_WITH_PARTICLE = re.compile(r"(과거|예전|옛날|옛적)(와|랑|를|가|는|)")
 # 받침 없는 말 뒤 조사 → '년'(받침) 뒤 조사. 없는 조사(보다·에·이랑 등)는 그대로
 PARTICLE_AFTER_NYEON = {"와": "과", "랑": "이랑", "를": "을", "가": "이", "는": "은"}
 FOLLOW_UP_MAX_CHARS = 25  # 이보다 길면 되묻기 답이 아니라 새 질문으로 본다
+# 되묻기 답에서 연도 표현을 지운 뒤 남아도 되는 말 (조사·접속어·문장부호).
+# 이것 말고 다른 말("출생아 수", "서울 인구")이 남으면 새 질문으로 본다
+REPLY_FILLER = re.compile(
+    r"\s+|[,.·~\-?!/()]|이랑|랑|하고|과|와|부터|까지|에서|이고|그리고|및|도|으로|로|"
+    r"입니다|이에요|예요|이요|요|기준|비교|대비|보다|년도|년|쯤|정도"
+)
 PENDING_FOR = timedelta(minutes=30)  # 되묻기 답을 기다리는 시간
 CENSUS_EVERY = 5  # 인구총조사 주기 (기간 안내를 줄일 때)
 
@@ -43,7 +51,11 @@ def has_explicit_year(question: str) -> bool:
 
 def needs_year(question: str) -> bool:
     """과거 표현만 있고 연도가 없어 되물어야 하는 질문인가"""
-    return bool(VAGUE_PAST.search(question)) and not has_explicit_year(question)
+    return (
+        bool(VAGUE_PAST.search(question))
+        and not has_explicit_year(question)
+        and not FROM_PAST.search(question)
+    )
 
 
 def _span_text(spans: list[tuple[int, int]]) -> str:
@@ -132,6 +144,8 @@ def merge(pending: str, reply: str) -> str | None:
     reply = reply.strip()
     if len(reply) > FOLLOW_UP_MAX_CHARS or not has_explicit_year(reply):
         return None
+    if not _only_years(reply):  # "2020년 출생아 수", "작년 서울 인구"는 새 질문
+        return None
     years = sorted({int(y) for y in slots.YEAR.findall(reply)} | slots.short_years(reply))
     if len(years) == 1 and VAGUE_PAST.search(pending):
         # "과거와" → "2000년과" ('년' 뒤라 받침 조사로 바꾼다)
@@ -141,6 +155,17 @@ def merge(pending: str, reply: str) -> str | None:
             count=1,
         )
     return f"{pending} ({reply})"
+
+
+def _only_years(reply: str) -> bool:
+    """연도 표현과 조사만 있는 답인가 ("2000년이랑", "2000년, 2010년", "작년", "5년 전")"""
+    rest = slots.YEAR.sub(" ", reply)
+    rest = slots.SHORT_YEAR.sub(" ", rest).replace("'", " ")
+    rest = timeref.RECENT_N_YEARS.sub(" ", rest)
+    rest = timeref.N_YEARS_AGO.sub(" ", rest)
+    for word, _ in timeref.WORDS:
+        rest = rest.replace(word, " ")
+    return not REPLY_FILLER.sub("", rest)
 
 
 def _key(session_id: str) -> str:

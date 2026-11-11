@@ -174,7 +174,8 @@ RATIO_ASK = re.compile(r"몇\s*배")
 LEVEL_CITY = re.compile(r"전국\s*(의\s*)?시\s*(중|가운데)|시\s*단위")
 ASCENDING = re.compile(r"꼴찌|최하위|가장\s*(낮|적)|제일\s*(낮|적)")
 TOP_N = re.compile(r"(상위|하위)\s*(\d+)|(\d+)\s*(곳|개|위까지)(?!\s*\S*\s*중)")
-RECENT = re.compile(r"최근\s*(\d+)\s*년")
+# "최근 5년", "과거 10년간", "지난 3년 동안" (timeref와 같은 표현)
+RECENT = timeref.RECENT_N_YEARS
 SPAN = re.compile(r"((?:19|20)\d{2})\s*년?\s*(대비|부터|에서)\s*((?:19|20)\d{2})\s*년")
 YEAR = re.compile(r"((?:19|20)\d{2})\s*년")
 SINCE = re.compile(r"((?:19|20)\d{2})\s*년\s*(이후|이래|부터)(?!.*까지)")
@@ -519,7 +520,16 @@ def _read_question(question, parsed, fix):
         asked["per_year"] = True
     by_year = {"extreme", "streak", "rebound", "per_year"} & set(asked)
     if m := RECENT.search(question):
-        asked["recent"] = int(m[1])
+        asked["recent"] = int(m[2])
+    if ask_followup.FROM_PAST.search(question) and not SPAN.search(question):
+        # "과거부터 지금까지 합계출산율 추이" → 수록 기간 전체 추이
+        asked["from_start"] = True
+        for key in ("start_year", "end_year"):
+            if parsed.get(key):
+                fix(key, None, "'과거부터'는 수록 기간 전체")
+        if kind != "trend":
+            fix("type", "trend", "과거부터의 변화를 물음")
+            kind = "trend"
     if (m := SINCE.search(question)) and not SPAN.search(question):  # "1970년 이후" → 끝은 최신
         asked["since"] = int(m[1])
         if parsed.get("start_year") != int(m[1]):
@@ -804,7 +814,7 @@ def _lookup_trend(q, sp, region, year, sex, ages):
     if asked.get("recent"):  # HCX가 준 기간 대신 자료 마지막 연도 기준 N개년
         end = hi
         start = end - asked["recent"] + 1
-    elif asked.get("streak") and not q.get("start_year"):
+    elif (asked.get("streak") or asked.get("from_start")) and not q.get("start_year"):
         start = lo
     else:
         start = q.get("start_year") or end - 5
@@ -1474,7 +1484,7 @@ async def _refresh_recent(question, parsed, trace):
         outcome = await table_cache.refresh_if_stale(tbl_id, info["org_id"], step)
         step["refresh"] = outcome
         steps.append(step)
-        if outcome in ("too_big", "failed", "timeout", "disabled") and step.get(
+        if outcome in ("too_big", "failed", "timeout", "disabled", "busy") and step.get(
             "refresh_kosis_year"
         ):
             try:
@@ -1554,8 +1564,9 @@ async def ask(question):
     parsed = await understand(question, trace)
     trace["understand_ms"] = round((time.perf_counter() - start) * 1000)
     start = time.perf_counter()
-    if ask_followup.needs_year(question):
-        # "과거와 최근 비교"처럼 연도 없이 과거만 말하면 계산하지 않고 되묻는다
+    if ask_followup.needs_year(question) and indicators.spec(parsed.get("indicator") or ""):
+        # "과거와 최근 비교"처럼 연도 없이 과거만 말하면 계산하지 않고 되묻는다.
+        # 지표 사전에 없는 지표면 되묻지 않고 계산으로 보내 지원하지 않는 지표라고 먼저 알린다
         result = await run_in_threadpool(ask_followup.missing_year, parsed)
     else:
         notes = await _refresh_recent(question, parsed, trace)

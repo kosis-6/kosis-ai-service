@@ -31,6 +31,7 @@
 
 import argparse
 import asyncio
+import contextlib
 import gzip
 import logging
 import os
@@ -58,6 +59,9 @@ IDLE_SECONDS = 10
 STALE_AFTER = timedelta(hours=2)
 MAX_ATTEMPTS = 3
 RETRY_AFTER = [timedelta(minutes=10), timedelta(hours=1)]  # 1번째, 2번째 실패 뒤 기다리는 시간
+# 표마다 거는 PostgreSQL 잠금 키 (pg_advisory_lock(hashtext(키))). 서버의 바로 받기
+# (table_cache.py)도 같은 키를 써서, 같은 {tbl_id}.csv·_work/{tbl_id}/를 동시에 쓰지 않는다
+LOCK_PREFIX = "table_load:"
 # 다시 해 볼 만한 일시 오류. 검증 실패(행 수·합계·중복)나 데이터 형식 문제는 다시 해도 같다
 TRANSIENT = (httpx.HTTPError, TimeoutError, ConnectionError, psycopg.OperationalError)
 
@@ -249,6 +253,29 @@ def _with_pg(fn, *args):
         return fn(pg, *args)
 
 
+@contextlib.asynccontextmanager
+async def table_lock(tbl_id: str):
+    """표 하나를 받는 동안 잡는 잠금. 서버가 같은 표를 바로 받는 중이면 끝날 때까지 기다린다"""
+    pg = await asyncio.to_thread(psycopg.connect, conninfo(), autocommit=True)
+    try:
+        await asyncio.to_thread(
+            pg.execute, "select pg_advisory_lock(hashtext(%s))", [LOCK_PREFIX + tbl_id]
+        )
+        yield
+    finally:
+        await asyncio.to_thread(pg.close)  # 연결을 닫으면 잠금도 풀린다
+
+
+def is_loaded(pg: psycopg.Connection, tbl_id: str) -> bool:
+    return bool(
+        pg.execute(
+            "select 1 from catalog.stat_table t join raw.stat_load using (tbl_key)"
+            " where t.tbl_id = %s",
+            [tbl_id],
+        ).fetchone()
+    )
+
+
 async def run_one() -> bool:
     """작업 하나 처리. 처리할 작업이 없었으면 False"""
     job = await asyncio.to_thread(_with_pg, claim)
@@ -256,7 +283,12 @@ async def run_one() -> bool:
         return False
     logger.info("시작 #%d %s (%s, %d번째 시도)", job.id, job.tbl_id, job.reason, job.attempts)
     try:
-        await process(job)
+        async with table_lock(job.tbl_id):
+            # 기다리는 동안 서버가 바로 받아 넣었으면 다시 받지 않는다 (갱신 작업은 항상 받는다)
+            if job.reason != "update" and await asyncio.to_thread(_with_pg, is_loaded, job.tbl_id):
+                logger.info("%s: 그사이 적재됨, 건너뜀", job.tbl_id)
+            else:
+                await process(job)
     except BaseException as e:  # noqa: BLE001 - load_raw는 분류 수 초과에 SystemExit을 쓴다
         if isinstance(e, (KeyboardInterrupt, asyncio.CancelledError)):
             raise

@@ -394,3 +394,27 @@ def test_compare_two_regions_with_nation_stays_compare() -> None:
     )
     assert p["type"] == "compare"
     assert "share_of" not in p
+
+
+@pytest.mark.parametrize(
+    ("question", "n"),
+    [
+        ("과거 10년 동안 서울 인구 변화", 10),
+        ("지난 5년간 출생아 수 추이", 5),
+        ("최근 3개년 혼인 건수", 3),
+    ],
+)
+def test_past_n_years_is_recent_n_years(question, n) -> None:
+    p = qa.correct(question, parsed(type="trend", indicator="총인구", regions=["서울"]), TODAY)
+    assert p["asked"]["recent"] == n
+
+
+def test_from_past_is_whole_period_trend() -> None:
+    # "과거부터 지금까지" → 되묻지 않고 수록 기간 전체 추이 (HCX가 넣은 기간은 지운다)
+    p = qa.correct(
+        "과거부터 지금까지 전국 합계출산율 추이",
+        parsed(type="value", indicator="합계출산율", regions=["전국"], start_year=2015),
+        TODAY,
+    )
+    assert p["type"] == "trend" and p["asked"]["from_start"] is True
+    assert p.get("start_year") is None
