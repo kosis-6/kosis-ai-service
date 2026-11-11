@@ -74,6 +74,16 @@ def test_missing_year_lists_db_and_kosis_years(monkeypatch) -> None:
     assert "KOSIS에는 1970년부터" in text and "(예: 1980년과 2025년)" in text
 
 
+def test_adjacent_spans_are_merged() -> None:
+    """같은 조사의 과거 표(1970~1989)와 지금 표(1990~)는 한 기간으로 알린다"""
+    assert ask_followup._span_text([(1990, 2025), (1970, 1989)]) == "1970~2025년"
+    assert ask_followup._span_text([(1980, 1980), (1985, 1985), (2022, 2025)]) == (
+        "1980년, 1985년, 2022~2025년"
+    )
+    census = [(y, y) for y in range(1970, 2021, 5)]
+    assert ask_followup._span_text([*census, (2022, 2025)]) == "1970~2020년(5년마다), 2022~2025년"
+
+
 def test_missing_year_without_indicator_only_asks_year(monkeypatch) -> None:
     monkeypatch.setattr(indicators, "spec", lambda name: None)
     r = ask_followup.missing_year({})

@@ -27,6 +27,7 @@ VAGUE_WITH_PARTICLE = re.compile(r"(과거|예전|옛날|옛적)(와|랑|를|가
 PARTICLE_AFTER_NYEON = {"와": "과", "랑": "이랑", "를": "을", "가": "이", "는": "은"}
 FOLLOW_UP_MAX_CHARS = 25  # 이보다 길면 되묻기 답이 아니라 새 질문으로 본다
 PENDING_FOR = timedelta(minutes=30)  # 되묻기 답을 기다리는 시간
+CENSUS_EVERY = 5  # 인구총조사 주기 (기간 안내를 줄일 때)
 
 
 def has_explicit_year(question: str) -> bool:
@@ -46,10 +47,31 @@ def needs_year(question: str) -> bool:
 
 
 def _span_text(spans: list[tuple[int, int]]) -> str:
-    """[(1980, 1980), (2022, 2025)] → '1980년, 2022~2025년'"""
-    parts = []
+    """[(1980, 1980), (2022, 2025)] → '1980년, 2022~2025년'
+    이어지는 기간은 합치고 ([(1970, 1989), (1990, 2025)] → '1970~2025년'),
+    5년마다 한 해씩인 인구총조사는 줄인다 (1970, 1975, …, 2020 → '1970~2020년(5년마다)')"""
+    merged: list[list[int]] = []
     for lo, hi in sorted(set(spans)):
-        parts.append(f"{lo}년" if lo == hi else f"{lo}~{hi}년")
+        if merged and lo <= merged[-1][1] + 1:
+            merged[-1][1] = max(merged[-1][1], hi)
+        else:
+            merged.append([lo, hi])
+    parts, i = [], 0
+    while i < len(merged):
+        lo, hi = merged[i]
+        j = i
+        while (
+            lo == hi
+            and j + 1 < len(merged)
+            and merged[j + 1][0] == merged[j + 1][1] == merged[j][0] + CENSUS_EVERY
+        ):
+            j += 1
+        if j - i >= 2:  # 세 번 이상 이어질 때만 줄인다
+            parts.append(f"{lo}~{merged[j][0]}년({CENSUS_EVERY}년마다)")
+        else:
+            j = i
+            parts.append(f"{lo}년" if lo == hi else f"{lo}~{hi}년")
+        i = j + 1
     return ", ".join(parts)
 
 

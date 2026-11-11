@@ -495,6 +495,7 @@ def _trend_series(spec, reg, start_year, end_year, sex, ages, out_of_range):
         return {**out_of_range, "region": reg["display"]}
     spans.sort(key=lambda s: s[1])
     vals, notes, label = {}, [], ""
+    by_note = {}  # 출처 note → (첫 연도, 끝 연도)
     for src, a, b in spans:
         try:
             age_codes, label, age_notes = _ages(src, ages)
@@ -506,9 +507,12 @@ def _trend_series(spec, reg, start_year, end_year, sex, ages, out_of_range):
             }
         got = _fetch(src, [reg["region_code"]], a, b, age_codes)
         vals.update({k: v for k, v in got.items() if k not in vals})
-        notes += age_notes
+        notes += [n for n in age_notes if n not in notes]
         if src.get("note") and src is not spans[-1][0]:  # 마지막 출처의 note는 _base가 붙인다
-            notes.append(f"{a}~{b}년: {src['note']}" if a != b else f"{a}년: {src['note']}")
+            lo, hi = by_note.get(src["note"], (a, b))
+            by_note[src["note"]] = (min(lo, a), max(hi, b))
+    # 같은 기준의 표 여러 개(조사 연도마다 따로 있는 인구총조사)는 한 줄로 알린다
+    notes += [f"{a}~{b}년: {n}" if a != b else f"{a}년: {n}" for n, (a, b) in by_note.items()]
     last = spans[-1][0]
     earlier = [_source_info(s) for s, _, _ in spans[:-1]]
     return last, label, notes, vals, earlier
