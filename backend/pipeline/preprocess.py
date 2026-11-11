@@ -26,6 +26,12 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from pipeline.region_map import (  # noqa: E402
+    REGION_COLUMN,
+    RegionIndex,
+    Source,
+    map_rows,
+)
 from pipeline.stats_build import Build  # noqa: E402
 
 # run_all.py가 수집 결과 폴더를 넘길 때 환경변수를 쓴다 (절대 경로면 그대로)
@@ -43,14 +49,6 @@ LABEL_COLUMN = {
     "DT_1BPB002": "c3_nm",
     "DT_1BPB003": "c3_nm",
     "DT_1BPB101": "c3_nm",
-}
-
-# 지역 분류가 c1이 아닌 표 (None = 지역 분류 없는 전국 자료)
-REGION_COLUMN = {
-    "DT_1BPB002": "c2",
-    "DT_1BPB003": "c2",
-    "DT_1BPB101": "c2",
-    "INH_1B8000F_01": None,
 }
 
 # 연령 분류 단위 (답변 불가 사례 2: 분류 기준 불일치 판단용)
@@ -117,12 +115,7 @@ SIDO_ALIASES = {
     # 붙여 쓴 이름만 통합특별시로 본다. "광주 전남", "광주, 전남"은 두 지역(29, 46)으로 해석
     "12": ["전남광주", "광주전남"],
 }
-# 예전 시도 이름 → 현재 이름 (다른 표의 지역 경로를 맞출 때 사용)
-OLD_SIDO_NAMES = {"강원도": "강원특별자치도", "전라북도": "전북특별자치도"}
-# 전국 합계를 뜻하는 지역 이름
-TOTAL_NAMES = {"전국", "계", "합계"}
-# 표마다 다르게 쓰는 지역 경로 (공백 제거한 '시도>시군구' 형태)
-PATH_FIXES = {"세종특별자치시>세종시": "세종특별자치시>세종특별자치시"}
+# 지역 연결 규칙(REGION_COLUMN, 예전 시도 이름, 전국 이름, 경로 보정)은 pipeline/region_map.py
 
 REGION_CHANGES = [
     (2010, "경남 창원시·마산시·진해시가 창원시로 통합", "48110,48160,48190,48120"),
@@ -175,11 +168,6 @@ PLACEHOLDER_REGIONS = {
         "통합특별시 출범(2026-07-01) 전 기간의 자리값으로 실제 자료 아님",
     ),
 }
-
-
-def _norm(text):
-    """지역 이름 비교용: 공백 제거 ('중  구' == '중구')"""
-    return re.sub(r"\s+", "", text or "")
 
 
 def resolve_unit(tbl_id, item_id, label, raw_unit):
@@ -330,12 +318,7 @@ def build_regions(con):
 def build_region_map(con):
     """표마다 다른 지역 코드를 regions.region_code로 맞추는 대응표 (region_code_map)
 
-    통계청 표 중에도 예전 코드 체계를 쓰는 표가 있다 (예전 31=경기도, 현재 31=울산광역시).
-    그래서 코드만 보고 연결하지 않고, 아래 순서로 이름까지 확인한다. (match_method)
-      total : 전국/계/합계
-      code  : 코드가 같고 이름도 같음
-      path  : '시도 > 시군구' 이름 경로가 같음 (3단계 경로는 시도와 마지막 이름만 사용)
-      sido  : 시도 이름이 같음 (예전 시도 이름 포함)
+    연결 규칙은 pipeline/region_map.match_region (적재 후 단계와 같은 규칙).
     같은 경로에 코드가 둘 이상이면(예: 부천시 원미구 41195 → 41192) 후보를 모두 남기고
     facts에서 연도로 하나를 고른다. 연결하지 못하면 unmatched_reason을 남긴다.
     src_dim은 지역이 들어 있는 분류 칸 번호(c1 → 1)로, 서비스가 raw.stat_value의 그 칸과 연결한다.
@@ -352,72 +335,13 @@ def build_region_map(con):
             from raw where tbl_id = '{tbl_id}'
         """)
     src = con.sql(" union all ".join(parts)).df()
-
-    regions = con.sql("select region_code, region_name, kind, path from regions").df()
-    name_by_code = {
-        c: _norm(n) for c, n in zip(regions.region_code, regions.region_name, strict=True)
-    }
-    codes_by_path = {}
-    for code, path in zip(regions.region_code, regions.path, strict=True):
-        codes_by_path.setdefault(_norm(path), []).append(code)
-    sido_by_name = {
-        _norm(n): c
-        for c, n, k in zip(regions.region_code, regions.region_name, regions.kind, strict=True)
-        if k == "시도"
-    }
-
-    def candidates(row):
-        name = _norm(row.src_name)
-        if name in TOTAL_NAMES and str(row.src_level) == "1":
-            return ["00"], "total"
-        if row.org_id == "101" and name_by_code.get(row.src_code) == name:
-            return [row.src_code], "code"
-        parts = [
-            _norm(OLD_SIDO_NAMES.get(p.strip(), p.strip())) for p in (row.src_path or "").split(">")
-        ]
-        parts = [p for p in parts if p and p not in TOTAL_NAMES]
-        if len(parts) >= 2:
-            key = PATH_FIXES.get(f"{parts[0]}>{parts[-1]}", f"{parts[0]}>{parts[-1]}")
-            if key in codes_by_path:
-                return codes_by_path[key], "path"
-        if len(parts) == 1 and parts[0] in sido_by_name:
-            return [sido_by_name[parts[0]]], "sido"
-        return [], None
-
-    def unmatched_reason(name):
-        name = name or ""
-        if "변동전" in name:
-            return "변동전 지역 (현재 지역과 범위가 달라 연결하지 않음)"
-        if _norm(name) in {"동부", "읍부", "면부"}:
-            return "지역이 아닌 동·읍·면부 분류"
-        if "국외" in name:
-            return "국외"
-        return "기준 지역 목록(2008~2025 주민등록)에 없는 지역"
+    regions = con.sql("select region_code, region_name, kind, path from regions").fetchall()
+    idx = RegionIndex(regions)
 
     rows = []
     for row in src.itertuples():
-        codes, method = candidates(row)
-        base = {
-            "tbl_id": row.tbl_id,
-            "src_dim": row.src_dim,
-            "src_code": row.src_code,
-            "src_name": row.src_name,
-            "src_path": row.src_path,
-        }
-        if codes:
-            rows += [
-                {**base, "region_code": c, "match_method": method, "unmatched_reason": None}
-                for c in codes
-            ]
-        else:
-            rows.append(
-                {
-                    **base,
-                    "region_code": None,
-                    "match_method": None,
-                    "unmatched_reason": unmatched_reason(row.src_name),
-                }
-            )
+        source = Source(row.src_code, row.src_name, row.src_level, row.src_path)
+        rows += map_rows(idx, row.tbl_id, row.org_id, row.src_dim, [source])
 
     con.register("map_df", pd.DataFrame(rows))
     con.sql("""

@@ -8,10 +8,9 @@
                 (scripts/collect_all.collect_table. LOAD_SOURCE=file이면 받지 않음)
   2. 적재      pipeline/load_raw.load_table: 중복·행 수·합계 검증 후 표 단위 교체,
                 raw.stat_load 기록
-  3. 적재 후   AFTER_LOAD 단계 (표 정보 catalog.catalog, 지역 매핑 mart.region_code_map)
-                ※ 아직 비어 있다. 전처리(preprocess.py)가 전체를 한 번에 만드는 방식이라
-                  표 하나 단위 함수로 나눈 뒤 여기에 넣는다. 그 전까지 새로 적재한 표는
-                  지역 조건 조회가 안 되고 전국 값만 나온다.
+  3. 적재 후   AFTER_LOAD 단계
+                지역 매핑 mart.region_code_map (pipeline/region_map.map_table): 이게 있어야
+                지역 조건으로 조회된다. 지역 분류가 없는 표는 전국 값만 나온다
   4. 기록      done / 일시 오류면 run_after 뒤 다시 시도 / 그 밖의 오류는 failed + 오류 내용
 
 약속 (app/services/load_queue.py와 함께 지킨다)
@@ -44,6 +43,7 @@ import httpx
 import psycopg
 
 from pipeline.load_raw import load_table
+from pipeline.region_map import map_table
 from pipeline.stats_build import conninfo
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -73,8 +73,10 @@ class Job:
     attempts: int
 
 
-# 적재 후 단계: (이름, 함수(pg, tbl_id)). 전처리를 표 하나 단위로 나누면 여기에 넣는다
-AFTER_LOAD: list[tuple[str, Callable[[psycopg.Connection, str], None]]] = []
+# 적재 후 단계: (이름, 함수(pg, tbl_id)). 표 하나 단위로 나눈 전처리를 여기에 넣는다
+AFTER_LOAD: list[tuple[str, Callable[[psycopg.Connection, str], object]]] = [
+    ("지역 매핑", map_table),
+]
 
 
 # ---- 대기열 ---------------------------------------------------------------------------------
@@ -237,8 +239,6 @@ def _load(path: Path, tbl_id: str) -> None:
         for name, step in AFTER_LOAD:
             logger.info("%s: 적재 후 단계 %s", tbl_id, name)
             step(pg, tbl_id)
-    if not AFTER_LOAD:
-        logger.warning("%s: 지역 매핑 단계가 아직 없어 전국 값만 조회됩니다", tbl_id)
 
 
 # ---- 반복 실행 -------------------------------------------------------------------------------
