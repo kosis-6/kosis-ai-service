@@ -1,6 +1,7 @@
 """질의 분석: 질문 → 슬롯 JSON (실전 2 F-03)
 
-  1. HCX-DASH-002가 질문을 슬롯 JSON으로 바꾼다 (JSON을 못 읽으면 1회 재시도)
+  1. HCX-007이 질문을 슬롯 JSON으로 바꾼다 (JSON을 못 읽으면 1회 재시도)
+     검색마다 맨 앞에서 부르므로 추론(thinking)은 끈다 (llm_pick과 같음)
   2. 코드가 질문 원문과 맞춰 고친다 (correct)
      - 연도·지역 수준·성별은 질문에 그 말이 있을 때만 남긴다 (LLM이 추측한 조건 제거)
      - 지역 이름은 KOSIS 분류 값과 같은 정식 시도명으로 바꾼다 ("부산" → "부산광역시")
@@ -27,7 +28,7 @@ from app.prompts.search import SLOT_SYSTEM
 from app.services import agegroup, timeref
 from app.services.hcx_client import HcxClient, HcxError
 
-MODEL = "HCX-DASH-002"
+MODEL = "HCX-007"
 QUERY_TYPES = {"find_table", "ambiguous", "not_statistics"}
 REGION_LEVELS = ("시도", "시군구", "읍면동")
 
@@ -161,9 +162,10 @@ async def _chat(question: str) -> str:
             {"role": "system", "content": SLOT_SYSTEM},
             {"role": "user", "content": question},
         ],
+        thinking={"effort": "none"},
         topP=0.8,
         topK=0,
-        maxTokens=512,
+        maxCompletionTokens=512,
         temperature=0.1,
         repetitionPenalty=1.1,
     )

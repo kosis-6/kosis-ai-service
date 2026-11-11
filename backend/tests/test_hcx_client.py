@@ -24,7 +24,7 @@ def make_client(handler, retry_waits: tuple[float, ...] = (0, 0)) -> HcxClient:
 
 def test_chat_success() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/v3/chat-completions/HCX-DASH-002"
+        assert request.url.path == "/v3/chat-completions/HCX-007"
         assert request.headers["Authorization"] == "Bearer test-key"
         body = json.loads(request.content)
         assert body["messages"] == [{"role": "user", "content": "안녕"}]
@@ -43,7 +43,7 @@ def test_chat_success() -> None:
 
     result = asyncio.run(
         make_client(handler).chat(
-            "HCX-DASH-002", [{"role": "user", "content": "안녕"}], temperature=0.1
+            "HCX-007", [{"role": "user", "content": "안녕"}], temperature=0.1
         )
     )
     assert result.content == "안녕하세요"
