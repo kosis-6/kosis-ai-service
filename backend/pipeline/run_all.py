@@ -10,6 +10,8 @@
                       중간에 실패하면 서비스 데이터는 그대로 둔다.
   6. load_raw.py      같은 원본 CSV를 숫자 키 구조(raw.stat_value)로 적재. 조회 지표가 읽는다.
                       표마다 대조 후 교체하므로 실패해도 그 표의 기존 값은 남는다.
+  7. region_map.py    5에서 region_code_map이 기본 표 것으로 바뀌므로, 그 밖에 적재해 둔 표
+                      (적재 프로세스·질문 중 적재)의 지역 대응을 다시 만든다.
   옵션
     --preview   export_preview.py: 엑셀로 열어볼 CSV (data/processed/preview/)
     --share     make_share.py: 팀 공유용 zip (dist/), --preview 포함
@@ -82,7 +84,14 @@ def main():
         extract_raw()
     # 서비스가 읽는 표를 건드리지 않도록 build 스키마에 만들고 검증한 뒤 옮긴다
     env = {"KOSIS_RAW_DIR": str(SOURCES[args.source])}
-    for script in ["preprocess.py", "catalog.py", "validate.py", "publish_stats.py", "load_raw.py"]:
+    for script in [
+        "preprocess.py",
+        "catalog.py",
+        "validate.py",
+        "publish_stats.py",
+        "load_raw.py",
+        "region_map.py",
+    ]:
         run(script, env)
     print("\n검증 통과: 서비스 데이터 교체 (실행 중인 서버는 재시작해야 반영)")
     if args.preview or args.share:
