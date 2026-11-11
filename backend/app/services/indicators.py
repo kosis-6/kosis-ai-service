@@ -113,8 +113,16 @@ def _data_years():
 
 
 def spec_tables():
-    """지표 사전이 쓰는 통계표 ID (서버 시작 시 적재 안 된 표를 적재 대기열에 넣을 때 씀)"""
-    return sorted({src["table"] for s in specs().values() for src in s.get("sources") or []})
+    """지표 사전이 쓰는 통계표 ID (서버 시작 시 적재 안 된 표를 적재 대기열에 넣을 때 씀)
+    years가 있는 과거 연도용 표는 빼고, 질문이 그 연도를 물을 때 받는다 (table_cache.py)"""
+    return sorted(
+        {
+            src["table"]
+            for s in specs().values()
+            for src in s.get("sources") or []
+            if not src.get("years")
+        }
+    )
 
 
 @lru_cache
@@ -193,8 +201,11 @@ def find_in_text(text):
 
 
 def kosis_url(tbl_id):
-    """KOSIS 통계표 화면 주소. 기관 ID는 수집 메타데이터(catalog 테이블)에서 읽는다"""
-    rows = _rows("select org_id from catalog where tbl_id = ?", [tbl_id])
+    """KOSIS 통계표 화면 주소. 기관 ID는 수집 메타데이터(catalog 테이블)에서 읽는다
+    서비스 기본 20개 표 밖의 표(질문 처리 중 바로 받은 표 등)는 표 목록 2,364개(table_meta)에서"""
+    rows = _rows("select org_id from catalog where tbl_id = ?", [tbl_id]) or _rows(
+        "select org_id from table_meta where tbl_id = ?", [tbl_id]
+    )
     return KOSIS_URL.format(org_id=rows[0]["org_id"], tbl_id=tbl_id) if rows else None
 
 

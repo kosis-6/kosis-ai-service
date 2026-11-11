@@ -27,7 +27,16 @@ from starlette.concurrency import run_in_threadpool
 
 from app.core.stats_db import StatsTableMissing
 from app.prompts.qa import PARSE_SYSTEM
-from app.services import agegroup, analysis, indicators, load_queue, lookup, timeref
+from app.services import (
+    agegroup,
+    ask_followup,
+    analysis,
+    indicators,
+    load_queue,
+    lookup,
+    table_cache,
+    timeref,
+)
 from app.services.hcx_client import HcxClient
 
 MODEL = "HCX-007"
@@ -649,6 +658,10 @@ def compute(q):
         by = "sex" if q.get("by") == "sex" else "age"
         try:
             return indicators.composition(regions[0], year, by, sex)
+        except StatsTableMissing as e:
+            if e.tbl_id:  # 적재 안 된 표: ask가 바로 받거나 대기열에 넣는다
+                raise
+            return {"status": "error", "reason": f"계산 중 오류가 났습니다: {e}"}
         except Exception as e:
             return {"status": "error", "reason": f"계산 중 오류가 났습니다: {e}"}
 
@@ -666,6 +679,10 @@ def compute(q):
             result = _compute_lookup(q, sp, kind, regions, year, sex, ages)
         else:
             result = _compute_population(q, sp["name"], kind, regions, year, sex, ages, hi)
+    except StatsTableMissing as e:
+        if e.tbl_id:  # 적재 안 된 표: ask가 바로 받거나 대기열에 넣는다 (_compute_fetching)
+            raise
+        return {"status": "error", "reason": f"계산 중 오류가 났습니다: {e}"}
     except Exception as e:  # 계산 중 오류도 답변 단계에서 안내
         return {"status": "error", "reason": f"계산 중 오류가 났습니다: {e}"}
 
@@ -736,7 +753,9 @@ def _compute_lookup(q, sp, kind, regions, year, sex, ages):
             }
         regions = ["전국"]
     if kind == "compare" and len(regions) == 1:  # 한 지역의 남녀 비교 등
-        kind = "value"
+        y0, y1 = q.get("start_year"), q.get("end_year")
+        # "1980년과 2025년 비교"처럼 한 지역의 두 연도를 비교하면 추이 (HCX가 compare로 읽는 경우)
+        kind = "trend" if y0 and y1 and y0 != y1 else "value"
     if not any(s.get("by_sex") for s in sp["sources"]):  # 성별 구분이 없는 지표 (예: 합계출산율)
         sex = "계"
     if ages and len(ages) > 1:
@@ -1241,6 +1260,8 @@ def _refusal_text(r):
         return (
             f"{what} 아직 지원하지 않는 지표입니다. {gap}아래 지원 지표로 다시 질문해 주세요."
         )
+    if status == "missing_year":
+        return f"{r['reason']} {ask_followup.guide(r)}"
     guide = REFUSAL_GUIDE.get(status, "")
     if status == "unknown_region" and r.get("alternative"):
         guide = f"속한 시군구({r['alternative']})로 다시 질문해 주세요."
@@ -1330,14 +1351,18 @@ def _body(r):
         return lines
     if "series" in r:  # 추이
         lines = [f"{r['region']} {name} ({r['sex']})"]
+        prev_year = None
         for s in r["series"]:
             line = f"- {s['year']}년: {_num(s['value'], unit)}"
             if "diff_from_prev" in s:
                 ch = _signed(s["diff_from_prev"], r["change"]["diff_unit"])
                 if "rate_from_prev" in s:
                     ch += f", {_signed(s['rate_from_prev'], '%')}"
-                line += f" (전년 대비 {ch})"
+                # 연도가 비면(예: 1980 → 2022, 조사 연도·표가 다름) "전년"이 아니라 앞 연도를 쓴다
+                base = "전년" if prev_year in (None, s["year"] - 1) else f"{prev_year}년"
+                line += f" ({base} 대비 {ch})"
             lines.append(line)
+            prev_year = s["year"]
         c = r["change"]
         total = _signed(c["diff"], c["diff_unit"])
         if "rate" in c:
@@ -1402,6 +1427,9 @@ def render(result):
         lines.append(f"출처: {src['source']} ({src['basis']})")
     if src.get("url"):
         lines.append(f"통계표: {src['url']}")
+    for extra in src.get("extra_sources") or []:  # 기간별로 다른 표를 이어 쓴 경우 (lookup.trend)
+        lines.append(f"출처: {extra['source']} ({extra['basis']})")
+        lines.append(f"통계표: {extra['url']}")
     return "\n".join(lines)
 
 
@@ -1412,12 +1440,83 @@ def sources(result):
         return []
     return [
         {
-            "name": src["source"],
-            "basis": src["basis"],
-            "tbl_id": src.get("tbl_id"),
-            "url": src.get("url"),
+            "name": s["source"],
+            "basis": s["basis"],
+            "tbl_id": s.get("tbl_id"),
+            "url": s.get("url"),
         }
+        for s in [src, *(src.get("extra_sources") or [])]
     ]
+
+
+RECENT_WORDS = re.compile(r"최근|최신|현재|요즘|지금|올해|금년")
+
+
+async def _refresh_recent(question, parsed, trace):
+    """최근·최신을 묻는 조회 지표 질문: 쓰는 표마다 KOSIS에 새 연도가 올라왔는지
+    확인(하루 한 번)하고 있으면 다시 받는다 (table_cache.refresh_if_stale). 바로 못 받으면 갱신 작업을 대기열에 넣고
+    지금 자료로 답하면서 그 사실을 주의사항으로 돌려준다.
+
+    계산 지표(총인구 등)는 전처리로 만든 mart.population을 읽어 표를 다시 받아도 반영되지 않으므로
+    확인하지 않는다."""
+    if not RECENT_WORDS.search(question):
+        return []
+    sp = indicators.spec(parsed.get("indicator") or "")
+    if sp is None or sp["method"] != "lookup":
+        return []
+    notes, steps = [], trace.setdefault("refreshed", [])
+    for tbl_id in dict.fromkeys(s["table"] for s in sp["sources"] if not s.get("years")):
+        try:
+            info = await load_queue.table_info(tbl_id)
+        except (load_queue.UnknownTable, SQLAlchemyError):
+            continue
+        step = {"tbl_id": tbl_id}
+        outcome = await table_cache.refresh_if_stale(tbl_id, info["org_id"], step)
+        step["refresh"] = outcome
+        steps.append(step)
+        if outcome in ("too_big", "failed", "timeout", "disabled") and step.get(
+            "refresh_kosis_year"
+        ):
+            try:
+                await load_queue.enqueue(tbl_id, "update")
+            except SQLAlchemyError:
+                continue
+            notes.append(
+                f"KOSIS에 {step['refresh_kosis_year']}년 자료가 새로 있어 받고 있습니다. "
+                f"지금은 {step['refresh_db_year']}년까지 자료로 답합니다"
+            )
+    return notes
+
+
+MAX_FETCH = 3  # 질문 하나에서 바로 받는 표 수 상한 (지표 하나가 표 여러 개를 쓸 수 있음)
+
+
+async def _compute_fetching(parsed, trace):
+    """계산 → 적재 안 된 표가 나오면 바로 받아 넣고 다시 계산 (table_cache.py)
+
+    큰 표·받기 실패·시간 초과면 대기열에 넣고 data_loading으로 답한다 (_loading_result).
+    trace["fetched"]: 이번 질문에서 바로 받은 표와 결과
+    """
+    for _ in range(MAX_FETCH + 1):
+        try:
+            return await run_in_threadpool(compute, parsed)
+        except StatsTableMissing as e:
+            error = e
+        fetched = trace.setdefault("fetched", [])
+        if len(fetched) >= MAX_FETCH or not error.tbl_id:
+            break
+        if any(f["tbl_id"] == error.tbl_id for f in fetched):
+            break  # 넣었는데도 같은 표가 없다고 나오면 다시 받지 않는다
+        try:
+            info = await load_queue.table_info(error.tbl_id)
+        except (load_queue.UnknownTable, SQLAlchemyError):
+            break  # _loading_result가 원래 오류를 올린다
+        step = {"tbl_id": error.tbl_id}
+        outcome = await table_cache.fetch_now(error.tbl_id, info["org_id"], step)
+        fetched.append(step)
+        if outcome != "loaded":
+            break
+    return await _loading_result(error)
 
 
 async def _loading_result(error):
@@ -1455,11 +1554,16 @@ async def ask(question):
     parsed = await understand(question, trace)
     trace["understand_ms"] = round((time.perf_counter() - start) * 1000)
     start = time.perf_counter()
-    # 통계 DB 조회는 동기 함수라 이벤트 루프를 막지 않도록 스레드에서 실행
-    try:
-        result = await run_in_threadpool(compute, parsed)
-    except StatsTableMissing as e:
-        result = await _loading_result(e)
+    if ask_followup.needs_year(question):
+        # "과거와 최근 비교"처럼 연도 없이 과거만 말하면 계산하지 않고 되묻는다
+        result = await run_in_threadpool(ask_followup.missing_year, parsed)
+    else:
+        notes = await _refresh_recent(question, parsed, trace)
+        # 통계 DB 조회는 동기 함수라 이벤트 루프를 막지 않도록 스레드에서 실행.
+        # 적재 안 된 표는 바로 받아 넣고 다시 계산한다 (받는 시간도 compute_ms에 들어감)
+        result = await _compute_fetching(parsed, trace)
+        if notes and result.get("status") == "ok":
+            result["notes"] = list(result.get("notes") or []) + notes
     trace["compute_ms"] = round((time.perf_counter() - start) * 1000)
     return {
         "status": result.get("status"),
@@ -1524,6 +1628,8 @@ def log_request(question, res=None, error=None, elapsed_ms=None, path=None, user
       hcx_raw     HCX가 돌려준 원문 (JSON을 못 읽었으면 여기서 원인 확인)
       parsed      해석 결과 + corrections(코드가 고친 항목과 이유)
       result      조회·계산 결과와 status
+      fetched     적재 안 된 표를 바로 받았는지: 표, 결과(loaded·too_big·failed·timeout),
+                  요청 수, 시간
     """
     res = res or {}
     trace = res.get("trace") or {}
@@ -1540,4 +1646,8 @@ def log_request(question, res=None, error=None, elapsed_ms=None, path=None, user
         "parsed": res.get("parsed"),
         "result": res.get("result"),
     }
+    if trace.get("fetched"):
+        record["fetched"] = trace["fetched"]
+    if trace.get("refreshed"):  # 최근·최신 질문에서 KOSIS 새 연도를 확인한 결과
+        record["refreshed"] = trace["refreshed"]
     _append(path or REQUEST_LOG, record)

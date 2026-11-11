@@ -292,15 +292,11 @@ def merge_parts(tdir: Path, target: Path) -> int:
     return rows
 
 
-async def collect_table(
-    client: Any, org_id: str, tbl_id: str, out: Path, dry_run: bool = False, per_table: int = 1
-) -> dict[str, Any]:
-    """표 하나를 받는다. 반환: 요청 수, 행 수, 이번에 새로 보낸 요청 수.
-
-    per_table: 표 하나 안에서 동시에 보내는 요청 수. 큰 표는 요청 하나에 10초 넘게 걸려서
-    하나씩 보내면 표 하나가 하루 넘게 걸린다. 조각은 서로 독립이라 순서와 상관없이 받아도 된다.
+def plan_table(meta: dict[str, Any]) -> list[dict[str, Any]]:
+    """표 하나를 받을 요청 계획: 수록주기마다 {label, prd_se, start, end, requests}.
+    요청 수(len(requests)의 합)로 질문 처리 중에 바로 받을 표인지 정한다
+    (app/services/table_cache.py)
     """
-    meta = await fetch_meta(client, org_id, tbl_id)
     jobs = []
     for p in meta["periods"]:
         code = period_code(p["PRD_SE"])
@@ -309,7 +305,32 @@ async def collect_table(
         start, end = digits(p["STRT_PRD_DE"]), digits(p["END_PRD_DE"])
         jobs.append({"label": p["PRD_SE"], "prd_se": code, "start": start, "end": end,
                      "requests": plan_requests(meta, code, start, end, every_years(p["PRD_SE"]))})
+    return jobs
+
+
+async def collect_table(
+    client: Any,
+    org_id: str,
+    tbl_id: str,
+    out: Path,
+    dry_run: bool = False,
+    per_table: int = 1,
+    meta: dict[str, Any] | None = None,
+    limiter: "RateLimiter | None" = None,
+    pause: float | None = None,
+) -> dict[str, Any]:
+    """표 하나를 받는다. 반환: 요청 수, 행 수, 이번에 새로 보낸 요청 수.
+
+    per_table: 표 하나 안에서 동시에 보내는 요청 수. 큰 표는 요청 하나에 10초 넘게 걸려서
+    하나씩 보내면 표 하나가 하루 넘게 걸린다. 조각은 서로 독립이라 순서와 상관없이 받아도 된다.
+    meta: 이미 받은 fetch_meta 결과 (없으면 받는다). limiter: 요청 간격 (없으면 이 모듈의 LIMITER).
+    pause: 요청마다 응답 뒤 쉬는 시간 (없으면 collect_kosis.call 기본값)
+    """
+    if meta is None:
+        meta = await fetch_meta(client, org_id, tbl_id)
+    jobs = plan_table(meta)
     n_requests = sum(len(j["requests"]) for j in jobs)
+    pace = {} if pause is None else {"pause": pause}
     summary = " / ".join(
         f"{j['label']} {j['start']}~{j['end']} {len(j['requests'])}회" for j in jobs
     )
@@ -343,8 +364,8 @@ async def collect_table(
         while todo and state["error"] is None:
             part, query = todo.pop(0)
             try:
-                await LIMITER.wait()
-                data = await call(client, DATA_PATH, query)
+                await (limiter or LIMITER).wait()
+                data = await call(client, DATA_PATH, query, **pace)
                 write_part(part, to_rows_by_sn(data, meta), cols)
             except Exception as e:  # noqa: BLE001 - 다른 줄도 멈추고 표를 실패로 남긴다
                 state["error"] = state["error"] or e

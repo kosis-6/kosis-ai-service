@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 from app import main
 from app.api.deps import get_current_user
 from app.core.stats_db import StatsTableMissing
-from app.services import load_queue, qa
+from app.services import load_queue, qa, table_cache
 
 TBL = "DT_1B26001"
 INFO = {
@@ -36,8 +36,12 @@ def queue(monkeypatch: pytest.MonkeyPatch) -> list:
         calls.append((tbl_id, reason))
         return {"id": 1, "status": "queued", "requested_count": len(calls), "created": True}
 
+    async def fetch_now(tbl_id, org_id, trace=None):
+        return "too_big"  # 바로 받지 않는 경우 (바로 받기는 test_table_cache.py)
+
     monkeypatch.setattr(load_queue, "table_info", table_info)
     monkeypatch.setattr(load_queue, "enqueue", enqueue)
+    monkeypatch.setattr(table_cache, "fetch_now", fetch_now)
     return calls
 
 
