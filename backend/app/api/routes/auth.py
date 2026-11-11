@@ -4,6 +4,7 @@
 → 30분 안에 POST /auth/register. 아이디는 이메일이다.
 
 토큰: 로그인하면 Access Token(15분)은 응답 본문으로, Refresh Token(14일)은 HttpOnly 쿠키로 준다.
+계속 쓰더라도 로그인한 지 30일(session_max_days)이 지나면 다시 로그인해야 한다.
 Access Token이 만료되면(401) POST /auth/refresh로 둘 다 새로 받는다. 서버는 로그인마다
 app.user_sessions에 Refresh Token 해시와 지금 쓸 수 있는 Access Token 번호를 두어,
 새 토큰을 받거나 로그아웃하면 예전 Access Token을 바로 막는다 (services/auth_sessions.py).
@@ -54,26 +55,33 @@ def _too_many(detail: str, wait: int) -> HTTPException:
     )
 
 
-def _refresh_failed() -> JSONResponse:
+def _refresh_failed(request: Request) -> JSONResponse:
     """401과 함께 쓸 수 없는 Refresh Token 쿠키를 지운다
     (HTTPException으로 내면 지우라는 쿠키가 응답에 실리지 않는다)"""
     r = JSONResponse(
         status_code=status.HTTP_401_UNAUTHORIZED, content={"detail": "다시 로그인해 주세요."}
     )
-    _forget_cookie(r)
+    _forget_cookie(r, request)
     return r
 
 
-def _issue(response: Response, user: User, row, secret: str, jti: str) -> Token:
+def _secure(request: Request) -> bool:
+    """쿠키에 Secure를 붙일지. COOKIE_SECURE를 비워 두면 https 요청일 때만"""
+    forced = get_settings().cookie_secure
+    return forced if forced is not None else request.url.scheme == "https"
+
+
+def _issue(request: Request, response: Response, user: User, row, jti: str) -> Token:
     """Access Token은 본문으로, Refresh Token은 HttpOnly 쿠키로 준다"""
     s = get_settings()
+    left = (row.expires_at - auth_sessions.now()).total_seconds()
     response.set_cookie(
         auth_sessions.COOKIE,
-        auth_sessions.refresh_token(row, secret),
-        max_age=s.refresh_token_days * 24 * 60 * 60,
+        auth_sessions.refresh_token(row),
+        max_age=max(0, int(left)),  # 보통 14일, 로그인 최대 기간이 가까우면 그때까지
         path=auth_sessions.COOKIE_PATH,
         httponly=True,  # 화면 JavaScript가 읽을 수 없다 (XSS로 훔쳐 가지 못하게)
-        secure=s.cookie_secure,
+        secure=_secure(request),  # https면 http 요청에는 실리지 않는다 (평문으로 새지 않게)
         samesite="strict",  # 다른 사이트에서 보낸 요청에는 실리지 않는다
     )
     return Token(
@@ -82,13 +90,20 @@ def _issue(response: Response, user: User, row, secret: str, jti: str) -> Token:
     )
 
 
-async def _new_login(response: Response, session, user: User) -> Token:
-    row, secret, jti = await auth_sessions.create(session, user.id, auth_sessions.now())
-    return _issue(response, user, row, secret, jti)
+async def _new_login(request: Request, response: Response, session, user: User) -> Token:
+    row, jti = await auth_sessions.create(session, user.id, auth_sessions.now())
+    return _issue(request, response, user, row, jti)
 
 
-def _forget_cookie(response: Response) -> None:
-    response.delete_cookie(auth_sessions.COOKIE, path=auth_sessions.COOKIE_PATH)
+def _forget_cookie(response: Response, request: Request) -> None:
+    # 만들 때와 같은 속성으로 지운다 (Secure 쿠키는 Secure로 지워야 하는 브라우저가 있다)
+    response.delete_cookie(
+        auth_sessions.COOKIE,
+        path=auth_sessions.COOKIE_PATH,
+        httponly=True,
+        secure=_secure(request),
+        samesite="strict",
+    )
 
 
 @router.post("/email-code", summary="① 인증번호 받기", status_code=status.HTTP_202_ACCEPTED)
@@ -200,7 +215,7 @@ async def login(
             headers={"WWW-Authenticate": "Bearer"},
         )
     login_limit.limiter.reset(key)
-    return await _new_login(response, session, user)
+    return await _new_login(request, response, session, user)
 
 
 @router.post(
@@ -210,6 +225,7 @@ async def login(
     responses={401: {"description": "다시 로그인해야 함"}},
 )
 async def refresh(
+    request: Request,
     response: Response,
     session: Session,
     refresh_token: Annotated[str | None, Cookie(include_in_schema=False)] = None,
@@ -221,31 +237,31 @@ async def refresh(
     예전 쿠키로 온 요청은 쿠키를 바꾸지 않고 지금 Access Token만 받는다"""
     parsed = auth_sessions.parse_refresh(refresh_token)
     if parsed is None:
-        return _refresh_failed()
-    sid, secret = parsed
+        return _refresh_failed(request)
     at = auth_sessions.now()
     # 잠근다: 동시에 온 요청은 앞 요청이 토큰을 바꿔 커밋한 뒤에 바뀐 줄을 읽는다
-    row = await auth_sessions.get(session, sid, lock=True)
-    result = auth_sessions.check_refresh(row, secret, at)
-    if result == "reused":  # 바로 전 Refresh Token: 훔쳐 간 것으로 보고 이 로그인을 끊는다
+    row = await auth_sessions.get(session, parsed.session_id, lock=True)
+    result = auth_sessions.check_refresh(row, parsed, at)
+    if result == "reused":  # 이미 쓴 진짜 Refresh Token: 훔쳐 간 것으로 보고 이 로그인을 끊는다
         row.revoked_at = at
         await auth_sessions.save(session, row)
     user = await users.get(session, row.user_id) if result in ("ok", "grace") else None
     if user is None or not user.is_active:
-        return _refresh_failed()
+        return _refresh_failed(request)
     if result == "grace":
         # 앞 요청이 이미 새 쿠키를 보냈다. 쿠키는 그대로 두고 그 로그인의 지금 Access Token을 준다
         return Token(
             access_token=create_access_token(user.id, row.id, row.access_jti, user.token_version),
             expires_in=get_settings().access_token_minutes * 60,
         )
-    new_secret, jti = auth_sessions.rotate(row, at)
+    jti = auth_sessions.rotate(row, at)
     await auth_sessions.save(session, row)
-    return _issue(response, user, row, new_secret, jti)
+    return _issue(request, response, user, row, jti)
 
 
 @router.post("/logout", summary="로그아웃", status_code=status.HTTP_204_NO_CONTENT)
 async def logout(
+    request: Request,
     response: Response,
     session: Session,
     token: Annotated[str | None, Depends(optional_scheme)] = None,
@@ -264,12 +280,12 @@ async def logout(
     # Access Token이 지난 번호여도(다른 탭이 새로 받음) 쿠키가 맞으면 끊는다.
     # 쿠키만 지우고 끝내면 서버의 로그인은 14일 동안 살아 있다
     if not ok and parsed:
-        row = await auth_sessions.get(session, parsed[0])
-        ok = auth_sessions.check_refresh(row, parsed[1], at) in ("ok", "grace")
+        row = await auth_sessions.get(session, parsed.session_id)
+        ok = auth_sessions.check_refresh(row, parsed, at) in ("ok", "grace")
     if ok:
         row.revoked_at = at
         await auth_sessions.save(session, row)
-    _forget_cookie(response)
+    _forget_cookie(response, request)
 
 
 @router.get("/me", summary="내 정보")
@@ -286,7 +302,11 @@ async def update_me(body: ProfileUpdate, user: CurrentUser, session: Session) ->
 
 @router.post("/password", summary="비밀번호 바꾸기")
 async def change_password(
-    body: PasswordChange, user: CurrentUser, response: Response, session: Session
+    body: PasswordChange,
+    user: CurrentUser,
+    request: Request,
+    response: Response,
+    session: Session,
 ) -> Token:
     """지금 비밀번호를 확인하고 새 비밀번호로 바꾼다.
     이 기기를 포함한 모든 로그인이 끊기고, 이 요청에는 새 로그인 토큰을 돌려준다"""
@@ -296,4 +316,4 @@ async def change_password(
         raise HTTPException(status_code=400, detail="새 비밀번호가 지금 비밀번호와 같습니다.")
     user = await users.change_password(session, user, body.new_password)
     await auth_sessions.revoke_all(session, user.id, auth_sessions.now())
-    return await _new_login(response, session, user)
+    return await _new_login(request, response, session, user)
