@@ -696,6 +696,12 @@ def _load_version():
     return r["n"], r["loaded_at"], r["job_done_at"]
 
 
+def clear_table_caches():
+    """표 정보 캐시를 지금 비운다 (질문 처리 중에 표를 바로 적재한 뒤, table_cache.py)"""
+    for cached in TABLE_CACHES:
+        cached.cache_clear()
+
+
 def refresh_if_reloaded(now=None):
     """표가 새로 적재·교체됐으면 표 정보 캐시를 비운다. 비웠으면 True
 

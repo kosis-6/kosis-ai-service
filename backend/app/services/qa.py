@@ -27,7 +27,15 @@ from starlette.concurrency import run_in_threadpool
 
 from app.core.stats_db import StatsTableMissing
 from app.prompts.qa import PARSE_SYSTEM
-from app.services import agegroup, analysis, indicators, load_queue, lookup, timeref
+from app.services import (
+    agegroup,
+    analysis,
+    indicators,
+    load_queue,
+    lookup,
+    table_cache,
+    timeref,
+)
 from app.services.hcx_client import HcxClient
 
 MODEL = "HCX-007"
@@ -1420,6 +1428,37 @@ def sources(result):
     ]
 
 
+MAX_FETCH = 3  # 질문 하나에서 바로 받는 표 수 상한 (지표 하나가 표 여러 개를 쓸 수 있음)
+
+
+async def _compute_fetching(parsed, trace):
+    """계산 → 적재 안 된 표가 나오면 바로 받아 넣고 다시 계산 (table_cache.py)
+
+    큰 표·받기 실패·시간 초과면 대기열에 넣고 data_loading으로 답한다 (_loading_result).
+    trace["fetched"]: 이번 질문에서 바로 받은 표와 결과
+    """
+    for _ in range(MAX_FETCH + 1):
+        try:
+            return await run_in_threadpool(compute, parsed)
+        except StatsTableMissing as e:
+            error = e
+        fetched = trace.setdefault("fetched", [])
+        if len(fetched) >= MAX_FETCH or not error.tbl_id:
+            break
+        if any(f["tbl_id"] == error.tbl_id for f in fetched):
+            break  # 넣었는데도 같은 표가 없다고 나오면 다시 받지 않는다
+        try:
+            info = await load_queue.table_info(error.tbl_id)
+        except (load_queue.UnknownTable, SQLAlchemyError):
+            break  # _loading_result가 원래 오류를 올린다
+        step = {"tbl_id": error.tbl_id}
+        outcome = await table_cache.fetch_now(error.tbl_id, info["org_id"], step)
+        fetched.append(step)
+        if outcome != "loaded":
+            break
+    return await _loading_result(error)
+
+
 async def _loading_result(error):
     """수치가 아직 적재되지 않은 표: 적재 대기열에 넣고 data_loading으로 답한다
 
@@ -1455,11 +1494,9 @@ async def ask(question):
     parsed = await understand(question, trace)
     trace["understand_ms"] = round((time.perf_counter() - start) * 1000)
     start = time.perf_counter()
-    # 통계 DB 조회는 동기 함수라 이벤트 루프를 막지 않도록 스레드에서 실행
-    try:
-        result = await run_in_threadpool(compute, parsed)
-    except StatsTableMissing as e:
-        result = await _loading_result(e)
+    # 통계 DB 조회는 동기 함수라 이벤트 루프를 막지 않도록 스레드에서 실행.
+    # 적재 안 된 표는 바로 받아 넣고 다시 계산한다 (받는 시간도 compute_ms에 들어감, fetched 참고)
+    result = await _compute_fetching(parsed, trace)
     trace["compute_ms"] = round((time.perf_counter() - start) * 1000)
     return {
         "status": result.get("status"),
