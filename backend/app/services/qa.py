@@ -657,6 +657,10 @@ def compute(q):
         by = "sex" if q.get("by") == "sex" else "age"
         try:
             return indicators.composition(regions[0], year, by, sex)
+        except StatsTableMissing as e:
+            if e.tbl_id:  # 적재 안 된 표: ask가 바로 받거나 대기열에 넣는다
+                raise
+            return {"status": "error", "reason": f"계산 중 오류가 났습니다: {e}"}
         except Exception as e:
             return {"status": "error", "reason": f"계산 중 오류가 났습니다: {e}"}
 
@@ -674,6 +678,10 @@ def compute(q):
             result = _compute_lookup(q, sp, kind, regions, year, sex, ages)
         else:
             result = _compute_population(q, sp["name"], kind, regions, year, sex, ages, hi)
+    except StatsTableMissing as e:
+        if e.tbl_id:  # 적재 안 된 표: ask가 바로 받거나 대기열에 넣는다 (_compute_fetching)
+            raise
+        return {"status": "error", "reason": f"계산 중 오류가 났습니다: {e}"}
     except Exception as e:  # 계산 중 오류도 답변 단계에서 안내
         return {"status": "error", "reason": f"계산 중 오류가 났습니다: {e}"}
 
@@ -744,7 +752,9 @@ def _compute_lookup(q, sp, kind, regions, year, sex, ages):
             }
         regions = ["전국"]
     if kind == "compare" and len(regions) == 1:  # 한 지역의 남녀 비교 등
-        kind = "value"
+        y0, y1 = q.get("start_year"), q.get("end_year")
+        # "1980년과 2025년 비교"처럼 한 지역의 두 연도를 비교하면 추이 (HCX가 compare로 읽는 경우)
+        kind = "trend" if y0 and y1 and y0 != y1 else "value"
     if not any(s.get("by_sex") for s in sp["sources"]):  # 성별 구분이 없는 지표 (예: 합계출산율)
         sex = "계"
     if ages and len(ages) > 1:
@@ -1338,14 +1348,18 @@ def _body(r):
         return lines
     if "series" in r:  # 추이
         lines = [f"{r['region']} {name} ({r['sex']})"]
+        prev_year = None
         for s in r["series"]:
             line = f"- {s['year']}년: {_num(s['value'], unit)}"
             if "diff_from_prev" in s:
                 ch = _signed(s["diff_from_prev"], r["change"]["diff_unit"])
                 if "rate_from_prev" in s:
                     ch += f", {_signed(s['rate_from_prev'], '%')}"
-                line += f" (전년 대비 {ch})"
+                # 연도가 비면(예: 1980 → 2022, 조사 연도·표가 다름) "전년"이 아니라 앞 연도를 쓴다
+                base = "전년" if prev_year in (None, s["year"] - 1) else f"{prev_year}년"
+                line += f" ({base} 대비 {ch})"
             lines.append(line)
+            prev_year = s["year"]
         c = r["change"]
         total = _signed(c["diff"], c["diff_unit"])
         if "rate" in c:
@@ -1410,6 +1424,9 @@ def render(result):
         lines.append(f"출처: {src['source']} ({src['basis']})")
     if src.get("url"):
         lines.append(f"통계표: {src['url']}")
+    for extra in src.get("extra_sources") or []:  # 기간별로 다른 표를 이어 쓴 경우 (lookup.trend)
+        lines.append(f"출처: {extra['source']} ({extra['basis']})")
+        lines.append(f"통계표: {extra['url']}")
     return "\n".join(lines)
 
 
@@ -1420,11 +1437,12 @@ def sources(result):
         return []
     return [
         {
-            "name": src["source"],
-            "basis": src["basis"],
-            "tbl_id": src.get("tbl_id"),
-            "url": src.get("url"),
+            "name": s["source"],
+            "basis": s["basis"],
+            "tbl_id": s.get("tbl_id"),
+            "url": s.get("url"),
         }
+        for s in [src, *(src.get("extra_sources") or [])]
     ]
 
 
@@ -1561,6 +1579,8 @@ def log_request(question, res=None, error=None, elapsed_ms=None, path=None, user
       hcx_raw     HCX가 돌려준 원문 (JSON을 못 읽었으면 여기서 원인 확인)
       parsed      해석 결과 + corrections(코드가 고친 항목과 이유)
       result      조회·계산 결과와 status
+      fetched     적재 안 된 표를 바로 받았는지: 표, 결과(loaded·too_big·failed·timeout),
+                  요청 수, 시간
     """
     res = res or {}
     trace = res.get("trace") or {}
@@ -1577,4 +1597,6 @@ def log_request(question, res=None, error=None, elapsed_ms=None, path=None, user
         "parsed": res.get("parsed"),
         "result": res.get("result"),
     }
+    if trace.get("fetched"):
+        record["fetched"] = trace["fetched"]
     _append(path or REQUEST_LOG, record)
