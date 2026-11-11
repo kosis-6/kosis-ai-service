@@ -737,8 +737,11 @@ def _compute_population(q, ind, kind, regions, year, sex, ages, hi):
     if kind == "value":
         return indicators.value(ind, regions[0], year, sex, ages)
     if kind == "trend":
+        asked = q.get("asked") or {}
         start, end = q.get("start_year") or hi - 5, q.get("end_year") or hi
-        if (q.get("asked") or {}).get("from_start") and not q.get("start_year"):
+        if asked.get("recent"):  # "최근 5년" → HCX가 준 기간 대신 자료 마지막 연도 기준 N개년
+            start, end = hi - asked["recent"] + 1, hi
+        elif asked.get("from_start") and not q.get("start_year"):
             start = indicators._data_years()[0]  # "과거부터" → 수록 첫해부터
         return indicators.trend(ind, regions[0], start, end, sex, ages)
     if kind == "compare":

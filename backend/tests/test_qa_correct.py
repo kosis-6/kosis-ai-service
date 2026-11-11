@@ -451,3 +451,12 @@ def test_from_past_computed_indicator_starts_at_first_year(monkeypatch) -> None:
     q = {"type": "trend", "asked": {}, "start_year": None, "end_year": None}
     qa._compute_population(q, "총인구", "trend", ["서울특별시"], 2025, "계", None, 2025)
     assert calls == [(2008, 2025), (2020, 2025)]
+
+
+def test_recent_n_years_computed_indicator(monkeypatch) -> None:
+    # 계산 지표도 "최근 5년"은 마지막 연도 기준 5개년 (전에는 기본값 6개년, HCX 기간을 그대로 씀)
+    calls = []
+    monkeypatch.setattr(indicators, "trend", lambda ind, reg, a, b, *rest: calls.append((a, b)))
+    q = {"type": "trend", "asked": {"recent": 5}, "start_year": 2019, "end_year": None}
+    qa._compute_population(q, "총인구", "trend", ["서울특별시"], 2025, "계", None, 2025)
+    assert calls == [(2021, 2025)]
