@@ -24,7 +24,12 @@ class KosisError(RuntimeError):
     pass
 
 
-async def call(client: KosisClient, path: str, params: dict[str, Any]) -> list[dict[str, Any]]:
+async def call(
+    client: KosisClient, path: str, params: dict[str, Any], pause: float = REQUEST_INTERVAL
+) -> list[dict[str, Any]]:
+    """KOSIS 요청 하나. pause: 응답 뒤 쉬는 시간(분당 호출 제한 대응). 질문 처리 중 받을 때는
+    호출 간격을 RateLimiter가 맞추므로 0으로 둔다 (KOSIS 응답은 0.2초 안팎인데 1초씩 쉬면
+    요청 1번짜리 표도 몇 초가 걸린다)"""
     for wait in (5, 15, 30, None):
         try:
             data = await client.get(path, params)
@@ -34,7 +39,8 @@ async def call(client: KosisClient, path: str, params: dict[str, Any]) -> list[d
             if wait is None:
                 raise
             await asyncio.sleep(wait)
-    await asyncio.sleep(REQUEST_INTERVAL)
+    if pause:
+        await asyncio.sleep(pause)
     # 오류는 {"err": "코드", "errMsg": "..."} 형태로 옴
     if isinstance(data, dict):
         # 30 = 데이터 없음 (예: 폐지된 행정구역만 묶인 요청) → 빈 결과로 처리
@@ -44,11 +50,17 @@ async def call(client: KosisClient, path: str, params: dict[str, Any]) -> list[d
     return data
 
 
-async def fetch_meta(client: KosisClient, org_id: str, tbl_id: str) -> dict[str, Any]:
+async def fetch_meta(
+    client: KosisClient, org_id: str, tbl_id: str, pause: float = REQUEST_INTERVAL
+) -> dict[str, Any]:
+    """표 이름·항목·분류·수록주기. 세 요청은 서로 독립이라 동시에 보낸다"""
     base = {"method": "getMeta", "orgId": org_id, "tblId": tbl_id}
-    tbl = await call(client, "/statisticsData.do", {**base, "type": "TBL"})
-    itm = await call(client, "/statisticsData.do", {**base, "type": "ITM"})
-    prd = await call(client, "/statisticsData.do", {**base, "type": "PRD"})
+    tbl, itm, prd = await asyncio.gather(
+        *(
+            call(client, "/statisticsData.do", {**base, "type": kind}, pause)
+            for kind in ("TBL", "ITM", "PRD")
+        )
+    )
 
     items = [x for x in itm if x["OBJ_ID"] == "ITEM"]
     # 분류는 OBJ_ID_SN 순서가 요청 파라미터 objL1, objL2 ... 순서

@@ -92,6 +92,13 @@ def _effective(src, sex):
 def _table(tbl_id):
     """표 이름·기관·수록 기간·기준 시점"""
     c = _rows("select tbl_nm, org_nm, start_year, end_year from catalog where tbl_id = ?", [tbl_id])
+    if not c:
+        # 서비스 기본 20개 표 밖(질문 처리 중 바로 받은 표 등)은 표 목록 2,364개에서 찾는다
+        c = _rows(
+            "select table_name as tbl_nm, organization as org_nm, start_year, end_year"
+            " from table_meta where tbl_id = ?",
+            [tbl_id],
+        )
     c = c[0] if c else {"tbl_nm": tbl_id, "org_nm": "", "start_year": None, "end_year": None}
     basis = ind_mod._catalog_rows(
         "select survey, reference_date from table_notes where tbl_id = ?", [tbl_id]
@@ -108,7 +115,12 @@ def _table(tbl_id):
 
 @lru_cache
 def _tbl_key(tbl_id):
-    r = _rows("select tbl_key from stat_table where tbl_id = ?", [tbl_id])
+    """표의 숫자 키. 적재가 끝난 표(stat_load에 기록)만 — stat_table은 적재 도중(코드 저장 단계)에
+    먼저 생겨서, 그것만 보면 수치가 없는 표를 있는 표로 읽고 빈 결과를 낸다"""
+    r = _rows(
+        "select t.tbl_key from stat_table t join stat_load l using (tbl_key) where t.tbl_id = ?",
+        [tbl_id],
+    )
     if not r:
         raise StatsTableMissing(f"{tbl_id} 수치가 raw.stat_value에 적재되지 않았습니다", tbl_id)
     return r[0]["tbl_key"]
@@ -171,6 +183,13 @@ def _items(src):
 
 
 def _years(src):
+    """출처의 수록 기간. 지표 사전에 years = [시작, 끝]이 있으면 그것을 쓴다
+
+    과거 연도용 표(예: 1980년 인구총조사)는 질문이 그 연도를 물을 때만 받으면 되므로, 기간을 알려고
+    DB를 보지 않는다 (적재 안 된 표를 DB에서 보면 StatsTableMissing → 바로 받기가 일어난다)"""
+    if src.get("years"):
+        lo, hi = src["years"]
+        return lo, hi
     return _item_years(src["table"], _items(src))
 
 
@@ -287,7 +306,16 @@ def _fetch(src, codes, y0, y1, age_codes=None):
         return num
     den_filters = src.get("den_filters") or src.get("filters", {})
     den = _sum(src, codes, y0, y1, "den_item_id", den_filters, age_codes)
-    return {k: (v / den[k] * 100 if v is not None and den.get(k) else None) for k, v in num.items()}
+    return {
+        k: (analysis.share(v, den[k]) if v is not None and den.get(k) else None)
+        for k, v in num.items()
+    }
+
+
+def _diff(base, current, spec):
+    """차이: 비율 지표는 %p (analysis.point_change), 그 밖은 증감량 (analysis.change)"""
+    fn = analysis.point_change if kind_of(spec) == "ratio" else analysis.change
+    return fn(base, current)
 
 
 def _round(v, spec):
@@ -352,6 +380,8 @@ def _level(regs):
 def _ages(src, ages):
     """(더할 연령 코드 또는 None, 이름 앞에 붙일 연령 표현, 주의사항) 또는 AgeMismatch"""
     if not ages:
+        if src.get("age_default"):  # 지표 정의에 맞춘 연령 (예: 15세 이상 표에서 18세 이상만)
+            return list(src["age_default"]), "", []
         return (([src["age_total"]] if src.get("age_dim") else None), "", [])
     if not src.get("age_dim"):
         raise AgeMismatch
@@ -369,7 +399,9 @@ def _base(spec, src, status="ok", label="", **extra):
     tbl = _table(src["table"])
     name = label + spec["name"] + (f"({src['label']})" if src.get("label") else "")
     notes = [spec["note"]] if spec.get("note") else []
-    if src.get("national_only"):
+    if src.get("note"):  # 출처마다 다른 기준 (예: 과거 연도용 인구총조사 표)
+        notes.append(src["note"])
+    if src.get("national_only") and not src.get("years"):  # 과거 연도용 표는 note로 따로 알린다
         notes.append("전국 장기 추이 표(지역 구분 없음) 기준입니다")
     out = {
         "status": status,
@@ -431,13 +463,89 @@ def value(spec, region, year, sex="계", ages=None):
     )
 
 
+def _spans(spec, level, y0, y1, sex):
+    """[y0, y1]을 출처별 기간으로 나눈다 [(출처, 시작, 끝)]. 앞에 적은 출처의 연도가 우선이고,
+    어느 출처에도 없는 연도는 빠진다
+    (예: 미혼 비율 1980~2025 → 2022~2025 등록센서스 + 1980 총조사)"""
+    spans, covered = [], set()
+    for s in spec["sources"]:
+        if s.get("national_only") and level != "전국":
+            continue
+        if LEVELS[s["level"]] < LEVELS[level]:
+            continue
+        eff = _effective(s, sex)
+        if eff is None:
+            continue
+        lo, hi = _years(eff)
+        years = [y for y in range(max(lo, y0), min(hi, y1) + 1) if y not in covered]
+        if years:
+            spans.append((eff, min(years), max(years)))
+            covered.update(years)
+    return spans
+
+
+def _source_info(src):
+    """답변 출처 한 줄에 쓰는 표 정보 (여러 표를 이어 쓸 때 앞 표들)"""
+    tbl = _table(src["table"])
+    return {
+        "source": f"{tbl['org_nm']}, {tbl['tbl_nm']} ({src['table']})",
+        "basis": tbl["basis"] or "KOSIS 공표 값",
+        "tbl_id": src["table"],
+        "url": ind_mod.kosis_url(src["table"]),
+    }
+
+
+def _trend_series(spec, reg, start_year, end_year, sex, ages, out_of_range):
+    """기간 전체를 담은 출처가 없을 때 연도별로 출처를 골라 이어 붙인다
+    반환: (마지막 연도의 출처, 연령 표현, 주의사항, 값 {(연도, 지역): 값}, 앞 출처 목록)
+    또는 오류 dict"""
+    spans = _spans(spec, REGION_LEVEL.get(reg["kind"], "시군구"), start_year, end_year, sex)
+    if len(spans) < 2:
+        return {**out_of_range, "region": reg["display"]}
+    spans.sort(key=lambda s: s[1])
+    vals, notes, label = {}, [], ""
+    by_note = {}  # 출처 note → (첫 연도, 끝 연도)
+    for src, a, b in spans:
+        try:
+            age_codes, label, age_notes = _ages(src, ages)
+        except AgeMismatch:
+            return {
+                "status": "unknown_indicator",
+                "indicator": spec["name"],
+                "reason": f"{spec['name']}은(는) 질문한 연령 구간으로 나눈 자료가 없습니다.",
+            }
+        got = _fetch(src, [reg["region_code"]], a, b, age_codes)
+        vals.update({k: v for k, v in got.items() if k not in vals})
+        notes += [n for n in age_notes if n not in notes]
+        if src.get("note") and src is not spans[-1][0]:  # 마지막 출처의 note는 _base가 붙인다
+            lo, hi = by_note.get(src["note"], (a, b))
+            by_note[src["note"]] = (min(lo, a), max(hi, b))
+    # 같은 기준의 표 여러 개(조사 연도마다 따로 있는 인구총조사)는 한 줄로 알린다
+    notes += [f"{a}~{b}년: {n}" if a != b else f"{a}년: {n}" for n, (a, b) in by_note.items()]
+    last = spans[-1][0]
+    earlier = [_source_info(s) for s, _, _ in spans[:-1]]
+    return last, label, notes, vals, earlier
+
+
 def trend(spec, region, start_year, end_year, sex="계", ages=None):
     prep = _prepare(spec, [region], start_year, end_year, sex, ages)
+    earlier = []
     if isinstance(prep, dict):
-        return prep
-    (reg,), src, age_codes, label, notes = prep
+        if prep.get("status") != "out_of_range":
+            return prep
+        regs = _resolve(spec, [region], end_year)
+        if isinstance(regs, dict):
+            return regs
+        reg = regs[0]
+        joined = _trend_series(spec, reg, start_year, end_year, sex, ages, prep)
+        if isinstance(joined, dict):
+            return joined
+        src, label, notes, vals, earlier = joined
+        notes += [reg["note"]] if reg.get("note") else []
+    else:
+        (reg,), src, age_codes, label, notes = prep
+        vals = _fetch(src, [reg["region_code"]], start_year, end_year, age_codes)
     code = reg["region_code"]
-    vals = _fetch(src, [code], start_year, end_year, age_codes)
     series = [
         {"year": y, "value": _round(v, spec)} for (y, _), v in sorted(vals.items()) if v is not None
     ]
@@ -455,7 +563,7 @@ def trend(spec, region, start_year, end_year, sex="계", ages=None):
     change = {
         "from_year": series[0]["year"],
         "to_year": series[-1]["year"],
-        "diff": _round(last - first, spec),
+        "diff": _round(_diff(first, last, spec), spec),
         "diff_unit": diff_unit(spec),
     }
     if k == "count" and first:
@@ -474,6 +582,7 @@ def trend(spec, region, start_year, end_year, sex="계", ages=None):
         series=series,
         change=change,
         notes=notes + ind_mod._change_notes(code, start_year, end_year),
+        **({"extra_sources": earlier} if earlier else {}),
     )
 
 
@@ -490,7 +599,7 @@ def compare(spec, regions, year, sex="계", ages=None):
     in_order = [v["value"] for v in values]
     values.sort(key=lambda x: (x["value"] is None, -(x["value"] or 0)))
     valid = [x for x in values if x["value"] is not None]
-    gap = valid[0]["value"] - valid[-1]["value"] if len(valid) >= 2 else None
+    gap = _diff(valid[-1]["value"], valid[0]["value"], spec) if len(valid) >= 2 else None
     out = _base(
         spec,
         src,
@@ -508,7 +617,7 @@ def compare(spec, regions, year, sex="계", ages=None):
         out["ratio"] = {
             "a": regs[0]["display"],
             "b": regs[1]["display"],
-            "value": round(in_order[0] / in_order[1], 2),
+            "value": round(analysis.times(in_order[0], in_order[1]), 2),
         }
     return out
 
@@ -548,9 +657,7 @@ def rank(
         v = vals.get((year, reg["region_code"]))
         if v is not None:
             items.append({"region": ind_mod._display(reg), "value": _round(v, spec)})
-    items.sort(key=lambda x: x["value"], reverse=not ascending)
-    for i, it in enumerate(items, 1):
-        it["rank"] = i
+    items = analysis.rank_rows(items, descending=not ascending)  # 같은 값은 같은 순위
     out = _base(
         spec,
         src,
@@ -694,6 +801,12 @@ def _load_version():
     """
     )[0]
     return r["n"], r["loaded_at"], r["job_done_at"]
+
+
+def clear_table_caches():
+    """표 정보 캐시를 지금 비운다 (질문 처리 중에 표를 바로 적재한 뒤, table_cache.py)"""
+    for cached in TABLE_CACHES:
+        cached.cache_clear()
 
 
 def refresh_if_reloaded(now=None):

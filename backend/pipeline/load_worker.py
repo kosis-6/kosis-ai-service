@@ -8,10 +8,9 @@
                 (scripts/collect_all.collect_table. LOAD_SOURCE=file이면 받지 않음)
   2. 적재      pipeline/load_raw.load_table: 중복·행 수·합계 검증 후 표 단위 교체,
                 raw.stat_load 기록
-  3. 적재 후   AFTER_LOAD 단계 (표 정보 catalog.catalog, 지역 매핑 mart.region_code_map)
-                ※ 아직 비어 있다. 전처리(preprocess.py)가 전체를 한 번에 만드는 방식이라
-                  표 하나 단위 함수로 나눈 뒤 여기에 넣는다. 그 전까지 새로 적재한 표는
-                  지역 조건 조회가 안 되고 전국 값만 나온다.
+  3. 적재 후   AFTER_LOAD 단계
+                지역 매핑 mart.region_code_map (pipeline/region_map.map_table): 이게 있어야
+                지역 조건으로 조회된다. 지역 분류가 없는 표는 전국 값만 나온다
   4. 기록      done / 일시 오류면 run_after 뒤 다시 시도 / 그 밖의 오류는 failed + 오류 내용
 
 약속 (app/services/load_queue.py와 함께 지킨다)
@@ -31,6 +30,7 @@
 
 import argparse
 import asyncio
+import contextlib
 import gzip
 import logging
 import os
@@ -44,6 +44,7 @@ import httpx
 import psycopg
 
 from pipeline.load_raw import load_table
+from pipeline.region_map import map_table
 from pipeline.stats_build import conninfo
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -58,6 +59,9 @@ IDLE_SECONDS = 10
 STALE_AFTER = timedelta(hours=2)
 MAX_ATTEMPTS = 3
 RETRY_AFTER = [timedelta(minutes=10), timedelta(hours=1)]  # 1번째, 2번째 실패 뒤 기다리는 시간
+# 표마다 거는 PostgreSQL 잠금 키 (pg_advisory_lock(hashtext(키))). 서버의 바로 받기
+# (table_cache.py)도 같은 키를 써서, 같은 {tbl_id}.csv·_work/{tbl_id}/를 동시에 쓰지 않는다
+LOCK_PREFIX = "table_load:"
 # 다시 해 볼 만한 일시 오류. 검증 실패(행 수·합계·중복)나 데이터 형식 문제는 다시 해도 같다
 TRANSIENT = (httpx.HTTPError, TimeoutError, ConnectionError, psycopg.OperationalError)
 
@@ -73,8 +77,10 @@ class Job:
     attempts: int
 
 
-# 적재 후 단계: (이름, 함수(pg, tbl_id)). 전처리를 표 하나 단위로 나누면 여기에 넣는다
-AFTER_LOAD: list[tuple[str, Callable[[psycopg.Connection, str], None]]] = []
+# 적재 후 단계: (이름, 함수(pg, tbl_id)). 표 하나 단위로 나눈 전처리를 여기에 넣는다
+AFTER_LOAD: list[tuple[str, Callable[[psycopg.Connection, str], object]]] = [
+    ("지역 매핑", map_table),
+]
 
 
 # ---- 대기열 ---------------------------------------------------------------------------------
@@ -237,8 +243,6 @@ def _load(path: Path, tbl_id: str) -> None:
         for name, step in AFTER_LOAD:
             logger.info("%s: 적재 후 단계 %s", tbl_id, name)
             step(pg, tbl_id)
-    if not AFTER_LOAD:
-        logger.warning("%s: 지역 매핑 단계가 아직 없어 전국 값만 조회됩니다", tbl_id)
 
 
 # ---- 반복 실행 -------------------------------------------------------------------------------
@@ -249,6 +253,29 @@ def _with_pg(fn, *args):
         return fn(pg, *args)
 
 
+@contextlib.asynccontextmanager
+async def table_lock(tbl_id: str):
+    """표 하나를 받는 동안 잡는 잠금. 서버가 같은 표를 바로 받는 중이면 끝날 때까지 기다린다"""
+    pg = await asyncio.to_thread(psycopg.connect, conninfo(), autocommit=True)
+    try:
+        await asyncio.to_thread(
+            pg.execute, "select pg_advisory_lock(hashtext(%s))", [LOCK_PREFIX + tbl_id]
+        )
+        yield
+    finally:
+        await asyncio.to_thread(pg.close)  # 연결을 닫으면 잠금도 풀린다
+
+
+def is_loaded(pg: psycopg.Connection, tbl_id: str) -> bool:
+    return bool(
+        pg.execute(
+            "select 1 from catalog.stat_table t join raw.stat_load using (tbl_key)"
+            " where t.tbl_id = %s",
+            [tbl_id],
+        ).fetchone()
+    )
+
+
 async def run_one() -> bool:
     """작업 하나 처리. 처리할 작업이 없었으면 False"""
     job = await asyncio.to_thread(_with_pg, claim)
@@ -256,7 +283,12 @@ async def run_one() -> bool:
         return False
     logger.info("시작 #%d %s (%s, %d번째 시도)", job.id, job.tbl_id, job.reason, job.attempts)
     try:
-        await process(job)
+        async with table_lock(job.tbl_id):
+            # 기다리는 동안 서버가 바로 받아 넣었으면 다시 받지 않는다 (갱신 작업은 항상 받는다)
+            if job.reason != "update" and await asyncio.to_thread(_with_pg, is_loaded, job.tbl_id):
+                logger.info("%s: 그사이 적재됨, 건너뜀", job.tbl_id)
+            else:
+                await process(job)
     except BaseException as e:  # noqa: BLE001 - load_raw는 분류 수 초과에 SystemExit을 쓴다
         if isinstance(e, (KeyboardInterrupt, asyncio.CancelledError)):
             raise

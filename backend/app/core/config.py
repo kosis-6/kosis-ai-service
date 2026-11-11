@@ -27,8 +27,12 @@ class Settings(BaseSettings):
     # Access Token은 짧게, Refresh Token(HttpOnly 쿠키, 서버는 app.user_sessions에 해시만)은 길게
     access_token_minutes: int = 15
     refresh_token_days: int = 14  # 마지막으로 새 토큰을 받은 뒤 이 기간 안 쓰면 다시 로그인
-    # Refresh Token 쿠키를 HTTPS에서만 보낸다. 로컬(http://127.0.0.1)은 false, 배포(https)는 true
-    cookie_secure: bool = False
+    # 계속 쓰더라도 로그인한 지 이 기간이 지나면 다시 로그인 (훔친 Refresh Token을 끝없이 못 쓰게)
+    session_max_days: int = 30
+    # Refresh Token 쿠키를 HTTPS에서만 보낼지(Secure). 비워 두면 요청이 https일 때 자동으로 붙인다.
+    # 프록시(nginx, ALB) 뒤면 uvicorn이 X-Forwarded-Proto를 믿어야 https로 보인다:
+    # FORWARDED_ALLOW_IPS=프록시 주소 (backend/Dockerfile). true/false로 강제할 수도 있다
+    cookie_secure: bool | None = None
 
     # 회원가입 이메일 인증번호 메일 (app/services/mailer.py)
     # smtp: 실제로 보낸다 (Gmail은 앱 비밀번호, 배포는 AWS SES SMTP 등)

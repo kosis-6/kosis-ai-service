@@ -98,7 +98,12 @@ def _norm(text):
 
 
 def _div(a, b):
-    return a / b * 100 if a is not None and b else None
+    return analysis.share(a, b) if a is not None and b else None
+
+
+def _diff(base, current, kind):
+    """차이: 비율 지표는 %p (analysis.point_change), 그 밖은 증감량 (analysis.change)"""
+    return (analysis.point_change if kind == "ratio" else analysis.change)(base, current)
 
 
 def _round(v, kind):
@@ -113,8 +118,16 @@ def _data_years():
 
 
 def spec_tables():
-    """지표 사전이 쓰는 통계표 ID (서버 시작 시 적재 안 된 표를 적재 대기열에 넣을 때 씀)"""
-    return sorted({src["table"] for s in specs().values() for src in s.get("sources") or []})
+    """지표 사전이 쓰는 통계표 ID (서버 시작 시 적재 안 된 표를 적재 대기열에 넣을 때 씀)
+    years가 있는 과거 연도용 표는 빼고, 질문이 그 연도를 물을 때 받는다 (table_cache.py)"""
+    return sorted(
+        {
+            src["table"]
+            for s in specs().values()
+            for src in s.get("sources") or []
+            if not src.get("years")
+        }
+    )
 
 
 @lru_cache
@@ -193,8 +206,11 @@ def find_in_text(text):
 
 
 def kosis_url(tbl_id):
-    """KOSIS 통계표 화면 주소. 기관 ID는 수집 메타데이터(catalog 테이블)에서 읽는다"""
-    rows = _rows("select org_id from catalog where tbl_id = ?", [tbl_id])
+    """KOSIS 통계표 화면 주소. 기관 ID는 수집 메타데이터(catalog 테이블)에서 읽는다
+    서비스 기본 20개 표 밖의 표(질문 처리 중 바로 받은 표 등)는 표 목록 2,364개(table_meta)에서"""
+    rows = _rows("select org_id from catalog where tbl_id = ?", [tbl_id]) or _rows(
+        "select org_id from table_meta where tbl_id = ?", [tbl_id]
+    )
     return KOSIS_URL.format(org_id=rows[0]["org_id"], tbl_id=tbl_id) if rows else None
 
 
@@ -529,9 +545,9 @@ def trend(indicator, region, start_year, end_year, sex="계", ages=None):
     change = {
         "from_year": series[0]["year"],
         "to_year": series[-1]["year"],
-        "diff": _round(last - first, ind["kind"])
+        "diff": _round(_diff(first, last, ind["kind"]), ind["kind"])
         if ind["kind"] == "count"
-        else round(last - first, 2),
+        else round(_diff(first, last, ind["kind"]), 2),
         "diff_unit": DIFF_UNIT[ind["kind"]],
     }
     if ind["kind"] == "count":
@@ -569,7 +585,7 @@ def compare(indicator, regions, year, sex="계", ages=None):
         )
     values.sort(key=lambda x: (x["value"] is None, -(x["value"] or 0)))
     valid = [x for x in values if x["value"] is not None]
-    gap = valid[0]["value"] - valid[-1]["value"] if len(valid) >= 2 else None
+    gap = _diff(valid[-1]["value"], valid[0]["value"], ind["kind"]) if len(valid) >= 2 else None
     return _base(
         name,
         ind,
@@ -694,9 +710,7 @@ def rank(indicator, year, level="시도", sido=None, top=None, ascending=False, 
         v = ind["calc"](comp) if comp else None
         if v is not None:
             items.append({"region": _display(reg), "value": _round(v, ind["kind"])})
-    items.sort(key=lambda x: x["value"], reverse=not ascending)
-    for i, it in enumerate(items, 1):
-        it["rank"] = i
+    items = analysis.rank_rows(items, descending=not ascending)  # 같은 값은 같은 순위
     return _base(
         name,
         ind,
