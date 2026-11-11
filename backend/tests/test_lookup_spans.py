@@ -91,12 +91,37 @@ def test_spec_tables_skip_past_year_sources(monkeypatch) -> None:
     assert indicators.spec_tables() == ["T_NEW"]  # 서버 시작 때 미리 받지 않는다
 
 
-def test_unmarried_rate_has_1980_source() -> None:
-    """실제 지표 사전: 미혼 비율 1980년은 인구총조사 표 (질문할 때 받음)"""
+@pytest.mark.parametrize("name", ["미혼 비율", "유배우 비율", "미혼 인구"])
+def test_marital_indicators_have_census_years(name) -> None:
+    """실제 지표 사전: 2022년 이전은 인구총조사 표 (1970~2020년, 5년마다, 질문할 때 받음)"""
     indicators.specs.cache_clear()
-    old = [s for s in indicators.specs()["미혼 비율"]["sources"] if s.get("years")]
-    assert [(s["table"], s["years"]) for s in old] == [("DT_1IN8003", [1980, 1980])]
-    assert "000" not in old[0]["age_default"] and "990" not in old[0]["age_default"]
+    old = [s for s in indicators.specs()[name]["sources"] if s.get("years")]
+    assert [s["years"][0] for s in old] == list(range(1970, 2021, 5))
+    assert all(s["years"][0] == s["years"][1] and s["national_only"] for s in old)
+    for s in old:  # 15세 이상 표에서 지표 정의(18세 이상)만 더한다
+        assert s["age_total"] not in s["age_default"] and "990" not in s["age_default"]
+        assert all(sx in s["by_sex"] for sx in ("계", "남", "여"))
+
+
+def test_vital_indicators_have_national_1970s() -> None:
+    """출생·사망·혼인·이혼 지표는 1970~1989년을 전국 장기 표에서 읽는다"""
+    indicators.specs.cache_clear()
+    names = ["조출생률", "사망자 수", "조사망률", "자연증가 건수", "혼인 건수", "조혼인율",
+             "이혼 건수", "조이혼율", "혼인 대비 이혼 건수 비율"]  # fmt: skip
+    for name in names:
+        old = [s for s in indicators.specs()[name]["sources"] if s.get("years")]
+        assert [(s["table"], s["years"]) for s in old] == [("DT_1B8000F", [1970, 1989])], name
+
+
+def test_same_note_of_many_census_tables_is_one_line(db) -> None:
+    """조사 연도마다 따로 있는 표(같은 note)는 주의사항을 한 줄로 합친다"""
+    olds = [{**OLD, "years": [y, y]} for y in (1970, 1975, 1980)]
+    spec = {**SPEC, "sources": [NEW, *olds]}
+    reg = {"region_code": "00", "display": "전국", "kind": "전국"}
+    *_, notes, _vals, earlier = lookup._trend_series(
+        spec, reg, 1970, 2025, "계", None, {"status": "out_of_range"}
+    )
+    assert notes == ["1970~1980년: 옛 조사 기준"] and len(earlier) == 3
 
 
 # ---- qa: 적재 안 된 표 오류를 계산 단계에서 삼키지 않는다 ---------------------------------

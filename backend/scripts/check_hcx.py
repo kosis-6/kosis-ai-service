@@ -3,8 +3,8 @@ import asyncio
 
 from app.services.hcx_client import HcxClient
 
-# 프로젝트에서 쓸 후보 모델 (NOTES: 질의 분석 HCX-007, 요약 HCX-DASH-002)
-DEFAULT_MODELS = ["HCX-007", "HCX-DASH-002"]
+# 프로젝트에서 쓰는 모델 (검색 질의 분석·최종 검토, 질문 답변 모두 HCX-007)
+DEFAULT_MODELS = ["HCX-007"]
 REASONING_MODELS = {"HCX-007"}
 
 

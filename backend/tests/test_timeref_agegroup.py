@@ -21,6 +21,18 @@ def test_n_years_ago_and_open_end() -> None:
     assert timeref.resolve("작년부터 늘었나", TODAY).open_end is True
 
 
+def test_jeon_starting_word_is_not_years_ago() -> None:
+    # "5년 전국"의 '전'은 "5년 전"이 아니다 (전국·전라·전남·전북·전주·전체)
+    for q in ["최근 5년 전국 합계출산율", "최근 3년 전라남도 인구", "지난 10년 전북 출생아 수"]:
+        assert timeref.recent_period(q, TODAY) is not None, q
+        assert timeref.resolve(q, TODAY) is None, q
+    assert timeref.resolve("5년 전체 인구", TODAY) is None
+    # 진짜 "N년 전"은 그대로
+    assert timeref.resolve("5년 전 전국 인구", TODAY).year == 2021
+    assert timeref.resolve("3년 전에 전남 인구", TODAY).year == 2023
+    assert timeref.recent_period("최근 5년 전보다", TODAY) is None
+
+
 def test_compare_base_and_non_years_are_not_time() -> None:
     assert timeref.resolve("작년보다 인구가 늘었어?", TODAY) is None
     assert timeref.resolve("5년 전이랑 비교해서 혼자 사는 집이 얼마나 늘었나", TODAY) is None

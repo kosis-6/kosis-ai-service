@@ -174,10 +174,12 @@ RATIO_ASK = re.compile(r"몇\s*배")
 LEVEL_CITY = re.compile(r"전국\s*(의\s*)?시\s*(중|가운데)|시\s*단위")
 ASCENDING = re.compile(r"꼴찌|최하위|가장\s*(낮|적)|제일\s*(낮|적)")
 TOP_N = re.compile(r"(상위|하위)\s*(\d+)|(\d+)\s*(곳|개|위까지)(?!\s*\S*\s*중)")
-RECENT = re.compile(r"최근\s*(\d+)\s*년")
+# "최근 5년", "과거 10년간", "지난 3년 동안" (timeref와 같은 표현)
+RECENT = timeref.RECENT_N_YEARS
 SPAN = re.compile(r"((?:19|20)\d{2})\s*년?\s*(대비|부터|에서)\s*((?:19|20)\d{2})\s*년")
 YEAR = re.compile(r"((?:19|20)\d{2})\s*년")
 SINCE = re.compile(r"((?:19|20)\d{2})\s*년\s*(이후|이래|부터)(?!.*까지)")
+UNTIL = re.compile(r"((?:19|20)\d{2})\s*년\s*까지")
 NATIONWIDE = re.compile(r"전국|우리나라|대한민국|한국\s*(전체|의|은|는)|국내\s*(전체)?")
 CAUSAL = re.compile(r"효과가?\s*(있|없|컸)|효과적|원인|왜\s|영향을?\s*(줬|주|미쳤|끼쳤)")
 # "가장 많이 빠져나간 시군구", "합계출산율이 가장 높은 시도" → 순위
@@ -519,7 +521,19 @@ def _read_question(question, parsed, fix):
         asked["per_year"] = True
     by_year = {"extreme", "streak", "rebound", "per_year"} & set(asked)
     if m := RECENT.search(question):
-        asked["recent"] = int(m[1])
+        asked["recent"] = int(m[2])
+    if ask_followup.FROM_PAST.search(question) and not SPAN.search(question):
+        # "과거부터 지금까지 합계출산율 추이" → 수록 기간 전체 추이
+        asked["from_start"] = True
+        if parsed.get("start_year"):
+            fix("start_year", None, "'과거부터'는 수록 첫해부터")
+        # 끝은 질문에 "2010년까지"가 있으면 그 해, 없으면 최신 (HCX가 넣은 끝 연도는 지운다)
+        until = int(m[1]) if (m := UNTIL.search(question)) else None
+        if parsed.get("end_year") != until:
+            fix("end_year", until, "질문의 끝 연도" if until else "'과거부터'는 최신까지")
+        if kind != "trend":
+            fix("type", "trend", "과거부터의 변화를 물음")
+            kind = "trend"
     if (m := SINCE.search(question)) and not SPAN.search(question):  # "1970년 이후" → 끝은 최신
         asked["since"] = int(m[1])
         if parsed.get("start_year") != int(m[1]):
@@ -723,7 +737,12 @@ def _compute_population(q, ind, kind, regions, year, sex, ages, hi):
     if kind == "value":
         return indicators.value(ind, regions[0], year, sex, ages)
     if kind == "trend":
+        asked = q.get("asked") or {}
         start, end = q.get("start_year") or hi - 5, q.get("end_year") or hi
+        if asked.get("recent"):  # "최근 5년" → HCX가 준 기간 대신 자료 마지막 연도 기준 N개년
+            start, end = hi - asked["recent"] + 1, hi
+        elif asked.get("from_start") and not q.get("start_year"):
+            start = indicators._data_years()[0]  # "과거부터" → 수록 첫해부터
         return indicators.trend(ind, regions[0], start, end, sex, ages)
     if kind == "compare":
         return indicators.compare(ind, regions, year, sex, ages)
@@ -804,7 +823,7 @@ def _lookup_trend(q, sp, region, year, sex, ages):
     if asked.get("recent"):  # HCX가 준 기간 대신 자료 마지막 연도 기준 N개년
         end = hi
         start = end - asked["recent"] + 1
-    elif asked.get("streak") and not q.get("start_year"):
+    elif (asked.get("streak") or asked.get("from_start")) and not q.get("start_year"):
         start = lo
     else:
         start = q.get("start_year") or end - 5
@@ -900,7 +919,7 @@ def _share_of(result, sp, year, sex, ages):
         result["share"] = {
             "base": "전국",
             "base_value": total["value"],
-            "value": round(result["value"] / total["value"] * 100, 2),
+            "value": round(analysis.share(result["value"], total["value"]), 2),
         }
     return result
 
@@ -1474,7 +1493,7 @@ async def _refresh_recent(question, parsed, trace):
         outcome = await table_cache.refresh_if_stale(tbl_id, info["org_id"], step)
         step["refresh"] = outcome
         steps.append(step)
-        if outcome in ("too_big", "failed", "timeout", "disabled") and step.get(
+        if outcome in ("too_big", "failed", "timeout", "disabled", "busy") and step.get(
             "refresh_kosis_year"
         ):
             try:
@@ -1554,8 +1573,9 @@ async def ask(question):
     parsed = await understand(question, trace)
     trace["understand_ms"] = round((time.perf_counter() - start) * 1000)
     start = time.perf_counter()
-    if ask_followup.needs_year(question):
-        # "과거와 최근 비교"처럼 연도 없이 과거만 말하면 계산하지 않고 되묻는다
+    if ask_followup.needs_year(question) and indicators.spec(parsed.get("indicator") or ""):
+        # "과거와 최근 비교"처럼 연도 없이 과거만 말하면 계산하지 않고 되묻는다.
+        # 지표 사전에 없는 지표면 되묻지 않고 계산으로 보내 지원하지 않는 지표라고 먼저 알린다
         result = await run_in_threadpool(ask_followup.missing_year, parsed)
     else:
         notes = await _refresh_recent(question, parsed, trace)

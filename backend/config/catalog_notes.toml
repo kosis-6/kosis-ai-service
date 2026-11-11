@@ -357,14 +357,22 @@ kind = "value"
 diff_unit = "명"
 method = "lookup"
 note = "연간 출생아 수 ÷ 연앙인구 × 1000"
-sources = [{ table = "DT_1B8000H", item_id = "T11", level = "시도" }]
+sources = [
+  { table = "DT_1B8000H", item_id = "T11", level = "시도" },
+  # 1970~1989년: 전국 장기 표 (같은 인구동향조사, 1990년 이후 값은 시도 표의 전국과 같다)
+  { table = "DT_1B8000F", item_id = "T1", level = "전국", national_only = true, years = [1970, 1989], filters = { c1_id = "21" } },
+]
 
 [[indicators]]
 name = "사망자 수"
 aliases = ["사망건수", "사망자수", "사망 수"]
 unit = "명"
 method = "lookup"
-sources = [{ table = "DT_1B8000H", item_id = "T20", level = "시도" }]
+sources = [
+  { table = "DT_1B8000H", item_id = "T20", level = "시도" },
+  # 1970~1989년: 전국 장기 표 (같은 인구동향조사, 1990년 이후 값은 시도 표의 전국과 같다)
+  { table = "DT_1B8000F", item_id = "T1", level = "전국", national_only = true, years = [1970, 1989], filters = { c1_id = "12" } },
+]
 
 [[indicators]]
 name = "조사망률"
@@ -374,7 +382,11 @@ kind = "value"
 diff_unit = "명"
 method = "lookup"
 note = "연간 사망자 수 ÷ 연앙인구 × 1000"
-sources = [{ table = "DT_1B8000H", item_id = "T22", level = "시도" }]
+sources = [
+  { table = "DT_1B8000H", item_id = "T22", level = "시도" },
+  # 1970~1989년: 전국 장기 표 (같은 인구동향조사, 1990년 이후 값은 시도 표의 전국과 같다)
+  { table = "DT_1B8000F", item_id = "T1", level = "전국", national_only = true, years = [1970, 1989], filters = { c1_id = "22" } },
+]
 
 [[indicators]]
 name = "자연증가 건수"
@@ -383,7 +395,11 @@ aliases = ["자연증가", "자연증감", "자연감소", "출생아보다 사�
 unit = "명"
 method = "lookup"
 desc = "출생아 수 − 사망자 수 (음수면 사망자가 더 많음)"
-sources = [{ table = "DT_1B8000H", item_id = "T30", level = "시도" }]
+sources = [
+  { table = "DT_1B8000H", item_id = "T30", level = "시도" },
+  # 1970~1989년: 전국 장기 표 (같은 인구동향조사, 1990년 이후 값은 시도 표의 전국과 같다)
+  { table = "DT_1B8000F", item_id = "T1", level = "전국", national_only = true, years = [1970, 1989], filters = { c1_id = "14" } },
+]
 
 # ---- 혼인·이혼 ----------------------------------------------------------------
 
@@ -392,7 +408,11 @@ name = "혼인 건수"
 aliases = ["혼인건수", "결혼 건수", "결혼건수", "결혼한 건수"]
 unit = "건"
 method = "lookup"
-sources = [{ table = "DT_1B8000H", item_id = "T40", level = "시도" }]
+sources = [
+  { table = "DT_1B8000H", item_id = "T40", level = "시도" },
+  # 1970~1989년: 전국 장기 표 (같은 인구동향조사, 1990년 이후 값은 시도 표의 전국과 같다)
+  { table = "DT_1B8000F", item_id = "T1", level = "전국", national_only = true, years = [1970, 1989], filters = { c1_id = "41" } },
+]
 
 [[indicators]]
 name = "조혼인율"
@@ -402,7 +422,11 @@ kind = "value"
 diff_unit = "건"
 method = "lookup"
 note = "연간 혼인 건수 ÷ 연앙인구 × 1000"
-sources = [{ table = "DT_1B8000H", item_id = "T41", level = "시도" }]
+sources = [
+  { table = "DT_1B8000H", item_id = "T41", level = "시도" },
+  # 1970~1989년: 전국 장기 표 (같은 인구동향조사, 1990년 이후 값은 시도 표의 전국과 같다)
+  { table = "DT_1B8000F", item_id = "T1", level = "전국", national_only = true, years = [1970, 1989], filters = { c1_id = "42" } },
+]
 
 [[indicators]]
 name = "일반혼인율"
@@ -419,7 +443,11 @@ name = "이혼 건수"
 aliases = ["이혼건수", "이혼 수"]
 unit = "건"
 method = "lookup"
-sources = [{ table = "DT_1B8000H", item_id = "T50", level = "시도" }]
+sources = [
+  { table = "DT_1B8000H", item_id = "T50", level = "시도" },
+  # 1970~1989년: 전국 장기 표 (같은 인구동향조사, 1990년 이후 값은 시도 표의 전국과 같다)
+  { table = "DT_1B8000F", item_id = "T1", level = "전국", national_only = true, years = [1970, 1989], filters = { c1_id = "51" } },
+]
 
 [[indicators]]
 name = "조이혼율"
@@ -429,7 +457,11 @@ kind = "value"
 diff_unit = "건"
 method = "lookup"
 note = "연간 이혼 건수 ÷ 연앙인구 × 1000"
-sources = [{ table = "DT_1B8000H", item_id = "T51", level = "시도" }]
+sources = [
+  { table = "DT_1B8000H", item_id = "T51", level = "시도" },
+  # 1970~1989년: 전국 장기 표 (같은 인구동향조사, 1990년 이후 값은 시도 표의 전국과 같다)
+  { table = "DT_1B8000F", item_id = "T1", level = "전국", national_only = true, years = [1970, 1989], filters = { c1_id = "52" } },
+]
 
 [[indicators]]
 name = "혼인 대비 이혼 건수 비율"
@@ -440,7 +472,11 @@ unit = "%"
 method = "lookup"
 desc = "같은 해 이혼 건수 ÷ 혼인 건수 × 100. '결혼한 부부 중 이혼한 비율'을 물으면 이것으로 답하고 차이를 고지"
 note = "같은 해의 이혼 건수를 혼인 건수로 나눈 값입니다. 이혼한 부부는 대부분 그 전 해들에 결혼했으므로 '결혼한 부부 중 이혼한 비율'(이혼율)이 아닙니다. 인구 대비 이혼은 조이혼율을 봅니다"
-sources = [{ table = "DT_1B8000H", item_id = "T50", den_item_id = "T40", level = "시도" }]
+sources = [
+  { table = "DT_1B8000H", item_id = "T50", den_item_id = "T40", level = "시도" },
+  # 1970~1989년: 전국 장기 표 (이혼 51 ÷ 혼인 41)
+  { table = "DT_1B8000F", item_id = "T1", level = "전국", national_only = true, years = [1970, 1989], filters = { c1_id = "51" }, den_item_id = "T1", den_filters = { c1_id = "41" } },
+]
 
 [[indicators]]
 name = "평균 초혼연령"
@@ -461,9 +497,20 @@ desc = "내국인 18세 이상 인구 중 미혼 비율. 성별·연령(5세 단
 note = "18세 이상 내국인 기준 (표에 18세 미만이 없음)"
 sources = [
   { table = "DT_1MR2060", level = "시군구", age_dim = "c2", age_total = "000", age_min = 18, by_sex = { "계" = { item_id = "T2", den_item_id = "T1" }, "남" = { item_id = "T6", den_item_id = "T5" }, "여" = { item_id = "T10", den_item_id = "T9" } } },
-  # 과거 연도: 인구총조사 표가 조사 연도마다 따로 있다. 질문이 그 연도를 물을 때만 받는다 (years)
+  # 과거 연도: 인구총조사 표가 조사 연도(5년마다)마다 따로 있다. 질문이 그 연도를 물을 때만 받는다 (years)
   # 15세 이상 표라 지표 정의(18세 이상)에 맞춰 18·19세 + 20세 이상 5세 묶음만 더한다 (연령미상 제외)
+  # 표마다 코드가 다르다: 1970~1995 항목=성별·c3=혼인상태 / 2000 c2=성별·c4=혼인상태 / 2005~2020 항목=성별×혼인상태
+  { table = "DT_1IN7003", level = "전국", national_only = true, years = [1970, 1970], age_dim = "c2", age_total = "000", age_min = 15, age_default = ["1004", "1005", "120", "130", "150", "160", "180", "190", "210", "230", "260", "280", "310", "330", "360", "370"], filters = { c1_id = "00", c3_id = "1" }, den_filters = { c1_id = "00", c3_id = "0" }, note = "인구총조사(전수, 전국) 기준. 2022년부터의 등록센서스와 조사 방법이 달라 비교에 주의", by_sex = { "계" = { item_id = "T1", den_item_id = "T1" }, "남" = { item_id = "T2", den_item_id = "T2" }, "여" = { item_id = "T3", den_item_id = "T3" } } },
+  { table = "DT_1IN7503", level = "전국", national_only = true, years = [1975, 1975], age_dim = "c2", age_total = "000", age_min = 15, age_default = ["1004", "1005", "120", "130", "150", "160", "180", "190", "210", "230", "260", "280", "310", "330", "360", "370"], filters = { c1_id = "00", c3_id = "1" }, den_filters = { c1_id = "00", c3_id = "0" }, note = "인구총조사(전수, 전국) 기준. 2022년부터의 등록센서스와 조사 방법이 달라 비교에 주의", by_sex = { "계" = { item_id = "T1", den_item_id = "T1" }, "남" = { item_id = "T2", den_item_id = "T2" }, "여" = { item_id = "T3", den_item_id = "T3" } } },
   { table = "DT_1IN8003", level = "전국", national_only = true, years = [1980, 1980], age_dim = "c2", age_total = "000", age_min = 15, age_default = ["1004", "1005", "120", "130", "150", "160", "180", "190", "210", "230", "260", "280", "310", "330", "360", "370"], filters = { c1_id = "00", c3_id = "1" }, den_filters = { c1_id = "00", c3_id = "0" }, note = "인구총조사(전수, 전국) 기준. 2022년부터의 등록센서스와 조사 방법이 달라 비교에 주의", by_sex = { "계" = { item_id = "T1", den_item_id = "T1" }, "남" = { item_id = "T2", den_item_id = "T2" }, "여" = { item_id = "T3", den_item_id = "T3" } } },
+  { table = "DT_1IN8503", level = "전국", national_only = true, years = [1985, 1985], age_dim = "c2", age_total = "000", age_min = 15, age_default = ["1004", "1005", "120", "130", "150", "160", "180", "190", "210", "230", "260", "280", "310", "330", "360", "370"], filters = { c1_id = "00", c3_id = "1" }, den_filters = { c1_id = "00", c3_id = "0" }, note = "인구총조사(전수, 전국) 기준. 2022년부터의 등록센서스와 조사 방법이 달라 비교에 주의", by_sex = { "계" = { item_id = "T1", den_item_id = "T1" }, "남" = { item_id = "T2", den_item_id = "T2" }, "여" = { item_id = "T3", den_item_id = "T3" } } },
+  { table = "DT_1IN9003", level = "전국", national_only = true, years = [1990, 1990], age_dim = "c2", age_total = "000", age_min = 15, age_default = ["1004", "1005", "120", "130", "150", "160", "180", "190", "210", "230", "260", "280", "310", "330", "360", "370"], filters = { c1_id = "00", c3_id = "1" }, den_filters = { c1_id = "00", c3_id = "0" }, note = "인구총조사(전수, 전국) 기준. 2022년부터의 등록센서스와 조사 방법이 달라 비교에 주의", by_sex = { "계" = { item_id = "T1", den_item_id = "T1" }, "남" = { item_id = "T2", den_item_id = "T2" }, "여" = { item_id = "T3", den_item_id = "T3" } } },
+  { table = "DT_1IN9503", level = "전국", national_only = true, years = [1995, 1995], age_dim = "c2", age_total = "000", age_min = 15, age_default = ["1004", "1005", "120", "130", "150", "160", "180", "190", "210", "230", "260", "280", "310", "330", "360", "370"], filters = { c1_id = "00", c3_id = "1" }, den_filters = { c1_id = "00", c3_id = "0" }, note = "인구총조사(전수, 전국) 기준. 2022년부터의 등록센서스와 조사 방법이 달라 비교에 주의", by_sex = { "계" = { item_id = "T1", den_item_id = "T1" }, "남" = { item_id = "T2", den_item_id = "T2" }, "여" = { item_id = "T3", den_item_id = "T3" } } },
+  { table = "DT_1PM0001", level = "전국", national_only = true, years = [2000, 2000], item_id = "T1", den_item_id = "T1", age_dim = "c3", age_total = "000", age_min = 15, age_default = ["1004", "1005", "120", "130", "150", "160", "180", "190", "210", "230", "260", "280", "310", "330", "360", "370"], filters = { c1_id = "00", c4_id = "1" }, note = "인구총조사(전국, 내국인) 기준. 2022년부터의 등록센서스와 조사 방법이 달라 비교에 주의", by_sex = { "계" = { filters = { c2_id = "0" }, den_filters = { c1_id = "00", c2_id = "0", c4_id = "0" } }, "남" = { filters = { c2_id = "1" }, den_filters = { c1_id = "00", c2_id = "1", c4_id = "0" } }, "여" = { filters = { c2_id = "2" }, den_filters = { c1_id = "00", c2_id = "2", c4_id = "0" } } } },
+  { table = "DT_1IN0508", level = "전국", national_only = true, years = [2005, 2005], age_dim = "c2", age_total = "000", age_min = 15, age_default = ["020004", "020005", "025", "030", "035", "040", "045", "050", "055", "060", "065", "070", "075", "080", "085", "086"], filters = { c1_id = "00" }, note = "인구총조사(전국, 내국인) 기준. 2022년부터의 등록센서스와 조사 방법이 달라 비교에 주의", by_sex = { "계" = { item_id = "T11", den_item_id = "T10" }, "남" = { item_id = "T21", den_item_id = "T20" }, "여" = { item_id = "T31", den_item_id = "T30" } } },
+  { table = "DT_1IN1005", level = "전국", national_only = true, years = [2010, 2010], age_dim = "c2", age_total = "000", age_min = 15, age_default = ["020004", "020005", "025", "030", "035", "040", "045", "050", "055", "060", "065", "070", "075", "080", "085", "086"], filters = { c1_id = "00" }, note = "인구총조사(전국, 내국인) 기준. 2022년부터의 등록센서스와 조사 방법이 달라 비교에 주의", by_sex = { "계" = { item_id = "T11", den_item_id = "T10" }, "남" = { item_id = "T21", den_item_id = "T20" }, "여" = { item_id = "T31", den_item_id = "T30" } } },
+  { table = "DT_1PM1503", level = "전국", national_only = true, years = [2015, 2015], age_dim = "c2", age_total = "000", age_min = 15, age_default = ["020004", "020005", "025", "030", "035", "040", "045", "050", "055", "060", "065", "070", "075", "080", "085", "086"], filters = { c1_id = "00" }, note = "인구총조사(전국, 내국인) 기준. 2022년부터의 등록센서스와 조사 방법이 달라 비교에 주의", by_sex = { "계" = { item_id = "T11", den_item_id = "T10" }, "남" = { item_id = "T21", den_item_id = "T20" }, "여" = { item_id = "T31", den_item_id = "T30" } } },
+  { table = "DT_1PM2002", level = "전국", national_only = true, years = [2020, 2020], age_dim = "c2", age_total = "000", age_min = 15, age_default = ["020004", "020005", "025", "030", "035", "040", "045", "050", "055", "060", "065", "070", "075", "080", "085", "086"], filters = { c1_id = "00" }, note = "인구총조사(전국, 내국인) 기준. 2022년부터의 등록센서스와 조사 방법이 달라 비교에 주의", by_sex = { "계" = { item_id = "T11", den_item_id = "T10" }, "남" = { item_id = "T21", den_item_id = "T20" }, "여" = { item_id = "T31", den_item_id = "T30" } } },
 ]
 
 [[indicators]]
@@ -474,7 +521,23 @@ unit = "%"
 method = "lookup"
 desc = "내국인 18세 이상 인구 중 배우자가 있는 사람의 비율. 성별·연령(5세 단위) 지정 가능"
 note = "18세 이상 내국인 기준 (표에 18세 미만이 없음)"
-sources = [{ table = "DT_1MR2060", level = "시군구", age_dim = "c2", age_total = "000", age_min = 18, by_sex = { "계" = { item_id = "T3", den_item_id = "T1" }, "남" = { item_id = "T7", den_item_id = "T5" }, "여" = { item_id = "T11", den_item_id = "T9" } } }]
+sources = [
+  { table = "DT_1MR2060", level = "시군구", age_dim = "c2", age_total = "000", age_min = 18, by_sex = { "계" = { item_id = "T3", den_item_id = "T1" }, "남" = { item_id = "T7", den_item_id = "T5" }, "여" = { item_id = "T11", den_item_id = "T9" } } },
+  # 과거 연도: 인구총조사 표가 조사 연도(5년마다)마다 따로 있다. 질문이 그 연도를 물을 때만 받는다 (years)
+  # 15세 이상 표라 지표 정의(18세 이상)에 맞춰 18·19세 + 20세 이상 5세 묶음만 더한다 (연령미상 제외)
+  # 표마다 코드가 다르다: 1970~1995 항목=성별·c3=혼인상태 / 2000 c2=성별·c4=혼인상태 / 2005~2020 항목=성별×혼인상태
+  { table = "DT_1IN7003", level = "전국", national_only = true, years = [1970, 1970], age_dim = "c2", age_total = "000", age_min = 15, age_default = ["1004", "1005", "120", "130", "150", "160", "180", "190", "210", "230", "260", "280", "310", "330", "360", "370"], filters = { c1_id = "00", c3_id = "3" }, den_filters = { c1_id = "00", c3_id = "0" }, note = "인구총조사(전수, 전국) 기준. 2022년부터의 등록센서스와 조사 방법이 달라 비교에 주의", by_sex = { "계" = { item_id = "T1", den_item_id = "T1" }, "남" = { item_id = "T2", den_item_id = "T2" }, "여" = { item_id = "T3", den_item_id = "T3" } } },
+  { table = "DT_1IN7503", level = "전국", national_only = true, years = [1975, 1975], age_dim = "c2", age_total = "000", age_min = 15, age_default = ["1004", "1005", "120", "130", "150", "160", "180", "190", "210", "230", "260", "280", "310", "330", "360", "370"], filters = { c1_id = "00", c3_id = "3" }, den_filters = { c1_id = "00", c3_id = "0" }, note = "인구총조사(전수, 전국) 기준. 2022년부터의 등록센서스와 조사 방법이 달라 비교에 주의", by_sex = { "계" = { item_id = "T1", den_item_id = "T1" }, "남" = { item_id = "T2", den_item_id = "T2" }, "여" = { item_id = "T3", den_item_id = "T3" } } },
+  { table = "DT_1IN8003", level = "전국", national_only = true, years = [1980, 1980], age_dim = "c2", age_total = "000", age_min = 15, age_default = ["1004", "1005", "120", "130", "150", "160", "180", "190", "210", "230", "260", "280", "310", "330", "360", "370"], filters = { c1_id = "00", c3_id = "3" }, den_filters = { c1_id = "00", c3_id = "0" }, note = "인구총조사(전수, 전국) 기준. 2022년부터의 등록센서스와 조사 방법이 달라 비교에 주의", by_sex = { "계" = { item_id = "T1", den_item_id = "T1" }, "남" = { item_id = "T2", den_item_id = "T2" }, "여" = { item_id = "T3", den_item_id = "T3" } } },
+  { table = "DT_1IN8503", level = "전국", national_only = true, years = [1985, 1985], age_dim = "c2", age_total = "000", age_min = 15, age_default = ["1004", "1005", "120", "130", "150", "160", "180", "190", "210", "230", "260", "280", "310", "330", "360", "370"], filters = { c1_id = "00", c3_id = "3" }, den_filters = { c1_id = "00", c3_id = "0" }, note = "인구총조사(전수, 전국) 기준. 2022년부터의 등록센서스와 조사 방법이 달라 비교에 주의", by_sex = { "계" = { item_id = "T1", den_item_id = "T1" }, "남" = { item_id = "T2", den_item_id = "T2" }, "여" = { item_id = "T3", den_item_id = "T3" } } },
+  { table = "DT_1IN9003", level = "전국", national_only = true, years = [1990, 1990], age_dim = "c2", age_total = "000", age_min = 15, age_default = ["1004", "1005", "120", "130", "150", "160", "180", "190", "210", "230", "260", "280", "310", "330", "360", "370"], filters = { c1_id = "00", c3_id = "3" }, den_filters = { c1_id = "00", c3_id = "0" }, note = "인구총조사(전수, 전국) 기준. 2022년부터의 등록센서스와 조사 방법이 달라 비교에 주의", by_sex = { "계" = { item_id = "T1", den_item_id = "T1" }, "남" = { item_id = "T2", den_item_id = "T2" }, "여" = { item_id = "T3", den_item_id = "T3" } } },
+  { table = "DT_1IN9503", level = "전국", national_only = true, years = [1995, 1995], age_dim = "c2", age_total = "000", age_min = 15, age_default = ["1004", "1005", "120", "130", "150", "160", "180", "190", "210", "230", "260", "280", "310", "330", "360", "370"], filters = { c1_id = "00", c3_id = "3" }, den_filters = { c1_id = "00", c3_id = "0" }, note = "인구총조사(전수, 전국) 기준. 2022년부터의 등록센서스와 조사 방법이 달라 비교에 주의", by_sex = { "계" = { item_id = "T1", den_item_id = "T1" }, "남" = { item_id = "T2", den_item_id = "T2" }, "여" = { item_id = "T3", den_item_id = "T3" } } },
+  { table = "DT_1PM0001", level = "전국", national_only = true, years = [2000, 2000], item_id = "T1", den_item_id = "T1", age_dim = "c3", age_total = "000", age_min = 15, age_default = ["1004", "1005", "120", "130", "150", "160", "180", "190", "210", "230", "260", "280", "310", "330", "360", "370"], filters = { c1_id = "00", c4_id = "2" }, note = "인구총조사(전국, 내국인) 기준. 2022년부터의 등록센서스와 조사 방법이 달라 비교에 주의", by_sex = { "계" = { filters = { c2_id = "0" }, den_filters = { c1_id = "00", c2_id = "0", c4_id = "0" } }, "남" = { filters = { c2_id = "1" }, den_filters = { c1_id = "00", c2_id = "1", c4_id = "0" } }, "여" = { filters = { c2_id = "2" }, den_filters = { c1_id = "00", c2_id = "2", c4_id = "0" } } } },
+  { table = "DT_1IN0508", level = "전국", national_only = true, years = [2005, 2005], age_dim = "c2", age_total = "000", age_min = 15, age_default = ["020004", "020005", "025", "030", "035", "040", "045", "050", "055", "060", "065", "070", "075", "080", "085", "086"], filters = { c1_id = "00" }, note = "인구총조사(전국, 내국인) 기준. 2022년부터의 등록센서스와 조사 방법이 달라 비교에 주의", by_sex = { "계" = { item_id = "T12", den_item_id = "T10" }, "남" = { item_id = "T22", den_item_id = "T20" }, "여" = { item_id = "T32", den_item_id = "T30" } } },
+  { table = "DT_1IN1005", level = "전국", national_only = true, years = [2010, 2010], age_dim = "c2", age_total = "000", age_min = 15, age_default = ["020004", "020005", "025", "030", "035", "040", "045", "050", "055", "060", "065", "070", "075", "080", "085", "086"], filters = { c1_id = "00" }, note = "인구총조사(전국, 내국인) 기준. 2022년부터의 등록센서스와 조사 방법이 달라 비교에 주의", by_sex = { "계" = { item_id = "T12", den_item_id = "T10" }, "남" = { item_id = "T22", den_item_id = "T20" }, "여" = { item_id = "T32", den_item_id = "T30" } } },
+  { table = "DT_1PM1503", level = "전국", national_only = true, years = [2015, 2015], age_dim = "c2", age_total = "000", age_min = 15, age_default = ["020004", "020005", "025", "030", "035", "040", "045", "050", "055", "060", "065", "070", "075", "080", "085", "086"], filters = { c1_id = "00" }, note = "인구총조사(전국, 내국인) 기준. 2022년부터의 등록센서스와 조사 방법이 달라 비교에 주의", by_sex = { "계" = { item_id = "T12", den_item_id = "T10" }, "남" = { item_id = "T22", den_item_id = "T20" }, "여" = { item_id = "T32", den_item_id = "T30" } } },
+  { table = "DT_1PM2002", level = "전국", national_only = true, years = [2020, 2020], age_dim = "c2", age_total = "000", age_min = 15, age_default = ["020004", "020005", "025", "030", "035", "040", "045", "050", "055", "060", "065", "070", "075", "080", "085", "086"], filters = { c1_id = "00" }, note = "인구총조사(전국, 내국인) 기준. 2022년부터의 등록센서스와 조사 방법이 달라 비교에 주의", by_sex = { "계" = { item_id = "T12", den_item_id = "T10" }, "남" = { item_id = "T22", den_item_id = "T20" }, "여" = { item_id = "T32", den_item_id = "T30" } } },
+]
 
 [[indicators]]
 name = "미혼 인구"
@@ -482,7 +545,23 @@ aliases = ["미혼 인구 수", "미혼자 수", "미혼자", "미혼인구"]
 unit = "명"
 method = "lookup"
 note = "18세 이상 내국인 기준"
-sources = [{ table = "DT_1MR2060", level = "시군구", age_dim = "c2", age_total = "000", age_min = 18, by_sex = { "계" = { item_id = "T2" }, "남" = { item_id = "T6" }, "여" = { item_id = "T10" } } }]
+sources = [
+  { table = "DT_1MR2060", level = "시군구", age_dim = "c2", age_total = "000", age_min = 18, by_sex = { "계" = { item_id = "T2" }, "남" = { item_id = "T6" }, "여" = { item_id = "T10" } } },
+  # 과거 연도: 인구총조사 표가 조사 연도(5년마다)마다 따로 있다. 질문이 그 연도를 물을 때만 받는다 (years)
+  # 15세 이상 표라 지표 정의(18세 이상)에 맞춰 18·19세 + 20세 이상 5세 묶음만 더한다 (연령미상 제외)
+  # 표마다 코드가 다르다: 1970~1995 항목=성별·c3=혼인상태 / 2000 c2=성별·c4=혼인상태 / 2005~2020 항목=성별×혼인상태
+  { table = "DT_1IN7003", level = "전국", national_only = true, years = [1970, 1970], age_dim = "c2", age_total = "000", age_min = 15, age_default = ["1004", "1005", "120", "130", "150", "160", "180", "190", "210", "230", "260", "280", "310", "330", "360", "370"], filters = { c1_id = "00", c3_id = "1" }, note = "인구총조사(전수, 전국) 기준. 2022년부터의 등록센서스와 조사 방법이 달라 비교에 주의", by_sex = { "계" = { item_id = "T1" }, "남" = { item_id = "T2" }, "여" = { item_id = "T3" } } },
+  { table = "DT_1IN7503", level = "전국", national_only = true, years = [1975, 1975], age_dim = "c2", age_total = "000", age_min = 15, age_default = ["1004", "1005", "120", "130", "150", "160", "180", "190", "210", "230", "260", "280", "310", "330", "360", "370"], filters = { c1_id = "00", c3_id = "1" }, note = "인구총조사(전수, 전국) 기준. 2022년부터의 등록센서스와 조사 방법이 달라 비교에 주의", by_sex = { "계" = { item_id = "T1" }, "남" = { item_id = "T2" }, "여" = { item_id = "T3" } } },
+  { table = "DT_1IN8003", level = "전국", national_only = true, years = [1980, 1980], age_dim = "c2", age_total = "000", age_min = 15, age_default = ["1004", "1005", "120", "130", "150", "160", "180", "190", "210", "230", "260", "280", "310", "330", "360", "370"], filters = { c1_id = "00", c3_id = "1" }, note = "인구총조사(전수, 전국) 기준. 2022년부터의 등록센서스와 조사 방법이 달라 비교에 주의", by_sex = { "계" = { item_id = "T1" }, "남" = { item_id = "T2" }, "여" = { item_id = "T3" } } },
+  { table = "DT_1IN8503", level = "전국", national_only = true, years = [1985, 1985], age_dim = "c2", age_total = "000", age_min = 15, age_default = ["1004", "1005", "120", "130", "150", "160", "180", "190", "210", "230", "260", "280", "310", "330", "360", "370"], filters = { c1_id = "00", c3_id = "1" }, note = "인구총조사(전수, 전국) 기준. 2022년부터의 등록센서스와 조사 방법이 달라 비교에 주의", by_sex = { "계" = { item_id = "T1" }, "남" = { item_id = "T2" }, "여" = { item_id = "T3" } } },
+  { table = "DT_1IN9003", level = "전국", national_only = true, years = [1990, 1990], age_dim = "c2", age_total = "000", age_min = 15, age_default = ["1004", "1005", "120", "130", "150", "160", "180", "190", "210", "230", "260", "280", "310", "330", "360", "370"], filters = { c1_id = "00", c3_id = "1" }, note = "인구총조사(전수, 전국) 기준. 2022년부터의 등록센서스와 조사 방법이 달라 비교에 주의", by_sex = { "계" = { item_id = "T1" }, "남" = { item_id = "T2" }, "여" = { item_id = "T3" } } },
+  { table = "DT_1IN9503", level = "전국", national_only = true, years = [1995, 1995], age_dim = "c2", age_total = "000", age_min = 15, age_default = ["1004", "1005", "120", "130", "150", "160", "180", "190", "210", "230", "260", "280", "310", "330", "360", "370"], filters = { c1_id = "00", c3_id = "1" }, note = "인구총조사(전수, 전국) 기준. 2022년부터의 등록센서스와 조사 방법이 달라 비교에 주의", by_sex = { "계" = { item_id = "T1" }, "남" = { item_id = "T2" }, "여" = { item_id = "T3" } } },
+  { table = "DT_1PM0001", level = "전국", national_only = true, years = [2000, 2000], item_id = "T1", age_dim = "c3", age_total = "000", age_min = 15, age_default = ["1004", "1005", "120", "130", "150", "160", "180", "190", "210", "230", "260", "280", "310", "330", "360", "370"], filters = { c1_id = "00", c4_id = "1" }, note = "인구총조사(전국, 내국인) 기준. 2022년부터의 등록센서스와 조사 방법이 달라 비교에 주의", by_sex = { "계" = { filters = { c2_id = "0" } }, "남" = { filters = { c2_id = "1" } }, "여" = { filters = { c2_id = "2" } } } },
+  { table = "DT_1IN0508", level = "전국", national_only = true, years = [2005, 2005], age_dim = "c2", age_total = "000", age_min = 15, age_default = ["020004", "020005", "025", "030", "035", "040", "045", "050", "055", "060", "065", "070", "075", "080", "085", "086"], filters = { c1_id = "00" }, note = "인구총조사(전국, 내국인) 기준. 2022년부터의 등록센서스와 조사 방법이 달라 비교에 주의", by_sex = { "계" = { item_id = "T11" }, "남" = { item_id = "T21" }, "여" = { item_id = "T31" } } },
+  { table = "DT_1IN1005", level = "전국", national_only = true, years = [2010, 2010], age_dim = "c2", age_total = "000", age_min = 15, age_default = ["020004", "020005", "025", "030", "035", "040", "045", "050", "055", "060", "065", "070", "075", "080", "085", "086"], filters = { c1_id = "00" }, note = "인구총조사(전국, 내국인) 기준. 2022년부터의 등록센서스와 조사 방법이 달라 비교에 주의", by_sex = { "계" = { item_id = "T11" }, "남" = { item_id = "T21" }, "여" = { item_id = "T31" } } },
+  { table = "DT_1PM1503", level = "전국", national_only = true, years = [2015, 2015], age_dim = "c2", age_total = "000", age_min = 15, age_default = ["020004", "020005", "025", "030", "035", "040", "045", "050", "055", "060", "065", "070", "075", "080", "085", "086"], filters = { c1_id = "00" }, note = "인구총조사(전국, 내국인) 기준. 2022년부터의 등록센서스와 조사 방법이 달라 비교에 주의", by_sex = { "계" = { item_id = "T11" }, "남" = { item_id = "T21" }, "여" = { item_id = "T31" } } },
+  { table = "DT_1PM2002", level = "전국", national_only = true, years = [2020, 2020], age_dim = "c2", age_total = "000", age_min = 15, age_default = ["020004", "020005", "025", "030", "035", "040", "045", "050", "055", "060", "065", "070", "075", "080", "085", "086"], filters = { c1_id = "00" }, note = "인구총조사(전국, 내국인) 기준. 2022년부터의 등록센서스와 조사 방법이 달라 비교에 주의", by_sex = { "계" = { item_id = "T11" }, "남" = { item_id = "T21" }, "여" = { item_id = "T31" } } },
+]
 
 # ---- 출산 연령·출산순위 --------------------------------------------------------
 

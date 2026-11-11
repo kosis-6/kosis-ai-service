@@ -394,3 +394,69 @@ def test_compare_two_regions_with_nation_stays_compare() -> None:
     )
     assert p["type"] == "compare"
     assert "share_of" not in p
+
+
+@pytest.mark.parametrize(
+    ("question", "n"),
+    [
+        ("과거 10년 동안 서울 인구 변화", 10),
+        ("지난 5년간 출생아 수 추이", 5),
+        ("최근 3개년 혼인 건수", 3),
+    ],
+)
+def test_past_n_years_is_recent_n_years(question, n) -> None:
+    p = qa.correct(question, parsed(type="trend", indicator="총인구", regions=["서울"]), TODAY)
+    assert p["asked"]["recent"] == n
+
+
+def test_from_past_is_whole_period_trend() -> None:
+    # "과거부터 지금까지" → 되묻지 않고 수록 기간 전체 추이 (HCX가 넣은 기간은 지운다)
+    p = qa.correct(
+        "과거부터 지금까지 전국 합계출산율 추이",
+        parsed(type="value", indicator="합계출산율", regions=["전국"], start_year=2015),
+        TODAY,
+    )
+    assert p["type"] == "trend" and p["asked"]["from_start"] is True
+    assert p.get("start_year") is None
+
+
+def test_from_past_keeps_end_year_in_question() -> None:
+    # "과거부터 2010년까지" → 시작만 수록 첫해, 끝은 질문의 2010년
+    p = qa.correct(
+        "과거부터 2010년까지 전국 합계출산율 추이",
+        parsed(type="trend", indicator="합계출산율", regions=["전국"], start_year=1970),
+        TODAY,
+    )
+    assert p["asked"]["from_start"] is True
+    assert p.get("start_year") is None and p["end_year"] == 2010
+
+
+def test_from_past_drops_guessed_end_year() -> None:
+    # 질문에 끝 연도가 없으면 HCX가 넣은 끝 연도를 지우고 최신까지
+    p = qa.correct(
+        "과거부터 지금까지 전국 합계출산율 추이",
+        parsed(type="trend", indicator="합계출산율", regions=["전국"], end_year=2020),
+        TODAY,
+    )
+    assert p.get("end_year") is None
+
+
+def test_from_past_computed_indicator_starts_at_first_year(monkeypatch) -> None:
+    # 계산 지표(총인구 등)도 "과거부터"면 주민등록인구 수록 첫해부터 (전에는 최근 6년만)
+    calls = []
+    monkeypatch.setattr(indicators, "_data_years", lambda: (2008, 2025))
+    monkeypatch.setattr(indicators, "trend", lambda ind, reg, a, b, *rest: calls.append((a, b)))
+    q = {"type": "trend", "asked": {"from_start": True}, "start_year": None, "end_year": None}
+    qa._compute_population(q, "총인구", "trend", ["서울특별시"], 2025, "계", None, 2025)
+    q = {"type": "trend", "asked": {}, "start_year": None, "end_year": None}
+    qa._compute_population(q, "총인구", "trend", ["서울특별시"], 2025, "계", None, 2025)
+    assert calls == [(2008, 2025), (2020, 2025)]
+
+
+def test_recent_n_years_computed_indicator(monkeypatch) -> None:
+    # 계산 지표도 "최근 5년"은 마지막 연도 기준 5개년 (전에는 기본값 6개년, HCX 기간을 그대로 씀)
+    calls = []
+    monkeypatch.setattr(indicators, "trend", lambda ind, reg, a, b, *rest: calls.append((a, b)))
+    q = {"type": "trend", "asked": {"recent": 5}, "start_year": 2019, "end_year": None}
+    qa._compute_population(q, "총인구", "trend", ["서울특별시"], 2025, "계", None, 2025)
+    assert calls == [(2021, 2025)]

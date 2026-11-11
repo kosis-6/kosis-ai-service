@@ -44,9 +44,11 @@ class User(Base):
 class UserSession(Base):
     """로그인 한 번(기기 하나)에 줄 하나. Refresh Token 보관과 예전 Access Token 막기를 함께 한다
 
-    - refresh_hash: Refresh Token 비밀 부분의 SHA-256. 원래 값은 두지 않는다
-    - prev_refresh_hash: 바로 전 Refresh Token의 해시. 이 값이 다시 오면 탈취로 보고 끊는다
+    - refresh_salt: Refresh Token 서명에 넣는 이 줄의 난수. 토큰 자체는 두지 않는다
+    - refresh_gen: 지금 Refresh Token의 세대. 새로 받을 때마다 1 오른다.
+      그보다 낮은 세대의 진짜 토큰이 다시 오면 탈취로 보고 끊는다
     - access_jti: 지금 쓸 수 있는 Access Token 번호. 새 토큰을 받으면 바뀌어 예전 토큰은 못 쓴다
+    - expires_at: 마지막으로 새로 받은 뒤 refresh_token_days, 단 created_at + session_max_days까지
     - revoked_at: 로그아웃·비밀번호 변경·계정 정지·Refresh Token 재사용 감지로 끊은 시각
     """
 
@@ -55,8 +57,8 @@ class UserSession(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
     user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("app.users.id", ondelete="CASCADE"))
-    refresh_hash: Mapped[str]
-    prev_refresh_hash: Mapped[str | None]
+    refresh_salt: Mapped[str]
+    refresh_gen: Mapped[int]
     access_jti: Mapped[str]
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     last_used_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

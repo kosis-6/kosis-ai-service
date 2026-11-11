@@ -101,9 +101,9 @@ def logins(monkeypatch: pytest.MonkeyPatch) -> dict[int, SimpleNamespace]:
 
     async def create(session, user_id, at):
         row = SimpleNamespace(id=len(rows) + 1, user_id=user_id, revoked_at=None)
-        secret, jti = auth_sessions.rotate(row, at)
+        jti = auth_sessions.start(row, at)
         rows[row.id] = row
-        return row, secret, jti
+        return row, jti
 
     async def save(session, row):
         rows[row.id] = row
@@ -557,7 +557,8 @@ def test_login_sets_refresh_cookie(db) -> None:
     assert r.status_code == 200
     assert r.json()["expires_in"] == 15 * 60
     cookie = r.headers["set-cookie"]
-    assert cookie.startswith("refresh_token=1.")
+    assert cookie.startswith("refresh_token=1.0.")
+    assert "Secure" not in cookie  # http 요청이면 Secure를 붙이지 않는다 (로컬 개발)
     for part in ("HttpOnly", "Path=/auth", "SameSite=strict", "Max-Age=1209600"):
         assert part in cookie
     assert "refresh_token" not in r.json()  # 본문에는 Access Token만
@@ -574,7 +575,8 @@ def test_refresh_rotates_and_cuts_old_access_token(db, logins, clock) -> None:
     assert new_refresh != old_refresh
     assert client.get("/auth/me", headers=_auth(old_access)).status_code == 401  # 예전 토큰 막힘
     assert client.get("/auth/me", headers=_auth(new_access)).status_code == 200
-    assert old_refresh.split(".")[1] not in str(vars(logins[1]))  # 원래 값은 두지 않는다
+    assert old_refresh.split(".")[2] not in str(vars(logins[1]))  # 토큰은 두지 않는다
+    assert new_refresh.split(".")[2] not in str(vars(logins[1]))
 
     # 이미 쓴 Refresh Token이 (동시 요청으로 볼 시간이 지나) 다시 오면
     # 훔쳐 간 것으로 보고 그 로그인을 통째로 끊는다
@@ -590,7 +592,9 @@ def test_refresh_rotates_and_cuts_old_access_token(db, logins, clock) -> None:
 def test_refresh_fails_without_valid_cookie(db, clock) -> None:
     assert _refresh().status_code == 401  # 쿠키 없음
     assert _refresh("garbage").status_code == 401
-    assert _refresh("99.nope").status_code == 401  # 없는 로그인
+    assert _refresh("99.0.nope").status_code == 401  # 없는 로그인
+    assert _refresh("1.nope").status_code == 401  # 이 변경 전 모양
+    assert _refresh(f"{'9' * 30}.0.x").status_code == 401  # bigint를 넘는 번호
     access = _signup("a@b.co")
     cookie = client.cookies["refresh_token"]
 
@@ -599,11 +603,15 @@ def test_refresh_fails_without_valid_cookie(db, clock) -> None:
     assert client.get("/auth/me", headers=_auth(access)).status_code == 401
 
 
-def test_refresh_extends_while_used(db, clock) -> None:
+def test_refresh_extends_while_used_up_to_max(db, clock) -> None:
     _signup("a@b.co")
-    for _ in range(3):  # 10일마다 새로 받으면 14일이 지나도 계속 쓸 수 있다
+    for _ in range(2):  # 10일마다 새로 받으면 14일이 지나도 계속 쓸 수 있다
         clock.at += timedelta(days=10)
         assert _refresh().status_code == 200
+    # 남은 기간이 14일보다 짧으면 쿠키도 그때까지만 (로그인한 지 30일)
+    assert "Max-Age=864000" in client.post("/auth/refresh").headers["set-cookie"]
+    clock.at += timedelta(days=10)  # 계속 써도 로그인한 지 30일이 지나면 다시 로그인
+    assert _refresh().status_code == 401
 
 
 def test_refresh_fails_for_stopped_user(db) -> None:
@@ -636,11 +644,16 @@ def test_logout_cuts_this_login_only(db) -> None:
 
 
 def test_wrong_refresh_secret_does_not_cut_login(db, logins) -> None:
-    """남의 로그인 줄 번호에 아무 값이나 붙여 보내도 그 로그인은 끊기지 않는다 (번호는 짐작 가능)"""
-    access = _signup("a@b.co")
-    assert _refresh("1.guessed-value").status_code == 401
+    """남의 로그인 줄 번호에 아무 값이나 붙여 보내도 그 로그인은 끊기지 않는다 (번호는 짐작 가능).
+    지난 세대·지금 세대·앞으로 올 세대 번호를 붙여도 서명이 틀리면 마찬가지"""
+    _signup("a@b.co")
+    r = _refresh()  # 1세대
+    access, cookie = r.json()["access_token"], client.cookies["refresh_token"]
+    for guess in ("1.0.guessed-value", "1.1.guessed-value", "1.5.guessed-value"):
+        assert _refresh(guess).status_code == 401
     assert logins[1].revoked_at is None
     assert client.get("/auth/me", headers=_auth(access)).status_code == 200
+    assert _refresh(cookie).status_code == 200
 
 
 def test_email_code_attempts_are_counted_in_db(db, codes) -> None:
@@ -682,3 +695,59 @@ def test_logout_with_old_access_token_still_cuts_login(db, logins) -> None:
     assert r.status_code == 204
     assert logins[1].revoked_at is not None
     assert _refresh(cookie).status_code == 401
+
+
+def test_stolen_refresh_token_is_caught_after_many_rotations(db, logins, clock) -> None:
+    """훔친 사람이 여러 번 새로 받은 뒤 진짜 사용자가 예전 쿠키로 돌아와도 그 로그인을 끊는다
+    (바로 전 값만 보면 '틀린 값'이 되어 훔친 사람의 로그인이 계속 살아 있었다)"""
+    _signup("a@b.co")
+    victim_cookie = client.cookies["refresh_token"]
+    attacker = _refresh(victim_cookie)  # 훔친 쿠키로 먼저 새로 받는다
+    for _ in range(3):
+        clock.at += timedelta(minutes=15)
+        attacker = client.post("/auth/refresh")
+        assert attacker.status_code == 200
+    attacker_access = attacker.json()["access_token"]
+
+    clock.at += timedelta(minutes=1)
+    assert _refresh(victim_cookie).status_code == 401  # 진짜 사용자가 돌아옴
+    assert logins[1].revoked_at is not None  # 탈취로 보고 끊는다
+    assert client.get("/auth/me", headers=_auth(attacker_access)).status_code == 401
+    client.cookies.clear()
+    assert (
+        _refresh(attacker.headers["set-cookie"].split(";")[0].split("=", 1)[1]).status_code == 401
+    )
+
+
+def test_refresh_token_signature_is_tied_to_login(db, logins) -> None:
+    """다른 로그인의 서명을 옮겨 붙이거나 세대를 바꾸면 틀린 값 (끊지 않는다)"""
+    _signup("a@b.co")
+    first = client.cookies["refresh_token"]
+    _login("a@b.co", PW)
+    second = client.cookies["refresh_token"]
+    sid1, _, mac1 = first.split(".")
+    sid2, _, mac2 = second.split(".")
+    assert mac1 != mac2
+    assert _refresh(f"{sid2}.0.{mac1}").status_code == 401
+    assert _refresh(f"{sid1}.1.{mac1}").status_code == 401
+    assert logins[1].revoked_at is None and logins[2].revoked_at is None
+    assert _refresh(first).status_code == 200
+
+
+def test_refresh_cookie_secure_follows_https(db, monkeypatch) -> None:
+    """COOKIE_SECURE를 비워 두면 https 요청일 때만 Secure. true/false로 강제할 수 있다"""
+    _register("a@b.co")
+    https = TestClient(app, base_url="https://testserver")
+    r = https.post("/auth/token", data={"username": "a@b.co", "password": PW})
+    assert r.status_code == 200 and "Secure" in r.headers["set-cookie"]
+    assert "Secure" in https.post("/auth/logout").headers["set-cookie"]  # 지울 때도 같게
+
+    monkeypatch.setattr(get_settings(), "cookie_secure", True)
+    assert "Secure" in _login("a@b.co", PW).headers["set-cookie"]  # http여도 강제
+    monkeypatch.setattr(get_settings(), "cookie_secure", False)
+    assert (
+        "Secure"
+        not in https.post("/auth/token", data={"username": "a@b.co", "password": PW}).headers[
+            "set-cookie"
+        ]
+    )

@@ -28,4 +28,8 @@ COPY frontend/ ../frontend/
 
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# 프록시(nginx, ALB)가 https를 받아 넘기면 X-Forwarded-Proto·For를 믿어야 서버가 https와 진짜 IP를 안다
+# (Refresh Token 쿠키 Secure, HSTS, 로그인 시도 제한). 믿을 프록시 주소는 배포 환경 변수로 준다:
+#   FORWARDED_ALLOW_IPS=프록시 주소 (uvicorn이 직접 읽는다. 기본 127.0.0.1)
+# 이 컨테이너에 프록시를 거치지 않고 바로 들어올 수 없을 때만 '*'로 둔다
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers"]

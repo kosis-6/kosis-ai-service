@@ -57,7 +57,7 @@
 
 - 언어 / 프레임워크: Python 3.12.15, FastAPI
 - 패키지 관리: uv 0.13.3
-- LLM / 임베딩: HyperCLOVA X(HCX-007, HCX-DASH-002), CLOVA Studio 임베딩 v2(bge-m3)
+- LLM / 임베딩: HyperCLOVA X(HCX-007), CLOVA Studio 임베딩 v2(bge-m3)
 - DB: PostgreSQL 17 + pgvector 0.8.7, SQLAlchemy, Alembic
 - 실행 환경: Docker, Docker Compose
 - 테스트 / 린트: pytest, ruff
