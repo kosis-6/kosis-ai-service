@@ -50,6 +50,26 @@ export const PART_COLORS = [
   { fill: "#008300", text: "#ffffff" },
 ];
 
+// 여러 꺾은선(지역별 추이)의 선 색: 구성비와 같은 순서·같은 검사를 통과한 색 (서버 charts.MAX_LINES 개까지)
+export const LINE_COLORS = PART_COLORS.map((c) => c.fill);
+
+/** 여러 꺾은선의 행 → Recharts 행: { year, s0, s1, ... } (series 순서). 자료가 없는 해는 비운다 */
+export function seriesRows(chart: Pick<Chart, "rows" | "series">): Record<string, number | null>[] {
+  const names = chart.series ?? [];
+  return chart.rows.map((r) => {
+    const row: Record<string, number | null> = { year: Number(r.label) };
+    names.forEach((_, i) => {
+      row[`s${i}`] = r.values?.[i] ?? null;
+    });
+    return row;
+  });
+}
+
+/** 여러 꺾은선의 모든 값 중 가장 큰 절댓값 */
+export function seriesMax(chart: Pick<Chart, "rows">): number {
+  return Math.max(0, ...chart.rows.flatMap((r) => (r.values ?? []).map((v) => Math.abs(v ?? 0))));
+}
+
 /** 조각 안에 비중 글자를 넣을 만큼 넓은가 (좁으면 넣지 않고 범례·표가 대신한다) */
 export function fitsLabel(share: number): boolean {
   return share >= 9;

@@ -620,6 +620,9 @@ def _read_question(question, parsed, fix):
             parsed["share_of"] = "전국"
 
 
+MAX_TREND_REGIONS = 6  # 여러 지역 추이는 이만큼까지 (꺾은선 색을 돌려 쓰지 않는 개수)
+
+
 def compute(q):
     """2~4단계: 질문 분석 결과 → indicators.py(계산 지표)·lookup.py(조회 지표) 결과"""
     lookup.refresh_if_reloaded()  # 적재 프로세스가 표를 새로 넣었으면 표 정보 캐시를 비운다
@@ -688,11 +691,21 @@ def compute(q):
             **lookup.data_gap(term),
         }
 
-    try:
+    def calc(rs):
         if sp["method"] == "lookup":
-            result = _compute_lookup(q, sp, kind, regions, year, sex, ages)
+            return _compute_lookup(q, sp, kind, rs, year, sex, ages)
+        return _compute_population(q, sp["name"], kind, rs, year, sex, ages, hi)
+
+    try:
+        if kind == "trend" and len(regions) > 1 and q.get("aggregate") != "sum":
+            # 여러 지역의 추이: 지역마다 따로 계산해 묶는다 (화면은 한 꺾은선 차트에 겹쳐 그린다)
+            result = _combine([calc([r]) for r in regions[:MAX_TREND_REGIONS]], by="region")
+            if result.get("status") == "ok" and len(regions) > MAX_TREND_REGIONS:
+                result["split"][0].setdefault("notes", []).append(
+                    f"지역이 많아 앞의 {MAX_TREND_REGIONS}곳만 연도별로 봤습니다"
+                )
         else:
-            result = _compute_population(q, sp["name"], kind, regions, year, sex, ages, hi)
+            result = calc(regions)
     except StatsTableMissing as e:
         if e.tbl_id:  # 적재 안 된 표: ask가 바로 받거나 대기열에 넣는다 (_compute_fetching)
             raise
@@ -703,7 +716,7 @@ def compute(q):
     if result.get("status") == "unknown_indicator" and "gap" not in result:
         # 지표는 있지만 질문한 구분(예: 연령)이 표에 없음 → 그 구분의 자료는 수집하지 않음
         result["gap"] = "not_collected"
-    for r in result.get("split") or [result]:
+    for r in _leaves(result):
         if r.get("series"):
             _add_yearly_change(r)
             _add_trend_facts(r)
@@ -713,7 +726,7 @@ def compute(q):
     term = q.get("term")
     if result.get("status") == "ok" and term and indicators.canonical_name(term) == sp["name"]:
         if indicators._norm(term) != indicators._norm(sp["name"]):  # 예: 합계출생율 → 합계출산율
-            for r in result.get("split") or [result]:
+            for r in _leaves(result):
                 note = f"'{term}'을(를) {sp['name']}(으)로 보고 답했습니다"
                 r["notes"] = [note] + r.get("notes", [])
     if (group := q.get("group")) and result.get("status") == "ok" and "values" in result:
@@ -859,16 +872,27 @@ def _lookup_span(sp, region, sex):
     return min(a for a, _ in spans), max(b for _, b in spans)
 
 
-def _combine(parts):
-    """남녀·연령 구간별로 따로 계산한 결과를 하나로. 하나라도 실패하면 그 결과"""
+def _combine(parts, by=None):
+    """남녀·연령 구간·지역별로 따로 계산한 결과를 하나로. 하나라도 실패하면 그 결과.
+    by="region"이면 여러 지역의 추이 (split_by로 화면·문장이 구분한다)"""
     for p in parts:
         if p.get("status") != "ok":
             return p
-    return {
+    out = {
         **{k: parts[0][k] for k in ("source", "basis", "tbl_id", "url") if k in parts[0]},
         "status": "ok",
         "split": parts,
     }
+    if by:
+        out["split_by"] = by
+    return out
+
+
+def _leaves(result):
+    """따로 계산한 결과의 맨 아래 조각들 (지역마다 남녀를 또 나눈 경우까지)"""
+    if not result.get("split"):
+        return [result]
+    return [leaf for p in result["split"] for leaf in _leaves(p)]
 
 
 def _sum_regions(result, q):
@@ -1094,7 +1118,10 @@ def _trend_text(r):
         text += f"(증감률 {c['rate']:+}{c['rate_unit']})"
     text += "."
     steps = [
-        (s["year"], "증가" if s["diff_from_prev"] > 0 else "감소" if s["diff_from_prev"] < 0 else "같음")
+        (
+            s["year"],
+            "증가" if s["diff_from_prev"] > 0 else "감소" if s["diff_from_prev"] < 0 else "같음",
+        )
         for s in r["series"]
         if "diff_from_prev" in s
     ]
@@ -1276,9 +1303,7 @@ def _refusal_text(r):
         if r.get("reason"):
             return f"{r['reason']} {gap}아래 지원 지표로 다시 질문해 주세요."
         what = f"'{r['indicator']}'은(는)" if r.get("indicator") else "질문하신 지표는"
-        return (
-            f"{what} 아직 지원하지 않는 지표입니다. {gap}아래 지원 지표로 다시 질문해 주세요."
-        )
+        return f"{what} 아직 지원하지 않는 지표입니다. {gap}아래 지원 지표로 다시 질문해 주세요."
     if status == "missing_year":
         return f"{r['reason']} {ask_followup.guide(r)}"
     guide = REFUSAL_GUIDE.get(status, "")
@@ -1293,10 +1318,42 @@ def _refusal_text(r):
     return " ".join(p for p in parts if p)
 
 
+def _region_trend_end(r):
+    """여러 지역 추이의 마지막 해 비교 문장 (지역마다 마지막 해가 같을 때만)"""
+    ends = [(p.get("region"), p["series"][-1]) for p in r["split"] if p.get("series")]
+    if len(ends) < 2 or len({s["year"] for _, s in ends}) != 1:
+        return ""
+    vals = [(region, s["value"]) for region, s in ends if s["value"] is not None]
+    if len(vals) < 2:
+        return ""
+    first = r["split"][0]
+    unit = first.get("unit", "")
+    year = ends[0][1]["year"]
+    hi, lo = max(vals, key=lambda x: x[1]), min(vals, key=lambda x: x[1])
+    if hi[1] == lo[1]:
+        return f" {year}년에는 {len(vals)}곳이 모두 같습니다."
+    many = first.get("kind") == "count"
+    if len(vals) == 2:
+        gap = round(hi[1] - lo[1], 3)
+        diff_unit = lookup.diff_unit({"unit": unit, "kind": first.get("kind")})
+        word = "많습니다" if many else "높습니다"
+        return (
+            f" {year}년에는 {_josa(hi[0], '이가')} {lo[0]}보다 "
+            f"{_val(gap, diff_unit, full=True)} {word}."
+        )
+    top, bottom = ("가장 많고", "가장 적습니다") if many else ("가장 높고", "가장 낮습니다")
+    return (
+        f" {year}년에는 {_josa(f'{hi[0]}({_val(hi[1], unit)})', '이가')} {top}, "
+        f"{_josa(f'{lo[0]}({_val(lo[1], unit)})', '이가')} {bottom}."
+    )
+
+
 def _split_text(r):
-    """남녀·연령 구간을 따로 계산한 결과의 문장. 값 조회 둘이면 어느 쪽이 높은지도"""
+    """남녀·연령 구간·지역을 따로 계산한 결과의 문장. 값 조회 둘이면 어느 쪽이 높은지도"""
     parts = r["split"]
     text = " ".join(summary(p) for p in parts)
+    if r.get("split_by") == "region":
+        return text + _region_trend_end(r)
     vals = [p.get("value") for p in parts]
     if len(parts) == 2 and None not in vals and all("value" in p for p in parts):
         a, b = parts

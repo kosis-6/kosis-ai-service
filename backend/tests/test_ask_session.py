@@ -40,9 +40,10 @@ def names(monkeypatch: pytest.MonkeyPatch) -> None:
 # ---- 조건 고치기 ---------------------------------------------------------------------------
 
 
-def test_add_region_turns_trend_into_compare() -> None:
+def test_add_region_keeps_trend_for_each_region() -> None:
     c, changed = s.apply_changes(BASE, {"regions": {"op": "add", "value": "서울"}})
-    assert c["regions"] == ["부산", "서울"] and c["type"] == "compare" and changed == {"regions"}
+    assert c["regions"] == ["부산", "서울"] and c["type"] == "trend" and changed == {"regions"}
+    assert (c["start_year"], c["end_year"]) == (2020, 2024)  # 기간은 그대로 (지역마다 추이)
     assert BASE["regions"] == ["부산"]  # 원래 조건은 건드리지 않는다
     again, _ = s.apply_changes(c, {"regions": {"op": "add", "value": ["서울특별시"]}})
     assert again["regions"] == ["부산", "서울"]  # 이미 있는 지역은 또 넣지 않는다
@@ -348,11 +349,13 @@ def test_change_recomputes_without_reparsing(talk: Talk) -> None:
     )  # 이미 한 해를 보던 중이면 알리지 않는다
 
 
-def test_adding_region_to_trend_tells_the_period_was_narrowed(talk: Talk) -> None:
+def test_adding_region_to_trend_keeps_the_period(talk: Talk) -> None:
     talk.say("부산 출생아 최근 5년 보여 줘")
     change = {"regions": {"op": "add", "value": "서울"}}
     res = talk.say("서울도 같이", request_type="change", changes=change)
-    assert res["parsed"]["type"] == "compare" and "2024년 기준으로 비교했습니다" in res["notice"]
+    assert res["parsed"]["type"] == "trend" and res["parsed"]["regions"] == ["부산", "서울"]
+    assert (res["parsed"]["start_year"], res["parsed"]["end_year"]) == (2020, 2024)
+    assert res["notice"] is None  # 기간을 줄이지 않으니 알릴 것도 없다
 
 
 def test_chart_and_summary_reuse_last_answer(talk: Talk) -> None:
@@ -517,3 +520,30 @@ def test_chart_change_does_not_search_again(talk: Talk) -> None:
     talk.say("부산 출생아 최근 5년 보여 줘")
     res = talk.say("표로 보여줘")
     assert res["request_type"] == "chart" and "tables" not in res and talk.searched == []
+
+
+def test_new_question_without_indicator_inherits_it() -> None:
+    """기간·방식만 말한 새 질문은 앞 지표를 이어받는다. 질문에 있는 말을 지표로 적었으면 이어받지 않는다"""
+    prev = {**BASE, "type": "compare", "indicator": "고령인구 비율", "regions": ["서울", "부산"]}
+    prev_sources = {**USER}
+    parsed = {
+        "type": "trend",
+        "indicator": None,
+        "term": "추이",
+        "regions": [],
+        "start_year": 2015,
+        "end_year": 2024,
+        "year": 2024,
+    }
+    question = "2015년부터 추이로 보여줘"
+    p, src = s.inherit(parsed, s.sources_of(question, parsed), prev, prev_sources, question)
+    assert p["indicator"] == "고령인구 비율" and src["indicator"] == "inherited"
+    assert p["regions"] == ["서울", "부산"] and p["start_year"] == 2015
+    pets = {**parsed, "term": "반려동물", "indicator": "반려동물 가구"}
+    q2 = "반려동물 키우는 집 추이"
+    p2, src2 = s.inherit(pets, s.sources_of(q2, pets), prev, prev_sources, q2)
+    assert p2["indicator"] == "반려동물 가구" and src2["indicator"] == "user"
+    # 지표를 말하지 않았는데 HCX가 총인구를 채워 넣어도 앞 지표를 이어받는다
+    guessed = {**parsed, "indicator": "총인구", "term": None}
+    p3, _ = s.inherit(guessed, s.sources_of(question, guessed), prev, prev_sources, question)
+    assert p3["indicator"] == "고령인구 비율"

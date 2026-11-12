@@ -1,6 +1,18 @@
 import { describe, expect, it } from "vitest";
 import { splitAnswer } from "./Answer";
-import { PART_COLORS, axisTick, fitsLabel, formatValue, labelWidth, rowLabel, shortUnit, withUnit } from "./chartFormat";
+import {
+  LINE_COLORS,
+  PART_COLORS,
+  axisTick,
+  fitsLabel,
+  formatValue,
+  labelWidth,
+  rowLabel,
+  seriesMax,
+  seriesRows,
+  shortUnit,
+  withUnit,
+} from "./chartFormat";
 
 describe("차트 숫자", () => {
   it("값은 자릿수 쉼표로, 없으면 줄표", () => {
@@ -32,6 +44,28 @@ describe("차트 숫자", () => {
     expect(PART_COLORS).toHaveLength(6);
     expect(fitsLabel(8.96)).toBe(false);
     expect(fitsLabel(19.44)).toBe(true);
+  });
+});
+
+describe("여러 꺾은선", () => {
+  const chart = {
+    series: ["서울특별시", "부산광역시"],
+    rows: [
+      { label: "2022", value: null, values: [0.59, null] },
+      { label: "2023", value: null, values: [0.55, -0.66] },
+    ],
+  };
+  it("행을 연도와 지역별 칸(s0, s1)으로 바꾸고, 없는 값은 비운다", () => {
+    expect(seriesRows(chart)).toEqual([
+      { year: 2022, s0: 0.59, s1: null },
+      { year: 2023, s0: 0.55, s1: -0.66 },
+    ]);
+  });
+  it("축 눈금은 모든 지역 값 중 가장 큰 절댓값으로 정한다", () => {
+    expect(seriesMax(chart)).toBe(0.66);
+  });
+  it("선 색은 서버가 보내는 선 수(6개)만큼 있다", () => {
+    expect(LINE_COLORS).toHaveLength(6);
   });
 });
 

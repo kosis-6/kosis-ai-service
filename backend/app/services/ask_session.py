@@ -163,7 +163,7 @@ def effective(parsed: dict, result: dict) -> dict:
     "최근 5년"·"과거부터"는 자료의 마지막·첫 연도를 보고 계산할 때 정해진다. 그 기간을 적어 두어야
     화면에 보이는 조건이 답과 같고, 다음 턴("서울도 같이")도 같은 기간으로 이어진다"""
     c = {k: v for k, v in parsed.items() if k not in ("corrections", "raw")}
-    series = result.get("series") or ((result.get("split") or [{}])[0].get("series"))
+    series = next((r["series"] for r in qa._leaves(result) if r.get("series")), None)
     if result.get("status") == "ok" and series:
         c["start_year"], c["end_year"] = series[0]["year"], series[-1]["year"]
         c["year"] = c["end_year"]
@@ -171,17 +171,6 @@ def effective(parsed: dict, result: dict) -> dict:
     elif result.get("status") == "ok" and result.get("year"):
         c["year"] = result["year"]
     return c
-
-
-def narrowed_notice(before: dict, after: dict) -> str | None:
-    """추이를 보다 지역을 더하면 한 해 비교가 된다 (여러 지역의 추이는 한 번에 계산하지 않는다).
-    기간이 말없이 줄어들지 않게 알린다"""
-    if before.get("type") == "trend" and after.get("type") == "compare" and after.get("year"):
-        return (
-            "여러 지역의 연도별 추이는 아직 한 번에 볼 수 없어 "
-            f"{after['year']}년 기준으로 비교했습니다."
-        )
-    return None
 
 
 def inherited_notice(conditions: dict, sources: dict[str, str]) -> str | None:
@@ -287,8 +276,8 @@ def apply_changes(conditions: dict, changes: dict) -> tuple[dict, set[str]]:
 
 def _retype(c: dict, changed: set[str]) -> None:
     """지역 수·기간이 바뀐 뒤 보는 방식을 맞춘다 (사용자가 방식을 직접 말했으면 부르지 않는다)
-      지역이 둘 이상      → 지역 비교 (한 해)
-      지역 하나 + 기간    → 추이
+      기간               → 추이 (지역이 여럿이면 지역마다 추이)
+      지역 둘 이상 + 한 해 → 지역 비교
       지역 하나 + 한 해   → 값 하나
     순위에서 순위 조건(개수·방향)만 바꾸면 순위로 둔다. 구성비는 그대로 둔다"""
     kind = c.get("type")
@@ -298,16 +287,48 @@ def _retype(c: dict, changed: set[str]) -> None:
         return
     count = len(c.get("regions") or [])
     span = bool(c.get("start_year") and c.get("end_year") and c["start_year"] != c["end_year"])
-    if count > 1:
+    if count >= 1 and span:
+        c["type"] = "trend"
+    elif count > 1:
         c["type"] = "compare"
     elif count == 1:
-        c["type"] = "trend" if span else "value"
+        c["type"] = "value"
     elif kind != "rank":
         c["type"] = "rank"  # 지역을 모두 뺐다 → 지역별 순위
 
 
-def inherit(parsed: dict, sources: dict, prev: dict, prev_sources: dict) -> tuple[dict, dict]:
+# 지표가 아니라 보는 방식을 가리키는 말. HCX가 이런 말을 지표(term)로 적어도 지표를 말한 것으로 보지 않는다
+VIEW_WORDS = {
+    "추이",
+    "변화",
+    "비교",
+    "순위",
+    "구성",
+    "구성비",
+    "통계",
+    "수치",
+    "그래프",
+    "차트",
+    "표",
+}
+
+
+def names_indicator(question: str, parsed: dict) -> bool:
+    """새 질문이 지표를 말했는가: 질문에 지원 지표의 이름·별칭이 있거나, 질문에 있는 말을 지표로 적었다.
+    "2015년부터 추이로 보여줘"처럼 기간·방식만 말하면 말하지 않은 것 (앞 지표를 이어받는다).
+    HCX가 지표 없는 질문에 총인구를 채워 넣기도 해서, 지표 이름이 아니라 질문의 말을 본다"""
+    if indicators.find_in_text(question):
+        return True
+    compact = question.replace(" ", "")
+    words = [parsed.get("term"), parsed.get("indicator")]
+    return any(w and w.strip() not in VIEW_WORDS and w.replace(" ", "") in compact for w in words)
+
+
+def inherit(
+    parsed: dict, sources: dict, prev: dict, prev_sources: dict, question: str = ""
+) -> tuple[dict, dict]:
     """새 질문이 말하지 않은 조건을 앞 조건에서 이어받는다 → (조건, 출처).
+    지표: 질문에 지표가 없으면 이어받는다 ("2015년부터 추이로 보여줘")
     지역: 지역이 필요한 질문인데 말하지 않았으면 이어받는다
           (순위는 지역 없이 묻는 것이 보통이라 제외)
     기간: 보는 방식이 같고, 앞에서 기간을 말했을 때만 이어받는다
@@ -316,6 +337,12 @@ def inherit(parsed: dict, sources: dict, prev: dict, prev_sources: dict) -> tupl
     kind = p.get("type")
     if kind in NO_CONDITIONS or prev.get("type") in NO_CONDITIONS:
         return p, s
+    if question and prev.get("indicator") and not names_indicator(question, p):
+        for key in ("indicator", "term", "ages", "age_group", "by"):
+            if prev.get(key) is not None:
+                p[key] = copy.deepcopy(prev[key])
+        p.pop("unsupported", None)
+        s["indicator"] = "inherited"
     if s.get("regions") == "default" and kind != "rank" and prev.get("regions"):
         p["regions"] = list(prev["regions"])
         s["regions"] = "inherited"
@@ -551,7 +578,9 @@ async def _new(question: str, state: dict | None) -> tuple[dict, dict, str | Non
         kept["original"] = parsed
         kept["sources"] = sources_of(question, parsed)
         if prev:
-            parsed, kept["sources"] = inherit(parsed, kept["sources"], prev, state["sources"])
+            parsed, kept["sources"] = inherit(
+                parsed, kept["sources"], prev, state["sources"], question
+            )
         return parsed
 
     res = await qa.ask(question, adjust=adjust)
@@ -626,7 +655,7 @@ async def _turn(
                 res = await _answer(conditions, trace)
                 res["request_type"] = CHANGE
                 sources = {**state["sources"], **{k: "user" for k in changed if k in LABELS}}
-                return res, sources, narrowed_notice(state["conditions"], conditions)
+                return res, sources, None
             delta["request_type"] = NEW
         if delta["request_type"] == CHART:
             view = delta["chart"]
@@ -710,10 +739,11 @@ async def _attach_tables(res: dict, state: dict | None, question: str, user_id: 
         except Exception:
             logger.exception("통계표 찾기 실패")
             return
-        kind = res.get("request_type")
+        kind, trace, parsed = res.get("request_type"), res.get("trace"), res.get("parsed")
         res.clear()
-        res.update(table_guide.tables_answer(found, {"parsed": {}}))
-        res["request_type"], res["question"] = kind, asked
+        res.update(table_guide.tables_answer(found, {"parsed": parsed or {}}))
+        # 수치 답을 하려다 표 찾기로 넘어온 경위(질문 해석)는 요청 기록에 남긴다
+        res["request_type"], res["question"], res["trace"] = kind, asked, trace or {}
         res["search_session"] = sid
         return
     try:

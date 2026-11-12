@@ -32,6 +32,10 @@ class ChartRow(BaseModel):
     label: str = Field(description="행 이름 (연도, 지역, 항목)")
     value: float | None = Field(description="값. 구성비(parts)는 비중(%). 자료가 없으면 null")
     count: float | None = Field(default=None, description="구성비일 때 그 항목의 원래 값")
+    values: list[float | None] | None = Field(
+        default=None,
+        description="꺾은선이 여러 개일 때 series 순서의 값 (이때 value는 null)",
+    )
 
 
 class Chart(BaseModel):
@@ -45,6 +49,9 @@ class Chart(BaseModel):
     category: str = Field(description="행이 무엇인지 (연도 / 지역 / 항목)")
     rows: list[ChartRow]
     count_unit: str | None = Field(default=None, description="count의 단위")
+    series: list[str] | None = Field(
+        default=None, description="꺾은선이 여러 개일 때 선 이름 (지역). 없으면 선 하나"
+    )
     note: str | None = Field(default=None, description="차트 아래 알림 (일부만 그린 경우 등)")
     view: Literal["line", "bar", "table"] | None = Field(
         default=None,

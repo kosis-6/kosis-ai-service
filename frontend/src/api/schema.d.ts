@@ -513,6 +513,11 @@ export interface components {
              */
             count_unit?: string | null;
             /**
+             * Series
+             * @description 꺾은선이 여러 개일 때 선 이름 (지역). 없으면 선 하나
+             */
+            series?: string[] | null;
+            /**
              * Note
              * @description 차트 아래 알림 (일부만 그린 경우 등)
              */
@@ -540,6 +545,11 @@ export interface components {
              * @description 구성비일 때 그 항목의 원래 값
              */
             count?: number | null;
+            /**
+             * Values
+             * @description 꺾은선이 여러 개일 때 series 순서의 값 (이때 value는 null)
+             */
+            values?: (number | null)[] | null;
         };
         /** EmailCodeRequest */
         EmailCodeRequest: {

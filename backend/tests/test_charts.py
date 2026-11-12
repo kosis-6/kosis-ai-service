@@ -83,3 +83,26 @@ def test_no_chart_for_single_value_or_refusal() -> None:
     assert charts.build({"status": "missing_year", "reason": "..."}) is None
     assert charts.build({**BASE, "split": [{"series": [{"year": 1, "value": 1}]}]}) is None
     assert charts.build(None) is None
+
+
+def test_region_trends_are_several_lines() -> None:
+    """여러 지역의 추이: 행은 연도, values는 series(지역) 순서. 한쪽에만 있는 해는 비운다"""
+    seoul = {
+        **BASE,
+        "region": "서울특별시",
+        "series": [{"year": 2022, "value": 0.59}, {"year": 2023, "value": 0.55}],
+    }
+    busan = {
+        **BASE,
+        "region": "부산광역시",
+        "series": [{"year": 2023, "value": 0.66}, {"year": 2024, "value": 0.68}],
+    }
+    chart = charts.build({"status": "ok", "split_by": "region", "split": [seoul, busan]})
+    assert chart["type"] == "line" and chart["series"] == ["서울특별시", "부산광역시"]
+    assert chart["title"] == "합계출산율 2022~2024년" and chart["unit"] == "가임여성 1명당 명"
+    assert [r["values"] for r in chart["rows"]] == [[0.59, None], [0.55, 0.66], [None, 0.68]]
+    Chart(**chart)
+    many = {"status": "ok", "split_by": "region", "split": [seoul] * (charts.MAX_LINES + 1)}
+    assert charts.build(many) is None  # 색을 돌려 쓰지 않는다
+    nested = {"status": "ok", "split_by": "region", "split": [{"split": [seoul]}, busan]}
+    assert charts.build(nested) is None  # 지역마다 남녀까지 나뉘면 그리지 않는다

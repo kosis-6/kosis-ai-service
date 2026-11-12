@@ -1,5 +1,6 @@
 // 답변의 차트 (POST /ask 의 chart). 서버가 종류와 행을 정하고 여기서는 그리기만 한다
 //   line   연도별 꺾은선 (막대로 바꿔 볼 수 있다. 다시 조회하지 않는다)
+//          series 가 있으면 지역마다 선 하나 (범례·툴팁·표가 이름을 함께 전한다)
 //   bar    지역별 가로 막대 (큰 순·순위 순)
 //   parts  구성비 나뉜 막대
 // 모든 차트는 "표"로도 볼 수 있다 (색이나 마우스 없이도 같은 값을 읽을 수 있게)
@@ -18,6 +19,7 @@ import {
 } from "recharts";
 import type { Chart } from "../api/types";
 import {
+  LINE_COLORS,
   PART_COLORS,
   axisTick,
   fitsLabel,
@@ -25,6 +27,8 @@ import {
   labelWidth,
   maxAbs,
   rowLabel,
+  seriesMax,
+  seriesRows,
   shortUnit,
   withUnit,
 } from "./chartFormat";
@@ -137,6 +141,132 @@ function ColumnView({ chart }: { chart: Chart }) {
   );
 }
 
+type SeriesTipProps = {
+  active?: boolean;
+  payload?: readonly { value?: unknown; dataKey?: unknown }[];
+  label?: unknown;
+};
+
+// 여러 꺾은선: 그 해의 지역별 값을 큰 순으로. 색 표시와 이름을 함께 둔다 (색만으로 구분하지 않는다)
+function SeriesTip({ active, payload, label, chart }: SeriesTipProps & { chart: Chart }) {
+  if (!active || !payload?.length) return null;
+  const names = chart.series ?? [];
+  const items = payload
+    .map((p) => ({ i: Number(String(p.dataKey).slice(1)), value: p.value }))
+    .filter((p): p is { i: number; value: number } => typeof p.value === "number")
+    .sort((a, b) => b.value - a.value);
+  if (!items.length) return null;
+  return (
+    <div className="chart-tip">
+      <span>{`${String(label)}년`}</span>
+      {items.map(({ i, value }) => (
+        <span key={i} className="chart-tip-row">
+          <span className="parts-key" style={{ background: LINE_COLORS[i] }} />
+          {names[i]}
+          <strong>{withUnit(value, chart.unit)}</strong>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function SeriesLegend({ chart }: { chart: Chart }) {
+  return (
+    <ul className="parts-legend chart-legend">
+      {(chart.series ?? []).map((name, i) => (
+        <li key={name}>
+          <span className="line-key" style={{ background: LINE_COLORS[i] }} />
+          {name}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+// 지역마다 선 하나. 가로축은 연도를 숫자로 (LineView 와 같은 이유)
+function MultiLineView({ chart }: { chart: Chart }) {
+  const rows = seriesRows(chart);
+  const top = seriesMax(chart);
+  const names = chart.series ?? [];
+  return (
+    <>
+      <SeriesLegend chart={chart} />
+      <ResponsiveContainer width="100%" height={248}>
+        <LineChart data={rows} margin={{ top: 16, right: 28, bottom: 0, left: 0 }}>
+          <CartesianGrid vertical={false} stroke={GRID} />
+          <XAxis
+            dataKey="year"
+            type="number"
+            domain={["dataMin", "dataMax"]}
+            ticks={rows.map((r) => r.year as number)}
+            interval="preserveStartEnd"
+            allowDecimals={false}
+            padding={{ left: 12, right: 12 }}
+            tickLine={false}
+            axisLine={{ stroke: GRID }}
+            tick={TICK}
+            minTickGap={20}
+          />
+          <YAxis
+            width={48}
+            tickLine={false}
+            axisLine={false}
+            tick={TICK}
+            domain={["auto", "auto"]}
+            tickFormatter={(v: number) => axisTick(v, top)}
+          />
+          <Tooltip cursor={{ stroke: MUTED, strokeWidth: 1 }} content={(p) => <SeriesTip {...p} chart={chart} />} />
+          {names.map((name, i) => (
+            <Line
+              key={name}
+              name={name}
+              dataKey={`s${i}`}
+              stroke={LINE_COLORS[i]}
+              strokeWidth={2}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              dot={rows.length <= 24 ? { r: 4, fill: LINE_COLORS[i], stroke: SURFACE, strokeWidth: 2 } : false}
+              activeDot={{ r: 6, fill: LINE_COLORS[i], stroke: SURFACE, strokeWidth: 2 }}
+              isAnimationActive={false}
+            />
+          ))}
+        </LineChart>
+      </ResponsiveContainer>
+    </>
+  );
+}
+
+// 여러 꺾은선을 막대로: 해마다 지역별 막대를 나란히 (막대 사이 2px 틈)
+function MultiColumnView({ chart }: { chart: Chart }) {
+  const rows = seriesRows(chart);
+  const top = seriesMax(chart);
+  const names = chart.series ?? [];
+  return (
+    <>
+      <SeriesLegend chart={chart} />
+      <ResponsiveContainer width="100%" height={248}>
+        <BarChart data={rows} margin={{ top: 16, right: 12, bottom: 0, left: 0 }} barGap={2}>
+          <CartesianGrid vertical={false} stroke={GRID} />
+          <XAxis dataKey="year" tickLine={false} axisLine={{ stroke: GRID }} tick={TICK} minTickGap={8} />
+          <YAxis width={48} tickLine={false} axisLine={false} tick={TICK} tickFormatter={(v: number) => axisTick(v, top)} />
+          <Tooltip cursor={{ fill: HOVER }} content={(p) => <SeriesTip {...p} chart={chart} />} />
+          {names.map((name, i) => (
+            <Bar
+              key={name}
+              name={name}
+              dataKey={`s${i}`}
+              fill={LINE_COLORS[i]}
+              maxBarSize={16}
+              radius={[4, 4, 0, 0]}
+              isAnimationActive={false}
+            />
+          ))}
+        </BarChart>
+      </ResponsiveContainer>
+    </>
+  );
+}
+
 function BarView({ chart }: { chart: Chart }) {
   const rows = chart.rows;
   const negative = rows.some((r) => (r.value ?? 0) < 0);
@@ -204,7 +334,37 @@ function PartsView({ chart }: { chart: Chart }) {
   );
 }
 
+// 여러 꺾은선의 표: 연도마다 한 줄, 지역마다 한 칸
+function SeriesTableView({ chart }: { chart: Chart }) {
+  const names = chart.series ?? [];
+  return (
+    <table className="chart-table">
+      <thead>
+        <tr>
+          <th scope="col">{chart.category}</th>
+          {names.map((name) => (
+            <th scope="col" key={name}>
+              {shortUnit(chart.unit) ? `${name} (${chart.unit})` : name}
+            </th>
+          ))}
+        </tr>
+      </thead>
+      <tbody>
+        {chart.rows.map((r) => (
+          <tr key={r.label}>
+            <th scope="row">{rowLabel(chart, r)}</th>
+            {names.map((name, i) => (
+              <td key={name}>{formatValue(r.values?.[i])}</td>
+            ))}
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
 function TableView({ chart }: { chart: Chart }) {
+  if (chart.series?.length) return <SeriesTableView chart={chart} />;
   const hasCount = chart.rows.some((r) => r.count != null);
   return (
     <table className="chart-table">
@@ -274,6 +434,8 @@ export default function ChartCard({ chart }: { chart: Chart }) {
         <PartsView chart={chart} />
       ) : chart.type === "bar" ? (
         <BarView chart={chart} />
+      ) : chart.series?.length ? (
+        view === "bar" ? <MultiColumnView chart={chart} /> : <MultiLineView chart={chart} />
       ) : view === "bar" ? (
         <ColumnView chart={chart} />
       ) : (

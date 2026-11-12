@@ -344,6 +344,11 @@ body[data-page="chat"] {
 .parts-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 0; padding: 0; list-style: none; font-size: 12px; line-height: 18px; }
 .parts-legend li { display: flex; align-items: center; gap: 6px; }
 .parts-key { flex: none; width: 10px; height: 10px; border-radius: 3px; }
+/* 여러 꺾은선: 범례는 차트 위, 선 모양 표시. 툴팁은 지역마다 한 줄 */
+.chart-legend { margin-bottom: 8px; color: var(--ink); }
+.line-key { flex: none; width: 16px; height: 3px; border-radius: 2px; }
+.chart-tip .chart-tip-row { display: flex; align-items: center; gap: 6px; color: var(--ink); font-size: 12px; }
+.chart-tip .chart-tip-row strong { margin-left: auto; padding-left: 12px; font-size: 13px; line-height: 19px; }
 
 .chart-table { width: 100%; border-collapse: collapse; font-size: 12px; line-height: 18px; font-variant-numeric: tabular-nums; }
 .chart-table th, .chart-table td { padding: 8px 10px; border-bottom: 1px solid var(--line); text-align: right; }

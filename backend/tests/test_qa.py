@@ -78,7 +78,12 @@ def test_compute_group_scope(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(qa.indicators, "_data_years", lambda: (2008, 2025))
     monkeypatch.setattr(qa.indicators, "spec", lambda name: {"name": name, "method": "lookup"})
     monkeypatch.setattr(qa, "_compute_lookup", lambda *a: {"status": "ok", "values": values})
-    q = {"type": "compare", "indicator": "혼인 건수", "regions": ["인천", "부산"], "group": "5대 광역시"}
+    q = {
+        "type": "compare",
+        "indicator": "혼인 건수",
+        "regions": ["인천", "부산"],
+        "group": "5대 광역시",
+    }
     assert qa.compute(q)["answer_note"] == "5대 광역시는 인천광역시, 부산광역시 기준입니다."
 
 
@@ -289,3 +294,54 @@ def test_refusal_says_not_implemented_or_not_collected() -> None:
     )
     missing = {"status": "unknown_indicator", "indicator": "1인 가구", "gap": "not_collected"}
     assert "아직 수집하지 않은 통계입니다." in qa.summary(missing)
+
+
+# ---- 여러 지역의 추이 --------------------------------------------------------------------
+
+
+def _region_trend(region, values, start=2023):
+    series = [{"year": start + i, "value": v} for i, v in enumerate(values)]
+    return {**TREND, "region": region, "series": series, "notes": []}
+
+
+def test_compute_trend_for_each_region(monkeypatch: pytest.MonkeyPatch) -> None:
+    """지역이 여럿인 추이는 지역마다 계산해 묶는다 (앞 지역 하나만 보지 않는다)"""
+    asked = []
+
+    def fake(q, sp, kind, regions, *rest):
+        asked.append((kind, regions))
+        return _region_trend(regions[0], [1000, 900, 810])
+
+    monkeypatch.setattr(qa.indicators, "_data_years", lambda: (2008, 2025))
+    monkeypatch.setattr(qa.indicators, "spec", lambda name: {"name": name, "method": "lookup"})
+    monkeypatch.setattr(qa, "_compute_lookup", fake)
+    q = {"type": "trend", "indicator": "출생아 수", "regions": ["서울", "부산"]}
+    r = qa.compute(q)
+    assert asked == [("trend", ["서울"]), ("trend", ["부산"])]
+    assert r["split_by"] == "region" and [p["region"] for p in r["split"]] == ["서울", "부산"]
+    assert r["split"][1]["series"][1]["diff_from_prev"] == -100  # 지역마다 전년 대비도 계산
+    # 지역을 합친 값은 지역마다 나누지 않는다
+    asked.clear()
+    qa.compute({**q, "aggregate": "sum"})
+    assert asked == [("trend", ["서울", "부산"])]
+
+
+def test_summary_region_trends_ends_with_last_year_comparison() -> None:
+    r = {
+        "status": "ok",
+        "split_by": "region",
+        "split": [
+            _region_trend("서울특별시", [1000, 900]),
+            _region_trend("부산광역시", [800, 950]),
+        ],
+    }
+    for p in r["split"]:
+        p["change"] = {
+            "from_year": 2023,
+            "to_year": 2024,
+            "diff": p["series"][1]["value"] - p["series"][0]["value"],
+            "diff_unit": "명",
+        }
+    text = qa.summary(r)
+    assert text.startswith("서울특별시의 총인구는 2023년 1,000명")
+    assert text.endswith("2024년에는 부산광역시가 서울특별시보다 50명 높습니다.")
