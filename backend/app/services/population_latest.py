@@ -8,6 +8,8 @@ KOSIS 원표는 월별로 올라오므로, 연간 자료에 없는 올해를 물
   components(지역 코드, 성별) → {"year", "month", "period", "total", "young", "working", "old",
                                  "ages"}
     지역 하나·성별 하나에 KOSIS 요청 1번 (1세별 102행). 같은 값은 CACHE_FOR 동안 다시 받지 않는다
+  components_many(지역 코드 목록, 성별) → {지역 코드: 값}
+    순위처럼 지역이 많을 때. 캐시에 없는 지역만 CHUNK곳씩 묶어 한 요청
     받지 못하면 None (질문 처리는 지금처럼 수집본·추계로 답한다)
 
 계산(indicators.py)은 스레드에서 돌므로 여기서도 동기 요청을 쓴다. 오류 메시지의 apiKey는 가린다.
@@ -30,7 +32,8 @@ ORG_ID = "101"
 SEX_ITEM = {"계": "T2", "남": "T3", "여": "T4"}
 CACHE_FOR = 6 * 3600.0  # 초. 월별 자료는 한 달에 한 번 올라온다
 FAILED_FOR = 300.0  # 초. 받기에 실패하면 이 동안은 다시 부르지 않는다 (질문마다 기다리지 않게)
-TIMEOUT = 8.0
+TIMEOUT = 15.0
+CHUNK = 100  # 한 요청에 묶는 지역 수 (100곳 × 1세별 102행 ≈ 1만 행, KOSIS 한도 4만 행)
 
 _cache: dict[tuple[str, str], tuple[float, dict | None]] = {}
 _lock = threading.Lock()
@@ -38,20 +41,38 @@ _lock = threading.Lock()
 
 def components(region_code: str, sex: str = "계") -> dict | None:
     """그 지역·성별의 최신 달 인구 (연령별 포함). 받지 못하면 None"""
-    key = (region_code, sex)
+    return components_many([region_code], sex).get(region_code)
+
+
+def components_many(codes: list[str], sex: str = "계") -> dict[str, dict]:
+    """여러 지역의 최신 달 인구 {지역 코드: 값}. 받지 못한 지역은 빠진다.
+    캐시에 없는 지역만 CHUNK개씩 묶어 받는다 (KOSIS objL1에 코드를 '+'로 이어 보냄)"""
+    now = time.monotonic()
+    found: dict[str, dict] = {}
+    missing = []
     with _lock:
-        hit = _cache.get(key)
-    if hit and time.monotonic() < hit[0]:
-        return hit[1]
-    try:
-        value = _parse(_fetch_month(region_code, SEX_ITEM.get(sex, "T2")))
-        until = time.monotonic() + (CACHE_FOR if value else FAILED_FOR)
-    except Exception as e:  # noqa: BLE001 - 최신 달을 못 받아도 답은 수집본으로 한다
-        logger.warning("최신 달 인구 받기 실패 (%s): %s", region_code, mask_key(str(e))[:200])
-        value, until = None, time.monotonic() + FAILED_FOR
-    with _lock:
-        _cache[key] = (until, value)
-    return value
+        for code in dict.fromkeys(codes):
+            hit = _cache.get((code, sex))
+            if hit and now < hit[0]:
+                if hit[1]:
+                    found[code] = hit[1]
+            else:
+                missing.append(code)
+    for i in range(0, len(missing), CHUNK):
+        chunk = missing[i : i + CHUNK]
+        try:
+            got = _parse_many(_fetch_month("+".join(chunk), SEX_ITEM.get(sex, "T2")))
+            until = time.monotonic() + CACHE_FOR
+        except Exception as e:  # noqa: BLE001 - 최신 달을 못 받아도 답은 수집본으로 한다
+            logger.warning(
+                "최신 달 인구 받기 실패 (%s개 지역): %s", len(chunk), mask_key(str(e))[:200]
+            )
+            got, until = {}, time.monotonic() + FAILED_FOR
+        with _lock:
+            for code in chunk:
+                _cache[(code, sex)] = (until, got.get(code))
+        found.update(got)
+    return found
 
 
 def band(comp: dict, lo: int, hi: int | None) -> int | None:
@@ -61,7 +82,7 @@ def band(comp: dict, lo: int, hi: int | None) -> int | None:
     return sum(picked) if picked else None
 
 
-def _fetch_month(region_code: str, item: str) -> list[dict[str, Any]]:
+def _fetch_month(region_codes: str, item: str) -> list[dict[str, Any]]:
     settings = get_settings()
     params = {
         "apiKey": settings.kosis_api_key,
@@ -73,7 +94,7 @@ def _fetch_month(region_code: str, item: str) -> list[dict[str, Any]]:
         "prdSe": "M",
         "newEstPrdCnt": "1",  # 가장 최근 시점 하나
         "itmId": item,
-        "objL1": region_code,
+        "objL1": region_codes,
         "objL2": "ALL",
     }
     with httpx.Client(base_url=settings.kosis_base_url, timeout=TIMEOUT) as client:
@@ -84,6 +105,14 @@ def _fetch_month(region_code: str, item: str) -> list[dict[str, Any]]:
     if isinstance(data, dict):  # {"err": "...", "errMsg": "..."}
         raise RuntimeError(f"{data.get('err')}: {data.get('errMsg')}")
     return data
+
+
+def _parse_many(rows: list[dict[str, Any]]) -> dict[str, dict]:
+    """여러 지역의 KOSIS 행 → {지역 코드: 값}"""
+    by_region: dict[str, list] = {}
+    for r in rows:
+        by_region.setdefault(str(r.get("C1")), []).append(r)
+    return {code: comp for code, part in by_region.items() if (comp := _parse(part))}
 
 
 def _parse(rows: list[dict[str, Any]]) -> dict | None:

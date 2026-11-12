@@ -718,6 +718,8 @@ def compute(q):
             return {"status": "missing_region", "reason": "어느 지역인지 질문에 없습니다."}
         by = "sex" if q.get("by") == "sex" else "age"
         try:
+            if (q.get("asked") or {}).get("latest"):  # "현재 서울 인구 구성" → 최신 달까지
+                year = indicators.latest_year(regions[:1])
             return indicators.composition(regions[0], year, by, sex)
         except StatsTableMissing as e:
             if e.tbl_id:  # 적재 안 된 표: ask가 바로 받거나 대기열에 넣는다
@@ -789,8 +791,9 @@ def _compute_population(q, ind, kind, regions, year, sex, ages, hi):
     """계산 지표 (주민등록인구)"""
     if kind in ("value", "trend", "compare") and not regions:
         return {"status": "missing_region", "reason": "어느 지역인지 질문에 없습니다."}
-    if (q.get("asked") or {}).get("latest") and kind in ("value", "compare"):
-        year = indicators.latest_year(regions, sex)  # 연간 자료 다음 해의 최신 달이 있으면 그 해
+    if (q.get("asked") or {}).get("latest") and kind in ("value", "compare", "rank"):
+        # 연간 자료 다음 해의 최신 달이 있으면 그 해 (순위는 지역 없이 전국으로 확인)
+        year = indicators.latest_year([] if kind == "rank" else regions, sex)
     if kind == "value" and len(regions) > 1 and q.get("aggregate") == "sum":
         return _sum_regions(indicators.compare(ind, regions, year, sex, ages), q)
     if kind == "value":
@@ -1287,19 +1290,19 @@ def _rank_text(r):
     name, unit = _subject(r), r.get("unit", "")
     items = r["ranking"]
     if not items:
-        return f"{r['year']}년 {name} 순위를 매길 자료가 없습니다."
+        return f"{_when(r)} {name} 순위를 매길 자료가 없습니다."
     order = "낮은" if r["order"] == "낮은 순" else "높은"
     if unit in ("명", "건"):
         order = {"낮은": "적은", "높은": "많은"}[order]
-    head = f"{r['year']}년 {_josa(name, '이가')} 가장 {order} {r['level']}"
+    head = f"{_when(r)} {_josa(name, '이가')} 가장 {order} {r['level']}"
     if r.get("indicator") == "순이동" and r["order"] == "낮은 순":  # 순유출이 큰 순
-        head = f"{r['year']}년 인구가 가장 많이 빠져나간(순유출이 가장 큰) {r['level']}"
+        head = f"{_when(r)} 인구가 가장 많이 빠져나간(순유출이 가장 큰) {r['level']}"
     listed = ", ".join(f"{x['region']}({_val(x['value'], unit)})" for x in items)
     if target := r.get("target"):
         if target["rank"] is None:
-            return f"{r['year']}년 {target['region']}의 {name} 값이 없어 순위를 매길 수 없습니다."
+            return f"{_when(r)} {target['region']}의 {name} 값이 없어 순위를 매길 수 없습니다."
         return (
-            f"{r['year']}년 {target['region']}의 {_josa(name, '은는')} "
+            f"{_when(r)} {target['region']}의 {_josa(name, '은는')} "
             f"{_ro(_val(target['value'], unit))} "
             f"{r['level']} {r['total_regions']}곳 중 {r['order'].replace(' 순', '')} 순으로 "
             f"{target['rank']}위입니다."
@@ -1327,12 +1330,12 @@ def _composition_text(r):
         unit = r.get("count_unit", "명")
         focus = [p for p in r["parts"] if p["label"] in (r.get("asked") or {}).get("focus", [])]
         lead = " ".join(
-            f"{r['year']}년 {r['region']}의 {r['subject']} 중 {_josa(p['label'], '은는')} "
+            f"{_when(r)} {r['region']}의 {r['subject']} 중 {_josa(p['label'], '은는')} "
             f"{p['count']:,}{unit}, {p['share']}%입니다."
             for p in focus
         )
         return (lead + " " if lead else "") + (
-            f"{r['year']}년 {r['region']}의 {r['subject']} 구성(전체 {r['total']:,}{unit})은 "
+            f"{_when(r)} {r['region']}의 {r['subject']} 구성(전체 {r['total']:,}{unit})은 "
             f"{listed}입니다. 가장 큰 비중은 {biggest['label']}입니다."
         )
     by = "성별" if r["by"] == "sex" else "연령대별"
@@ -1340,7 +1343,7 @@ def _composition_text(r):
     listed = ", ".join(f"{p['label']} {p['share']}%" for p in r["parts"])
     biggest = max(r["parts"], key=lambda p: p["share"])
     return (
-        f"{r['year']}년 {r['region']} {whom}인구 {r['total']:,}명의 {by} 구성은 {listed}입니다. "
+        f"{_when(r)} {r['region']} {whom}인구 {r['total']:,}명의 {by} 구성은 {listed}입니다. "
         f"가장 큰 비중은 {biggest['label']}입니다."
     )
 
@@ -1499,7 +1502,7 @@ def _body(r):
         lines.append(f"- {c['from_year']}년 → {c['to_year']}년 전체 변화: {total}")
         return lines
     if "values" in r:  # 지역 비교
-        lines = [f"{r['year']}년 {name} ({r['sex']}, 높은 순)"]
+        lines = [f"{_when(r)} {name} ({r['sex']}, 높은 순)"]
         lines += [f"- {v['region']}: {_num(v['value'], unit)}" for v in r["values"]]
         if r.get("gap") is not None:
             lines.append(
@@ -1509,7 +1512,7 @@ def _body(r):
         return lines
     if "ranking" in r:  # 순위
         lines = [
-            f"{r['year']}년 {name} {r['level']} 순위 ({r['order']}, 전체 {r['total_regions']}곳 중)"
+            f"{_when(r)} {name} {r['level']} 순위 ({r['order']}, 전체 {r['total_regions']}곳 중)"
         ]
         lines += [f"{x['rank']}. {x['region']}: {_num(x['value'], unit)}" for x in r["ranking"]]
         return lines

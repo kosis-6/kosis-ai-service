@@ -310,8 +310,9 @@ def _components(codes, y0, y1, sex, band=None):
     )
     out = {(r["year"], r["region_code"]): r for r in rows}
     if y1 > _data_years()[1]:
+        latest = population_latest.components_many(list(codes), sex)
         for code in codes:
-            if m := _monthly(code, sex, y1):
+            if (m := latest.get(code)) and m["year"] == y1:
                 out[(y1, code)] = {
                     **{k: m[k] for k in ("total", "young", "working", "old")},
                     "year": y1,
@@ -331,12 +332,14 @@ def latest_year(region_names, sex="계"):
     """최근·현재를 물은 질문의 연도.
     첫 지역의 최신 달이 연간 자료보다 새로우면 그 해, 아니면 연간 마지막 해"""
     hi = _data_years()[1]
-    reg = resolve_region(region_names[0], None, sigungu=True) if region_names else None
-    if reg and reg.get("status") == "ok":
-        m = population_latest.components(reg["region_code"], sex)
-        if m and m["year"] > hi:
-            return m["year"]
-    return hi
+    code = "00"  # 지역 없이 묻는 순위는 전국의 최신 달로 본다
+    if region_names:
+        reg = resolve_region(region_names[0], None, sigungu=True)
+        if reg.get("status") != "ok":
+            return hi
+        code = reg["region_code"]
+    m = population_latest.components(code, sex)
+    return m["year"] if m and m["year"] > hi else hi
 
 
 def _mark_monthly(out, code, sex, year):
@@ -697,7 +700,7 @@ def composition(region, year, by="age", sex="계"):
             reason=f"{reg['display']} {year}년 인구 자료가 없습니다.",
         )
     shares = analysis.composition(counts, total)  # 분모는 '계' 값 (연령 미상 등이 있어도 맞게)
-    return _base(
+    out = _base(
         "인구 구성",
         COMPOSITION,
         region=reg["display"],
@@ -710,6 +713,7 @@ def composition(region, year, by="age", sex="계"):
             for label, n in counts.items()
         ],
     )
+    return _mark_monthly(out, code, sex, year)
 
 
 def rank_where(level, sido=None):
@@ -741,7 +745,8 @@ def rank(indicator, year, level="시도", sido=None, top=None, ascending=False, 
             "supported": list(specs()),
         }
     lo, hi = _data_years()
-    if not lo <= year <= hi:
+    monthly = year > hi and _monthly("00", "계", year)  # 연간 자료 다음 해: 최신 달 값으로 순위
+    if not lo <= year <= hi and not monthly:
         return _base(
             name, ind, "out_of_range", reason=_out_of_range_reason(lo, hi), available_years=[lo, hi]
         )
@@ -757,7 +762,7 @@ def rank(indicator, year, level="시도", sido=None, top=None, ascending=False, 
         where {where}
         order by r.region_code
     """,
-        [year, *params],
+        [min(year, hi), *params],  # 최신 달 순위는 연간 마지막 해에 있던 지역으로
     )
     comps = _components([r["region_code"] for r in regs], year, year, sex, ind.get("band"))
     items = []
@@ -767,7 +772,7 @@ def rank(indicator, year, level="시도", sido=None, top=None, ascending=False, 
         if v is not None:
             items.append({"region": _display(reg), "value": _round(v, ind["kind"])})
     items = analysis.rank_rows(items, descending=not ascending)  # 같은 값은 같은 순위
-    return _base(
+    out = _base(
         name,
         ind,
         year=year,
@@ -777,6 +782,7 @@ def rank(indicator, year, level="시도", sido=None, top=None, ascending=False, 
         total_regions=len(items),
         ranking=items[:top] if top else items,
     )
+    return _mark_monthly(out, "00", "계", year) if monthly else out
 
 
 def projection(indicator, region, year, scenario=DEFAULT_SCENARIO):
