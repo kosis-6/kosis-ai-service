@@ -310,9 +310,9 @@ def _components(codes, y0, y1, sex, band=None):
     )
     out = {(r["year"], r["region_code"]): r for r in rows}
     if y1 > _data_years()[1]:
-        latest = population_latest.components_many(list(codes), sex)
+        latest = _month_values(list(codes), sex, y1)
         for code in codes:
-            if (m := latest.get(code)) and m["year"] == y1:
+            if m := latest.get(code):
                 out[(y1, code)] = {
                     **{k: m[k] for k in ("total", "young", "working", "old")},
                     "year": y1,
@@ -322,10 +322,22 @@ def _components(codes, y0, y1, sex, band=None):
     return out
 
 
+def _month_values(codes, sex, year):
+    """연간 자료에 없는 해(year)의 월별 값 {지역 코드: 값}.
+    올해면 최신 달, 최신 달이 이미 다음 해로 넘어갔으면 그해 12월 (연간 자료와 같은 12월 말 기준.
+    수집본(mart.population)은 전처리를 다시 돌려야 새 해가 들어가서, 그 전까지 이 값으로 답한다)"""
+    latest = population_latest.components_many(codes, sex)
+    out = {c: m for c, m in latest.items() if m["year"] == year}
+    later = [c for c, m in latest.items() if m["year"] > year]
+    if later:
+        december = population_latest.components_many(later, sex, f"{year}12")
+        out |= {c: m for c, m in december.items() if m["year"] == year}
+    return out
+
+
 def _monthly(code, sex, year):
-    """연간 자료 다음 해(year)의 최신 달 값. 그 해 자료가 KOSIS에 아직 없으면 None"""
-    m = population_latest.components(code, sex)
-    return m if m and m["year"] == year else None
+    """연간 자료에 없는 해(year)의 월별 값 하나. KOSIS에 아직 없으면 None"""
+    return _month_values([code], sex, year).get(code)
 
 
 def latest_year(region_names, sex="계"):
@@ -350,8 +362,9 @@ def _mark_monthly(out, code, sex, year):
     hi = _data_years()[1]
     out["as_of"] = f"{m['year']}년 {m['month']}월 말"
     out["basis"] = f"주민등록인구, {out['as_of']} 기준 (KOSIS 월별 자료)"
+    which = "12월" if m["month"] == 12 else "최신 달"
     out.setdefault("notes", []).append(
-        f"{hi}년까지는 연간(12월 말) 자료이고, {year}년은 KOSIS 월별 자료의 최신 달"
+        f"{hi}년까지는 수집한 연간(12월 말) 자료이고, {year}년은 KOSIS 월별 자료의 {which}"
         f"({out['as_of']}) 값입니다"
     )
     return out

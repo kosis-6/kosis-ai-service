@@ -26,7 +26,7 @@ def test_parse_latest_month() -> None:
 def test_fetch_failure_is_cached_as_none(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = []
 
-    def boom(code, item):
+    def boom(code, item, period=None):
         calls.append(code)
         raise RuntimeError("40: 호출 초과 (https://x?apiKey=SECRET)")
 
@@ -41,7 +41,7 @@ def test_fetch_failure_is_cached_as_none(monkeypatch: pytest.MonkeyPatch) -> Non
 def test_many_regions_are_fetched_in_chunks(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = []
 
-    def fetch(codes, item):
+    def fetch(codes, item, period=None):
         calls.append(codes)
         return [{**r, "C1": c} for c in codes.split("+") if c != "99" for r in ROWS]
 
@@ -60,7 +60,9 @@ def october(monkeypatch: pytest.MonkeyPatch) -> dict:
     hi = indicators._data_years()[1]
     comp = population_latest._parse([{**r, "PRD_DE": f"{hi + 1}10"} for r in ROWS])
     monkeypatch.setattr(
-        population_latest, "components_many", lambda codes, sex="계": dict.fromkeys(codes, comp)
+        population_latest,
+        "components_many",
+        lambda codes, sex="계", period=None: dict.fromkeys(codes, comp),
     )
     return comp
 
@@ -116,3 +118,20 @@ def test_recent_rank_and_composition_use_latest_month(october: dict) -> None:
         {"type": "composition", "indicator": "총인구", "regions": ["서울"], "year": 2025},
     )
     assert qa.compute(comp)["year"] == october["year"]
+
+
+def test_year_already_passed_uses_december(monkeypatch: pytest.MonkeyPatch) -> None:
+    """최신 달이 다음 해로 넘어갔으면 (2027년 1월) 연간 자료에 없는 해(2026년)는 그해 12월 값"""
+    hi = indicators._data_years()[1]
+    jan = population_latest._parse([{**r, "PRD_DE": f"{hi + 2}01"} for r in ROWS])
+    dec = population_latest._parse([{**r, "PRD_DE": f"{hi + 1}12"} for r in ROWS])
+    asked = []
+
+    def many(codes, sex="계", period=None):
+        asked.append(period)
+        return dict.fromkeys(codes, dec if period else jan)
+
+    monkeypatch.setattr(population_latest, "components_many", many)
+    r = indicators.value("총인구", "서울", hi + 1)
+    assert r["status"] == "ok" and r["as_of"] == f"{hi + 1}년 12월 말"
+    assert f"{hi + 1}12" in asked

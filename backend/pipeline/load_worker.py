@@ -26,6 +26,8 @@
   python -m pipeline.load_worker enqueue DT_1B26001 …  표를 대기열에 넣기 (reason=manual)
   python -m pipeline.load_worker enqueue --from-dir    TABLE_DIR에 받아 둔 표 중 적재 안 된 표 전부
   docker compose --profile worker up -d worker         컨테이너로 띄우기
+  python -m pipeline.load_worker --no-refresh          매일 0시 갱신 확인 없이
+                                                       (pipeline/refresh_check.py)
 """
 
 import argparse
@@ -300,7 +302,11 @@ async def run_one() -> bool:
     return True
 
 
-async def run_forever(concurrency: int = CONCURRENCY) -> None:
+async def run_forever(concurrency: int = CONCURRENCY, refresh: bool = True) -> None:
+    """대기열을 계속 처리한다. refresh면 매일 0시에 적재된 표의 KOSIS 갱신도 확인한다
+    (pipeline/refresh_check.py: 새 시점이 있는 표를 갱신 작업으로 넣으면 이 일꾼들이 받는다)"""
+    from pipeline import refresh_check
+
     recovered = await asyncio.to_thread(_with_pg, recover_stale)
     if recovered:
         logger.warning("멈춰 있던 작업 %d개를 대기로 되돌렸습니다", recovered)
@@ -310,7 +316,10 @@ async def run_forever(concurrency: int = CONCURRENCY) -> None:
             if not await run_one():
                 await asyncio.sleep(IDLE_SECONDS)
 
-    await asyncio.gather(*(lane() for _ in range(concurrency)))
+    tasks = [lane() for _ in range(concurrency)]
+    if refresh:
+        tasks.append(refresh_check.run_nightly())
+    await asyncio.gather(*tasks)
 
 
 def main() -> None:
@@ -324,6 +333,11 @@ def main() -> None:
     add.add_argument("--from-dir", action="store_true", help=f"{TABLE_DIR}에 받아 둔 표 전부")
     parser.add_argument("--once", action="store_true", help="작업 하나만 처리하고 끝")
     parser.add_argument("--concurrency", type=int, default=CONCURRENCY)
+    parser.add_argument(
+        "--no-refresh",
+        action="store_true",
+        help="매일 0시 KOSIS 갱신 확인을 하지 않음 (REFRESH_NIGHTLY=0과 같음)",
+    )
     args = parser.parse_args()
 
     if args.command == "enqueue":
@@ -339,7 +353,8 @@ def main() -> None:
         if not asyncio.run(run_one()):
             print("처리할 작업이 없습니다")
         return
-    asyncio.run(run_forever(args.concurrency))
+    refresh = not args.no_refresh and os.environ.get("REFRESH_NIGHTLY", "1") != "0"
+    asyncio.run(run_forever(args.concurrency, refresh))
 
 
 if __name__ == "__main__":

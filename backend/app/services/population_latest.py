@@ -35,7 +35,7 @@ FAILED_FOR = 300.0  # 초. 받기에 실패하면 이 동안은 다시 부르지
 TIMEOUT = 15.0
 CHUNK = 100  # 한 요청에 묶는 지역 수 (100곳 × 1세별 102행 ≈ 1만 행, KOSIS 한도 4만 행)
 
-_cache: dict[tuple[str, str], tuple[float, dict | None]] = {}
+_cache: dict[tuple[str, str, str], tuple[float, dict | None]] = {}
 _lock = threading.Lock()
 
 
@@ -44,15 +44,18 @@ def components(region_code: str, sex: str = "계") -> dict | None:
     return components_many([region_code], sex).get(region_code)
 
 
-def components_many(codes: list[str], sex: str = "계") -> dict[str, dict]:
+def components_many(
+    codes: list[str], sex: str = "계", period: str | None = None
+) -> dict[str, dict]:
     """여러 지역의 최신 달 인구 {지역 코드: 값}. 받지 못한 지역은 빠진다.
+    period("202612")를 주면 최신 달 대신 그 달 (최신 달이 이미 다음 해로 넘어간 해의 12월 값).
     캐시에 없는 지역만 CHUNK개씩 묶어 받는다 (KOSIS objL1에 코드를 '+'로 이어 보냄)"""
     now = time.monotonic()
     found: dict[str, dict] = {}
     missing = []
     with _lock:
         for code in dict.fromkeys(codes):
-            hit = _cache.get((code, sex))
+            hit = _cache.get((code, sex, period or ""))
             if hit and now < hit[0]:
                 if hit[1]:
                     found[code] = hit[1]
@@ -61,7 +64,7 @@ def components_many(codes: list[str], sex: str = "계") -> dict[str, dict]:
     for i in range(0, len(missing), CHUNK):
         chunk = missing[i : i + CHUNK]
         try:
-            got = _parse_many(_fetch_month("+".join(chunk), SEX_ITEM.get(sex, "T2")))
+            got = _parse_many(_fetch_month("+".join(chunk), SEX_ITEM.get(sex, "T2"), period))
             until = time.monotonic() + CACHE_FOR
         except Exception as e:  # noqa: BLE001 - 최신 달을 못 받아도 답은 수집본으로 한다
             logger.warning(
@@ -70,7 +73,7 @@ def components_many(codes: list[str], sex: str = "계") -> dict[str, dict]:
             got, until = {}, time.monotonic() + FAILED_FOR
         with _lock:
             for code in chunk:
-                _cache[(code, sex)] = (until, got.get(code))
+                _cache[(code, sex, period or "")] = (until, got.get(code))
         found.update(got)
     return found
 
@@ -82,7 +85,7 @@ def band(comp: dict, lo: int, hi: int | None) -> int | None:
     return sum(picked) if picked else None
 
 
-def _fetch_month(region_codes: str, item: str) -> list[dict[str, Any]]:
+def _fetch_month(region_codes: str, item: str, period: str | None = None) -> list[dict[str, Any]]:
     settings = get_settings()
     params = {
         "apiKey": settings.kosis_api_key,
@@ -92,11 +95,14 @@ def _fetch_month(region_codes: str, item: str) -> list[dict[str, Any]]:
         "orgId": ORG_ID,
         "tblId": TABLE,
         "prdSe": "M",
-        "newEstPrdCnt": "1",  # 가장 최근 시점 하나
         "itmId": item,
         "objL1": region_codes,
         "objL2": "ALL",
     }
+    if period:
+        params |= {"startPrdDe": period, "endPrdDe": period}
+    else:
+        params["newEstPrdCnt"] = "1"  # 가장 최근 시점 하나
     with httpx.Client(base_url=settings.kosis_base_url, timeout=TIMEOUT) as client:
         response = client.get("/Param/statisticsParameterData.do", params=params)
     if response.status_code >= 400:
