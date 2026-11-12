@@ -7,6 +7,17 @@ export type Token = Schemas["Token"];
 export type UserRead = Schemas["UserRead"];
 export type EmailCodeSent = Schemas["EmailCodeSent"];
 export type SearchRequest = Schemas["SearchRequest"];
+export type AskRequest = Schemas["AskRequest"];
+// tables 는 서버 스키마가 자유 형식(dict)이라 화면이 읽는 모양을 적는다
+//   수치로 답함        { status: "ok", recommendations }      (답에 쓴 표)
+//   통계표만 안내함     SearchResponse 와 같은 모양               (status 가 "tables" 인 답)
+export type AskResponse = Omit<Schemas["AskResponse"], "tables"> & {
+  tables?: (Partial<SearchResponse> & { recommendations: Recommendation[] }) | null;
+};
+export type Chart = Schemas["Chart"];
+export type ChartRow = Schemas["ChartRow"];
+export type Source = Schemas["Source"];
+export type Applied = Schemas["Applied"];
 
 // /search 응답의 parsed·clarify·recommendations 는 서버 스키마가 자유 형식(dict)이라
 // 화면이 읽는 칸만 여기에 적는다 (backend/app/services/search_answer.py 가 만드는 모양)
@@ -28,6 +39,7 @@ export type Recommendation = {
   checks?: Checks;
   notes?: string[];
   family?: Family;
+  basis?: string | null; // 수치 답에 쓴 표일 때 조사 기준 (시점 등)
 };
 
 export type Parsed = {
