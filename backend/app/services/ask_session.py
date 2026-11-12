@@ -40,7 +40,7 @@ import copy
 import json
 import logging
 import re
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
@@ -297,7 +297,32 @@ def _retype(c: dict, changed: set[str]) -> None:
         c["type"] = "rank"  # 지역을 모두 뺐다 → 지역별 순위
 
 
-# 지표가 아니라 보는 방식을 가리키는 말. HCX가 이런 말을 지표(term)로 적어도 지표를 말한 것으로 보지 않는다
+# 대화의 연도를 기준으로 한 시점: 지금 보는 연도의 앞·뒤 해 ("그 전년도는?", "그 다음 해는?")
+CONTEXT_YEAR = [
+    (re.compile(r"전년도|전년|(?:그|직)\s*전\s*해|이전\s*해|직전\s*연도|한\s*해\s*전"), -1),
+    (re.compile(r"다음\s*해|이듬해|다음\s*연도|익년|한\s*해\s*(?:뒤|후)"), 1),
+]
+FULL_YEAR = re.compile(r"(?:19|20)\d{2}\s*년?")
+
+
+def follow_year(question: str, conditions: dict, today: date | None = None) -> int | None:
+    """이어 묻는 말의 상대 시점 → 연도 (HCX는 오늘 날짜를 모르고 기준도 헷갈린다).
+      "그 전년도", "다음 해"   지금 보는 연도 기준 (2020년을 보다가 "그 전년도는?" → 2019)
+      "작년", "올해", "3년 전" 오늘 기준 (timeref, 2026년이면 "작년" → 2025)
+    "전년 대비"처럼 비교 기준으로 쓴 말, 연도를 숫자로 말한 경우, "작년부터"처럼 기간이면 None"""
+    q = timeref.COMPARE_BASE.sub(" ", question)
+    if FULL_YEAR.search(q):
+        return None
+    base = conditions.get("end_year") or conditions.get("year")
+    for pattern, step in CONTEXT_YEAR:
+        if pattern.search(q):
+            return int(base) + step if base else None
+    ref = timeref.resolve(q, today)
+    return ref.year if ref and not ref.open_end else None
+
+
+# 지표가 아니라 보는 방식을 가리키는 말.
+# HCX가 이런 말을 지표(term)로 적어도 지표를 말한 것으로 보지 않는다
 VIEW_WORDS = {
     "추이",
     "변화",
@@ -314,7 +339,8 @@ VIEW_WORDS = {
 
 
 def names_indicator(question: str, parsed: dict) -> bool:
-    """새 질문이 지표를 말했는가: 질문에 지원 지표의 이름·별칭이 있거나, 질문에 있는 말을 지표로 적었다.
+    """새 질문이 지표를 말했는가.
+    질문에 지원 지표의 이름·별칭이 있거나, 질문에 있는 말을 지표로 적었으면 말한 것.
     "2015년부터 추이로 보여줘"처럼 기간·방식만 말하면 말하지 않은 것 (앞 지표를 이어받는다).
     HCX가 지표 없는 질문에 총인구를 채워 넣기도 해서, 지표 이름이 아니라 질문의 말을 본다"""
     if indicators.find_in_text(question):
@@ -647,6 +673,15 @@ async def _turn(
     if view is None and not (has_last and summary_request(question)):
         trace: dict = {}
         delta = await extract(state, question, trace)
+        year = follow_year(question, state["conditions"])
+        if year and not names_indicator(question, {}):
+            # 상대 시점은 HCX가 아니라 코드가 푼다 ("작년은?"을 2020년의 다음 해로 읽던 문제)
+            changes = {
+                k: v
+                for k, v in (delta.get("changes") or {}).items()
+                if k not in ("year", "start_year", "end_year")
+            }
+            delta.update(request_type=CHANGE, unclear=None, changes={**changes, "year": year})
         if delta["unclear"]:
             return _unclear(state, delta["unclear"]), state["sources"], None
         if delta["request_type"] == CHANGE:

@@ -523,7 +523,8 @@ def test_chart_change_does_not_search_again(talk: Talk) -> None:
 
 
 def test_new_question_without_indicator_inherits_it() -> None:
-    """기간·방식만 말한 새 질문은 앞 지표를 이어받는다. 질문에 있는 말을 지표로 적었으면 이어받지 않는다"""
+    """기간·방식만 말한 새 질문은 앞 지표를 이어받는다.
+    질문에 있는 말을 지표로 적었으면 이어받지 않는다"""
     prev = {**BASE, "type": "compare", "indicator": "고령인구 비율", "regions": ["서울", "부산"]}
     prev_sources = {**USER}
     parsed = {
@@ -547,3 +548,35 @@ def test_new_question_without_indicator_inherits_it() -> None:
     guessed = {**parsed, "indicator": "총인구", "term": None}
     p3, _ = s.inherit(guessed, s.sources_of(question, guessed), prev, prev_sources, question)
     assert p3["indicator"] == "고령인구 비율"
+
+
+@pytest.mark.parametrize(
+    ("question", "year"),
+    [
+        ("그 전년도는?", 2019),  # 지금 보는 연도(2020) 기준
+        ("전년도는?", 2019),
+        ("그 다음 해는?", 2021),
+        ("이듬해는?", 2021),
+        ("작년은?", 2025),  # 오늘(2026-11-12) 기준
+        ("올해는?", 2026),
+        ("재작년은?", 2024),
+        ("3년 전은?", 2023),
+        ("전년 대비 얼마나 늘었어?", None),  # 비교 기준이지 시점이 아니다
+        ("2018년은?", None),  # 숫자로 말한 연도는 HCX가 그대로 적는다
+        ("작년부터 보여줘", None),  # 기간
+        ("부산은?", None),
+    ],
+)
+def test_follow_year(question, year) -> None:
+    from datetime import date
+
+    value = {**BASE, "type": "value", "year": 2020, "start_year": None, "end_year": None}
+    assert s.follow_year(question, value, today=date(2026, 11, 12)) == year
+
+
+def test_relative_year_overrides_hcx(talk: Talk, monkeypatch: pytest.MonkeyPatch) -> None:
+    """HCX가 "작년은?"을 앞 연도의 다음 해로 읽어도 코드가 오늘 기준으로 고친다"""
+    monkeypatch.setattr(s, "follow_year", lambda q, c, today=None: 2025 if "작년" in q else None)
+    talk.say("2020년 부산 출생아 수")
+    res = talk.say("작년은?", request_type="change", changes={"year": 2021})
+    assert res["parsed"]["year"] == 2025 and res["request_type"] == "change"
