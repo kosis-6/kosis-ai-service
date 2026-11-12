@@ -29,7 +29,8 @@ HCX가 다시 지어낼 수 있다. 숫자는 매 턴 DB에서 다시 계산한�
 
 이어받기: 지역은 이어받는다. 기간은 보는 방식(type)이 같을 때만 이어받는다
 (추이를 보다 값 하나를 물으면 최신 연도). 성별은 이어받지 않는다. 이어받은 조건은 답 위에 알린다.
-이어받은 기간으로 답할 수 없으면 기간을 빼고 다시 답한다 (사용자가 직접 말한 조건은 바꾸지 않는다).
+이어받은 조건으로 답할 수 없으면 기간·지역·둘 다를 차례로 빼고 다시 답한다.
+사용자가 직접 말한 조건은 바꾸지 않는다.
 
 판단(apply_changes, inherit, pick_region 등)은 DB를 모르는 함수로 두고,
 저장(load, save, log_turn)만 DB를 쓴다. 저장이 실패해도 답은 한다 (이어 가기만 안 된다).
@@ -357,6 +358,21 @@ def names_indicator(question: str, parsed: dict) -> bool:
     compact = question.replace(" ", "")
     words = [parsed.get("term"), parsed.get("indicator")]
     return any(w and w.strip() not in VIEW_WORDS and w.replace(" ", "") in compact for w in words)
+
+
+def complete_question(question: str) -> bool:
+    """지표·지역·기간을 모두 말하면 변경 추출 없이 새 질문으로 해석한다.
+
+    추가·제외·비교처럼 직전 조건을 참조하는 말은 변경 추출에 남긴다.
+    "막대그래프로" 같은 표현이 들어 있어도 지표와 조건을 말했으면 수치 질문이다.
+    """
+    if re.search(r"같이|추가|빼|빼고|제외|대신|그대로|거기|거기에|보다|도\s", question):
+        return False
+    return bool(
+        indicators.find_in_text(question)
+        and has_period(question)
+        and ("전국" in question or indicators.find_regions(question))
+    )
 
 
 def inherit(
@@ -718,6 +734,9 @@ async def _turn(
     usable = bool(state and (state.get("conditions") or {}).get("type") not in NO_CONDITIONS)
     if not usable:
         return await _new(question, None)
+
+    if await asyncio.to_thread(complete_question, question):
+        return await _new(question, state)
 
     has_last = bool((state.get("last") or {}).get("answer"))
     view = chart_request(question) if has_last else None

@@ -35,6 +35,9 @@ def names(monkeypatch: pytest.MonkeyPatch) -> None:
         indicators, "find_in_text", lambda t: next((n for n in known if n in t), None)
     )
     monkeypatch.setattr(indicators, "specs", lambda: dict.fromkeys(known, {}))
+    monkeypatch.setattr(
+        indicators, "find_regions", lambda t: [r for r in ("서울", "부산") if r in t]
+    )
 
 
 # ---- 조건 고치기 ---------------------------------------------------------------------------
@@ -656,3 +659,29 @@ def test_question_interpretation_records_usage(monkeypatch) -> None:
     assert asyncio.run(qa._chat("질문", "시스템", trace=trace)) == "{}"
     assert trace["understand_usage"] == {"completionTokens": 123}
     assert trace["understand_max_completion_tokens"] == 5120
+
+
+@pytest.mark.parametrize("region", ["서울", "전국"])
+def test_complete_question_skips_change_extraction(talk: Talk, region: str) -> None:
+    talk.say("부산 출생아 최근 5년 보여 줘")
+    question = f"2024년 {region} 합계출산율을 막대그래프로 보여줘"
+    res = talk.say(question)
+    assert res["request_type"] == "new"
+    assert talk.asked[-1] == question
+    assert talk.extracted == []
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "2024년 서울 합계출산율도 같이 보여줘",
+        "2024년 서울 합계출산율 대신 사망자 수 보여줘",
+        "서울 합계출산율은?",
+        "2024년 합계출산율은?",
+        "2024년 서울은?",
+    ],
+)
+def test_context_dependent_question_still_extracts_changes(talk: Talk, question: str) -> None:
+    talk.say("부산 출생아 최근 5년 보여 줘")
+    talk.say(question)
+    assert talk.extracted == [question]
