@@ -13,11 +13,11 @@ app.user_sessions에 Refresh Token 해시와 지금 쓸 수 있는 Access Token 
 
 from typing import Annotated
 
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Cookie, Depends, Form, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
 from fastapi.security import OAuth2PasswordRequestForm
 
-from app.api.deps import CurrentUser, Session, optional_scheme
+from app.api.deps import CurrentUser, Session, oauth2_scheme, optional_scheme
 from app.core import login_limit
 from app.core.config import get_settings
 from app.core.security import create_access_token, decode_access_token, verify_password
@@ -78,7 +78,9 @@ def _issue(request: Request, response: Response, user: User, row, jti: str) -> T
     response.set_cookie(
         auth_sessions.COOKIE,
         auth_sessions.refresh_token(row),
-        max_age=max(0, int(left)),  # 보통 14일, 로그인 최대 기간이 가까우면 그때까지
+        # 보통 14일, 로그인 최대 기간이 가까우면 그때까지.
+        # "로그인 상태 유지"를 고르지 않았으면 기간을 주지 않는다 (브라우저를 닫으면 없어지는 쿠키)
+        max_age=max(0, int(left)) if row.persistent else None,
         path=auth_sessions.COOKIE_PATH,
         httponly=True,  # 화면 JavaScript가 읽을 수 없다 (XSS로 훔쳐 가지 못하게)
         secure=_secure(request),  # https면 http 요청에는 실리지 않는다 (평문으로 새지 않게)
@@ -90,8 +92,10 @@ def _issue(request: Request, response: Response, user: User, row, jti: str) -> T
     )
 
 
-async def _new_login(request: Request, response: Response, session, user: User) -> Token:
-    row, jti = await auth_sessions.create(session, user.id, auth_sessions.now())
+async def _new_login(
+    request: Request, response: Response, session, user: User, persistent: bool = True
+) -> Token:
+    row, jti = await auth_sessions.create(session, user.id, auth_sessions.now(), persistent)
     return _issue(request, response, user, row, jti)
 
 
@@ -195,9 +199,14 @@ async def login(
     request: Request,
     response: Response,
     session: Session,
+    # bool로 받으면 FastAPI가 폼에 없는 값을 기본값이 아니라 False로 읽는다 → 글자로 받아 직접 본다
+    keep: Annotated[
+        str, Form(description="로그인 상태 유지. false면 브라우저를 닫을 때 끝난다")
+    ] = "true",
 ) -> Token:
     """OAuth2 표준 폼(username, password). username 칸에 이메일을 넣는다.
-    같은 IP에서 같은 이메일로 15분 안에 5번 틀리면 잠시 막는다(429)"""
+    같은 IP에서 같은 이메일로 15분 안에 5번 틀리면 잠시 막는다(429).
+    keep=false면 Refresh Token 쿠키에 기간을 주지 않아 브라우저를 닫으면 로그인이 끝난다"""
     key = login_limit.key(request.client.host if request.client else None, form.username)
     wait = login_limit.limiter.retry_after(key)
     if wait:
@@ -215,7 +224,8 @@ async def login(
             headers={"WWW-Authenticate": "Bearer"},
         )
     login_limit.limiter.reset(key)
-    return await _new_login(request, response, session, user)
+    persistent = keep.strip().lower() not in ("false", "0", "off", "no")
+    return await _new_login(request, response, session, user, persistent=persistent)
 
 
 @router.post(
@@ -307,6 +317,7 @@ async def change_password(
     request: Request,
     response: Response,
     session: Session,
+    token: Annotated[str, Depends(oauth2_scheme)],
 ) -> Token:
     """지금 비밀번호를 확인하고 새 비밀번호로 바꾼다.
     이 기기를 포함한 모든 로그인이 끊기고, 이 요청에는 새 로그인 토큰을 돌려준다"""
@@ -314,6 +325,11 @@ async def change_password(
         raise HTTPException(status_code=400, detail="지금 비밀번호가 맞지 않습니다.")
     if body.new_password == body.current_password:
         raise HTTPException(status_code=400, detail="새 비밀번호가 지금 비밀번호와 같습니다.")
+    # 새 로그인은 지금 로그인의 "로그인 상태 유지" 선택을 그대로 따른다
+    claims = decode_access_token(token)
+    current = await auth_sessions.get(session, claims.session_id) if claims else None
     user = await users.change_password(session, user, body.new_password)
     await auth_sessions.revoke_all(session, user.id, auth_sessions.now())
-    return await _new_login(request, response, session, user)
+    return await _new_login(
+        request, response, session, user, persistent=current.persistent if current else True
+    )

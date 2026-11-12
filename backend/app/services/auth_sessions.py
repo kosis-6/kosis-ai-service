@@ -155,8 +155,10 @@ async def get(session: AsyncSession, session_id: int, lock: bool = False) -> Use
     return await session.get(UserSession, session_id)
 
 
-async def create(session: AsyncSession, user_id: int, at: datetime) -> tuple[UserSession, str]:
-    """새 로그인 줄을 만든다 → (줄, Access 번호).
+async def create(
+    session: AsyncSession, user_id: int, at: datetime, persistent: bool = True
+) -> tuple[UserSession, str]:
+    """새 로그인 줄을 만든다 → (줄, Access 번호). persistent=False면 "로그인 상태 유지" 안 함.
     이 사용자의 만료됐거나 끊긴 지 하루 지난 줄은 이때 지운다"""
     await session.execute(
         delete(UserSession).where(
@@ -164,7 +166,7 @@ async def create(session: AsyncSession, user_id: int, at: datetime) -> tuple[Use
             or_(UserSession.expires_at < at, UserSession.revoked_at < at - timedelta(days=1)),
         )
     )
-    row = UserSession(user_id=user_id)
+    row = UserSession(user_id=user_id, persistent=persistent)
     jti = start(row, at)
     session.add(row)
     await session.commit()
