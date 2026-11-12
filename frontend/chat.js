@@ -399,7 +399,8 @@
   // ---- 보내기 -------------------------------------------------------------------
   async function callSearch(body) {
     if (mockOn) return window.MockApi.search(body);
-    const res = await fetch("/search", {
+    // 로그인했으면 토큰을 붙여 보낸다 (검색 기록이 사용자와 이어진다). 만료되면 새로 받아 다시 보낸다
+    const res = await window.SixAccount.fetch("/search", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -488,9 +489,10 @@
     document.querySelectorAll(".js-name").forEach((node) => { node.textContent = user ? user.name : ""; });
   }
   document.querySelectorAll(".js-logout").forEach((b) => b.addEventListener("click", () => {
-    window.SixAccount.clear();
-    syncAccount();
+    window.SixAccount.logout();
   }));
+  // 로그인 확인이 끝나거나(화면을 열 때), 로그아웃·만료로 상태가 바뀌면 다시 그린다
+  window.SixAccount.onChange(syncAccount);
 
   syncAccount();
   syncMode();

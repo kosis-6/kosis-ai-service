@@ -99,8 +99,10 @@ def logins(monkeypatch: pytest.MonkeyPatch) -> dict[int, SimpleNamespace]:
     """로그인 기록(app.user_sessions) 대신 id → 줄 사전. 판단 함수(rotate 등)는 그대로 쓴다"""
     rows: dict[int, SimpleNamespace] = {}
 
-    async def create(session, user_id, at):
-        row = SimpleNamespace(id=len(rows) + 1, user_id=user_id, revoked_at=None)
+    async def create(session, user_id, at, persistent=True):
+        row = SimpleNamespace(
+            id=len(rows) + 1, user_id=user_id, revoked_at=None, persistent=persistent
+        )
         jti = auth_sessions.start(row, at)
         rows[row.id] = row
         return row, jti
@@ -751,3 +753,20 @@ def test_refresh_cookie_secure_follows_https(db, monkeypatch) -> None:
             "set-cookie"
         ]
     )
+
+
+def test_login_without_keep_gives_session_cookie(db, logins) -> None:
+    """ "로그인 상태 유지"를 고르지 않으면 쿠키에 기간이 없다 (브라우저를 닫으면 끝).
+    새 토큰을 받거나 비밀번호를 바꿔도 그대로다"""
+    _register("a@b.co")
+    r = client.post("/auth/token", data={"username": "a@b.co", "password": PW, "keep": "false"})
+    assert r.status_code == 200 and "Max-Age" not in r.headers["set-cookie"]
+    r = client.post("/auth/refresh")
+    assert r.status_code == 200 and "Max-Age" not in r.headers["set-cookie"]
+    r = client.post(
+        "/auth/password",
+        json={"current_password": PW, "new_password": "new1234!"},
+        headers=_auth(r.json()["access_token"]),
+    )
+    assert r.status_code == 200 and "Max-Age" not in r.headers["set-cookie"]
+    assert "Max-Age" in _login("a@b.co", "new1234!").headers["set-cookie"]  # 기본은 유지

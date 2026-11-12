@@ -108,6 +108,34 @@ body {
 .eye { flex: none; display: grid; place-items: center; padding: 0; border: 0; background: none; opacity: .75; }
 .eye[aria-pressed="true"] { opacity: 1; filter: brightness(.5); }
 
+/* 칸 안의 글자 버튼 (인증번호 받기·확인), 칸 아래 안내·오류 문구. 시안에 없어 SIX / Input 에 맞춰 둠 */
+.field-btn {
+  flex: none;
+  padding: 6px 0;
+  border: 0;
+  background: none;
+  color: var(--accent-hover);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 20px;
+  white-space: nowrap;
+}
+.field-btn:hover:not(:disabled) { text-decoration: underline; }
+.field-btn:disabled { color: var(--muted); cursor: default; }
+.field-msg { color: var(--muted); font-size: 12px; line-height: 18px; }
+.field-msg.ok { color: var(--ok); }
+.field-msg.bad { color: var(--bad); }
+.field.invalid .field-box { border-color: var(--bad); box-shadow: none; }
+.form-msg {
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: var(--bad-soft);
+  color: var(--bad);
+  font-size: 13px;
+  line-height: 20px;
+}
+.btn[aria-busy="true"] { cursor: progress; }
+
 /* 체크박스 */
 .agrees { display: flex; flex-direction: column; gap: 8px; }
 .agree {
@@ -182,8 +210,9 @@ body {
 
 /* 터치 기기: 시안의 크기는 두고 눌리는 범위만 44px 로 넓힌다 */
 @media (pointer: coarse) {
-  .eye { position: relative; }
+  .eye, .field-btn { position: relative; }
   .eye::after { content: ""; position: absolute; inset: -13px; }
+  .field-btn::after { content: ""; position: absolute; inset: -6px -8px; }
   .m-back { display: grid; place-items: center; width: 44px; height: 44px; margin-left: -10px; }
   .agree { min-height: 32px; }
 }

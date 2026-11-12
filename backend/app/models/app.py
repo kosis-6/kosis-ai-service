@@ -59,6 +59,8 @@ class UserSession(Base):
     user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("app.users.id", ondelete="CASCADE"))
     refresh_salt: Mapped[str]
     refresh_gen: Mapped[int]
+    # False면 "로그인 상태 유지"를 고르지 않은 로그인: 쿠키를 브라우저를 닫으면 없어지게 준다
+    persistent: Mapped[bool] = mapped_column(server_default=text("true"))
     access_jti: Mapped[str]
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     last_used_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
