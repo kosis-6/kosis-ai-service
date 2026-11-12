@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 
 from app import main
 from app.services import ask_session as s
-from app.services import indicators, qa
+from app.services import indicators, qa, table_guide
 
 BASE = {
     "type": "trend",
@@ -231,6 +231,8 @@ class Talk:
         self.delta: dict = {"request_type": "new", "changes": {}, "chart": None, "unclear": None}
         self.parsed: dict = dict(BASE)
         self.fail_when: object = lambda parsed: False
+        self.searched: list = []  # 통계표 찾기에 보낸 말 (session, selections)
+        self.found: dict = {"status": "ok", "answer": "인구총조사에서 확인할 수 있습니다."}
         self.at = s.now()
         self.sid: str | None = None
         monkeypatch.setattr(qa, "ask", self._ask)
@@ -240,10 +242,14 @@ class Talk:
         monkeypatch.setattr(s, "save", self._save)
         monkeypatch.setattr(s, "log_turn", self._log)
         monkeypatch.setattr(s, "now", lambda: self.at)
+        monkeypatch.setattr(table_guide, "find_tables", self._find)
+        monkeypatch.setattr(table_guide, "cards_for", self._cards)
 
     def _result(self, parsed: dict, question: str = "") -> dict:
         regions = parsed.get("regions") or []
-        if "과거" in question:
+        if parsed.get("indicator") == "반려동물 수":
+            result = {"status": "unknown_indicator"}
+        elif "과거" in question:
             result = {"status": "missing_year"}
         elif "광주" in regions:
             result = {"status": "ambiguous_region", "region": "광주"}
@@ -265,6 +271,13 @@ class Talk:
             "sources": [{"name": "출처", "basis": "기준", "tbl_id": "T", "url": None}],
             "trace": {},
         }
+
+    async def _find(self, question, session_id, selections, user_id):
+        self.searched.append((question, session_id, selections))
+        return {**self.found, "recommendations": [{"tbl_id": "DT_X"}], "clarify": None}
+
+    async def _cards(self, question, sources):
+        return [{"tbl_id": src["tbl_id"], "basis": src["basis"]} for src in sources]
 
     async def _ask(self, question, adjust=None):
         self.asked.append(question)
@@ -293,9 +306,9 @@ class Talk:
     async def _log(self, session_id, user_id, turn_no, question, res, before, after):
         self.turns.append((turn_no, res.get("request_type"), question))
 
-    def say(self, question: str, **delta) -> dict:
+    def say(self, question: str, selections: dict | None = None, **delta) -> dict:
         self.delta = delta
-        res = asyncio.run(s.handle(self.sid, question, user_id=7))
+        res = asyncio.run(s.handle(self.sid, question, user_id=7, selections=selections))
         self.sid = res["session_id"]
         return res
 
@@ -463,3 +476,44 @@ def test_api_returns_session_fields(talk: Talk, monkeypatch: pytest.MonkeyPatch)
     second = client.post("/ask", json=body).json()
     assert second["request_type"] == "chart" and second["chart"]["view"] == "table"
     assert second["session_id"] == first["session_id"]
+
+
+# ---- 수치와 통계표를 한 번에 (table_guide) ----------------------------------------------
+
+
+def test_numeric_answer_carries_its_table_card(talk: Talk) -> None:
+    res = talk.say("부산 출생아 최근 5년 보여 줘")
+    assert res["status"] == "ok" and res["chart"]["type"] == "line"
+    assert res["tables"] == {"status": "ok", "recommendations": [{"tbl_id": "T", "basis": "기준"}]}
+    assert talk.searched == []  # 수치로 답했으면 통계표 찾기(HCX)를 부르지 않는다
+
+
+def test_unsupported_indicator_falls_back_to_table_search(talk: Talk) -> None:
+    talk.parsed = {**BASE, "type": "value", "indicator": "반려동물 수"}
+    res = talk.say("반려동물 키우는 집 몇 곳이야?")
+    assert res["status"] == "tables" and res["chart"] is None and res["applied"] == []
+    assert res["tables"]["recommendations"] == [{"tbl_id": "DT_X"}]
+    assert "수치를 바로 계산하지 못해" in res["answer"]
+    question, search_session, _ = talk.searched[0]
+    assert question == "반려동물 키우는 집 몇 곳이야?" and search_session.startswith("S_")
+    # 표만 안내한 뒤의 말은 수치 조건 변경이 아니라 새 질문이다
+    talk.parsed = dict(BASE)
+    assert talk.say("부산 출생아 최근 5년")["request_type"] == "new" and talk.extracted == []
+
+
+def test_table_choice_reply_goes_to_table_search(talk: Talk) -> None:
+    talk.parsed = {**BASE, "type": "value", "indicator": "반려동물 수"}
+    talk.found = {"status": "clarify", "answer": "대상을 골라 주세요."}
+    talk.say("국적 취득한 외국인 통계")
+    session = talk.searched[0][1]
+    talk.found = {"status": "ok", "answer": "찾았습니다."}
+    res = talk.say("혼인 귀화자, 여", selections={"target": "혼인 귀화자", "sex": "여"})
+    assert res["status"] == "tables" and res["request_type"] == "reply"
+    assert talk.searched[-1] == ("혼인 귀화자, 여", session, {"target": "혼인 귀화자", "sex": "여"})
+    assert len(talk.asked) == 1  # 선택지에 답할 때는 수치 해석(HCX)을 부르지 않는다
+
+
+def test_chart_change_does_not_search_again(talk: Talk) -> None:
+    talk.say("부산 출생아 최근 5년 보여 줘")
+    res = talk.say("표로 보여줘")
+    assert res["request_type"] == "chart" and "tables" not in res and talk.searched == []

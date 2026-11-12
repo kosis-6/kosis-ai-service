@@ -15,6 +15,10 @@ class AskRequest(BaseModel):
         " '2022년만', '막대그래프로'처럼 바뀐 것만 말해도 앞 조건에 이어서 답한다."
         " 없으면 새 대화로 시작한다",
     )
+    selections: dict[str, str] | None = Field(
+        default=None,
+        description="통계표 선택지 버튼으로 고른 값 (family_id / target / sex). /search와 같다",
+    )
 
 
 class Source(BaseModel):
@@ -59,7 +63,9 @@ class Applied(BaseModel):
 
 
 class AskResponse(BaseModel):
-    status: str | None = Field(description="ok 또는 답변 불가 사유 (out_of_range 등)")
+    status: str | None = Field(
+        description="ok / tables(수치 없이 통계표만 안내) / 답변 불가 사유 (out_of_range 등)"
+    )
     answer: str = Field(description="답변 문장 + 수치·출처 (화면에 그대로 보여줄 답변)")
     parsed: dict[str, Any] = Field(description="1단계 질문 분석 결과")
     result: dict[str, Any] = Field(description="2~4단계 계산 결과")
@@ -78,6 +84,12 @@ class AskResponse(BaseModel):
     applied: list[Applied] = Field(default_factory=list, description="이번 답에 적용한 조건과 출처")
     notice: str | None = Field(
         default=None, description="답 위에 보여 줄 알림 (이어받은 조건, 세션 만료 등)"
+    )
+    tables: dict[str, Any] | None = Field(
+        default=None,
+        description="통계표 안내. 수치로 답했으면 답에 쓴 표({status: ok, recommendations}),"
+        " 수치로 답할 수 없는 질문이면 통계표 찾기 결과(/search 응답과 같은 모양: status, answer,"
+        " recommendations, clarify, notice). status가 'tables'면 수치 없이 표만 안내한 답",
     )
     question: str | None = Field(
         default=None,

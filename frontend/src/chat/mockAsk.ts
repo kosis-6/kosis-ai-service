@@ -1,8 +1,10 @@
 // 목업 API: POST /ask 응답과 같은 형식을 서버·HCX 호출 없이 돌려준다 (화면 개발용)
 // 아래 답은 2026-11-12 로컬 서버가 실제로 돌려준 응답을 그대로 옮긴 것이다 (수치를 지어내지 않았다).
 // 질문을 해석하지 않고 낱말로 고른다: 추이 / 비교 / 순위 / 구성 / 과거(연도 되묻기) / 그 밖(값 하나)
-// 대화 이어 가기는 그림 바꾸기("막대그래프로", "표로")와 요약만 흉내 낸다. 조건 변경은 실제 서버로 본다
-import type { AskRequest, AskResponse } from "../api/types";
+// 대화 이어 가기는 그림 바꾸기("막대그래프로", "표로")와 요약만 흉내 낸다. 조건 변경은 실제 서버로 본다.
+// 수치로 답할 수 없는 질문(반려동물, 국적 취득, 외국인, 날씨 등)은 통계표 찾기 목업(mock.js)으로 답한다
+import type { AskRequest, AskResponse, SearchResponse } from "../api/types";
+import { MockApi } from "./mock.js";
 
 const ANSWERS: Record<string, AskResponse> = {
   "trend": {
@@ -293,11 +295,47 @@ function pick(question: string): string {
 }
 
 let last: AskResponse | null = null; // 직전 답 ("막대그래프로", "요약해줘"는 이것으로 답한다)
+let searchSession: string | null = null; // 통계표 찾기 목업의 대화 id
+let waitingChoice = false; // 통계표 선택지를 물었다 (다음 말은 그 답)
+
+// 서버의 table_guide.SEARCH_INSTEAD 처럼: 수치 지표가 아닌 질문은 통계표 찾기로
+const TABLE_ONLY = /반려|강아지|고양이|집에서|병원 말고|국적|귀화|외국인|날씨|집값|안녕|1인/;
+
+async function findTables(body: AskRequest): Promise<AskResponse> {
+  const found = (await MockApi.search({
+    question: body.question,
+    session_id: searchSession,
+    selections: body.selections ?? null,
+    top_k: 3,
+    debug: false,
+  })) as SearchResponse;
+  searchSession = found.session_id;
+  waitingChoice = found.status === "clarify" || found.status === "ambiguous";
+  const res: AskResponse = {
+    status: "tables",
+    answer: found.answer,
+    parsed: {},
+    result: { status: "tables" },
+    sources: [],
+    chart: null,
+    tables: found,
+    session_id: body.session_id ?? `M_${Date.now().toString(36)}`,
+    request_type: body.selections ? "reply" : "new",
+    applied: [],
+  };
+  last = null;
+  return res;
+}
 
 export const MockAsk = {
   async ask(body: AskRequest): Promise<AskResponse> {
     await new Promise((r) => setTimeout(r, 350 + Math.random() * 400));
     const q = body.question;
+    if (body.selections || (waitingChoice && body.session_id) || TABLE_ONLY.test(q)) {
+      if (!body.session_id) searchSession = null; // 새 대화
+      return findTables(body);
+    }
+    waitingChoice = false;
     const view = VIEWS.find(([pattern]) => pattern.test(q));
     if (last?.chart && body.session_id && view && q.length <= 25) {
       const drawable = view[1] === "table" || view[1] === last.chart.type || last.chart.type === "line";

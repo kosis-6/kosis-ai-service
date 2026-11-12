@@ -10,7 +10,8 @@ HCX가 다시 지어낼 수 있다. 숫자는 매 턴 DB에서 다시 계산한�
               보는 방식(type), 순위 개수·방향
   sources     조건의 출처: user(사용자가 말함) / inherited(앞 질문에서 이어받음) / default(기본값)
   last        직전 답 (문장, 출처, 차트). 차트 바꾸기·요약은 다시 계산하지 않고 이것으로 답한다
-  pending     되묻는 중이면 무엇을 물었는지와 원래 질문
+  pending     되묻는 중이면 무엇을 물었는지와 원래 질문 (연도 / 지역 / 통계표 고르기)
+  search_session  통계표 찾기(dialog.py)의 대화 id. 통계표 선택지를 물었을 때 그 답을 이어 간다
   recent      최근 사용자 말 (기록용)
 
 한 턴의 흐름 (handle)
@@ -22,7 +23,9 @@ HCX가 다시 지어낼 수 있다. 숫자는 매 턴 DB에서 다시 계산한�
        chart / summary   3과 같다
        new      새 질문으로 해석한다 (qa.ask). 말하지 않은 지역·기간은 앞 조건에서 이어받는다
        unclear  추측하지 않고 되묻는다
-  5. 상태를 저장하고 턴을 기록한다 (app.chat_turns, TURNS_FOR 동안)
+  5. 답에 통계표를 붙인다 (table_guide.py): 수치로 답했으면 그 표의 카드,
+     수치로 답할 수 없는 질문이면 통계표 찾기 결과 (표 카드·선택지)
+  6. 상태를 저장하고 턴을 기록한다 (app.chat_turns, TURNS_FOR 동안)
 
 이어받기: 지역은 이어받는다. 기간은 보는 방식(type)이 같을 때만 이어받는다
 (추이를 보다 값 하나를 물으면 최신 연도). 성별은 이어받지 않는다. 이어받은 조건은 답 위에 알린다.
@@ -45,7 +48,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.prompts.qa import FOLLOW_SYSTEM
-from app.services import ask_followup, charts, indicators, qa, timeref
+from app.services import ask_followup, charts, indicators, qa, table_guide, timeref
 from app.services.hcx_client import HcxClient
 
 logger = logging.getLogger(__name__)
@@ -64,6 +67,7 @@ NEW, CHANGE, CHART, SUMMARY, REPLY, UNCLEAR = (
     "reply",
     "unclear",
 )
+TABLES = "tables"  # 수치 없이 통계표만 안내한 답의 status
 TYPES = {"value", "trend", "compare", "rank", "composition"}
 # 조건이 의미 있는 답 (이 뒤의 말은 조건 변경일 수 있다). 통계 밖 질문·해석 실패는 이어 가지 않는다
 NO_CONDITIONS = {"other", "parse_error", None}
@@ -576,9 +580,22 @@ async def _new(question: str, state: dict | None) -> tuple[dict, dict, str | Non
     return res, sources, notice
 
 
-async def _turn(state: dict | None, question: str) -> tuple[dict, dict, str | None]:
+async def _turn(
+    state: dict | None, question: str, selections: dict | None = None, user_id: int | None = None
+) -> tuple[dict, dict, str | None]:
     """이번 말을 처리한다 → (응답, 조건의 출처, 알림)"""
     pending = (state or {}).get("pending")
+    if (state or {}).get("search_session") and (
+        selections or (pending or {}).get("missing") == "table"
+    ):
+        # 통계표 선택지(대상·성별·판, 비슷한 표 여럿)에 대한 답: 통계표 찾기가 이어서 처리한다.
+        # 선택지와 맞지 않는 말이면 dialog가 새 검색으로 처리하므로 그 결과를 그대로 쓴다
+        found = await table_guide.find_tables(
+            question, state["search_session"], selections, user_id
+        )
+        res = table_guide.tables_answer(found)
+        res["request_type"] = REPLY
+        return res, {}, None
     if pending and pending.get("missing") == "year":
         if merged := ask_followup.merge(pending["original_question"], question):
             res, sources, notice = await _new(merged, None)
@@ -646,6 +663,24 @@ def next_state(state: dict | None, question: str, res: dict, sources: dict) -> d
         return {**prev, "last": last, "recent": recent, "turn_no": turn_no}
     if res.get("request_type") == UNCLEAR:
         return {**prev, "recent": recent, "turn_no": turn_no}
+    if res.get("status") == TABLES:
+        # 수치 없이 표만 안내했다: 수치 조건은 이어 가지 않는다 (다음 "서울도 같이"는 새 질문).
+        # 표 선택지를 물었으면 다음 말을 그 답으로 읽는다
+        found = res.get("tables")
+        return {
+            "conditions": {},
+            "sources": {},
+            "last": {
+                "status": TABLES,
+                "answer": res.get("answer") or "",
+                "sources": [],
+                "chart": None,
+            },
+            "pending": {"missing": "table"} if table_guide.waiting_choice(found) else None,
+            "search_session": res.get("search_session") or prev.get("search_session"),
+            "recent": recent,
+            "turn_no": turn_no,
+        }
     asked = res.get("question") or question
     return {
         "conditions": effective(res.get("parsed") or {}, res.get("result") or {}),
@@ -657,18 +692,52 @@ def next_state(state: dict | None, question: str, res: dict, sources: dict) -> d
             "chart": res.get("chart"),
         },
         "pending": pending_of(res.get("result") or {}, asked),
+        "search_session": prev.get("search_session"),
         "recent": recent,
         "turn_no": turn_no,
     }
 
 
-async def handle(session_id: str | None, question: str, user_id: int | None = None) -> dict:
+async def _attach_tables(res: dict, state: dict | None, question: str, user_id: int | None) -> None:
+    """답에 통계표를 붙인다 (table_guide.py). 표 찾기가 실패해도 수치 답은 그대로 준다"""
+    if res.get("tables") is not None or res.get("request_type") in (CHART, SUMMARY, UNCLEAR):
+        return
+    asked = res.get("question") or question
+    if res.get("status") in table_guide.SEARCH_INSTEAD:
+        sid = (state or {}).get("search_session") or table_guide.new_search_session()
+        try:
+            found = await table_guide.find_tables(asked, sid, None, user_id)
+        except Exception:
+            logger.exception("통계표 찾기 실패")
+            return
+        kind = res.get("request_type")
+        res.clear()
+        res.update(table_guide.tables_answer(found, {"parsed": {}}))
+        res["request_type"], res["question"] = kind, asked
+        res["search_session"] = sid
+        return
+    try:
+        cards = await table_guide.cards_for(asked, res.get("sources") or [])
+    except Exception:
+        logger.exception("통계표 카드 만들기 실패")
+        cards = []
+    if cards:
+        res["tables"] = {"status": "ok", "recommendations": cards}
+
+
+async def handle(
+    session_id: str | None,
+    question: str,
+    user_id: int | None = None,
+    selections: dict | None = None,
+) -> dict:
     """/ask 한 턴. qa.ask의 응답에 더하는 것:
     session_id, question, chart, request_type, applied(적용한 조건), notice(알림)"""
     sid = session_id or new_id()
     async with _lock(sid):
         state, expired = await _load(sid)
-        res, sources, notice = await _turn(state, question)
+        res, sources, notice = await _turn(state, question, selections, user_id)
+        await _attach_tables(res, state, question, user_id)
         if expired:
             notice = " ".join(filter(None, ["시간이 지나 이전 조건이 초기화됐습니다.", notice]))
         after = next_state(state, question, res, sources)

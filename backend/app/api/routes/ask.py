@@ -21,13 +21,17 @@ async def ask(body: AskRequest, user: OptionalUser) -> AskResponse:
     - "서울도 같이", "2022년만", "남자만", "낮은 순으로": 바뀐 조건만 고쳐 다시 계산한다
     - "막대그래프로", "표로 보여줘", "요약해줘": 다시 계산하지 않고 직전 답으로 답한다
     - 새 질문은 말하지 않은 지역·기간을 앞 질문에서 이어받고, 이어받은 조건을 notice로 알린다
+    - 수치로 답하면 답에 쓴 통계표를, 수치로 답할 수 없는 질문이면 통계표 찾기 결과를 tables로 준다
+      (통계표 선택지에 답할 때는 selections를 함께 보낸다)
     - 연도·지역을 되물었을 때("과거와 최근 비교", "광주")는
       "2000년", "광주광역시"처럼 답하면 된다"""
     start = time.perf_counter()
     res, error = None, None
     question = body.question
     try:
-        res = await ask_session.handle(body.session_id, question, user.id if user else None)
+        res = await ask_session.handle(
+            body.session_id, question, user.id if user else None, body.selections
+        )
         question = res.get("question") or question
     except StatsNotLoadedError as e:
         error = f"StatsNotLoadedError: {e}"

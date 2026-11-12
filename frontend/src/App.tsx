@@ -10,9 +10,7 @@ export function App() {
   return (
     <BrowserRouter basename={import.meta.env.BASE_URL}>
       <Routes>
-        {/* key 를 달리해 메뉴를 오가면 대화를 새로 시작한다 (두 화면의 답이 섞이지 않게) */}
-        <Route path="/" element={<ChatPage key="search" mode="search" />} />
-        <Route path="/ask" element={<ChatPage key="ask" mode="ask" />} />
+        <Route path="/" element={<ChatPage />} />
         <Route element={<AccountLayout />}>
           <Route path="/login" element={<LoginPage />} />
           <Route path="/signup" element={<SignupPage />} />
