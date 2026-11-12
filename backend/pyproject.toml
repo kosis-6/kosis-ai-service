@@ -8,6 +8,7 @@ dependencies = [
     "fastapi>=0.151.0",
     "httpx>=0.28.1",
     "kiwipiepy>=0.24",
+    "langgraph>=1.2",
     "pandas==3.0.6",
     "pgvector>=0.5.1",
     "psycopg[binary]>=3.3.6",

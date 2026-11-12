@@ -4,8 +4,10 @@
 화면에서는 질문 하나에 둘 다 나와야 하므로 /ask 한 곳에서 합친다. /search는 평가용으로 남긴다.
 
   수치로 답했다            답에 쓴 표를 표 카드로 붙인다 (표 메타데이터만 쓴다, HCX 없음)
-  수치로 답할 수 없는 질문  통계표 찾기를 돌려 표 카드·선택지를 준다 (HCX 2회: 조건 추출, 최종 검토)
+  수치로 답할 수 없는 질문  통계표 찾기를 돌려 표 카드·선택지를 준다
   (지원하지 않는 지표, 통계와 관계없는 말, 해석 실패)
+                          HCX 3회: 조건 추출, 계획, 최종 검토 (app/agent/multi.py).
+                          지표 여러 개를 물었으면 지표마다 찾은 표를 multi 칸에 덧붙인다
   그 밖의 답변 불가        수치 쪽 안내 그대로 (연도·지역 되묻기, 자료 준비 중, 범위 밖)
 
 질문마다 둘 다 돌리지 않는 이유: HCX 한도(분당 60회·6만 토큰) 안에서 질문 하나에 HCX를 세 번 부르면
@@ -16,7 +18,9 @@ import logging
 from typing import Any
 from uuid import uuid4
 
-from app.services import dialog, search, search_answer, search_log
+from app.agent import graph, multi
+from app.core.config import get_settings
+from app.services import search, search_answer, search_log
 from app.services import slots as slot_parser
 
 logger = logging.getLogger(__name__)
@@ -60,13 +64,21 @@ async def find_tables(
     selections: dict[str, Any] | None,
     user_id: int | None,
 ) -> dict:
-    """통계표 찾기 한 턴 (/search와 같은 처리). 되묻기 중이면 dialog가 이어서 처리한다"""
+    """통계표 찾기 한 턴. 되묻기 중이면 이어서 처리한다.
+
+    /search(dialog.handle)와 같은 처리를 LangGraph 흐름(app/agent)으로 돌린다.
+    새 질문이면 계획이 질문을 지표로 나누고, 지표가 여럿이면 지표마다 찾은 표를
+    응답의 multi에 덧붙인다 (SEARCH_PLAN=false면 계획 없이 기존과 같은 결과만)"""
     trace: dict = {}
     result, response, error = None, None, None
+    handle = multi.handle if get_settings().search_plan else graph.handle
     try:
-        result = await dialog.handle(question, session_id, selections, trace)
+        result = await handle(question, session_id, selections, trace)
         tables = await search.load_tables()
         response = search_answer.respond(result, tables, session_id, TOP_K, trace)
+        by_indicator = indicator_tables(result.get("multi"), tables)
+        if by_indicator:
+            response["multi"] = by_indicator
         return response
     except Exception as e:
         error = f"{type(e).__name__}: {e}"
@@ -78,6 +90,46 @@ async def find_tables(
             )
         except Exception:  # 기록 실패가 답변을 막지 않게
             logger.exception("검색 요청 기록 실패")
+
+
+def indicator_tables(multi_result: dict | None, tables: list[dict]) -> dict | None:
+    """지표가 여럿인 질문의 지표별 표 카드 (추천 카드와 같은 모양). 지표가 하나면 None
+
+    화면은 아직 이 칸을 쓰지 않는다. 지표를 잘못 나눴을 때를 대비해 질문 전체 검색의
+    상위 표(whole)도 함께 준다"""
+    if not multi_result or multi_result.get("mode") != "multi":
+        return None
+    by_id = {t["tbl_id"]: t for t in tables}
+
+    def cards(candidates: list[dict], question: str) -> list[dict]:
+        slots = slot_parser.empty_slots(question)
+        out = []
+        for c in candidates:
+            t = by_id.get(c["tbl_id"])
+            if t is None:
+                continue
+            family = [r for r in tables if r["family_id"] == t["family_id"]]
+            out.append(
+                search_answer.recommendation(len(out) + 1, t, family, {}, c.get("score"), slots)
+            )
+        return out
+
+    plan = multi_result.get("plan") or {}
+    return {
+        "indicators": [
+            {
+                "indicator": ind.get("span"),
+                "merged": ind.get("merged_spans") or [],
+                "question": ind.get("question"),
+                "conditions": ind.get("conditions") or {},
+                "tables": cards(ind.get("candidates") or [], ind.get("question") or ""),
+            }
+            for ind in multi_result.get("indicators") or []
+        ],
+        "whole": cards(multi_result.get("whole") or [], ""),
+        "combine": plan.get("combine") or {},
+        "out_of_scope": plan.get("out_of_scope") or [],
+    }
 
 
 def tables_answer(found: dict, refused: dict | None = None) -> dict:
