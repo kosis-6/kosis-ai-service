@@ -405,6 +405,45 @@ def without_inherited_period(
     return p, {**sources, "period": "default"}
 
 
+def without_inherited(parsed: dict, original: dict, sources: dict):
+    """이어받은 기간, 지역, 둘 다를 순서대로 되돌린 재시도 후보."""
+    keys = [k for k in ("period", "regions") if sources.get(k) == "inherited"]
+    tries = [(k,) for k in keys] + ([tuple(keys)] if len(keys) == 2 else [])
+    for dropped in tries:
+        p, source = copy.deepcopy(parsed), dict(sources)
+        if "period" in dropped:
+            for key in ("year", "start_year", "end_year"):
+                p[key] = original.get(key)
+        if "regions" in dropped:
+            p["regions"] = list(original.get("regions") or [])
+        source.update({key: "default" for key in dropped})
+        yield p, source, dropped
+
+
+def table_choice_options(found: dict) -> list[str]:
+    clarify = found.get("clarify") or {}
+    options = [str(o) for a in clarify.get("axes", []) for o in a.get("options", [])]
+    options.extend(str(f["tbl_nm"]) for f in clarify.get("families", []) if f.get("tbl_nm"))
+    return options
+
+
+def is_choice_reply(question: str, options: list[str]) -> bool:
+    """짧다는 이유만으로 새 질문을 선택지 응답으로 처리하지 않는다."""
+    if indicators.find_in_text(question):
+        return False
+    q = re.sub(r"\s+", "", question).strip(" .?!")
+    if re.fullmatch(r"[1-9](?:번)?(?:이요|요)?", q):
+        return bool(options)
+    for option in options:
+        word = re.sub(r"\s+", "", option)
+        if word and q in {word, word + "요", word + "이요", word + "로", word + "으로"}:
+            return True
+    parts = [p.strip() for p in re.split(r"[,/·]", question)]
+    return len(parts) > 1 and all(
+        re.sub(r"\s+", "", part) in {re.sub(r"\s+", "", o) for o in options} for part in parts
+    )
+
+
 # ---- 되묻기 답과 규칙으로 알아보는 요청 (DB 없이 동작) ---------------------------------------
 
 
@@ -621,24 +660,24 @@ async def _new(question: str, state: dict | None) -> tuple[dict, dict, str | Non
     res = await qa.ask(question, adjust=adjust)
     sources = kept.get("sources") or sources_of(question, res.get("parsed") or {})
     notice = inherited_notice(res.get("parsed") or {}, sources)
-    if res.get("status") != "ok" and (
-        retry := without_inherited_period(
-            res.get("parsed") or {}, kept.get("original") or {}, sources
-        )
-    ):
-        # 이어받은 기간으로는 답할 수 없다 → 기간을 빼고 다시 답한다 (지역은 그대로)
-        again = await qa.answer(retry[0], res.get("trace"), question)
-        if again.get("status") == "ok":
-            res, sources = again, retry[1]
-            notice = " ".join(
-                filter(
-                    None,
-                    [
-                        inherited_notice(res["parsed"], sources),
-                        "앞 질문의 기간으로는 자료가 없어 기본 기간으로 답했습니다.",
-                    ],
-                )
-            )
+    if res.get("status") in {"out_of_range", "region_not_in_year", "missing_data"}:
+        inherited = res.get("parsed") or {}
+        for conditions, retry_sources, dropped in without_inherited(
+            inherited, kept.get("original") or {}, sources
+        ):
+            again = await qa.answer(conditions, res.get("trace"), question)
+            if again.get("status") != "ok":
+                continue
+            res, sources = again, retry_sources
+            messages = [inherited_notice(res["parsed"], sources)]
+            if "period" in dropped:
+                messages.append("앞 질문의 기간으로는 자료가 없어 기본 기간으로 답했습니다.")
+            if "regions" in dropped:
+                old = ", ".join(inherited.get("regions") or [])
+                new = ", ".join(conditions.get("regions") or []) or "전국"
+                messages.append(f"앞 질문의 지역({old})으로는 자료가 없어 {new}으로 답했습니다.")
+            notice = " ".join(filter(None, messages))
+            break
     res["chart"] = charts.build(res.get("result"))
     res["request_type"] = NEW
     return res, sources, notice
@@ -650,10 +689,14 @@ async def _turn(
     """이번 말을 처리한다 → (응답, 조건의 출처, 알림)"""
     pending = (state or {}).get("pending")
     if (state or {}).get("search_session") and (
-        selections or (pending or {}).get("missing") == "table"
+        selections
+        or (
+            (pending or {}).get("missing") == "table"
+            and is_choice_reply(question, pending.get("options") or [])
+        )
     ):
         # 통계표 선택지(대상·성별·판, 비슷한 표 여럿)에 대한 답: 통계표 찾기가 이어서 처리한다.
-        # 선택지와 맞지 않는 말이면 dialog가 새 검색으로 처리하므로 그 결과를 그대로 쓴다
+        # 새 질문은 이 분기를 건너뛰어 수치 질문 경로로 보낸다
         found = await table_guide.find_tables(
             question, state["search_session"], selections, user_id
         )
@@ -749,7 +792,9 @@ def next_state(state: dict | None, question: str, res: dict, sources: dict) -> d
                 "sources": [],
                 "chart": None,
             },
-            "pending": {"missing": "table"} if table_guide.waiting_choice(found) else None,
+            "pending": {"missing": "table", "options": table_choice_options(found)}
+            if table_guide.waiting_choice(found)
+            else None,
             "search_session": res.get("search_session") or prev.get("search_session"),
             "recent": recent,
             "turn_no": turn_no,

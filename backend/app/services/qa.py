@@ -42,7 +42,7 @@ from app.services.hcx_client import HcxClient
 MODEL = "HCX-007"
 
 
-async def _chat(prompt, system, temperature=0.1):
+async def _chat(prompt, system, temperature=0.1, trace=None):
     """HCX-007 호출. 설정은 기존 pipeline/clova.py 기본값과 같다"""
     result = await HcxClient().chat(
         MODEL,
@@ -57,6 +57,9 @@ async def _chat(prompt, system, temperature=0.1):
         temperature=temperature,
         repetitionPenalty=1.1,
     )
+    if trace is not None:
+        trace["understand_usage"] = dict(result.usage)
+        trace["understand_max_completion_tokens"] = 5120
     return result.content
 
 
@@ -65,7 +68,7 @@ async def understand(question, trace=None):
     trace(dict)를 주면 HCX 원본 출력을 담는다 (요청 로그용)"""
     lo, hi = await run_in_threadpool(indicators._data_years)
     system = PARSE_SYSTEM.replace("{INDICATORS}", _indicator_list()).replace("{LATEST}", str(hi))
-    text = await _chat(question, system)
+    text = await _chat(question, system, trace=trace)
     if trace is not None:
         trace["hcx_raw"] = text
     objects = _json_objects(text)

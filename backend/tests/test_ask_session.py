@@ -580,3 +580,79 @@ def test_relative_year_overrides_hcx(talk: Talk, monkeypatch: pytest.MonkeyPatch
     talk.say("2020년 부산 출생아 수")
     res = talk.say("작년은?", request_type="change", changes={"year": 2021})
     assert res["parsed"]["year"] == 2025 and res["request_type"] == "change"
+
+
+def test_inherited_region_falls_back_to_original_scope(talk: Talk) -> None:
+    talk.parsed = {**BASE, "type": "value", "regions": ["수성구"]}
+    talk.say("2024년 수성구 출생아 수")
+    talk.parsed = {**BASE, "type": "value", "regions": [], "year": 2050}
+    talk.fail_when = lambda p: p.get("regions") == ["수성구"]
+    res = talk.say("2050년 출생아 수")
+    assert res["status"] == "ok" and res["parsed"]["regions"] == []
+    assert "지역(수성구)" in res["notice"] and "전국" in res["notice"]
+    assert len(talk.answered) == 1
+
+
+def test_explicit_region_is_not_dropped(talk: Talk) -> None:
+    talk.say("부산 출생아 2020~2024년")
+    talk.parsed = {**BASE, "type": "value", "regions": ["수성구"], "year": 2050}
+    talk.fail_when = lambda p: True
+    res = talk.say("2050년 수성구 출생아 수")
+    assert res["status"] == "out_of_range" and talk.answered == []
+
+
+def test_table_pending_does_not_swallow_new_numeric_question(talk: Talk) -> None:
+    talk.parsed = {**BASE, "type": "value", "indicator": "반려동물 수"}
+    talk.found = {"status": "clarify", "answer": "대상을 골라 주세요."}
+    talk.say("외국인 통계")
+    talk.parsed = {**BASE, "type": "value", "indicator": "합계출산율", "regions": ["서울"]}
+    res = talk.say("서울 합계출산율은?")
+    assert res["status"] == "ok" and res["request_type"] == "new"
+    assert len(talk.searched) == 1
+
+
+def test_choice_reply_requires_actual_option() -> None:
+    options = ["혼인 귀화자", "여"]
+    assert s.is_choice_reply("혼인 귀화자요", options)
+    assert s.is_choice_reply("혼인 귀화자, 여", options)
+    assert not s.is_choice_reply("서울 합계출산율은?", options)
+    assert not s.is_choice_reply("새 질문", options)
+
+
+def test_both_inherited_conditions_can_be_dropped_without_mutating_input() -> None:
+    sources = {**USER, "period": "inherited", "regions": "inherited"}
+    original = {**BASE, "regions": [], "start_year": 2021}
+    tries = list(s.without_inherited(BASE, original, sources))
+    assert [t[2] for t in tries] == [("period",), ("regions",), ("period", "regions")]
+    assert tries[-1][0]["regions"] == [] and tries[-1][0]["start_year"] == 2021
+    assert BASE["regions"] == ["부산"] and sources["regions"] == "inherited"
+
+
+def test_table_pending_keeps_options_for_text_reply(talk: Talk, monkeypatch) -> None:
+    async def find(question, session_id, selections, user_id):
+        talk.searched.append((question, session_id, selections))
+        return {
+            "status": "clarify",
+            "answer": "대상을 골라 주세요.",
+            "clarify": {"axes": [{"options": ["혼인 귀화자", "여"]}]},
+        }
+
+    monkeypatch.setattr(table_guide, "find_tables", find)
+    talk.parsed = {**BASE, "type": "value", "indicator": "반려동물 수"}
+    talk.say("외국인 통계")
+    assert talk.store[talk.sid][0]["pending"]["options"] == ["혼인 귀화자", "여"]
+    res = talk.say("혼인 귀화자요")
+    assert res["request_type"] == "reply" and len(talk.asked) == 1
+
+
+def test_question_interpretation_records_usage(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    async def chat(self, *args, **kwargs):
+        return SimpleNamespace(content="{}", usage={"completionTokens": 123})
+
+    monkeypatch.setattr(qa.HcxClient, "chat", chat)
+    trace = {}
+    assert asyncio.run(qa._chat("질문", "시스템", trace=trace)) == "{}"
+    assert trace["understand_usage"] == {"completionTokens": 123}
+    assert trace["understand_max_completion_tokens"] == 5120
