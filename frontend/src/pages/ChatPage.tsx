@@ -127,7 +127,8 @@ export function ChatPage({ mode }: { mode: Mode }) {
     add({ kind: "user", text: q });
     try {
       if (mode === "ask") {
-        // 연도를 되물었으면(missing_year) 서버가 session_id 를 준다. 다음 답("2000년")과 합쳐 준다
+        // 대화 id 를 이어 보내면 "서울도 같이", "2022년만", "막대그래프로"처럼 바뀐 것만 말해도 된다.
+        // "새 대화"를 누르거나 화면을 새로 열면 조건이 초기화된다
         const data = await ask({ question: q, session_id: sessionId.current }, mock);
         sessionId.current = data.session_id ?? null;
         add({ kind: "answer", data });

@@ -10,7 +10,7 @@ client = TestClient(app)
 
 
 def test_ask(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def fake_ask(question: str) -> dict:
+    async def fake_ask(question: str, adjust=None) -> dict:
         return {
             "status": "ok",
             "answer": f"답변: {question}",
@@ -41,7 +41,7 @@ def test_ask_empty_question() -> None:
     ],
 )
 def test_ask_errors(monkeypatch: pytest.MonkeyPatch, error: Exception, status_code: int) -> None:
-    async def fail(question: str) -> dict:
+    async def fail(question: str, adjust=None) -> dict:
         raise error
 
     monkeypatch.setattr(qa, "ask", fail)

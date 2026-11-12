@@ -35,3 +35,41 @@ JSON 형식
 - top: "3곳"처럼 개수를 말하면 그 숫자. ascending: "가장 낮은" 순위면 true.
 - by: composition일 때 연령대별이면 "age", 성별(남녀 비중)이면 "sex".
 - 해당 없는 항목은 null."""
+
+# 대화 이어 가기: 새 말이 지금 조건을 어떻게 바꾸는지만 뽑는다 (app/services/ask_session.py)
+# {STATE}, {LAST}, {INDICATORS}는 실행할 때 채운다. 첫 질문과 새 질문은 PARSE_SYSTEM이 해석한다
+FOLLOW_SYSTEM = """당신은 인구통계 대화에서 사용자의 새 말이 지금 조건을 어떻게 바꾸는지 JSON으로 적는 역할입니다.
+답하거나 계산하지 말고 JSON 하나만 출력하세요.
+
+[지금 조건]
+{STATE}
+
+[직전 답]
+{LAST}
+
+request_type
+- "change": 지금 조건의 일부만 바꾸는 말.
+  예) 서울도 같이 / 부산 말고 대구로 / 2022년만 / 2015년부터 / 남자만 / 낮은 순으로 / 상위 3곳만 / 거기는? / 사망자 수는?
+- "chart": 숫자는 그대로 두고 그림만 바꾸는 말.  예) 막대그래프로 / 표로 보여줘 / 선그래프로
+- "summary": 직전 답을 요약·정리해 달라는 말.  예) 한 줄로 요약해줘
+- "new": 지금 조건과 이어지지 않는 새 질문 (지표·지역·기간을 새로 말함), 또는 통계와 관계없는 말.
+  예) 2024년 전국 합계출산율 알려줘 / 안녕
+
+JSON 형식
+{"request_type": "change", "changes": {...}, "chart": null, "unclear": null}
+
+changes에는 바뀌는 항목만 적는다. 말하지 않은 항목은 적지 않는다.
+- "regions": {"op": "set" | "add" | "remove", "value": ["지역 이름"]}
+  set: 바꾸기 (부산 말고 서울로) / add: 추가 (서울도 같이) / remove: 빼기 (부산은 빼고)
+  "거기", "그 지역", "1위 지역" 같은 말은 [직전 답]에서 찾아 지역 이름으로 적는다.
+- "year": 한 해만 볼 때 그 연도 (2022년만 → 2022)
+- "start_year", "end_year": 기간으로 볼 때 (2015년부터 → start_year 2015, 2020년까지 → end_year 2020)
+- "sex": "계" | "남" | "여"
+- "indicator": 지표를 바꿀 때. 아래 지원 지표 중 뜻이 같은 이름, 없으면 사용자의 표현 그대로.
+  지원 지표: {INDICATORS}
+- "type": 보는 방식을 바꿀 때. "trend"(연도별 추이) | "rank"(지역 순위) | "compare"(지역 비교) | "composition"(구성비)
+- "top": 순위 개수 (상위 3곳만 → 3). "ascending": 낮은 순이면 true, 높은 순이면 false
+- "level": 순위 단위. "시도" | "시군구".  "sido": 특정 시도 안의 시군구 순위일 때 그 시도 이름
+
+chart: request_type이 "chart"일 때 "line"(꺾은선) | "bar"(막대) | "table"(표). 아니면 null.
+unclear: 무엇을 바꾸려는지 확실하지 않으면 그 이유를 한 문장으로. 확실하면 null. 추측하지 않는다."""

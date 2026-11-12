@@ -1,6 +1,6 @@
-// 수치 질문의 답 한 건 (POST /ask): 답변 문장 + 차트 + 수치·계산식 + 출처
+// 수치 질문의 답 한 건 (POST /ask): 알림 + 답변 문장 + 적용한 조건 + 차트 + 수치·계산식 + 출처
 import { lazy, Suspense } from "react";
-import type { AskResponse } from "../api/types";
+import type { Applied, AskResponse } from "../api/types";
 import { safeUrl, splitLinks } from "./format";
 
 // 차트 라이브러리(Recharts)는 차트가 있는 답을 처음 그릴 때 내려받는다
@@ -35,25 +35,49 @@ function Linked({ text }: { text: string }) {
   );
 }
 
+const SOURCE_WORDS: Record<string, string> = { inherited: "이어받음", default: "기본값" };
+
+// 이번 답에 적용한 조건. 사용자가 말하지 않은 조건(앞 질문에서 이어받음, 기본값)은 그렇다고 적는다
+function Conditions({ applied }: { applied: Applied[] }) {
+  if (!applied.length) return null;
+  return (
+    <ul className="conditions" aria-label="적용한 조건">
+      {applied.map((c) => (
+        <li key={c.name} className={c.source === "user" ? undefined : "soft"}>
+          <span className="condition-name">{c.name}</span>
+          {c.value}
+          {SOURCE_WORDS[c.source] && <span className="condition-source">{SOURCE_WORDS[c.source]}</span>}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 export function Answer({ data }: { data: AskResponse }) {
+  const notice = data.notice && <p className="answer-notice">{data.notice}</p>;
   // 답하지 못한 경우(연도 되묻기, 자료 준비 중, 범위 밖)는 서버 안내를 그대로 보여 준다
   if (data.status !== "ok") {
     return (
-      <div className="bubble">
-        <Linked text={data.answer} />
-      </div>
+      <>
+        {notice}
+        <div className="bubble">
+          <Linked text={data.answer} />
+        </div>
+      </>
     );
   }
   const { lead, detail } = splitAnswer(data.answer);
   return (
     <>
+      {notice}
       <div className="bubble">{lead}</div>
+      <Conditions applied={data.applied ?? []} />
       {data.chart && (
         <Suspense fallback={<div className="chart-card chart-loading">차트를 그리고 있어요</div>}>
           <ChartCard chart={data.chart} />
         </Suspense>
       )}
-      {detail && (
+      {detail && data.request_type !== "chart" && data.request_type !== "summary" && (
         // 차트가 없으면(값 하나) 계산식이 답의 일부라 펼쳐 둔다
         <details className="answer-detail" open={!data.chart}>
           <summary>수치와 계산식 보기</summary>

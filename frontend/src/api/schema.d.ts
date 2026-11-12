@@ -306,8 +306,12 @@ export interface paths {
          * 질문에 답하기
          * @description 로그인 없이도 쓸 수 있다. 로그인하면 기록에 사용자 id가 남는다
          *
-         *     연도 없이 과거만 말하면("과거와 최근 인구수 비교") status = missing_year로 연도를 되묻고
-         *     session_id를 돌려준다. 그 session_id로 "2000년"처럼 답하면 앞 질문과 합쳐 답한다.
+         *     응답의 session_id를 다음 요청에 함께 보내면 대화를 이어 간다 (app/services/ask_session.py).
+         *     - "서울도 같이", "2022년만", "남자만", "낮은 순으로": 바뀐 조건만 고쳐 다시 계산한다
+         *     - "막대그래프로", "표로 보여줘", "요약해줘": 다시 계산하지 않고 직전 답으로 답한다
+         *     - 새 질문은 말하지 않은 지역·기간을 앞 질문에서 이어받고, 이어받은 조건을 notice로 알린다
+         *     - 연도·지역을 되물었을 때("과거와 최근 비교", "광주")는
+         *       "2000년", "광주광역시"처럼 답하면 된다
          */
         post: operations["ask_ask_post"];
         delete?: never;
@@ -341,6 +345,25 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * Applied
+         * @description 이번 답에 적용한 조건 하나
+         */
+        Applied: {
+            /**
+             * Name
+             * @description 지표 / 지역 / 기간 / 성별
+             */
+            name: string;
+            /** Value */
+            value: string;
+            /**
+             * Source
+             * @description user: 사용자가 말함 / inherited: 앞 질문에서 이어받음 / default: 기본값
+             * @enum {string}
+             */
+            source: "user" | "inherited" | "default";
+        };
         /** AskRequest */
         AskRequest: {
             /**
@@ -350,7 +373,7 @@ export interface components {
             question: string;
             /**
              * Session Id
-             * @description 연도 되묻기(missing_year)에 답할 때 응답의 session_id를 그대로 보낸다. 그러면 '2000년'처럼 짧은 답을 앞 질문과 합쳐 답한다
+             * @description 대화를 이어 갈 때 앞 응답의 session_id를 그대로 보낸다. 그러면 '서울도 같이', '2022년만', '막대그래프로'처럼 바뀐 것만 말해도 앞 조건에 이어서 답한다. 없으면 새 대화로 시작한다
              */
             session_id?: string | null;
         };
@@ -389,9 +412,24 @@ export interface components {
             chart?: components["schemas"]["Chart"] | null;
             /**
              * Session Id
-             * @description 대화 id. 연도를 되물었을 때(status = missing_year) 다음 요청에 함께 보낸다
+             * @description 대화 id. 다음 요청에 함께 보내면 조건을 이어 간다 (1시간)
              */
             session_id?: string | null;
+            /**
+             * Request Type
+             * @description 이번 말을 읽은 방식: new(새 질문) / change(조건 변경) / chart(차트 바꾸기) / summary(요약) / reply(되묻기에 대한 답) / unclear(되물음)
+             */
+            request_type?: string | null;
+            /**
+             * Applied
+             * @description 이번 답에 적용한 조건과 출처
+             */
+            applied?: components["schemas"]["Applied"][];
+            /**
+             * Notice
+             * @description 답 위에 보여 줄 알림 (이어받은 조건, 세션 만료 등)
+             */
+            notice?: string | null;
             /**
              * Question
              * @description 실제로 답한 질문 (되묻기 답을 앞 질문과 합친 경우 합친 질문)
@@ -463,6 +501,11 @@ export interface components {
              * @description 차트 아래 알림 (일부만 그린 경우 등)
              */
             note?: string | null;
+            /**
+             * View
+             * @description 처음 보여 줄 모양. '막대그래프로', '표로'라고 했을 때 (없으면 type대로)
+             */
+            view?: ("line" | "bar" | "table") | null;
         };
         /** ChartRow */
         ChartRow: {

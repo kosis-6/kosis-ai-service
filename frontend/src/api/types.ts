@@ -12,6 +12,7 @@ export type AskResponse = Schemas["AskResponse"];
 export type Chart = Schemas["Chart"];
 export type ChartRow = Schemas["ChartRow"];
 export type Source = Schemas["Source"];
+export type Applied = Schemas["Applied"];
 
 // /search 응답의 parsed·clarify·recommendations 는 서버 스키마가 자유 형식(dict)이라
 // 화면이 읽는 칸만 여기에 적는다 (backend/app/services/search_answer.py 가 만드는 모양)

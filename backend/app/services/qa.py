@@ -1564,14 +1564,24 @@ async def _loading_result(error):
     }
 
 
-async def ask(question):
+async def ask(question, adjust=None):
     """질문 하나를 끝까지 처리. status, answer, parsed, result, sources, trace를 반환한다.
     status: ok 또는 답변 불가 사유 (indicators.py 결과의 status)
-    trace: HCX 원본 출력과 단계별 시간(ms). 요청 로그에만 쓰고 API 응답에는 넣지 않는다"""
+    trace: HCX 원본 출력과 단계별 시간(ms). 요청 로그에만 쓰고 API 응답에는 넣지 않는다
+    adjust: 해석한 조건을 계산 전에 고치는 함수 (대화에서 앞 질문의 조건을 이어받을 때, ask_session.py)"""
     trace = {}
     start = time.perf_counter()
     parsed = await understand(question, trace)
     trace["understand_ms"] = round((time.perf_counter() - start) * 1000)
+    if adjust is not None:
+        parsed = adjust(parsed)
+    return await answer(parsed, trace, question)
+
+
+async def answer(parsed, trace=None, question=""):
+    """해석된 조건(parsed)으로 조회·계산해 답을 만든다. ask의 2단계부터.
+    대화에서 조건만 바꿔 다시 답할 때는 HCX 해석 없이 여기를 바로 부른다 (question은 비워 둔다)"""
+    trace = {} if trace is None else trace
     start = time.perf_counter()
     if ask_followup.needs_year(question) and indicators.spec(parsed.get("indicator") or ""):
         # "과거와 최근 비교"처럼 연도 없이 과거만 말하면 계산하지 않고 되묻는다.

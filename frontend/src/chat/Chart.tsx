@@ -243,7 +243,9 @@ export default function ChartCard({ chart }: { chart: Chart }) {
           [chart.type === "bar" ? "bar" : "line", "차트"],
           ["table", "표"],
         ];
-  const [view, setView] = useState<View>(views[0][0]);
+  // "막대그래프로", "표로"라고 했으면 서버가 정한 모양으로 시작한다 (그릴 수 있는 모양일 때만)
+  const asked = views.find(([key]) => key === chart.view)?.[0];
+  const [view, setView] = useState<View>(asked ?? views[0][0]);
 
   return (
     <figure className="chart-card">

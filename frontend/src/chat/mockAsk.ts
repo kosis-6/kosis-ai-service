@@ -1,6 +1,7 @@
 // 목업 API: POST /ask 응답과 같은 형식을 서버·HCX 호출 없이 돌려준다 (화면 개발용)
 // 아래 답은 2026-11-12 로컬 서버가 실제로 돌려준 응답을 그대로 옮긴 것이다 (수치를 지어내지 않았다).
 // 질문을 해석하지 않고 낱말로 고른다: 추이 / 비교 / 순위 / 구성 / 과거(연도 되묻기) / 그 밖(값 하나)
+// 대화 이어 가기는 그림 바꾸기("막대그래프로", "표로")와 요약만 흉내 낸다. 조건 변경은 실제 서버로 본다
 import type { AskRequest, AskResponse } from "../api/types";
 
 const ANSWERS: Record<string, AskResponse> = {
@@ -242,18 +243,82 @@ const ANSWERS: Record<string, AskResponse> = {
   }
 };
 
-function pick(question: string): AskResponse {
-  if (/추이|변화|부터/.test(question)) return ANSWERS.trend;
-  if (/순위|가장|상위/.test(question)) return ANSWERS.rank;
-  if (/구성|비중|나뉘/.test(question)) return ANSWERS.parts;
-  if (/과거|예전/.test(question)) return ANSWERS.refuse;
-  if (/비교|중에|와|과/.test(question)) return ANSWERS.compare;
-  return ANSWERS.value;
+// 적용한 조건 (실제 서버는 app/services/ask_session.py 가 만든다)
+const APPLIED: Record<string, AskResponse["applied"]> = {
+  trend: [
+    { name: "지표", value: "합계출산율", source: "user" },
+    { name: "지역", value: "서울", source: "user" },
+    { name: "기간", value: "2015~2024년", source: "user" },
+    { name: "성별", value: "계", source: "default" },
+  ],
+  compare: [
+    { name: "지표", value: "고령인구 비율", source: "user" },
+    { name: "지역", value: "서울, 부산, 대구", source: "user" },
+    { name: "기간", value: "2024년", source: "user" },
+    { name: "성별", value: "계", source: "default" },
+  ],
+  rank: [
+    { name: "지표", value: "합계출산율", source: "user" },
+    { name: "지역", value: "전국 시도별", source: "default" },
+    { name: "기간", value: "2024년", source: "user" },
+    { name: "성별", value: "계", source: "default" },
+  ],
+  parts: [
+    { name: "지표", value: "총인구", source: "user" },
+    { name: "지역", value: "서울", source: "user" },
+    { name: "기간", value: "2024년", source: "user" },
+    { name: "성별", value: "계", source: "default" },
+  ],
+  value: [
+    { name: "지표", value: "고령인구 비율", source: "user" },
+    { name: "지역", value: "부산", source: "user" },
+    { name: "기간", value: "2024년", source: "user" },
+    { name: "성별", value: "계", source: "default" },
+  ],
+};
+
+const VIEWS: [RegExp, "line" | "bar" | "table", string][] = [
+  [/표\s*로/, "table", "표"],
+  [/막대/, "bar", "막대그래프"],
+  [/꺾은\s*선|선\s*그래프/, "line", "꺾은선 그래프"],
+];
+
+function pick(question: string): string {
+  if (/추이|변화|부터/.test(question)) return "trend";
+  if (/순위|가장|상위/.test(question)) return "rank";
+  if (/구성|비중|나뉘/.test(question)) return "parts";
+  if (/과거|예전/.test(question)) return "refuse";
+  if (/비교|중에|와|과/.test(question)) return "compare";
+  return "value";
 }
+
+let last: AskResponse | null = null; // 직전 답 ("막대그래프로", "요약해줘"는 이것으로 답한다)
 
 export const MockAsk = {
   async ask(body: AskRequest): Promise<AskResponse> {
     await new Promise((r) => setTimeout(r, 350 + Math.random() * 400));
-    return structuredClone(pick(body.question));
+    const q = body.question;
+    const view = VIEWS.find(([pattern]) => pattern.test(q));
+    if (last?.chart && body.session_id && view && q.length <= 25) {
+      const drawable = view[1] === "table" || view[1] === last.chart.type || last.chart.type === "line";
+      if (drawable) {
+        return {
+          ...structuredClone(last),
+          answer: `${view[2]}로 바꿨습니다.`,
+          chart: { ...structuredClone(last.chart), view: view[1] },
+          request_type: "chart",
+        };
+      }
+    }
+    if (last && body.session_id && /^(한\s*줄로\s*)?(요약|정리)/.test(q.trim())) {
+      return { ...structuredClone(last), answer: last.answer.split("\n\n")[0], request_type: "summary" };
+    }
+    const key = pick(q);
+    const res = structuredClone(ANSWERS[key]);
+    res.session_id = body.session_id ?? `M_${Date.now().toString(36)}`;
+    res.request_type = "new";
+    res.applied = res.status === "ok" ? (APPLIED[key] ?? []) : [];
+    last = res;
+    return res;
   },
 };

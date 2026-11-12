@@ -30,7 +30,7 @@ def read(path: Path) -> list[dict]:
 def test_logs_every_request_with_stages(
     request_logs: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    async def fake_ask(question: str) -> dict:
+    async def fake_ask(question: str, adjust=None) -> dict:
         return answered()
 
     monkeypatch.setattr(qa, "ask", fake_ask)
@@ -48,7 +48,7 @@ def test_logs_every_request_with_stages(
 
 
 def test_logs_failed_request(request_logs: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    async def fail(question: str) -> dict:
+    async def fail(question: str, adjust=None) -> dict:
         raise HcxError("40100", "Unauthorized", 401)
 
     monkeypatch.setattr(qa, "ask", fail)

@@ -277,6 +277,23 @@ body[data-page="chat"] {
 
 /* ---- 수치 답변 (통계 수치 묻기): 차트 카드, 수치·계산식, 출처 ---- */
 .reply > .chart-card, .reply > .answer-detail, .reply > .sources { width: 100%; }
+/* 알림 (이어받은 조건, 세션 만료)과 적용한 조건 */
+.answer-notice { padding: 0 6px; color: var(--muted); font-size: 12px; line-height: 18px; }
+.conditions { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0 6px; list-style: none; }
+.conditions li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  font-size: 11px;
+  line-height: 17px;
+}
+.conditions li.soft { border-style: dashed; color: var(--muted); }
+.condition-name { color: var(--muted); }
+.condition-source { padding-left: 6px; border-left: 1px solid var(--line); color: var(--sage); }
 .chart-card {
   display: flex;
   flex-direction: column;

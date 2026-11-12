@@ -9,15 +9,11 @@
 
 되묻기 뒤 사용자가 "2000년이랑"처럼 연도만 짧게 답하면, 같은 session_id의 앞 질문과 합쳐 다시 묻는다
 ("과거와 최근 인구수 비교해줘" + "2000년" → "2000년과 최근 인구수 비교해줘").
-대화 상태는 검색 되묻기와 같은 app.chat_sessions에 "ask:" 키로 둔다 (dialog.py).
+되묻는 중이라는 것과 원래 질문은 대화 상태에 둔다 (ask_session.py의 pending).
 """
 
-import json
 import re
-from datetime import UTC, datetime, timedelta
 from typing import Any
-
-from sqlalchemy import text
 
 from app.services import slots, timeref
 
@@ -34,7 +30,6 @@ REPLY_FILLER = re.compile(
     r"\s+|[,.·~\-?!/()]|이랑|랑|하고|과|와|부터|까지|에서|이고|그리고|및|도|으로|로|"
     r"입니다|이에요|예요|이요|요|기준|비교|대비|보다|년도|년|쯤|정도"
 )
-PENDING_FOR = timedelta(minutes=30)  # 되묻기 답을 기다리는 시간
 CENSUS_EVERY = 5  # 인구총조사 주기 (기간 안내를 줄일 때)
 
 
@@ -166,49 +161,3 @@ def _only_years(reply: str) -> bool:
     for word, _ in timeref.WORDS:
         rest = rest.replace(word, " ")
     return not REPLY_FILLER.sub("", rest)
-
-
-def _key(session_id: str) -> str:
-    return f"ask:{session_id}"
-
-
-async def load_pending(session_id: str) -> str | None:
-    """되묻기를 기다리는 앞 질문 (PENDING_FOR 안에 저장된 것만)"""
-    from app.core.db import engine
-    from app.services import dialog
-
-    async with engine.begin() as conn:
-        await dialog._ensure(conn)
-        row = (
-            await conn.execute(
-                text(
-                    "select slots, updated_at from app.chat_sessions"
-                    " where session_id = :k and status = 'missing_year'"
-                ),
-                {"k": _key(session_id)},
-            )
-        ).first()
-    if row is None or datetime.now(UTC) - row.updated_at > PENDING_FOR:
-        return None
-    return (row.slots or {}).get("question")
-
-
-async def save(session_id: str, status: str, question: str) -> None:
-    """이번 답의 상태를 남긴다.
-    missing_year면 다음 답과 합칠 질문, 그 밖이면 기다리던 질문이 끝남"""
-    from app.core.db import engine
-    from app.services import dialog
-
-    async with engine.begin() as conn:
-        await dialog._ensure(conn)
-        await conn.execute(
-            text(dialog.UPSERT),
-            {
-                "session_id": _key(session_id),
-                "status": status,
-                "family_id": None,
-                "slots": json.dumps({"question": question}, ensure_ascii=False),
-                "asked": None,
-                "turns": 0,
-            },
-        )

@@ -32,7 +32,7 @@ def test_ask_route_logs_refusal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     log = tmp_path / "missing.jsonl"
     monkeypatch.setattr(qa, "MISSING_LOG", log)
 
-    async def fake_ask(question: str) -> dict:
+    async def fake_ask(question: str, adjust=None) -> dict:
         return refused("out_of_range")
 
     monkeypatch.setattr(qa, "ask", fake_ask)
