@@ -1,17 +1,20 @@
-// 통계표 안내 채팅 화면: POST /search 응답(status별)을 말풍선·표 카드·선택 버튼으로 그린다
-// 목업 모드(?mock=1)는 chat/mock.js 가 응답을 만들어 서버·HCX 를 부르지 않는다
+// 채팅 화면. 왼쪽 메뉴로 두 가지를 오간다 (mode)
+//   search  통계표 찾기: POST /search 응답(status별)을 말풍선·표 카드·선택 버튼으로 그린다
+//   ask     통계 수치 묻기: POST /ask 응답을 답변 문장·차트·출처로 그린다
+// 목업 모드(?mock=1)는 chat/mock.js·mockAsk.ts 가 응답을 만들어 서버·HCX 를 부르지 않는다
 // 개발 도구(목업·디버그 전환, 검색 과정)는 ?mock=1 / ?debug=1 로 켰을 때만 보인다
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
-import { Link } from "react-router-dom";
-import type { Parsed, Recommendation, SearchRequest, SearchResponse } from "../api/types";
+import { Link, NavLink } from "react-router-dom";
+import type { AskResponse, Parsed, Recommendation, SearchRequest, SearchResponse } from "../api/types";
 import iconArrow from "../assets/icon-arrow.svg";
 import iconChart from "../assets/icon-chart.svg";
 import iconSearch from "../assets/icon-search.svg";
 import iconSpark from "../assets/icon-spark.svg";
 import { logout } from "../auth/client";
 import { useUser } from "../auth/useUser";
-import { search } from "../chat/api";
-import { EXAMPLE_CATEGORIES, EXAMPLES } from "../chat/examples";
+import { Answer } from "../chat/Answer";
+import { ask, search } from "../chat/api";
+import { ASK_CATEGORIES, ASK_EXAMPLES, EXAMPLE_CATEGORIES, EXAMPLES } from "../chat/examples";
 import { AltCard, Reply } from "../chat/Reply";
 import { DevTools, Sheet } from "../chat/Sheet";
 import { Brand } from "../components/Brand";
@@ -21,6 +24,7 @@ import "../styles/chat.css";
 type Message =
   | { id: number; kind: "user"; text: string }
   | { id: number; kind: "bot"; data: SearchResponse }
+  | { id: number; kind: "answer"; data: AskResponse }
   | { id: number; kind: "error"; text: string };
 
 type NewMessage = Message extends infer M ? (M extends Message ? Omit<M, "id"> : never) : never;
@@ -50,11 +54,37 @@ function initial(name: "mock" | "debug"): boolean {
   return params.has(name) ? params.get(name) !== "0" : load(`chat.${name}`) === "1";
 }
 
-const MAIN_EXAMPLES = EXAMPLES.slice(0, EXAMPLE_CATEGORIES.length);
-const MORE_EXAMPLES = EXAMPLES.slice(EXAMPLE_CATEGORIES.length);
+export type Mode = "search" | "ask";
 
-export function ChatPage() {
-  usePage("chat", "인구 통계표 안내");
+// 화면마다 다른 글자와 질문 예시
+const MODES = {
+  search: {
+    title: "인구 통계표 안내",
+    categories: EXAMPLE_CATEGORIES,
+    examples: EXAMPLES,
+    placeholder: "궁금한 인구 통계를 편하게 물어보세요",
+    typing: "통계표를 찾고 있어요",
+    wide: ["평소 말투로 물어보세요. 인구 분야 통계표 2,364개에서", "질문에 맞는 자료와 KOSIS 바로가기를 안내해 드려요."],
+    narrow: ["평소 말투로 물어보세요.", "인구 분야 통계표 2,364개에서 찾아드려요."],
+    note: ["통계표의 수치와 상세 내용은 KOSIS에서 확인해 주세요.", "수치와 상세 내용은 KOSIS에서 확인해 주세요."],
+  },
+  ask: {
+    title: "인구 통계 수치",
+    categories: ASK_CATEGORIES,
+    examples: ASK_EXAMPLES,
+    placeholder: "지역과 연도를 넣어 수치를 물어보세요",
+    typing: "통계를 조회하고 있어요",
+    wide: ["지역과 연도를 넣어 물어보세요. KOSIS 통계표의 수치를", "문장과 차트, 출처와 함께 보여 드려요."],
+    narrow: ["지역과 연도를 넣어 물어보세요.", "수치를 차트, 출처와 함께 보여 드려요."],
+    note: ["수치는 KOSIS 통계표에서 조회·계산한 값입니다. 출처에서 확인해 주세요.", "수치는 KOSIS 통계표 기준입니다."],
+  },
+} as const;
+
+export function ChatPage({ mode }: { mode: Mode }) {
+  const text = MODES[mode];
+  const mainExamples = text.examples.slice(0, text.categories.length);
+  const moreExamples = text.examples.slice(text.categories.length);
+  usePage("chat", text.title);
   const user = useUser();
 
   const [messages, setMessages] = useState<Message[]>([]);
@@ -95,12 +125,19 @@ export function ChatPage() {
     busyRef.current = true;
     setBusy(true);
     add({ kind: "user", text: q });
-    const body: SearchRequest = { question: q, session_id: sessionId.current, top_k: 3, debug };
-    if (selections && Object.keys(selections).length) body.selections = selections;
     try {
-      const data = await search(body, mock);
-      sessionId.current = data.session_id;
-      add({ kind: "bot", data });
+      if (mode === "ask") {
+        // 연도를 되물었으면(missing_year) 서버가 session_id 를 준다. 다음 답("2000년")과 합쳐 준다
+        const data = await ask({ question: q, session_id: sessionId.current }, mock);
+        sessionId.current = data.session_id ?? null;
+        add({ kind: "answer", data });
+      } else {
+        const body: SearchRequest = { question: q, session_id: sessionId.current, top_k: 3, debug };
+        if (selections && Object.keys(selections).length) body.selections = selections;
+        const data = await search(body, mock);
+        sessionId.current = data.session_id;
+        add({ kind: "bot", data });
+      }
     } catch (e) {
       add({ kind: "error", text: `답변을 가져오지 못했어요. ${e instanceof Error ? e.message : String(e)}` });
     } finally {
@@ -143,10 +180,16 @@ export function ChatPage() {
             {"＋  새 대화 시작하기"}
           </button>
           <p className="side-label">WORKSPACE</p>
-          <div className="menu-item" aria-current="page">
-            <img src={iconSearch} width="18" height="18" alt="" />
-            통계표 찾기
-          </div>
+          <nav className="menu" aria-label="하는 일">
+            <NavLink className="menu-item" to="/" end>
+              <img src={iconSearch} width="18" height="18" alt="" />
+              통계표 찾기
+            </NavLink>
+            <NavLink className="menu-item" to="/ask">
+              <img src={iconChart} width="18" height="18" alt="" />
+              통계 수치 묻기
+            </NavLink>
+          </nav>
         </div>
         <div className="side-bottom">
           <div className="guide">
@@ -187,7 +230,7 @@ export function ChatPage() {
         <header className="head">
           <div className="service only-wide">
             <p className="service-tag">통계와 일상을 잇다</p>
-            <h1 className="service-name">인구 통계표 안내</h1>
+            <h1 className="service-name">{text.title}</h1>
           </div>
           <Brand className="only-narrow" />
           <div className="head-actions">
@@ -225,6 +268,14 @@ export function ChatPage() {
           </div>
         </header>
 
+        {/* 좁은 화면에는 사이드바가 없어 메뉴를 머리글 아래에 둔다 */}
+        <nav className="mode-tabs only-narrow" aria-label="하는 일">
+          <NavLink to="/" end>
+            통계표 찾기
+          </NavLink>
+          <NavLink to="/ask">통계 수치 묻기</NavLink>
+        </nav>
+
         <main className="log" aria-live="polite" ref={logRef}>
           {!inChat && (
             <section className="welcome">
@@ -238,28 +289,28 @@ export function ChatPage() {
                 <em>궁금하신가요?</em>
               </h2>
               <p className="welcome-text only-wide">
-                평소 말투로 물어보세요. 인구 분야 통계표 2,364개에서
+                {text.wide[0]}
                 <br />
-                질문에 맞는 자료와 KOSIS 바로가기를 안내해 드려요.
+                {text.wide[1]}
               </p>
               <p className="welcome-text only-narrow">
-                평소 말투로 물어보세요.
+                {text.narrow[0]}
                 <br />
-                인구 분야 통계표 2,364개에서 찾아드려요.
+                {text.narrow[1]}
               </p>
               <div className="examples">
                 <p className="examples-label">이런 질문으로 시작해 보세요</p>
                 <div className="examples-grid">
-                  {MAIN_EXAMPLES.map((q, i) => (
+                  {mainExamples.map((q, i) => (
                     <button type="button" className="example" key={q} onClick={() => void send(q)}>
-                      <span className="example-cat">{`${EXAMPLE_CATEGORIES[i]}  ↗`}</span>
+                      <span className="example-cat">{`${text.categories[i]}  ↗`}</span>
                       <span className="example-q">{q}</span>
                     </button>
                   ))}
                 </div>
               </div>
               <button type="button" className="text-btn more-examples" onClick={() => setSheet({ kind: "examples" })}>
-                {`다른 질문 예시  ${MORE_EXAMPLES.length}  ⌄`}
+                {`다른 질문 예시  ${moreExamples.length}  ⌄`}
               </button>
             </section>
           )}
@@ -277,6 +328,8 @@ export function ChatPage() {
                 <div className="reply">
                   {m.kind === "error" ? (
                     <div className="bubble">{m.text}</div>
+                  ) : m.kind === "answer" ? (
+                    <Answer data={m.data} />
                   ) : (
                     <Reply
                       data={m.data}
@@ -299,7 +352,7 @@ export function ChatPage() {
               </span>
               <div className="reply">
                 <div className="bubble">
-                  통계표를 찾고 있어요
+                  {text.typing}
                   <span className="dots" />
                 </div>
               </div>
@@ -314,7 +367,7 @@ export function ChatPage() {
               ref={inputRef}
               rows={1}
               maxLength={500}
-              placeholder="궁금한 인구 통계를 편하게 물어보세요"
+              placeholder={text.placeholder}
               aria-label="질문"
               required
               value={question}
@@ -329,8 +382,8 @@ export function ChatPage() {
             </button>
           </div>
           <p className="composer-note">
-            <span className="only-wide">통계표의 수치와 상세 내용은 KOSIS에서 확인해 주세요.</span>
-            <span className="only-narrow">수치와 상세 내용은 KOSIS에서 확인해 주세요.</span>
+            <span className="only-wide">{text.note[0]}</span>
+            <span className="only-narrow">{text.note[1]}</span>
             <span className="composer-keys only-wide">Enter 전송 · Shift + Enter 줄바꿈</span>
           </p>
         </form>
@@ -346,7 +399,7 @@ export function ChatPage() {
       )}
       {sheet?.kind === "examples" && (
         <Sheet title="다른 질문 예시" narrow onClose={() => setSheet(null)}>
-          {MORE_EXAMPLES.map((q) => (
+          {moreExamples.map((q) => (
             <button
               type="button"
               className="btn secondary"

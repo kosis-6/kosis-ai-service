@@ -8,7 +8,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from app.api.deps import OptionalUser
 from app.core.stats_db import StatsNotLoadedError
 from app.schemas.ask import AskRequest, AskResponse
-from app.services import ask_followup, qa
+from app.services import ask_followup, charts, qa
 from app.services.hcx_client import HcxError
 
 router = APIRouter(tags=["질문 답변"])
@@ -51,6 +51,7 @@ async def ask(body: AskRequest, user: OptionalUser) -> AskResponse:
     try:
         res = await qa.ask(question)
         res["question"] = question
+        res["chart"] = charts.build(res.get("result"))
         res["session_id"] = await _remember(body.session_id, res)
     except StatsNotLoadedError as e:
         error = f"StatsNotLoadedError: {e}"

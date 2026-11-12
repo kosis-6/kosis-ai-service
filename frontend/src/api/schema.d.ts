@@ -385,6 +385,8 @@ export interface components {
              * @description 답변에 쓴 통계표
              */
             sources: components["schemas"]["Source"][];
+            /** @description 그릴 차트. 값 하나짜리 답이나 답변 불가면 null */
+            chart?: components["schemas"]["Chart"] | null;
             /**
              * Session Id
              * @description 대화 id. 연도를 되물었을 때(status = missing_year) 다음 요청에 함께 보낸다
@@ -425,6 +427,60 @@ export interface components {
              * Format: password
              */
             client_secret?: string | null;
+        };
+        /**
+         * Chart
+         * @description 화면이 그릴 차트 (app/services/charts.py). 값은 result에 있는 숫자 그대로다
+         */
+        Chart: {
+            /**
+             * Type
+             * @description line: 연도별 꺾은선 / bar: 가로 막대 (큰 순·순위 순) / parts: 구성비 나뉜 막대
+             * @enum {string}
+             */
+            type: "line" | "bar" | "parts";
+            /** Title */
+            title: string;
+            /**
+             * Unit
+             * @description 값의 단위 (%, 명 등)
+             */
+            unit: string;
+            /**
+             * Category
+             * @description 행이 무엇인지 (연도 / 지역 / 항목)
+             */
+            category: string;
+            /** Rows */
+            rows: components["schemas"]["ChartRow"][];
+            /**
+             * Count Unit
+             * @description count의 단위
+             */
+            count_unit?: string | null;
+            /**
+             * Note
+             * @description 차트 아래 알림 (일부만 그린 경우 등)
+             */
+            note?: string | null;
+        };
+        /** ChartRow */
+        ChartRow: {
+            /**
+             * Label
+             * @description 행 이름 (연도, 지역, 항목)
+             */
+            label: string;
+            /**
+             * Value
+             * @description 값. 구성비(parts)는 비중(%). 자료가 없으면 null
+             */
+            value: number | null;
+            /**
+             * Count
+             * @description 구성비일 때 그 항목의 원래 값
+             */
+            count?: number | null;
         };
         /** EmailCodeRequest */
         EmailCodeRequest: {
