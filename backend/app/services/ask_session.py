@@ -146,7 +146,7 @@ def applied(conditions: dict, sources: dict[str, str]) -> list[dict[str, str]]:
     if not regions and conditions.get("type") == "rank":
         regions = [f"{conditions.get('sido') or '전국'} {conditions.get('level') or '시도'}별"]
     values = {
-        "indicator": conditions.get("indicator"),
+        "indicator": ", ".join(conditions.get("indicators") or []) or conditions.get("indicator"),
         "regions": ", ".join(regions) or None,
         "period": period_text(conditions),
         "sex": conditions.get("sex"),
@@ -216,7 +216,16 @@ def apply_changes(conditions: dict, changes: dict) -> tuple[dict, set[str]]:
         c["indicator"] = indicators.canonical_name(name) or name
         c["term"] = name
         # 앞 지표에만 맞던 세부 조건은 버린다
-        for key in ("ages", "age_group", "unsupported", "share_of", "aggregate", "group", "by"):
+        for key in (
+            "ages",
+            "age_group",
+            "unsupported",
+            "share_of",
+            "aggregate",
+            "group",
+            "by",
+            "indicators",
+        ):
             c.pop(key, None)
         changed.add("indicator")
 

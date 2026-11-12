@@ -397,9 +397,31 @@ def correct(question, parsed, today=None):
         elif kind not in ("trend", "other", "parse_error") and parsed.get("year") != ref.year:
             fix("year", ref.year, ref.describe(today))
 
+    names = asked_indicators(question)
+    if len(names) > 1 and parsed.get("type") in ("value", "trend", "compare"):
+        parsed["indicators"] = names  # 지표마다 따로 계산한다 (compute)
+
     if fixes:
         parsed["corrections"] = fixes
     return parsed
+
+
+# 지표 이름 사이에 이 말만 있으면 여러 지표를 함께 물은 것 ("출생아 수와 사망자 수")
+AND_WORDS = re.compile(r"^(와|과|하고|랑|이랑|및|,|그리고|,그리고|와함께|과함께)$")
+
+
+def asked_indicators(question):
+    """질문이 함께 물은 지원 지표들 (MAX_INDICATORS개까지). 하나면 [] (HCX 해석을 그대로 쓴다).
+    "서울 인구 중 고령인구 비율"처럼 이름이 이어지지 않으면 여러 지표로 보지 않는다"""
+    spans = sorted(indicators.find_in_text(question))
+    text = indicators._norm(question)
+    names = [spans[0][2]] if spans else []
+    for (_, end, _), (start, _, name) in zip(spans, spans[1:], strict=False):
+        if not AND_WORDS.match(text[end:start]):
+            return []
+        names.append(name)
+    names = list(dict.fromkeys(names))
+    return names[:MAX_INDICATORS] if len(names) > 1 else []
 
 
 def _ground_regions(question, parsed, fix):
@@ -621,6 +643,7 @@ def _read_question(question, parsed, fix):
 
 
 MAX_TREND_REGIONS = 6  # 여러 지역 추이는 이만큼까지 (꺾은선 색을 돌려 쓰지 않는 개수)
+MAX_INDICATORS = 3  # 한 질문에서 함께 답하는 지표 수
 
 
 def compute(q):
@@ -645,6 +668,21 @@ def compute(q):
             "reason": "지역별 인구통계 질문에만 답할 수 있습니다.",
             "supported": list(indicators.specs()),
         }
+
+    names = q.get("indicators") or []
+    if len(names) > 1 and kind in ("value", "trend", "compare"):
+        # 여러 지표를 함께 물음: 지표마다 따로 계산해 묶는다 (단위가 달라 차트 하나에 그리지 않는다)
+        parts = [compute({**q, "indicators": None, "indicator": n, "term": n}) for n in names]
+        ok = [p for p in parts if p.get("status") == "ok"]
+        if not ok:
+            return parts[0]
+        result = _combine(ok, by="indicator")
+        missed = [n for n, p in zip(names, parts, strict=False) if p.get("status") != "ok"]
+        if missed:
+            ok[0].setdefault("notes", []).append(
+                f"{', '.join(missed)}은(는) 이 조건으로 답할 수 없어 뺐습니다"
+            )
+        return result
 
     causal = kind == "causal"
     if causal:  # 답변 불가 사례 4: 인과 판단 없이 수치 변화만 제시
@@ -1355,6 +1393,8 @@ def _split_text(r):
     if r.get("split_by") == "region":
         return text + _region_trend_end(r)
     vals = [p.get("value") for p in parts]
+    if r.get("split_by") == "indicator":
+        return text  # 다른 지표끼리는 크기를 견주지 않는다 (단위·뜻이 다르다)
     if len(parts) == 2 and None not in vals and all("value" in p for p in parts):
         a, b = parts
         if vals[0] != vals[1]:
@@ -1474,9 +1514,18 @@ def _body(r):
 def _source_result(result):
     """출처를 보여줄 계산 결과 (수록 기간 밖이라 추계값을 대신 보여주면 추계 결과)"""
     if result.get("split"):
-        first = result["split"][0]
-        notes = list(dict.fromkeys(n for p in result["split"] for n in p.get("notes") or []))
-        return {**first, "notes": notes}
+        first = _source_result(result["split"][0])
+        notes = list(dict.fromkeys(n for p in _leaves(result) for n in p.get("notes") or []))
+        extra = list(first.get("extra_sources") or [])
+        if result.get("split_by") == "indicator":  # 지표마다 다른 표를 썼다
+            seen = {first.get("tbl_id"), *(e.get("tbl_id") for e in extra)}
+            for part in result["split"][1:]:
+                src = _source_result(part)
+                for one in [src, *(src.get("extra_sources") or [])]:
+                    if one.get("source") and one.get("tbl_id") not in seen:
+                        seen.add(one.get("tbl_id"))
+                        extra.append({k: one.get(k) for k in ("source", "basis", "tbl_id", "url")})
+        return {**first, "notes": notes, "extra_sources": extra}
     suggestion = result.get("suggestion", {})
     if result.get("status") == "out_of_range" and suggestion.get("status") == "ok":
         return suggestion

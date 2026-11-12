@@ -134,6 +134,11 @@ def test_keeps_llm_indicator(question: str) -> None:
     assert p["indicator"] == "HCX 해석"
 
 
+def test_two_indicators_are_both_answered() -> None:
+    p = qa.correct("서울 고령화율과 노령화지수를 비교해줘", parsed(indicator="HCX 해석"), TODAY)
+    assert p["indicators"] == ["고령인구 비율", "노령화지수"]
+
+
 def test_both_genders_or_rank_untouched() -> None:
     p = qa.correct(
         "2025년 전국 시도 중 남성과 여성 인구 차이가 큰 곳은?",

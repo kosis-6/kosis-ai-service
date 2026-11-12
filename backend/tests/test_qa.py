@@ -345,3 +345,58 @@ def test_summary_region_trends_ends_with_last_year_comparison() -> None:
     text = qa.summary(r)
     assert text.startswith("서울특별시의 총인구는 2023년 1,000명")
     assert text.endswith("2024년에는 부산광역시가 서울특별시보다 50명 높습니다.")
+
+
+# ---- 여러 지표를 함께 물음 ---------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("question", "names"),
+    [
+        ("2024년 서울 출생아 수와 사망자 수", ["출생아 수", "사망자 수"]),
+        ("서울 출생아 수, 사망자 수, 혼인 건수 알려줘", ["출생아 수", "사망자 수", "혼인 건수"]),
+        ("서울 인구 중 고령인구 비율", []),  # 이름이 '와·과'로 이어지지 않으면 지표 하나
+        ("2024년 서울 출생아 수", []),
+    ],
+)
+def test_asked_indicators(question, names) -> None:
+    assert qa.asked_indicators(question) == names
+
+
+def test_compute_each_indicator(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake(q, sp, kind, regions, *rest):
+        value = {"출생아 수": 41605, "사망자 수": 47000}.get(sp["name"])
+        if value is None:
+            return {"status": "missing_data", "reason": "없음"}
+        tbl = "T_" + sp["name"]
+        return {
+            **VALUE,
+            "indicator": sp["name"],
+            "unit": "명",
+            "sex": "계",
+            "value": value,
+            "source": sp["name"] + " 표",
+            "tbl_id": tbl,
+            "url": "https://kosis.kr/" + tbl,
+        }
+
+    monkeypatch.setattr(qa.indicators, "_data_years", lambda: (2008, 2025))
+    monkeypatch.setattr(qa.indicators, "spec", lambda name: {"name": name, "method": "lookup"})
+    monkeypatch.setattr(qa, "_compute_lookup", fake)
+    q = {
+        "type": "value",
+        "indicator": "출생아 수",
+        "regions": ["서울"],
+        "year": 2025,
+        "indicators": ["출생아 수", "사망자 수", "혼인 건수"],
+    }
+    r = qa.compute(q)
+    assert r["split_by"] == "indicator" and [p["indicator"] for p in r["split"]] == [
+        "출생아 수",
+        "사망자 수",
+    ]
+    text = qa.summary(r)
+    assert "출생아 수는 41,605명" in text and "사망자 수는 47,000명" in text
+    assert "더 높습니다" not in text  # 다른 지표끼리 견주지 않는다
+    assert [s["tbl_id"] for s in qa.sources(r)] == ["T_출생아 수", "T_사망자 수"]
+    assert "혼인 건수은(는) 이 조건으로 답할 수 없어 뺐습니다" in qa.render(r)
