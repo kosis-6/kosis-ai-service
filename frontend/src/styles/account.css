@@ -3,6 +3,8 @@
 body[data-page="account"] {
   display: flex;
   gap: 20px;
+  /* base.css 의 height: 100% 를 풀어, 폼이 화면보다 길면(인증번호 칸·오류 문구) 패널도 함께 늘어나게 한다 */
+  height: auto;
   min-height: 100dvh;
   padding: 20px;
 }
