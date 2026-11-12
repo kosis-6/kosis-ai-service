@@ -1,5 +1,6 @@
 /* 로그인·회원가입·가입 완료 화면 (Figma 02·03·06, M02~M04) */
-body {
+/* 화면마다 body 배치가 달라 data-page 로 나눈다 (pages/*.tsx 의 usePage) */
+body[data-page="account"] {
   display: flex;
   gap: 20px;
   min-height: 100dvh;
@@ -30,7 +31,7 @@ body {
   border-radius: 32px;
   background: var(--logo-paper);
 }
-.story-art .logo { height: 186px; border-radius: 0; background-image: url("assets/team-six-symbol.png"); }
+.story-art .logo { height: 186px; border-radius: 0; background-image: url("../assets/team-six-symbol.png"); }
 .story-title { font-size: 34px; font-weight: 700; line-height: 51px; }
 .story-text { color: var(--accent-mid); line-height: 21px; }
 .story-topics { display: flex; gap: 10px; margin: 0; padding: 0; list-style: none; }
@@ -184,7 +185,7 @@ body {
 
 /* ---- 모바일 (M02~M04) ---- */
 @media (max-width: 860px) {
-  body { display: block; padding: 0; background: var(--workspace); }
+  body[data-page="account"] { display: block; padding: 0; background: var(--workspace); }
   .story, .back, .panel-foot { display: none; }
   .panel { min-height: 100dvh; padding: 0; border-radius: 0; gap: 0; }
   .m-head {

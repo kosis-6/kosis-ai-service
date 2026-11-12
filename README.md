@@ -58,6 +58,7 @@
 - 언어 / 프레임워크: Python 3.12.15, FastAPI
 - 패키지 관리: uv 0.13.3
 - LLM / 임베딩: HyperCLOVA X(HCX-007), CLOVA Studio 임베딩 v2(bge-m3)
+- 화면: React, TypeScript, Vite, React Router (테스트: Vitest)
 - DB: PostgreSQL 17 + pgvector 0.8.7, SQLAlchemy, Alembic
 - 실행 환경: Docker, Docker Compose
 - 테스트 / 린트: pytest, ruff
@@ -66,7 +67,12 @@
 
 ```
 kosis-ai-service/
-├── frontend/                # 채팅 화면 (FastAPI가 /chat으로 서빙)
+├── frontend/                # 화면 (React + TypeScript + Vite). 빌드한 dist/를 FastAPI가 /chat으로 서빙
+│   ├── src/pages/           # 화면: 통계표 찾기(채팅), 로그인, 회원가입
+│   ├── src/chat/            # 답변 그리기, /search 호출, 목업 응답
+│   ├── src/auth/            # 로그인 상태, /auth API 호출
+│   ├── src/api/             # API 타입 (schema.d.ts는 npm run gen:api로 생성)
+│   └── src/styles/          # Figma 토큰과 화면 스타일
 ├── backend/
 │   ├── app/
 │   │   ├── main.py          # FastAPI 앱 진입점
@@ -86,6 +92,24 @@ kosis-ai-service/
 │   └── docker/postgres/     # DB 최초 생성 시 확장 설치
 ├── docs/                    # 데이터 사전, 작업 기록
 ├── .devcontainer/           # VS Code 컨테이너 개발 환경 설정
-├── compose.yaml             # 로컬 개발용 실행 설정 (api + db)
+├── compose.yaml             # 로컬 개발용 실행 설정 (api + db + frontend 빌드)
 └── .env                     # 환경변수 (각자 생성, 커밋 X)
 ```
+
+## 화면 실행
+
+화면은 `frontend/`(React)를 빌드한 결과물(`frontend/dist/`)을 서버가 `/chat`으로 서빙한다.
+
+- **그냥 쓰기**: `docker compose up` → http://localhost:8000/chat
+  `frontend` 서비스가 화면을 빌드하고, `frontend/`를 고치면 다시 빌드한다. Node를 설치하지 않아도 된다.
+- **화면 개발**: Node 22에서 `cd frontend && npm install && npm run dev` → http://localhost:5173/chat/
+  고치면 바로 반영되고, API 요청은 8000번 서버로 넘어간다.
+
+| 명령 (`frontend/`에서) | 하는 일 |
+| --- | --- |
+| `npm run dev` | 개발 서버 (5173) |
+| `npm run build` | 타입 검사 후 `dist/`에 빌드 |
+| `npm test` | 단위 테스트 (Vitest) |
+| `npm run gen:api` | 서버의 OpenAPI에서 API 타입(`src/api/schema.d.ts`) 다시 생성. 서버 API를 바꾼 뒤 실행 |
+
+목업 응답으로 화면만 볼 때는 주소 뒤에 `?mock=1`을 붙인다 (서버·HCX를 부르지 않는다).

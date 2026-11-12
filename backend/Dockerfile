@@ -1,3 +1,13 @@
+# ---- 화면 빌드: frontend/ (React + Vite) → frontend/dist ----
+FROM node:22-slim AS frontend
+WORKDIR /frontend
+# 의존성만 먼저 설치해 화면 코드가 바뀌어도 이 레이어는 캐시를 재사용
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+COPY frontend/ ./
+RUN npm run build
+
+# ---- 서버 ----
 FROM python:3.12.15-slim
 
 COPY --from=ghcr.io/astral-sh/uv:0.13.3 /uv /uvx /bin/
@@ -16,7 +26,7 @@ RUN apt-get update \
     # Windows 바인드 마운트는 파일 소유자가 달라 git이 거부하므로 /workspace를 신뢰
     && git config --system --add safe.directory /workspace
 
-# 레포와 같은 배치: /workspace/backend, /workspace/frontend
+# 레포와 같은 배치: /workspace/backend, /workspace/frontend/dist
 WORKDIR /workspace/backend
 
 # 의존성만 먼저 설치해 코드가 바뀌어도 이 레이어는 캐시를 재사용
@@ -24,7 +34,8 @@ COPY backend/pyproject.toml backend/uv.lock ./
 RUN uv sync --frozen --no-install-project
 
 COPY backend/ ./
-COPY frontend/ ../frontend/
+# 화면은 빌드 결과물만 넣는다 (app/main.py가 /chat 으로 서빙)
+COPY --from=frontend /frontend/dist ../frontend/dist
 
 EXPOSE 8000
 

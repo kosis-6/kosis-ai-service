@@ -1,5 +1,5 @@
 /* 통계표 찾기 화면 (Figma 01·04·05·07·08, M01, 추가 상태) */
-body {
+body[data-page="chat"] {
   display: flex;
   gap: 20px;
   height: 100dvh;
@@ -433,7 +433,7 @@ button.pill:not(.on):hover { border-color: var(--accent-mid); }
 
 /* ---- 모바일 (M01) ---- */
 @media (max-width: 860px) {
-  body { padding: 0; gap: 0; background: var(--workspace); }
+  body[data-page="chat"] { padding: 0; gap: 0; background: var(--workspace); }
   .only-wide { display: none !important; }
   .only-narrow:not([hidden]) { display: revert !important; }
   .brand.only-narrow { display: flex !important; }
