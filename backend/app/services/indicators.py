@@ -30,7 +30,7 @@ from pathlib import Path
 
 from app.core.stats_db import StatsTableMissing
 from app.core.stats_db import rows as _rows
-from app.services import analysis
+from app.services import analysis, population_latest
 
 POP_TABLE = "DT_1B04006"
 POP_SOURCE = "국가데이터처 (구 통계청), 행정구역(시군구)별/1세별 주민등록인구 (DT_1B04006)"
@@ -280,6 +280,8 @@ def _series_break_notes(y0, y1):
 
 def _out_of_range_reason(lo, hi):
     reason = f"수집된 주민등록인구 자료는 {lo}~{hi}년(연간)만 있습니다."
+    if m := population_latest.components("00"):  # 받아 온 최신 달 (설정의 적어 둔 값보다 정확)
+        return reason + f" KOSIS 원표에는 {m['year']}년 {m['month']}월(월별)까지 자료가 있습니다."
     rows = _catalog_rows("select latest_available from table_notes where tbl_id = ?", [POP_TABLE])
     if rows and rows[0]["latest_available"]:
         reason += f" KOSIS 원표에는 {rows[0]['latest_available']}까지 자료가 있습니다."
@@ -306,12 +308,57 @@ def _components(codes, y0, y1, sex, band=None):
     """,
         [lo, hi, sex, y0, y1, *codes],
     )
-    return {(r["year"], r["region_code"]): r for r in rows}
+    out = {(r["year"], r["region_code"]): r for r in rows}
+    if y1 > _data_years()[1]:
+        for code in codes:
+            if m := _monthly(code, sex, y1):
+                out[(y1, code)] = {
+                    **{k: m[k] for k in ("total", "young", "working", "old")},
+                    "year": y1,
+                    "region_code": code,
+                    "band": population_latest.band(m, lo, hi),
+                }
+    return out
+
+
+def _monthly(code, sex, year):
+    """연간 자료 다음 해(year)의 최신 달 값. 그 해 자료가 KOSIS에 아직 없으면 None"""
+    m = population_latest.components(code, sex)
+    return m if m and m["year"] == year else None
+
+
+def latest_year(region_names, sex="계"):
+    """최근·현재를 물은 질문의 연도.
+    첫 지역의 최신 달이 연간 자료보다 새로우면 그 해, 아니면 연간 마지막 해"""
+    hi = _data_years()[1]
+    reg = resolve_region(region_names[0], None, sigungu=True) if region_names else None
+    if reg and reg.get("status") == "ok":
+        m = population_latest.components(reg["region_code"], sex)
+        if m and m["year"] > hi:
+            return m["year"]
+    return hi
+
+
+def _mark_monthly(out, code, sex, year):
+    """최신 달 값으로 답한 결과에 기준 시점을 적는다 (연간 값은 12월 말, 이 값은 그 달 말)"""
+    m = _monthly(code, sex, year)
+    if out.get("status") != "ok" or not m:
+        return out
+    hi = _data_years()[1]
+    out["as_of"] = f"{m['year']}년 {m['month']}월 말"
+    out["basis"] = f"주민등록인구, {out['as_of']} 기준 (KOSIS 월별 자료)"
+    out.setdefault("notes", []).append(
+        f"{hi}년까지는 연간(12월 말) 자료이고, {year}년은 KOSIS 월별 자료의 최신 달"
+        f"({out['as_of']}) 값입니다"
+    )
+    return out
 
 
 def _check(name, ind, reg, y0, y1):
     """수록 기간·지역 유효 기간 확인. 문제가 있으면 안내용 dict, 없으면 None"""
     lo, hi = _data_years()
+    if y1 > hi and y0 >= lo and _monthly(reg["region_code"], "계", y1):
+        return None  # 연간 자료 다음 해: 같은 표의 최신 달 값으로 답한다 (_components)
     if y0 < lo or y1 > hi:
         out = _base(
             name,
@@ -517,7 +564,7 @@ def value(indicator, region, year, sex="계", ages=None):
         (year, reg["region_code"])
     )
     v = ind["calc"](comp) if comp else None
-    return _base(
+    out = _base(
         name,
         ind,
         region=reg["display"],
@@ -526,6 +573,7 @@ def value(indicator, region, year, sex="계", ages=None):
         value=_round(v, ind["kind"]),
         notes=_region_notes(regs),
     )
+    return _mark_monthly(out, reg["region_code"], sex, year)
 
 
 def trend(indicator, region, start_year, end_year, sex="계", ages=None):
@@ -553,7 +601,7 @@ def trend(indicator, region, start_year, end_year, sex="계", ages=None):
     if ind["kind"] == "count":
         change["rate"] = round(analysis.growth_rate(first, last), 2)
         change["rate_unit"] = "%"
-    return _base(
+    out = _base(
         name,
         ind,
         region=reg["display"],
@@ -563,6 +611,13 @@ def trend(indicator, region, start_year, end_year, sex="계", ages=None):
         notes=_change_notes(reg["region_code"], start_year, end_year)
         + _series_break_notes(start_year, end_year),
     )
+    if (m := _monthly(reg["region_code"], sex, end_year)) and series[-1]["year"] == end_year:
+        hi = _data_years()[1]
+        out["notes"].append(
+            f"{end_year}년 값은 {m['year']}년 {m['month']}월 말 기준입니다 "
+            f"(KOSIS 월별 자료의 최신 달, {hi}년까지는 12월 말)"
+        )
+    return out
 
 
 def compare(indicator, regions, year, sex="계", ages=None):
@@ -586,7 +641,7 @@ def compare(indicator, regions, year, sex="계", ages=None):
     values.sort(key=lambda x: (x["value"] is None, -(x["value"] or 0)))
     valid = [x for x in values if x["value"] is not None]
     gap = _diff(valid[-1]["value"], valid[0]["value"], ind["kind"]) if len(valid) >= 2 else None
-    return _base(
+    out = _base(
         name,
         ind,
         year=year,
@@ -600,6 +655,7 @@ def compare(indicator, regions, year, sex="계", ages=None):
         gap_unit=DIFF_UNIT[ind["kind"]],
         notes=_region_notes(regs),
     )
+    return _mark_monthly(out, regs[0]["region_code"], sex, year)
 
 
 AGE_GROUPS = [

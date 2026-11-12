@@ -179,6 +179,7 @@ ASCENDING = re.compile(r"꼴찌|최하위|가장\s*(낮|적)|제일\s*(낮|적)"
 TOP_N = re.compile(r"(상위|하위)\s*(\d+)|(\d+)\s*(곳|개|위까지)(?!\s*\S*\s*중)")
 # "최근 5년", "과거 10년간", "지난 3년 동안" (timeref와 같은 표현)
 RECENT = timeref.RECENT_N_YEARS
+LATEST = re.compile(r"최근|최신|현재|요즘|지금")
 SPAN = re.compile(r"((?:19|20)\d{2})\s*년?\s*(대비|부터|에서)\s*((?:19|20)\d{2})\s*년")
 YEAR = re.compile(r"((?:19|20)\d{2})\s*년")
 SINCE = re.compile(r"((?:19|20)\d{2})\s*년\s*(이후|이래|부터)(?!.*까지)")
@@ -547,6 +548,8 @@ def _read_question(question, parsed, fix):
     by_year = {"extreme", "streak", "rebound", "per_year"} & set(asked)
     if m := RECENT.search(question):
         asked["recent"] = int(m[2])
+    elif LATEST.search(question) and not YEAR.search(question) and not timeref.resolve(question):
+        asked["latest"] = True  # "최근 서울 인구" → 연도 없이 가장 최근 값 (인구는 최신 달까지)
     if ask_followup.FROM_PAST.search(question) and not SPAN.search(question):
         # "과거부터 지금까지 합계출산율 추이" → 수록 기간 전체 추이
         asked["from_start"] = True
@@ -786,6 +789,8 @@ def _compute_population(q, ind, kind, regions, year, sex, ages, hi):
     """계산 지표 (주민등록인구)"""
     if kind in ("value", "trend", "compare") and not regions:
         return {"status": "missing_region", "reason": "어느 지역인지 질문에 없습니다."}
+    if (q.get("asked") or {}).get("latest") and kind in ("value", "compare"):
+        year = indicators.latest_year(regions, sex)  # 연간 자료 다음 해의 최신 달이 있으면 그 해
     if kind == "value" and len(regions) > 1 and q.get("aggregate") == "sum":
         return _sum_regions(indicators.compare(ind, regions, year, sex, ages), q)
     if kind == "value":
@@ -1121,14 +1126,19 @@ NEGATIVE_MEANING = {
 }
 
 
+def _when(r):
+    """답의 시점: 연간 값은 "2025년", 최신 달 값은 "2026년 10월 말" (indicators._mark_monthly)"""
+    return r.get("as_of") or f"{r['year']}년"
+
+
 def _value_text(r):
     name, unit = _subject(r), r.get("unit", "")
     if r["value"] is None:
-        return f"{r['year']}년 {r['region']}의 {_josa(name, '은는')} 자료가 없습니다."
+        return f"{_when(r)} {r['region']}의 {_josa(name, '은는')} 자료가 없습니다."
     meaning = _meaning(r["indicator"], r["value"])
     # 뜻풀이 문장이 있으면 단위는 거기서 설명한다
     value = _val(r["value"], unit, full=not meaning)
-    text = f"{r['year']}년 {r['region']}의 {_josa(name, '은는')} {value}입니다." + meaning
+    text = f"{_when(r)} {r['region']}의 {_josa(name, '은는')} {value}입니다." + meaning
     negative = NEGATIVE_MEANING.get(r["indicator"])
     if negative and r["value"] < 0:
         text += " " + negative.format(value=f"{-r['value']:,}")
@@ -1241,7 +1251,7 @@ def _compare_text(r):
     name, unit = _subject(r), r.get("unit", "")
     valid = [v for v in r["values"] if v["value"] is not None]
     if len(valid) < 2:
-        return f"{r['year']}년 {name} 값이 있는 지역이 둘 이상이 아니어서 비교할 수 없습니다."
+        return f"{_when(r)} {name} 값이 있는 지역이 둘 이상이 아니어서 비교할 수 없습니다."
     high, low = valid[0], valid[-1]
     ratio = r.get("ratio") if (r.get("asked") or {}).get("ratio") else None
     if ratio:
@@ -1250,24 +1260,24 @@ def _compare_text(r):
         by_region = {v["region"]: v["value"] for v in r["values"]}
         a, b = ratio["a"], ratio["b"]
         return (
-            f"{r['year']}년 {a}의 {_josa(name, '은는')} {b}의 {tail}"
+            f"{_when(r)} {a}의 {_josa(name, '은는')} {b}의 {tail}"
             f" ({a} {_val(by_region[a], unit)}, {b} {_val(by_region[b], unit)})"
         )
     if r["gap"] == 0:
         return (
-            f"{r['year']}년 {_josa(name, '은는')} {_josa(high['region'], '과와')} "
+            f"{_when(r)} {_josa(name, '은는')} {_josa(high['region'], '과와')} "
             f"{_josa(low['region'], '이가')} 같습니다."
         )
     gap = _val(r["gap"], r["gap_unit"])
     if len(valid) == 2:
         return (
-            f"{r['year']}년 {_josa(name, '은는')} {_josa(high['region'], '이가')} "
+            f"{_when(r)} {_josa(name, '은는')} {_josa(high['region'], '이가')} "
             f"{low['region']}보다 {gap} 높습니다"
             f"({high['region']} {_val(high['value'], unit)}, "
             f"{low['region']} {_val(low['value'], unit)})."
         )
     return (
-        f"{r['year']}년 {_josa(name, '이가')} 가장 높은 지역은 "
+        f"{_when(r)} {_josa(name, '이가')} 가장 높은 지역은 "
         f"{high['region']}({_val(high['value'], unit)}), 가장 낮은 지역은 "
         f"{low['region']}({_val(low['value'], unit)})이며, 차이는 {gap}입니다."
     )
