@@ -27,6 +27,8 @@
 [hidden] { display: none !important; }
 
 html, body { height: 100%; }
+/* React 가 그리는 곳. 화면의 큰 덩어리(사이드바·본문)가 body 의 flex 자식으로 놓이게 상자를 없앤다 */
+#root { display: contents; }
 
 body {
   margin: 0;
@@ -79,7 +81,7 @@ a { color: inherit; }
   flex: none;
   aspect-ratio: 42 / 60;
   /* 작은 크기는 원본(910px)을 크게 줄일 때 일반 모니터에서 거칠어져서 작은 판을 쓴다 */
-  background: var(--logo-paper) image-set(url("assets/team-six-symbol-small.png") 1x, url("assets/team-six-symbol.png") 2x) 43.44% 29.44% / 212.5% 135.67% no-repeat;
+  background: var(--logo-paper) image-set(url("../assets/team-six-symbol-small.png") 1x, url("../assets/team-six-symbol.png") 2x) 43.44% 29.44% / 212.5% 135.67% no-repeat;
   border-radius: 13.33%/9.33%;
 }
 

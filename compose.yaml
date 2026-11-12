@@ -27,6 +27,18 @@ services:
     # 개발용: 시작할 때 DB 구조를 최신으로 맞춘다. 운영에서는 배포 단계에서 한 번만 실행한다
     command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
 
+  # 화면 빌드 (개발용): frontend/ 를 고칠 때마다 다시 빌드해 frontend/dist 에 쓴다.
+  # api 가 그 폴더를 /chat 으로 서빙하므로 Node 를 깔지 않아도 docker compose up 만으로 화면이 뜬다.
+  # 화면을 고치는 사람은 frontend/ 에서 npm run dev (5173, 바로 반영) 를 쓰면 더 빠르다
+  frontend:
+    image: node:22-slim
+    working_dir: /workspace/frontend
+    volumes:
+      - .:/workspace
+      # 호스트(macOS/Windows)의 node_modules 는 OS 가 달라 컨테이너에서 못 쓰므로 가린다
+      - /workspace/frontend/node_modules
+    command: sh -c "npm ci && npm run build:watch"
+
   # 통계표 적재 프로세스 (app.load_jobs 대기열 처리). 기본으로는 뜨지 않는다:
   #   docker compose --profile worker up -d worker
   # 받아 둔 표는 backend/data/tables/에 {표ID}.csv(.gz) + .meta.json으로 둔다

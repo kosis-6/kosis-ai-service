@@ -6,12 +6,12 @@ from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles
 
 from app.api.router import api_router
 from app.core.config import get_settings
 from app.core.security import AuthNotConfigured
 from app.core.security_headers import SecurityHeadersMiddleware
+from app.core.spa import SpaFiles
 from app.services import indicators, load_queue, search
 from app.services.mailer import MailNotConfigured
 
@@ -101,7 +101,7 @@ async def not_configured(request: Request, exc: RuntimeError) -> JSONResponse:
     return JSONResponse(status_code=503, content={"detail": str(exc)})
 
 
-# 통계표 안내 채팅 화면 (frontend/, /chat, 목업은 /chat/?mock=1)
+# 화면 (React, frontend/ 를 빌드한 frontend/dist). /chat, 목업은 /chat/?mock=1
 # API와 같은 주소로 서빙해 CORS가 필요 없다
-FRONTEND_DIR = Path(__file__).resolve().parents[2] / "frontend"
-app.mount("/chat", StaticFiles(directory=FRONTEND_DIR, html=True), name="chat")
+FRONTEND_DIR = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+app.mount("/chat", SpaFiles(directory=str(FRONTEND_DIR)), name="chat")

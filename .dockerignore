@@ -6,6 +6,8 @@
 **/.pytest_cache/
 **/.ruff_cache/
 **/.DS_Store
+**/node_modules
+frontend/dist
 .idea/
 .vscode/
 # 데이터는 볼륨 마운트로 사용 (빌드 컨텍스트에서 제외)

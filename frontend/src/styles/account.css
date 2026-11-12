@@ -1,7 +1,10 @@
 /* 로그인·회원가입·가입 완료 화면 (Figma 02·03·06, M02~M04) */
-body {
+/* 화면마다 body 배치가 달라 data-page 로 나눈다 (pages/*.tsx 의 usePage) */
+body[data-page="account"] {
   display: flex;
   gap: 20px;
+  /* base.css 의 height: 100% 를 풀어, 폼이 화면보다 길면(인증번호 칸·오류 문구) 패널도 함께 늘어나게 한다 */
+  height: auto;
   min-height: 100dvh;
   padding: 20px;
 }
@@ -30,7 +33,7 @@ body {
   border-radius: 32px;
   background: var(--logo-paper);
 }
-.story-art .logo { height: 186px; border-radius: 0; background-image: url("assets/team-six-symbol.png"); }
+.story-art .logo { height: 186px; border-radius: 0; background-image: url("../assets/team-six-symbol.png"); }
 .story-title { font-size: 34px; font-weight: 700; line-height: 51px; }
 .story-text { color: var(--accent-mid); line-height: 21px; }
 .story-topics { display: flex; gap: 10px; margin: 0; padding: 0; list-style: none; }
@@ -108,6 +111,34 @@ body {
 .eye { flex: none; display: grid; place-items: center; padding: 0; border: 0; background: none; opacity: .75; }
 .eye[aria-pressed="true"] { opacity: 1; filter: brightness(.5); }
 
+/* 칸 안의 글자 버튼 (인증번호 받기·확인), 칸 아래 안내·오류 문구. 시안에 없어 SIX / Input 에 맞춰 둠 */
+.field-btn {
+  flex: none;
+  padding: 6px 0;
+  border: 0;
+  background: none;
+  color: var(--accent-hover);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 20px;
+  white-space: nowrap;
+}
+.field-btn:hover:not(:disabled) { text-decoration: underline; }
+.field-btn:disabled { color: var(--muted); cursor: default; }
+.field-msg { color: var(--muted); font-size: 12px; line-height: 18px; }
+.field-msg.ok { color: var(--ok); }
+.field-msg.bad { color: var(--bad); }
+.field.invalid .field-box { border-color: var(--bad); box-shadow: none; }
+.form-msg {
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: var(--bad-soft);
+  color: var(--bad);
+  font-size: 13px;
+  line-height: 20px;
+}
+.btn[aria-busy="true"] { cursor: progress; }
+
 /* 체크박스 */
 .agrees { display: flex; flex-direction: column; gap: 8px; }
 .agree {
@@ -156,7 +187,7 @@ body {
 
 /* ---- 모바일 (M02~M04) ---- */
 @media (max-width: 860px) {
-  body { display: block; padding: 0; background: var(--workspace); }
+  body[data-page="account"] { display: block; padding: 0; background: var(--workspace); }
   .story, .back, .panel-foot { display: none; }
   .panel { min-height: 100dvh; padding: 0; border-radius: 0; gap: 0; }
   .m-head {
@@ -182,8 +213,9 @@ body {
 
 /* 터치 기기: 시안의 크기는 두고 눌리는 범위만 44px 로 넓힌다 */
 @media (pointer: coarse) {
-  .eye { position: relative; }
+  .eye, .field-btn { position: relative; }
   .eye::after { content: ""; position: absolute; inset: -13px; }
+  .field-btn::after { content: ""; position: absolute; inset: -6px -8px; }
   .m-back { display: grid; place-items: center; width: 44px; height: 44px; margin-left: -10px; }
   .agree { min-height: 32px; }
 }
