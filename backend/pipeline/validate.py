@@ -87,6 +87,20 @@ CHECKS = [
         from population group by 1, 2, 3 having count(*) <> 102
     """,
     ),
+    # ---- regions: 기준 지역 (새로 넣은 지역도 기존 지역과 같은 모양인지) ----------
+    (
+        "regions: 시군구는 모두 is_basic",
+        """
+        select region_code, region_name from regions where kind = '시군구' and not is_basic
+    """,
+    ),
+    (
+        "regions: 시군구·일반구·출장소는 시도 코드와 시도 이름이 있다",
+        """
+        select region_code, region_name from regions
+        where kind in ('시군구', '일반구', '출장소') and (sido_code is null or sido_name is null)
+    """,
+    ),
     # ---- facts: 통계표 20개 통합 ----------------------------------------------
     (
         "facts: 결측이 아닌데 값이 빈 행",
