@@ -375,15 +375,15 @@ def build_regions(con):
         sido_code = None if kind == "시도" else code[:2]
         sido_name = None
         if sido_code:
-            row = con.execute(
+            rows = con.execute(
                 "select region_name from regions where region_code = ?", [sido_code]
-            ).fetchone()
-            if row is None:
+            ).fetchall()
+            if not rows:
                 raise ValueError(
                     f"NEW_REGIONS: {code} {name}의 시도({sido_code})가 regions에 없습니다. "
                     "시도를 시군구보다 먼저 적어 주세요"
                 )
-            sido_name = row[0]
+            sido_name = rows[0][0]
         path = f"{sido_name} > {name}" if sido_name else name
         con.execute(
             """
