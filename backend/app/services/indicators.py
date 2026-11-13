@@ -381,6 +381,15 @@ def in_year(reg, year):
     """,
         [reg["region_name"], reg["region_code"], year, year],
     )
+    if len(found) > 1:
+        # 같은 이름이 여러 곳이면(예: 2026년 광주 동구 → 부산·대구·대전·울산 동구와 12210)
+        # 같은 행정구역 변경 기록(region_changes)에 함께 적힌 지역만 남긴다
+        linked = set()
+        for ch in _rows("select region_codes from region_changes"):
+            codes = ch["region_codes"].split(",")
+            if reg["region_code"] in codes:
+                linked.update(codes)
+        found = [f for f in found if f["region_code"] in linked]
     if len(found) != 1:
         return reg
     old = {"status": "ok", **found[0], "display": _display(found[0])}
