@@ -348,6 +348,7 @@ def status() -> dict[str, Any]:
         "embedding_backend": vector_search.get_settings().embedding_backend,
         "retrieval": "hybrid" if _vectors is not None else "keyword",
         "adapter": vector_search.adapter_loaded(),
+        "morph": synonyms.morph_backend(),
     }
 
 

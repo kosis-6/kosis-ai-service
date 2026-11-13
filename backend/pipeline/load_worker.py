@@ -26,6 +26,8 @@
   python -m pipeline.load_worker enqueue DT_1B26001 …  표를 대기열에 넣기 (reason=manual)
   python -m pipeline.load_worker enqueue --from-dir    TABLE_DIR에 받아 둔 표 중 적재 안 된 표 전부
   docker compose --profile worker up -d worker         컨테이너로 띄우기
+  python -m pipeline.load_worker --no-refresh          매일 0시 갱신 확인 없이
+                                                       (pipeline/refresh_check.py)
 """
 
 import argparse
@@ -53,6 +55,7 @@ ROOT = Path(__file__).resolve().parent.parent
 TABLE_DIR = ROOT / os.environ.get("KOSIS_TABLE_DIR", "data/tables")
 # auto: 파일이 있으면 파일, 없으면 KOSIS / file: 파일만 (없으면 실패) / kosis: 항상 KOSIS에서 받기
 LOAD_SOURCE = os.environ.get("LOAD_SOURCE", "auto")
+UPDATE_DIR = "_updates"  # 갱신 때 받은 일부 자료를 두는 곳 (TABLE_DIR 아래, 적재 뒤 지움)
 PER_MINUTE = 100
 CONCURRENCY = 2  # 동시에 처리하는 표 수 (큰 표 하나가 작은 표를 막지 않게)
 IDLE_SECONDS = 10
@@ -204,25 +207,55 @@ def find_source(tbl_id: str, table_dir: Path = TABLE_DIR) -> Path | None:
     return None
 
 
-async def collect(job: Job, table_dir: Path = TABLE_DIR) -> Path:
-    """KOSIS에서 표 전체를 받아 table_dir에 {tbl_id}.csv + .meta.json으로 둔다"""
+class NothingToFetch(Exception):
+    """갱신 작업인데 KOSIS에서 가져올 부분이 없다 (그사이 받았거나 수록 기간이 그대로)"""
+
+
+async def collect(job: Job, table_dir: Path = TABLE_DIR, delta: bool = False) -> Path:
+    """KOSIS에서 받아 table_dir에 {tbl_id}.csv + .meta.json으로 둔다.
+    delta면 표 전체가 아니라 DB에 없는 부분만 받는다 (refresh_check.delta_periods)"""
     from app.services.kosis_client import KosisClient
+    from pipeline import refresh_check
     from scripts import collect_all
+    from scripts.collect_kosis import fetch_meta
 
     # 분당 호출 수를 이 프로세스 몫으로 낮춘다 (collect_all 기본값은 전체 수집용 150회)
     if collect_all.LIMITER.gap < 60.0 / PER_MINUTE:
         collect_all.LIMITER = collect_all.RateLimiter(PER_MINUTE)
     table_dir.mkdir(parents=True, exist_ok=True)
     client = KosisClient(timeout=180.0)
-    await collect_all.collect_table(client, job.org_id, job.tbl_id, table_dir, per_table=2)
+    meta = None
+    if delta:
+        meta = await fetch_meta(client, job.org_id, job.tbl_id)
+        lasts = await asyncio.to_thread(_with_pg, _db_lasts_of, job.tbl_id)
+        periods = refresh_check.delta_periods(meta["periods"], lasts)
+        if not periods:
+            raise NothingToFetch(job.tbl_id)
+        text = ", ".join(f"{p['PRD_SE']} {p['STRT_PRD_DE']}~{p['END_PRD_DE']}" for p in periods)
+        logger.info("%s: 가져올 부분만 받습니다 (%s)", job.tbl_id, text)
+        meta = {**meta, "periods": periods}
+    await collect_all.collect_table(
+        client, job.org_id, job.tbl_id, table_dir, per_table=2, meta=meta
+    )
     return table_dir / f"{job.tbl_id}.csv"
+
+
+def _db_lasts_of(pg: psycopg.Connection, tbl_id: str) -> dict[str, int]:
+    from pipeline import refresh_check
+
+    row = pg.execute(
+        "select tbl_key from catalog.stat_table where tbl_id = %s", [tbl_id]
+    ).fetchone()
+    return refresh_check.db_lasts(pg, row[0]) if row else {}
 
 
 async def process(job: Job, source: str = LOAD_SOURCE, table_dir: Path = TABLE_DIR) -> None:
     """원본 찾기(없으면 KOSIS) → 적재 → 적재 후 단계. 실패하면 예외를 그대로 올린다"""
+    if job.reason == "update":
+        await process_update(job, table_dir / UPDATE_DIR)
+        return
     had_csv = (table_dir / f"{job.tbl_id}.csv").exists()
-    # 갱신은 받아 둔 파일이 옛 자료라 항상 KOSIS에서 새로 받는다
-    fresh = source == "kosis" or job.reason == "update"
+    fresh = source == "kosis"
     path = None if fresh else find_source(job.tbl_id, table_dir)
     unpacked = path is not None and not had_csv  # .gz를 풀어 만든 CSV
     if path is None:
@@ -237,9 +270,25 @@ async def process(job: Job, source: str = LOAD_SOURCE, table_dir: Path = TABLE_D
             path.unlink(missing_ok=True)  # 풀어 둔 CSV만 지운다. 원본 .gz는 남긴다
 
 
-def _load(path: Path, tbl_id: str) -> None:
+async def process_update(job: Job, delta_dir: Path) -> None:
+    """갱신: DB에 없는 부분만 KOSIS에서 받아 기존 자료와 합쳐 적재한다.
+    받은 조각은 delta_dir에 따로 둔다 (data/tables의 원본 파일을 일부 자료로 덮어쓰지 않게)
+    다 적재하면 지운다"""
+    try:
+        path = await collect(job, delta_dir, delta=True)
+    except NothingToFetch:
+        logger.info("%s: KOSIS에서 가져올 부분이 없습니다", job.tbl_id)
+        return
+    try:
+        await asyncio.to_thread(_load, path, job.tbl_id, True)  # 기존 표에 덧붙인다
+    finally:
+        for leftover in (path, path.with_suffix(".meta.json")):
+            leftover.unlink(missing_ok=True)
+
+
+def _load(path: Path, tbl_id: str, merge: bool = False) -> None:
     with psycopg.connect(conninfo(), autocommit=True) as pg:
-        load_table(pg, path)
+        load_table(pg, path, merge=merge)
         for name, step in AFTER_LOAD:
             logger.info("%s: 적재 후 단계 %s", tbl_id, name)
             step(pg, tbl_id)
@@ -300,7 +349,11 @@ async def run_one() -> bool:
     return True
 
 
-async def run_forever(concurrency: int = CONCURRENCY) -> None:
+async def run_forever(concurrency: int = CONCURRENCY, refresh: bool = True) -> None:
+    """대기열을 계속 처리한다. refresh면 매일 0시에 적재된 표의 KOSIS 갱신도 확인한다
+    (pipeline/refresh_check.py: 새 시점이 있는 표를 갱신 작업으로 넣으면 이 일꾼들이 받는다)"""
+    from pipeline import refresh_check
+
     recovered = await asyncio.to_thread(_with_pg, recover_stale)
     if recovered:
         logger.warning("멈춰 있던 작업 %d개를 대기로 되돌렸습니다", recovered)
@@ -310,7 +363,10 @@ async def run_forever(concurrency: int = CONCURRENCY) -> None:
             if not await run_one():
                 await asyncio.sleep(IDLE_SECONDS)
 
-    await asyncio.gather(*(lane() for _ in range(concurrency)))
+    tasks = [lane() for _ in range(concurrency)]
+    if refresh:
+        tasks.append(refresh_check.run_nightly())
+    await asyncio.gather(*tasks)
 
 
 def main() -> None:
@@ -324,6 +380,11 @@ def main() -> None:
     add.add_argument("--from-dir", action="store_true", help=f"{TABLE_DIR}에 받아 둔 표 전부")
     parser.add_argument("--once", action="store_true", help="작업 하나만 처리하고 끝")
     parser.add_argument("--concurrency", type=int, default=CONCURRENCY)
+    parser.add_argument(
+        "--no-refresh",
+        action="store_true",
+        help="매일 0시 KOSIS 갱신 확인을 하지 않음 (REFRESH_NIGHTLY=0과 같음)",
+    )
     args = parser.parse_args()
 
     if args.command == "enqueue":
@@ -339,7 +400,8 @@ def main() -> None:
         if not asyncio.run(run_one()):
             print("처리할 작업이 없습니다")
         return
-    asyncio.run(run_forever(args.concurrency))
+    refresh = not args.no_refresh and os.environ.get("REFRESH_NIGHTLY", "1") != "0"
+    asyncio.run(run_forever(args.concurrency, refresh))
 
 
 if __name__ == "__main__":

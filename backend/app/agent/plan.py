@@ -114,6 +114,8 @@ def _age_grounded(age: str, question: str) -> bool:
 
 YEAR_MARK = re.compile(r"(?:19|20)\d\d(?=\s*년)")
 RANGE_WORD = re.compile(r"~|부터|까지|사이|대비|동안|와\s*(?:19|20)\d\d년\s*(?:비교|사이)")
+# 현재를 가리키는 말 (지표 구절 안이나 바로 앞에 있으면 그 지표는 공통 연도를 물려받지 않는다)
+PRESENT = re.compile(r"지금|현재|요즘|최신")
 
 
 def _level(question: str) -> str | None:
@@ -160,6 +162,21 @@ def fix_periods_and_level(question: str, p: Plan, today: date | None = None) -> 
         shared.pop("year_to", None)
         by_indicator = [(i.get("span"), (i.get("override") or {}).get("year_from")) for i in inds]
         fixes.append(("지표별 연도", by_indicator))
+
+    # '2050년 총인구 전망을 지금 주민등록인구와 비교'처럼 현재를 가리키는 지표는 공통 연도를
+    # 물려받지 않는다 (최신 연도로 찾는다). 물려받으면 두 지표가 같은 연도 조건이 되어 같은 표
+    # 묶음으로 합쳐지거나(2026-11-13 결함 3), 2050년 자료가 없는 표를 놓쳤다(측정 x02)
+    if shared.get("year_from") or shared.get("year_to"):
+        for ind in inds:
+            if (ind.get("override") or {}).get("year_from"):
+                continue
+            span = ind.get("span") or ""
+            at = question.find(span) if span else -1
+            before = question[max(0, at - 6) : at] if at > 0 else ""
+            if PRESENT.search(span) or PRESENT.search(before):
+                keep = list(ind.get("no_inherit") or [])
+                ind["no_inherit"] = [*keep, *(k for k in ("year_from", "year_to") if k not in keep)]
+                fixes.append(("현재 시점 지표", span))
 
     level = _level(question)
     if level:
@@ -256,7 +273,8 @@ def fix_indicators(question: str, p: Plan) -> list[tuple]:
         at = question.find(span)
         after_whole = at > 0 and WHOLE_BEFORE.search(question[max(0, at - 4) : at])
         if after_whole or span.startswith("전체"):
-            ind["no_inherit"] = ["sex", "age"]
+            keep = list(ind.get("no_inherit") or [])  # 현재 시점 지표의 연도 칸은 남긴다
+            ind["no_inherit"] = [*keep, *(k for k in ("sex", "age") if k not in keep)]
             fixes.append(("전체 지표는 성별·연령 안 물려받음", span))
 
     asks_region = REGION_ASK.search(question)

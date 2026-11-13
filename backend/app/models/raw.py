@@ -47,6 +47,38 @@ class StatValue(Base):
     flag: Mapped[str | None]
 
 
+class StatValueHistory(Base):
+    """다시 적재할 때 값이 바뀐 칸의 예전 값 (pipeline/load_raw.py, 마이그레이션 0016).
+    새 자료에 없는 칸은 여기가 아니라 stat_value에 그대로 남는다"""
+
+    __tablename__ = "stat_value_history"
+    __table_args__ = (
+        Index("stat_value_history_lookup", "tbl_key", "item_key", "period", "c1"),
+        {"schema": "raw"},
+    )
+    __mapper_args__ = {
+        "primary_key": [
+            "tbl_key", "item_key", "period", "prd_se", "c1", "c2", "c3", "c4", "c5", "archived_at"
+        ]
+    }  # fmt: skip
+
+    tbl_key: Mapped[int]
+    period: Mapped[int]
+    item_key: Mapped[int]
+    c1: Mapped[int | None]
+    c2: Mapped[int | None]
+    c3: Mapped[int | None]
+    c4: Mapped[int | None]
+    c5: Mapped[int | None]
+    unit_key: Mapped[int | None] = mapped_column(SmallInteger)
+    prd_se: Mapped[str] = mapped_column(String(2))
+    value: Mapped[Decimal | None]
+    flag: Mapped[str | None]
+    archived_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class StatLoad(Base):
     """표별 현재 적재 상태. 다음 수집 때 이 값과 비교해 바뀐 표만 다시 받는다"""
 

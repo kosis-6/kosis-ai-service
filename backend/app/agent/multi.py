@@ -149,16 +149,25 @@ async def ind_done(s: State) -> dict[str, Any]:
 # ---- 합치기·넘기기 ----------------------------------------------------------------
 
 
+def _years(ind: dict[str, Any]) -> tuple[Any, Any]:
+    cond = ind.get("conditions") or {}
+    return cond.get("year_from"), cond.get("year_to")
+
+
 def merge_same(inds: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[list[str]]]:
     """1위 후보가 같은 표 묶음인 지표들은 지표 하나였다고 보고 합친다
-    ('합의 이혼'·'재판 이혼' → 이혼 종류별 이혼). 합친 구절들은 merged_spans에 남긴다"""
+    ('합의 이혼'·'재판 이혼' → 이혼 종류별 이혼). 합친 구절들은 merged_spans에 남긴다.
+    연도 조건이 다르면 합치지 않는다 ('2050년 총인구 전망'과 '지금 주민등록인구'는 1위 묶음이
+    같아도 다른 표가 필요하다, 2026-11-13 결함 3. 측정 512문항에서는 이 조건으로 바뀐 결과 없음)"""
     kept: list[dict[str, Any]] = []
     by_family: dict[str, dict[str, Any]] = {}
     for ind in inds:
         top = (ind.get("candidates") or [{}])[0].get("family_id")
         first = by_family.get(top) if top else None
+        if first is not None and _years(first) != _years(ind):
+            first = None
         if first is None:
-            if top:
+            if top and top not in by_family:
                 by_family[top] = ind
             kept.append(ind)
         else:

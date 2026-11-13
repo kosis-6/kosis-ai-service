@@ -25,6 +25,13 @@ def _title(*parts: Any) -> str:
     return " ".join(str(p) for p in parts if p)
 
 
+def _when(result: dict) -> str | None:
+    """제목의 시점: 연간 값은 "2025년", 최신 달 값은 "2026년 10월 말" (indicators._mark_monthly)"""
+    if result.get("as_of"):
+        return result["as_of"]
+    return f"{result['year']}년" if result.get("year") else None
+
+
 def _sex(result: dict) -> str | None:
     sex = result.get("sex")
     return f"({sex})" if sex and sex != "계" else None
@@ -78,7 +85,7 @@ def _bar(result: dict, items: list[dict], order: str | None = None) -> dict | No
     if len(rows) > MAX_BARS:
         note = f"전체 {len(rows)}개 지역 중 위에서 {MAX_BARS}개만 그렸습니다."
         rows = rows[:MAX_BARS]
-    year = f"{result['year']}년" if result.get("year") else None
+    year = _when(result)
     return {
         "type": "bar",
         "title": _title(year, result.get("indicator"), _sex(result), order and f"({order})"),
@@ -96,7 +103,7 @@ def _parts(result: dict) -> dict | None:
     ]
     if len(rows) < 2:
         return None
-    year = f"{result['year']}년" if result.get("year") else None
+    year = _when(result)
     return {
         # 조각이 많으면 나뉜 막대 대신 가로 막대 (큰 순)
         "type": "parts" if len(rows) <= MAX_PARTS else "bar",

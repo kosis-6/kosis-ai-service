@@ -323,6 +323,18 @@ method = "computed"
 sources = [{ table = "DT_1B04006", level = "시군구" }]
 projection = { table = "DT_1BPB002", c3_id = "50" }
 
+# 면적은 pipeline/load_area.py가 지적통계(DT_MLTM_2300)를 mart.area에 넣는다 (KOSIS 공식 인구밀도
+# DT_1B08024는 인구총조사 기준·시도만이라, 주민등록인구로 시군구까지 같은 기준으로 계산한다)
+[[indicators]]
+name = "인구밀도"
+aliases = ["인구 밀도", "인구밀집도", "인구 밀집도", "면적당 인구", "㎢당 인구", "제곱킬로미터당 인구", "1㎢당 인구", "빽빽", "밀집"]
+unit = "명/㎢"
+kind = "value"
+diff_unit = "명/㎢"
+method = "computed"
+desc = "주민등록인구 ÷ 행정구역 면적(㎢). 1㎢에 사는 사람 수. '빽빽한', '밀집한' 지역 질문도 이 지표"
+sources = [{ table = "DT_1B04006", level = "시군구" }]
+
 # ---- 출생·사망 ----------------------------------------------------------------
 
 [[indicators]]

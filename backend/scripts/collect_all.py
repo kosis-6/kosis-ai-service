@@ -64,7 +64,11 @@ MULTI_YEAR = re.compile(r"^\d+\s*년$")  # 2년, 5년, 10년 → F
 # 1년당 시점 수 (셀 수 계산용. 다년·부정기는 1로 잡아 넉넉하게 계산)
 PER_YEAR = {"Y": 1, "H": 2, "Q": 4, "M": 12, "D": 366, "F": 1, "IR": 1}
 # 연도 안의 첫·마지막 시점 표기 (기간을 연 단위로 나눌 때 씀. 예: 월 201101 ~ 201112)
-SUB_YEAR = {"H": ("1", "2"), "Q": ("1", "4"), "M": ("01", "12")}
+# 한 해 안의 처음·마지막 시점 (요청 시점 형식: 연도 + 두 자리). KOSIS는 분기를 202601~202604,
+# 반년을 202601~202602로 받는다. 한 자리("20261")로 보내면 그 구간이 비어서 온다
+SUB_YEAR = {"H": ("01", "02"), "Q": ("01", "04"), "M": ("01", "12")}
+# 메타데이터의 분기·반년 표기 "2026 3/4", "2026 1/2"
+FRACTION = re.compile(r"^\s*(\d{4})\D+(\d{1,2})\s*/\s*\d+\s*$")
 
 BASE_COLUMNS = ["tbl_id", "org_id", "period", "prd_se", "item_id", "item_nm"]
 VALUE_COLUMNS = ["value", "value_flag", "unit", "last_changed"]
@@ -228,6 +232,17 @@ def count_rows(path: Path) -> int:
         return sum(1 for _ in f) - 1
 
 
+def request_period(period: Any, prd_se: str) -> str:
+    """메타데이터의 수록 시점 표기 → 요청 시점 (KOSIS 오류 21을 피하는 형식)
+    분기 "2026 3/4" → "202603", 반년 "2026 1/2" → "202601"
+    (숫자만 남기면 "202634"가 되어 비어 온다),
+    월 "2026.09" → "202609", 연 "2025" → "2025"
+    """
+    if prd_se in ("Q", "H") and (m := FRACTION.match(str(period))):
+        return f"{m[1]}{int(m[2]):02d}"
+    return digits(period)
+
+
 def digits(period: Any) -> str:
     """KOSIS 수록 시점 표기에서 숫자만 남긴다. 월·분기 표는 '1970.01'처럼 점이 오는데,
     요청에는 숫자만 써야 한다 (오류 21)"""
@@ -302,7 +317,7 @@ def plan_table(meta: dict[str, Any]) -> list[dict[str, Any]]:
         code = period_code(p["PRD_SE"])
         if code is None:
             raise KosisError(f"모르는 수록주기: {p['PRD_SE']}")
-        start, end = digits(p["STRT_PRD_DE"]), digits(p["END_PRD_DE"])
+        start, end = request_period(p["STRT_PRD_DE"], code), request_period(p["END_PRD_DE"], code)
         jobs.append({"label": p["PRD_SE"], "prd_se": code, "start": start, "end": end,
                      "requests": plan_requests(meta, code, start, end, every_years(p["PRD_SE"]))})
     return jobs
