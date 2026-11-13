@@ -137,9 +137,15 @@ REGION_GROUPS = {
     "6대 광역시": ["부산", "대구", "인천", "광주광역시", "대전", "울산"],
     "5대 광역시": ["부산", "대구", "인천", "광주광역시", "대전"],
 }
-# "합계출산율"의 합계는 합산이 아니다
+# "합계출산율"의 합계는 합산이 아니다.
+# "다 해서"·"전부 몇"·"통틀어"·"누적"도 합계 (2026-11-13 결함 1·2: 이 표현을 놓치면 첫 지역만,
+# 또는 추이로 답했다). "전부"·"모두"는 뒤에 몇·합·더가 올 때만 ("시도 전부 보여줘"는 목록).
+# "다"는 혼자 쓰인 "다"만 ("서울보다 합계출산율"의 "보다"는 아니다), 그 뒤의 "합"도
+# "합계출산율"이면 아니다 ("두 지역 모두 합계출산율이 낮아?"는 비교)
+_HAP = r"합(?!계\s*출[산생])"
 SUM_WORDS = re.compile(
-    r"합계(?!\s*출[산생])|합친|합쳐|합하면|총\s*몇|모두\s*더|더하면|총합|총\s*인원"
+    r"합계(?!\s*출[산생])|합친|합쳐|합하면|합치면|합산|총\s*몇|더하면|총합|총\s*인원"
+    rf"|(?:모두|전부)\s*(?:몇|더|해서|{_HAP})|(?<![가-힣])다\s*(?:해서|더해|{_HAP})|통틀|누적"
 )
 COUNT_ASK = re.compile(r"몇\s*(명|건|가구|곳|개)|인구는|인구가|인구\s*수|수는|수가|건수")
 PCT_ASK = re.compile(r"%|퍼센트|비율|비중|몇\s*프로")
@@ -399,6 +405,20 @@ def correct(question, parsed, today=None):
                 kind = "trend"
         elif kind not in ("trend", "other", "parse_error") and parsed.get("year") != ref.year:
             fix("year", ref.year, ref.describe(today))
+
+    # 지역이 여럿인 값 질문: 합계를 물었으면 더하고, 아니면 지역별 비교로 답한다.
+    # value + 여러 지역 + 합계 표시 없음은 계산이 첫 지역만 써서 나머지 지역이 말없이 빠졌다
+    # (2026-11-13 결함 1)
+    regions = parsed.get("regions") or []
+    if len(regions) > 1 and not parsed.get("share_of"):
+        if parsed.get("type") == "value" and parsed.get("aggregate") != "sum":
+            fix("type", "compare", "지역이 여럿인데 합계를 묻지 않음")
+        elif (
+            parsed.get("type") == "compare"
+            and parsed.get("aggregate") == "sum"
+            and not parsed.get("group")
+        ):
+            fix("type", "value", "여러 지역의 합계를 물음")
 
     names = asked_indicators(question)
     if len(names) > 1 and parsed.get("type") in ("value", "trend", "compare"):
@@ -745,6 +765,9 @@ def compute(q):
                 result["split"][0].setdefault("notes", []).append(
                     f"지역이 많아 앞의 {MAX_TREND_REGIONS}곳만 연도별로 봤습니다"
                 )
+        elif kind == "trend" and len(regions) > 1:
+            # 여러 지역의 기간 합계 (예: 수도권 최근 5년 출생아 수 합계). 예전에는 첫 지역만 셌다
+            result = _sum_region_periods([calc([r]) for r in regions], q)
         else:
             result = calc(regions)
     except StatsTableMissing as e:
@@ -958,6 +981,20 @@ def _sum_regions(result, q):
         members = ", ".join(v["region"] for v in values)
         out["notes"] = [f"{name}: {members}의 합계"] + out.get("notes", [])
     return out
+
+
+def _sum_region_periods(parts, q):
+    """여러 지역의 기간 합계: 지역마다 기간 합계(_sum_years)를 낸 뒤 지역끼리 더한다.
+    기간 합계가 안 된 조각(비율 지표, 남녀를 나눈 결과 등)이 있거나 지역마다 기간이 다르면
+    더하지 않고 지역별 추이로 답한다"""
+    for p in parts:
+        if p.get("status") != "ok":
+            return p
+    summed = all("members" in p and "value" in p for p in parts)
+    if not summed or len({p.get("year") for p in parts}) > 1:
+        return _combine(parts, by="region")
+    values = [{"region": p.get("region"), "value": p["value"]} for p in parts]
+    return _sum_regions({**parts[0], "values": values}, q)
 
 
 def _sum_years(result):
