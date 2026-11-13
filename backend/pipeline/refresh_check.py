@@ -41,6 +41,12 @@ logger = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parent.parent
 STATE_PATH = ROOT / "data" / "refresh" / "last_run.json"
+# 갱신 작업을 넣은 표와 그때 KOSIS가 알린 마지막 시점. 다시 받았는데도 그 시점이 없으면
+# (KOSIS 수록 기간에는 있지만 자료는 아직 없음, 예: DT_1B85032 2018년) 수록 기간이 또 바뀔 때까지
+# 다시 넣지 않는다. 안 그러면 매일 밤 같은 표를 통째로 다시 받는다
+TRIED_PATH = ROOT / "data" / "refresh" / "tried.json"
+RETRY_AFTER = 600.0  # 초. 확인이 통째로 실패하면 이만큼 뒤에 다시
+TICK = 60.0  # 초. 0시가 지났는지 이 간격으로 실제 시각을 본다 (잠자기 등으로 시계가 어긋나도 맞게)
 KST = ZoneInfo("Asia/Seoul")
 RUN_AT = time(0, 0)  # 매일 이 시각 (한국 시간)
 PER_MINUTE = 50
@@ -175,8 +181,34 @@ async def _kosis_periods(client, org_id: str, tbl_id: str) -> list[dict]:
     )
 
 
+def last_update_done(pg: psycopg.Connection, tbl_id: str) -> datetime | None:
+    """그 표의 갱신 작업이 마지막으로 끝난 시각"""
+    return pg.execute(
+        "select max(finished_at) from app.load_jobs"
+        " where tbl_id = %s and reason = 'update' and status = 'done'",
+        [tbl_id],
+    ).fetchone()[0]
+
+
+def _read_json(path: Path) -> dict:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def already_tried(tried: dict | None, kosis: dict[str, int], done_at: datetime | None) -> bool:
+    """같은 KOSIS 시점으로 갱신 작업을 넣었고, 그 뒤 다시 받기가 끝났는데도 DB가 그대로인가"""
+    if not tried or tried.get("kosis") != kosis or done_at is None:
+        return False
+    return done_at >= datetime.fromisoformat(tried["queued_at"])
+
+
 async def check_all(
-    only: list[str] | None = None, dry_run: bool = False, state_path: Path = STATE_PATH
+    only: list[str] | None = None,
+    dry_run: bool = False,
+    state_path: Path = STATE_PATH,
+    tried_path: Path = TRIED_PATH,
 ) -> dict:
     """적재된 표를 모두 확인하고 새 시점이 있는 표를 갱신 대기열에 넣는다 → 결과 요약"""
     from app.services.kosis_client import KosisClient, mask_key
@@ -186,7 +218,8 @@ async def check_all(
     client = KosisClient(timeout=30.0)
     limiter = RateLimiter(PER_MINUTE)
     started = datetime.now(KST)
-    updated, failed = [], []
+    updated, failed, waiting = [], [], []
+    tried = _read_json(tried_path)
     logger.info("갱신 확인 시작: 적재된 표 %d개", len(tables))
     for i, (tbl_id, org_id, tbl_key) in enumerate(tables, start=1):
         await limiter.wait()
@@ -196,7 +229,19 @@ async def check_all(
         except Exception as e:  # noqa: BLE001 - 표 하나가 실패해도 나머지는 확인한다
             failed.append({"tbl_id": tbl_id, "error": mask_key(f"{type(e).__name__}: {e}")[:200]})
             continue
-        if newer := needs_update(periods, lasts):
+        newer = needs_update(periods, lasts)
+        if not newer:
+            tried.pop(tbl_id, None)  # 다 받았다
+        elif already_tried(
+            tried.get(tbl_id),
+            {code: k for code, (_, k) in newer.items()},
+            await asyncio.to_thread(_with_pg, last_update_done, tbl_id),
+        ):
+            waiting.append(tbl_id)
+            logger.info(
+                "%s: KOSIS 수록 기간에는 새 시점이 있지만 받은 자료에는 없어 기다립니다", tbl_id
+            )
+        else:
             changes = {code: {"db": db, "kosis": k} for code, (db, k) in newer.items()}
             updated.append({"tbl_id": tbl_id, "org_id": org_id, "periods": changes})
             text = ", ".join(f"{code} {db}→{k}" for code, (db, k) in newer.items())
@@ -207,6 +252,12 @@ async def check_all(
     if updated and not dry_run:
         pairs = [(u["tbl_id"], u["org_id"]) for u in updated]
         await asyncio.to_thread(_with_pg, enqueue_updates, pairs)
+        for u in updated:
+            kosis = {code: v["kosis"] for code, v in u["periods"].items()}
+            tried[u["tbl_id"]] = {"kosis": kosis, "queued_at": datetime.now(KST).isoformat()}
+    if not dry_run:
+        tried_path.parent.mkdir(parents=True, exist_ok=True)
+        tried_path.write_text(json.dumps(tried, ensure_ascii=False, indent=2), encoding="utf-8")
     summary = {
         "date": started.date().isoformat(),
         "started_at": started.isoformat(timespec="seconds"),
@@ -214,16 +265,18 @@ async def check_all(
         "checked": len(tables) - len(failed),
         "failed": failed,
         "updated": updated,
+        "waiting": waiting,  # KOSIS 수록 기간에만 있고 자료는 아직 없는 표
         "dry_run": dry_run,
     }
     if not dry_run and not only:  # 일부 표만 본 수동 실행은 그날 확인으로 치지 않는다
         state_path.parent.mkdir(parents=True, exist_ok=True)
         state_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     logger.info(
-        "갱신 확인 끝: 확인 %d개, 갱신 대기열 %d개%s, 실패 %d개",
+        "갱신 확인 끝: 확인 %d개, 갱신 대기열 %d개%s, 자료 기다림 %d개, 실패 %d개",
         summary["checked"],
         len(updated),
         " (넣지 않음, --dry-run)" if dry_run else "",
+        len(waiting),
         len(failed),
     )
     return summary
@@ -237,8 +290,12 @@ async def run_nightly() -> None:
     while True:
         wait = seconds_until_next_run()
         logger.info("다음 갱신 확인: %.1f시간 뒤 (매일 %s)", wait / 3600, RUN_AT.strftime("%H:%M"))
-        await asyncio.sleep(wait)
+        # 남은 시간을 한 번에 자지 않고 TICK마다 실제 시각을 본다 (컨테이너가 멈췄다 깨어나도 맞게)
+        while not missed_today():
+            await asyncio.sleep(min(TICK, max(1.0, seconds_until_next_run())))
         await _safe_check()
+        if missed_today():  # 확인이 통째로 실패함 (DB 연결 등) → 바로 되풀이하지 않고 잠시 뒤
+            await asyncio.sleep(RETRY_AFTER)
 
 
 async def _safe_check() -> None:

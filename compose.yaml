@@ -39,11 +39,11 @@ services:
       - /workspace/frontend/node_modules
     command: sh -c "npm ci && npm run build:watch"
 
-  # 통계표 적재 프로세스 (app.load_jobs 대기열 처리). 기본으로는 뜨지 않는다:
-  #   docker compose --profile worker up -d worker
+  # 통계표 적재 프로세스 (app.load_jobs 대기열 처리). docker compose up으로 함께 뜬다
+  # 매일 0시(한국 시간)에 적재된 표의 KOSIS 갱신을 확인하고, 새 시점이 있는 표를 다시 받아 적재한다
+  # (pipeline/refresh_check.py). 끄려면 .env에 REFRESH_NIGHTLY=0
   # 받아 둔 표는 backend/data/tables/에 {표ID}.csv(.gz) + .meta.json으로 둔다
   worker:
-    profiles: ["worker"]
     build:
       context: .
       dockerfile: backend/Dockerfile

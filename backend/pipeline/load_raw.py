@@ -9,6 +9,12 @@ DB에 고유 인덱스가 없으므로(용량) 이 중복 검사가 중복을 �
   큰 표(BIG_ROWS 이상)  전용 파티션을 만들어 통째로 교체. 지우고 넣지 않아 빈 공간이 쌓이지 않는다
   작은 표               기본 파티션의 해시 묶음에서 지우고 넣기
 
+다시 적재(갱신)할 때 기존 값은 지우지 않는다 (carry_missing, archive_changed)
+  새 자료에 없는 칸     예) KOSIS가 뺀 예전 시점. 새 표에 그대로 옮겨 질문에 계속 답한다
+  값이 바뀐 칸          새 값으로 답하고, 예전 값은 raw.stat_value_history에 바뀐 시각과 함께 남긴다
+  CSV와의 행 수·합계 대조는 옮기기 전(새 자료만)에 한다.
+  raw.stat_load에는 옮긴 칸까지 센 값을 적는다
+
 실행: alembic upgrade head                          테이블이 없으면 먼저
       python pipeline/load_raw.py                      data/processed(KOSIS_RAW_DIR)의 모든 표
       python pipeline/load_raw.py DT_1B04006 DT_1MR2060  이 표만
@@ -207,7 +213,72 @@ def check_loaded(pg: psycopg.Connection, target: sql.Composable, scan: Scan, nam
         raise SystemExit(f"{name}: 값 합계가 다릅니다 (CSV {scan.value_sum}, 적재 {total})")
 
 
-def replace_big(pg: psycopg.Connection, tbl_key: int, rows, scan: Scan, name: str) -> None:
+# 같은 칸인지: 분류가 없는 칸(NULL)끼리도 같게 본다. 키는 양수라 -1과 겹치지 않는다.
+# IS NOT DISTINCT FROM은 해시 조인을 못 써 큰 표에서 느려서 coalesce로 맞춘다
+SAME_CELL = sql.SQL(" AND ").join(
+    [sql.SQL("n.{c} = o.{c}").format(c=sql.Identifier(c)) for c in ("item_key", "period", "prd_se")]
+    + [
+        sql.SQL("coalesce(n.{c}, -1) = coalesce(o.{c}, -1)").format(c=sql.Identifier(c))
+        for c in ("c1", "c2", "c3", "c4", "c5")
+    ]
+)
+
+
+@dataclass
+class Kept:
+    """다시 적재할 때 남긴 기존 값"""
+
+    carried: int = 0  # 새 자료에 없어 그대로 옮긴 칸
+    carried_sum: Decimal = Decimal(0)
+    first_period: int | None = None
+    last_period: int | None = None
+    archived: int = 0  # 값이 바뀌어 이력으로 보낸 예전 값
+
+
+def _old(tbl_key: int) -> sql.Composable:
+    return sql.SQL("(SELECT * FROM raw.stat_value WHERE tbl_key = {}) o").format(
+        sql.Literal(tbl_key)
+    )
+
+
+_NAMES = sql.SQL(", ").join(map(sql.Identifier, VALUE_COLUMNS))
+_OLD_COLS = sql.SQL(", ").join(sql.SQL("o.{}").format(sql.Identifier(c)) for c in VALUE_COLUMNS)
+
+
+def archive_changed(pg: psycopg.Connection, new: sql.Composable, tbl_key: int) -> int:
+    """값이 바뀐 칸의 예전 값 → raw.stat_value_history. 교체와 같은 트랜잭션에서 부른다
+    (교체가 실패하면 이력도 남지 않게). 보낸 행 수"""
+    return pg.execute(
+        sql.SQL(
+            "INSERT INTO raw.stat_value_history ({names}) SELECT {cols} FROM {old} JOIN {new} n"
+            " ON {same} WHERE o.value IS DISTINCT FROM n.value OR o.flag IS DISTINCT FROM n.flag"
+            " OR o.unit_key IS DISTINCT FROM n.unit_key"
+        ).format(names=_NAMES, cols=_OLD_COLS, old=_old(tbl_key), new=new, same=SAME_CELL)
+    ).rowcount
+
+
+def carry_missing(pg: psycopg.Connection, new: sql.Composable, tbl_key: int) -> Kept:
+    """새 자료에 없는 기존 칸 → new에 옮겨 넣는다 (교체 뒤에도 남아 질문에 답한다).
+    새 자료를 CSV와 대조한 뒤에 부른다. 처음 적재하는 표는 기존 칸이 없어 아무것도 하지 않는다"""
+    pg.execute("DROP TABLE IF EXISTS pg_temp.carried")
+    pg.execute(
+        sql.SQL(
+            "CREATE TEMP TABLE carried AS SELECT {cols} FROM {old}"
+            " WHERE NOT EXISTS (SELECT 1 FROM {new} n WHERE {same})"
+        ).format(cols=_OLD_COLS, old=_old(tbl_key), new=new, same=SAME_CELL)
+    )
+    count, total, first, last = pg.execute(
+        "SELECT count(*), coalesce(sum(value), 0), min(period), max(period) FROM pg_temp.carried"
+    ).fetchone()
+    if count:
+        pg.execute(sql.SQL("INSERT INTO {} ({}) SELECT {} FROM pg_temp.carried").format(
+            new, _NAMES, _NAMES
+        ))  # fmt: skip
+    pg.execute("DROP TABLE pg_temp.carried")
+    return Kept(count, total, first, last)
+
+
+def replace_big(pg: psycopg.Connection, tbl_key: int, rows, scan: Scan, name: str) -> Kept:
     """전용 파티션을 새로 만들어 대조한 뒤 기존 파티션과 맞바꾼다"""
     part = f"stat_value_t{tbl_key}"
     new = sql.Identifier("raw", f"{part}__new")
@@ -220,11 +291,13 @@ def replace_big(pg: psycopg.Connection, tbl_key: int, rows, scan: Scan, name: st
     copy_rows(pg, new, rows)
     check_duplicates(pg, new, name)
     check_loaded(pg, new, scan, name)
+    kept = carry_missing(pg, new, tbl_key)
     # 부모의 stat_value_lookup과 같은 칸이어야 붙일 때 그 인덱스의 일부가 된다
     pg.execute(sql.SQL("CREATE INDEX ON {} (tbl_key, item_key, period, c1)").format(new))
     pg.execute(sql.SQL("ANALYZE {}").format(new))
     old = sql.Identifier("raw", part)
     with pg.transaction():
+        kept.archived = archive_changed(pg, new, tbl_key)
         # 전에 작은 표였으면 기본 파티션에 남은 행을 지운다 (붙일 때 겹치면 실패한다)
         pg.execute("DELETE FROM raw.stat_value_small WHERE tbl_key = %s", [tbl_key])
         if pg.execute("SELECT to_regclass(%s)", [f"raw.{part}"]).fetchone()[0]:
@@ -235,9 +308,10 @@ def replace_big(pg: psycopg.Connection, tbl_key: int, rows, scan: Scan, name: st
                 old, sql.Literal(tbl_key)
             )
         )
+    return kept
 
 
-def replace_small(pg: psycopg.Connection, tbl_key: int, rows, scan: Scan, name: str) -> None:
+def replace_small(pg: psycopg.Connection, tbl_key: int, rows, scan: Scan, name: str) -> Kept:
     with pg.transaction():
         pg.execute(
             "CREATE TEMP TABLE new_rows (LIKE raw.stat_value INCLUDING DEFAULTS) ON COMMIT DROP"
@@ -246,11 +320,14 @@ def replace_small(pg: psycopg.Connection, tbl_key: int, rows, scan: Scan, name: 
         copy_rows(pg, target, rows)
         check_duplicates(pg, target, name)
         check_loaded(pg, target, scan, name)
+        kept = carry_missing(pg, target, tbl_key)
+        kept.archived = archive_changed(pg, target, tbl_key)
         pg.execute("DELETE FROM raw.stat_value WHERE tbl_key = %s", [tbl_key])
         part = sql.Identifier("raw", f"stat_value_t{tbl_key}")
         if pg.execute("SELECT to_regclass(%s)", [f"raw.stat_value_t{tbl_key}"]).fetchone()[0]:
             pg.execute(sql.SQL("DROP TABLE {}").format(part))  # 전에 큰 표였으면 파티션을 없앤다
         pg.execute("INSERT INTO raw.stat_value SELECT * FROM new_rows")
+    return kept
 
 
 def load_table(pg: psycopg.Connection, path: Path) -> None:
@@ -259,7 +336,9 @@ def load_table(pg: psycopg.Connection, path: Path) -> None:
     tbl_key, keys, units = save_codes(pg, path, scan)
     rows = value_rows(path, tbl_key, keys, units)
     big = is_big(scan.row_count)
-    (replace_big if big else replace_small)(pg, tbl_key, rows, scan, path.stem)
+    kept = (replace_big if big else replace_small)(pg, tbl_key, rows, scan, path.stem)
+    periods = [p for p in (scan.first_period, scan.last_period) if p is not None]
+    periods += [p for p in (kept.first_period, kept.last_period) if p is not None]
     pg.execute(
         """
         INSERT INTO raw.stat_load (tbl_key, row_count, value_sum, first_period, last_period,
@@ -273,18 +352,23 @@ def load_table(pg: psycopg.Connection, path: Path) -> None:
         """,
         [
             tbl_key,
-            scan.row_count,
-            scan.value_sum,
-            scan.first_period,
-            scan.last_period,
+            scan.row_count + kept.carried,  # 표에 실제로 있는 행 (남긴 기존 칸 포함)
+            scan.value_sum + kept.carried_sum,
+            min(periods) if periods else None,
+            max(periods) if periods else None,
             scan.last_changed,
             big,
             path.name,
         ],
     )
     kind = "전용 파티션" if big else "기본 파티션"
+    kept_text = (
+        f", 남긴 기존 칸 {kept.carried:,}개, 이력으로 보낸 예전 값 {kept.archived:,}개"
+        if kept.carried or kept.archived
+        else ""
+    )
     print(
-        f"{path.stem}: {scan.row_count:,}행, 코드 {len(keys):,}개, {kind},"
+        f"{path.stem}: {scan.row_count:,}행, 코드 {len(keys):,}개, {kind}{kept_text},"
         f" {time.perf_counter() - start:.1f}초",
         flush=True,
     )

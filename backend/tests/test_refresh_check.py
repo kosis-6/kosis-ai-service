@@ -86,6 +86,8 @@ def fake(monkeypatch: pytest.MonkeyPatch) -> dict:
             state["queued"] += args[0]
         if fn is rc.db_lasts:
             return {"A": 2024 if args[0] == 1 else 2025}
+        if fn is rc.last_update_done:
+            return state.get("done_at")
         return None
 
     async def periods(client, org_id, tbl_id):
@@ -108,7 +110,7 @@ def fake(monkeypatch: pytest.MonkeyPatch) -> dict:
 
 def test_check_all_queues_only_newer_tables(fake, tmp_path) -> None:
     state_path = tmp_path / "last_run.json"
-    summary = asyncio.run(rc.check_all(state_path=state_path))
+    summary = asyncio.run(rc.check_all(state_path=state_path, tried_path=tmp_path / "t.json"))
     assert fake["queued"] == [("T_NEW", "101")]
     assert [u["tbl_id"] for u in summary["updated"]] == ["T_NEW"]
     assert summary["checked"] == 2 and summary["failed"][0]["tbl_id"] == "T_ERR"
@@ -118,7 +120,31 @@ def test_check_all_queues_only_newer_tables(fake, tmp_path) -> None:
 
 def test_dry_run_and_partial_run_do_not_count(fake, tmp_path) -> None:
     state_path = tmp_path / "last_run.json"
-    asyncio.run(rc.check_all(dry_run=True, state_path=state_path))
+    tried = tmp_path / "t.json"
+    asyncio.run(rc.check_all(dry_run=True, state_path=state_path, tried_path=tried))
     assert fake["queued"] == [] and not state_path.exists()
-    asyncio.run(rc.check_all(only=["T_NEW"], state_path=state_path))
+    asyncio.run(rc.check_all(only=["T_NEW"], state_path=state_path, tried_path=tried))
     assert fake["queued"] == [("T_NEW", "101")] and not state_path.exists()
+
+
+def test_period_only_in_kosis_metadata_is_not_reloaded_every_night(fake, tmp_path) -> None:
+    """KOSIS 수록 기간에는 2025년이 있지만 다시 받아도 자료가 없으면
+    다음 날부터는 다시 넣지 않는다"""
+    paths = {"state_path": tmp_path / "s.json", "tried_path": tmp_path / "t.json"}
+    asyncio.run(rc.check_all(**paths))
+    assert fake["queued"] == [("T_NEW", "101")]
+    fake["done_at"] = datetime.now(KST)  # 적재 프로세스가 다시 받았지만 DB는 여전히 2024년
+    summary = asyncio.run(rc.check_all(**paths))
+    assert fake["queued"] == [("T_NEW", "101")] and summary["waiting"] == ["T_NEW"]
+
+
+def test_already_tried() -> None:
+    queued = datetime(2026, 11, 12, 9, 0, tzinfo=KST)
+    tried = {"kosis": {"A": 2018}, "queued_at": queued.isoformat()}
+    assert rc.already_tried(tried, {"A": 2018}, queued + rc.timedelta(hours=1))
+    assert not rc.already_tried(tried, {"A": 2018}, None)  # 아직 다시 받지 않음
+    assert not rc.already_tried(tried, {"A": 2018}, queued - rc.timedelta(days=1))  # 예전 작업
+    assert not rc.already_tried(
+        tried, {"A": 2019}, queued + rc.timedelta(hours=1)
+    )  # 수록 기간이 또 바뀜
+    assert not rc.already_tried(None, {"A": 2018}, queued)
