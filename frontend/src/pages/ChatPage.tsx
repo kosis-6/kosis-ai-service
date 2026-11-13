@@ -1,18 +1,22 @@
-// 통계표 안내 채팅 화면: POST /search 응답(status별)을 말풍선·표 카드·선택 버튼으로 그린다
-// 목업 모드(?mock=1)는 chat/mock.js 가 응답을 만들어 서버·HCX 를 부르지 않는다
-// 개발 도구(목업·디버그 전환, 검색 과정)는 ?mock=1 / ?debug=1 로 켰을 때만 보인다
+// 채팅 화면: 질문 하나에 POST /ask 한 번. 답 한 건에 수치·차트·통계표 카드·선택지가 함께 나온다 (Answer)
+//   수치로 답할 수 있으면  답변 문장 + 차트 + 이 수치의 통계표 + 출처
+//   수치로 답할 수 없으면  통계표 찾기 결과 (표 카드, 대상·성별·판 선택지)
+// 대화 id 를 이어 보내 "서울도 같이", "막대그래프로"처럼 바뀐 것만 말해도 된다 (서버 ask_session.py)
+// 목업 모드(?mock=1)는 chat/mockAsk.ts 가 응답을 만들어 서버·HCX 를 부르지 않는다
+// 개발 도구(목업 전환)는 ?mock=1 로 켰을 때만 보인다
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { Link } from "react-router-dom";
-import type { Parsed, Recommendation, SearchRequest, SearchResponse } from "../api/types";
+import type { AskResponse, Parsed, Recommendation } from "../api/types";
 import iconArrow from "../assets/icon-arrow.svg";
 import iconChart from "../assets/icon-chart.svg";
 import iconSearch from "../assets/icon-search.svg";
 import iconSpark from "../assets/icon-spark.svg";
 import { logout } from "../auth/client";
 import { useUser } from "../auth/useUser";
-import { search } from "../chat/api";
+import { Answer } from "../chat/Answer";
+import { ask } from "../chat/api";
 import { EXAMPLE_CATEGORIES, EXAMPLES } from "../chat/examples";
-import { AltCard, Reply } from "../chat/Reply";
+import { AltCard } from "../chat/Reply";
 import { DevTools, Sheet } from "../chat/Sheet";
 import { Brand } from "../components/Brand";
 import { usePage } from "../components/usePage";
@@ -20,7 +24,7 @@ import "../styles/chat.css";
 
 type Message =
   | { id: number; kind: "user"; text: string }
-  | { id: number; kind: "bot"; data: SearchResponse }
+  | { id: number; kind: "answer"; data: AskResponse }
   | { id: number; kind: "error"; text: string };
 
 type NewMessage = Message extends infer M ? (M extends Message ? Omit<M, "id"> : never) : never;
@@ -28,7 +32,7 @@ type NewMessage = Message extends infer M ? (M extends Message ? Omit<M, "id"> :
 type SheetState =
   | { kind: "others"; recs: Recommendation[]; parsed: Parsed }
   | { kind: "examples" }
-  | { kind: "dev"; data: SearchResponse | null };
+  | { kind: "dev" };
 
 // 보기 편의용 설정이라 저장에 실패해도 동작한다
 function load(key: string): string | null {
@@ -50,11 +54,21 @@ function initial(name: "mock" | "debug"): boolean {
   return params.has(name) ? params.get(name) !== "0" : load(`chat.${name}`) === "1";
 }
 
+const TEXT = {
+  title: "인구 통계 안내",
+  placeholder: "궁금한 인구 통계를 편하게 물어보세요",
+  typing: "통계를 찾고 있어요",
+  wide: ["평소 말투로 물어보세요. 수치는 차트와 함께,", "질문에 맞는 KOSIS 통계표와 출처까지 안내해 드려요."],
+  narrow: ["평소 말투로 물어보세요.", "수치·차트와 통계표를 함께 찾아드려요."],
+  note: ["수치는 KOSIS 통계표에서 조회·계산한 값입니다. 출처에서 확인해 주세요.", "수치는 KOSIS 통계표 기준입니다."],
+} as const;
+
 const MAIN_EXAMPLES = EXAMPLES.slice(0, EXAMPLE_CATEGORIES.length);
 const MORE_EXAMPLES = EXAMPLES.slice(EXAMPLE_CATEGORIES.length);
 
 export function ChatPage() {
-  usePage("chat", "인구 통계표 안내");
+  const text = TEXT;
+  usePage("chat", text.title);
   const user = useUser();
 
   const [messages, setMessages] = useState<Message[]>([]);
@@ -79,9 +93,17 @@ export function ChatPage() {
     document.body.classList.toggle("in-chat", inChat);
     return () => document.body.classList.remove("in-chat");
   }, [inChat]);
+  // 새 질문은 맨 아래로, 새 답은 그 답의 첫 줄이 보이게 내린다
+  // (답이 길면 맨 아래로 내렸을 때 문장과 차트가 위로 밀려 출처만 보인다)
   useEffect(() => {
     const log = logRef.current;
-    if (log) log.scrollTop = log.scrollHeight;
+    if (!log) return;
+    const last = log.querySelector(".msg:last-of-type");
+    if (last?.classList.contains("bot") && !busy) {
+      log.scrollTop = Math.max(0, (last as HTMLElement).offsetTop - log.offsetTop - 16);
+    } else {
+      log.scrollTop = log.scrollHeight;
+    }
   }, [messages, busy]);
   useEffect(() => inputRef.current?.focus(), []);
 
@@ -95,12 +117,16 @@ export function ChatPage() {
     busyRef.current = true;
     setBusy(true);
     add({ kind: "user", text: q });
-    const body: SearchRequest = { question: q, session_id: sessionId.current, top_k: 3, debug };
-    if (selections && Object.keys(selections).length) body.selections = selections;
     try {
-      const data = await search(body, mock);
-      sessionId.current = data.session_id;
-      add({ kind: "bot", data });
+      // 대화 id 를 이어 보낸다. "새 대화"를 누르거나 화면을 새로 열면 조건이 초기화된다.
+      // 통계표 선택지 버튼으로 고른 값은 selections 로 함께 보낸다
+      const has = selections && Object.keys(selections).length > 0;
+      const data = await ask(
+        { question: q, session_id: sessionId.current, ...(has ? { selections } : {}) },
+        mock,
+      );
+      sessionId.current = data.session_id ?? null;
+      add({ kind: "answer", data });
     } catch (e) {
       add({ kind: "error", text: `답변을 가져오지 못했어요. ${e instanceof Error ? e.message : String(e)}` });
     } finally {
@@ -145,7 +171,7 @@ export function ChatPage() {
           <p className="side-label">WORKSPACE</p>
           <div className="menu-item" aria-current="page">
             <img src={iconSearch} width="18" height="18" alt="" />
-            통계표 찾기
+            통계 찾기
           </div>
         </div>
         <div className="side-bottom">
@@ -187,12 +213,12 @@ export function ChatPage() {
         <header className="head">
           <div className="service only-wide">
             <p className="service-tag">통계와 일상을 잇다</p>
-            <h1 className="service-name">인구 통계표 안내</h1>
+            <h1 className="service-name">{text.title}</h1>
           </div>
           <Brand className="only-narrow" />
           <div className="head-actions">
             {(mock || debug) && (
-              <button type="button" className="dev-badge" onClick={() => setSheet({ kind: "dev", data: null })}>
+              <button type="button" className="dev-badge" onClick={() => setSheet({ kind: "dev" })}>
                 {mock ? "목업 모드" : "개발 도구"}
               </button>
             )}
@@ -238,14 +264,14 @@ export function ChatPage() {
                 <em>궁금하신가요?</em>
               </h2>
               <p className="welcome-text only-wide">
-                평소 말투로 물어보세요. 인구 분야 통계표 2,364개에서
+                {text.wide[0]}
                 <br />
-                질문에 맞는 자료와 KOSIS 바로가기를 안내해 드려요.
+                {text.wide[1]}
               </p>
               <p className="welcome-text only-narrow">
-                평소 말투로 물어보세요.
+                {text.narrow[0]}
                 <br />
-                인구 분야 통계표 2,364개에서 찾아드려요.
+                {text.narrow[1]}
               </p>
               <div className="examples">
                 <p className="examples-label">이런 질문으로 시작해 보세요</p>
@@ -278,12 +304,11 @@ export function ChatPage() {
                   {m.kind === "error" ? (
                     <div className="bubble">{m.text}</div>
                   ) : (
-                    <Reply
+                    <Answer
                       data={m.data}
                       busy={busy}
                       onSend={(text, selections) => void send(text, selections)}
                       onOthers={(recs, parsed) => setSheet({ kind: "others", recs, parsed })}
-                      onDebug={(data) => setSheet({ kind: "dev", data })}
                       onAskAgain={() => inputRef.current?.focus()}
                     />
                   )}
@@ -299,7 +324,7 @@ export function ChatPage() {
               </span>
               <div className="reply">
                 <div className="bubble">
-                  통계표를 찾고 있어요
+                  {text.typing}
                   <span className="dots" />
                 </div>
               </div>
@@ -314,7 +339,7 @@ export function ChatPage() {
               ref={inputRef}
               rows={1}
               maxLength={500}
-              placeholder="궁금한 인구 통계를 편하게 물어보세요"
+              placeholder={text.placeholder}
               aria-label="질문"
               required
               value={question}
@@ -329,8 +354,8 @@ export function ChatPage() {
             </button>
           </div>
           <p className="composer-note">
-            <span className="only-wide">통계표의 수치와 상세 내용은 KOSIS에서 확인해 주세요.</span>
-            <span className="only-narrow">수치와 상세 내용은 KOSIS에서 확인해 주세요.</span>
+            <span className="only-wide">{text.note[0]}</span>
+            <span className="only-narrow">{text.note[1]}</span>
             <span className="composer-keys only-wide">Enter 전송 · Shift + Enter 줄바꿈</span>
           </p>
         </form>
@@ -364,7 +389,7 @@ export function ChatPage() {
       {sheet?.kind === "dev" && (
         <Sheet title="개발 도구" onClose={() => setSheet(null)}>
           <DevTools
-            data={sheet.data}
+            data={null}
             mock={mock}
             debug={debug}
             onMock={() => {

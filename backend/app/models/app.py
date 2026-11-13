@@ -1,6 +1,6 @@
-"""app 스키마: 서비스 사용자, 통계표 적재 대기열
+"""app 스키마: 서비스 사용자, 통계표 적재 대기열, 수치 대화의 턴 기록
 
-대화·검색 기록 테이블은 아직 모델로 옮기지 않았다.
+대화 상태(chat_sessions)·검색 기록 테이블은 아직 모델로 옮기지 않았다.
 """
 
 from datetime import datetime
@@ -18,6 +18,7 @@ from sqlalchemy import (
     text,
     true,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
@@ -84,6 +85,41 @@ class EmailVerification(Base):
     sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ChatTurn(Base):
+    """수치 대화(/ask)의 턴 기록: 사용자가 무엇을 요청했고 조건이 어떻게 바뀌었는지
+
+    세션 상태(app.chat_sessions)는 1시간 뒤 이어 가지 않지만, 이 기록은 30일 보관한다
+    (app/services/ask_session.py). 디버깅과 멀티턴 채점에 쓴다.
+    - request_type: new(새 질문) / change(조건 변경) / chart(차트 바꾸기) / summary(요약) /
+      reply(되묻기에 대한 답) / unclear(되물음)
+    - recomputed: 이 턴에 다시 조회·계산했는지 (차트 바꾸기·요약은 하지 않는다)
+    """
+
+    __tablename__ = "chat_turns"
+    __table_args__ = (
+        Index("chat_turns_session", "session_id", "turn_no"),
+        Index("chat_turns_created", "created_at"),
+        {"schema": "app"},
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    session_id: Mapped[str]
+    user_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("app.users.id", ondelete="SET NULL")
+    )
+    turn_no: Mapped[int]
+    message: Mapped[str]
+    request_type: Mapped[str | None]
+    status: Mapped[str | None]
+    conditions_before: Mapped[dict | None] = mapped_column(JSONB)
+    conditions_after: Mapped[dict | None] = mapped_column(JSONB)
+    sources: Mapped[dict | None] = mapped_column(JSONB)
+    tbl_id: Mapped[str | None]
+    recomputed: Mapped[bool]
+    answer: Mapped[str | None]
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class LoadJob(Base):

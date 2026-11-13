@@ -306,8 +306,14 @@ export interface paths {
          * 질문에 답하기
          * @description 로그인 없이도 쓸 수 있다. 로그인하면 기록에 사용자 id가 남는다
          *
-         *     연도 없이 과거만 말하면("과거와 최근 인구수 비교") status = missing_year로 연도를 되묻고
-         *     session_id를 돌려준다. 그 session_id로 "2000년"처럼 답하면 앞 질문과 합쳐 답한다.
+         *     응답의 session_id를 다음 요청에 함께 보내면 대화를 이어 간다 (app/services/ask_session.py).
+         *     - "서울도 같이", "2022년만", "남자만", "낮은 순으로": 바뀐 조건만 고쳐 다시 계산한다
+         *     - "막대그래프로", "표로 보여줘", "요약해줘": 다시 계산하지 않고 직전 답으로 답한다
+         *     - 새 질문은 말하지 않은 지역·기간을 앞 질문에서 이어받고, 이어받은 조건을 notice로 알린다
+         *     - 수치로 답하면 답에 쓴 통계표를, 수치로 답할 수 없는 질문이면 통계표 찾기 결과를 tables로 준다
+         *       (통계표 선택지에 답할 때는 selections를 함께 보낸다)
+         *     - 연도·지역을 되물었을 때("과거와 최근 비교", "광주")는
+         *       "2000년", "광주광역시"처럼 답하면 된다
          */
         post: operations["ask_ask_post"];
         delete?: never;
@@ -341,6 +347,25 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * Applied
+         * @description 이번 답에 적용한 조건 하나
+         */
+        Applied: {
+            /**
+             * Name
+             * @description 지표 / 지역 / 기간 / 성별
+             */
+            name: string;
+            /** Value */
+            value: string;
+            /**
+             * Source
+             * @description user: 사용자가 말함 / inherited: 앞 질문에서 이어받음 / default: 기본값
+             * @enum {string}
+             */
+            source: "user" | "inherited" | "default";
+        };
         /** AskRequest */
         AskRequest: {
             /**
@@ -350,15 +375,22 @@ export interface components {
             question: string;
             /**
              * Session Id
-             * @description 연도 되묻기(missing_year)에 답할 때 응답의 session_id를 그대로 보낸다. 그러면 '2000년'처럼 짧은 답을 앞 질문과 합쳐 답한다
+             * @description 대화를 이어 갈 때 앞 응답의 session_id를 그대로 보낸다. 그러면 '서울도 같이', '2022년만', '막대그래프로'처럼 바뀐 것만 말해도 앞 조건에 이어서 답한다. 없으면 새 대화로 시작한다
              */
             session_id?: string | null;
+            /**
+             * Selections
+             * @description 통계표 선택지 버튼으로 고른 값 (family_id / target / sex). /search와 같다
+             */
+            selections?: {
+                [key: string]: string;
+            } | null;
         };
         /** AskResponse */
         AskResponse: {
             /**
              * Status
-             * @description ok 또는 답변 불가 사유 (out_of_range 등)
+             * @description ok / tables(수치 없이 통계표만 안내) / 답변 불가 사유 (out_of_range 등)
              */
             status: string | null;
             /**
@@ -385,11 +417,35 @@ export interface components {
              * @description 답변에 쓴 통계표
              */
             sources: components["schemas"]["Source"][];
+            /** @description 그릴 차트. 값 하나짜리 답이나 답변 불가면 null */
+            chart?: components["schemas"]["Chart"] | null;
             /**
              * Session Id
-             * @description 대화 id. 연도를 되물었을 때(status = missing_year) 다음 요청에 함께 보낸다
+             * @description 대화 id. 다음 요청에 함께 보내면 조건을 이어 간다 (1시간)
              */
             session_id?: string | null;
+            /**
+             * Request Type
+             * @description 이번 말을 읽은 방식: new(새 질문) / change(조건 변경) / chart(차트 바꾸기) / summary(요약) / reply(되묻기에 대한 답) / unclear(되물음)
+             */
+            request_type?: string | null;
+            /**
+             * Applied
+             * @description 이번 답에 적용한 조건과 출처
+             */
+            applied?: components["schemas"]["Applied"][];
+            /**
+             * Notice
+             * @description 답 위에 보여 줄 알림 (이어받은 조건, 세션 만료 등)
+             */
+            notice?: string | null;
+            /**
+             * Tables
+             * @description 통계표 안내. 수치로 답했으면 답에 쓴 표({status: ok, recommendations}), 수치로 답할 수 없는 질문이면 통계표 찾기 결과(/search 응답과 같은 모양: status, answer, recommendations, clarify, notice). status가 'tables'면 수치 없이 표만 안내한 답
+             */
+            tables?: {
+                [key: string]: unknown;
+            } | null;
             /**
              * Question
              * @description 실제로 답한 질문 (되묻기 답을 앞 질문과 합친 경우 합친 질문)
@@ -425,6 +481,75 @@ export interface components {
              * Format: password
              */
             client_secret?: string | null;
+        };
+        /**
+         * Chart
+         * @description 화면이 그릴 차트 (app/services/charts.py). 값은 result에 있는 숫자 그대로다
+         */
+        Chart: {
+            /**
+             * Type
+             * @description line: 연도별 꺾은선 / bar: 가로 막대 (큰 순·순위 순) / parts: 구성비 나뉜 막대
+             * @enum {string}
+             */
+            type: "line" | "bar" | "parts";
+            /** Title */
+            title: string;
+            /**
+             * Unit
+             * @description 값의 단위 (%, 명 등)
+             */
+            unit: string;
+            /**
+             * Category
+             * @description 행이 무엇인지 (연도 / 지역 / 항목)
+             */
+            category: string;
+            /** Rows */
+            rows: components["schemas"]["ChartRow"][];
+            /**
+             * Count Unit
+             * @description count의 단위
+             */
+            count_unit?: string | null;
+            /**
+             * Series
+             * @description 꺾은선이 여러 개일 때 선 이름 (지역). 없으면 선 하나
+             */
+            series?: string[] | null;
+            /**
+             * Note
+             * @description 차트 아래 알림 (일부만 그린 경우 등)
+             */
+            note?: string | null;
+            /**
+             * View
+             * @description 처음 보여 줄 모양. '막대그래프로', '표로'라고 했을 때 (없으면 type대로)
+             */
+            view?: ("line" | "bar" | "table") | null;
+        };
+        /** ChartRow */
+        ChartRow: {
+            /**
+             * Label
+             * @description 행 이름 (연도, 지역, 항목)
+             */
+            label: string;
+            /**
+             * Value
+             * @description 값. 구성비(parts)는 비중(%). 자료가 없으면 null
+             */
+            value: number | null;
+            /**
+             * Count
+             * @description 구성비일 때 그 항목의 원래 값
+             */
+            count?: number | null;
+            /**
+             * Values
+             * @description 꺾은선이 여러 개일 때 series 순서의 값 (이때 value는 null)
+             */
+            values?: (number | null)[] | null;
         };
         /** EmailCodeRequest */
         EmailCodeRequest: {

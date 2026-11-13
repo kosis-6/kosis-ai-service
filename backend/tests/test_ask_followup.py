@@ -5,10 +5,7 @@
 import asyncio
 
 import pytest
-from fastapi.testclient import TestClient
 
-from app import main
-from app.api.routes import ask as ask_route
 from app.services import ask_followup, indicators, load_queue, lookup, qa, table_cache
 
 # ---- 되묻기 판정 ---------------------------------------------------------------------------
@@ -273,48 +270,3 @@ def test_newer_year_not_fetched_now_is_still_checked_once(stale, monkeypatch) ->
     monkeypatch.setattr(table_cache, "_guarded_fetch", busy)
     assert asyncio.run(table_cache.refresh_if_stale("T", "101")) == "busy"
     assert asyncio.run(table_cache.refresh_if_stale("T", "101")) == "skipped"
-
-
-# ---- /ask 대화 이어 받기 ------------------------------------------------------------------
-
-
-@pytest.fixture
-def api(monkeypatch: pytest.MonkeyPatch) -> dict:
-    state = {"asked": [], "saved": [], "pending": None}
-
-    async def fake_ask(question):
-        state["asked"].append(question)
-        status = "missing_year" if ask_followup.needs_year(question) else "ok"
-        return {"status": status, "answer": "답", "parsed": {}, "result": {}, "sources": []}
-
-    async def load_pending(session_id):
-        return state["pending"]
-
-    async def save(session_id, status, question):
-        state["saved"].append((session_id, status, question))
-
-    monkeypatch.setattr(qa, "ask", fake_ask)
-    monkeypatch.setattr(qa, "log_request", lambda *a, **k: None)
-    monkeypatch.setattr(qa, "log_missing", lambda *a, **k: None)
-    monkeypatch.setattr(ask_route.ask_followup, "load_pending", load_pending)
-    monkeypatch.setattr(ask_route.ask_followup, "save", save)
-    return state
-
-
-def test_ask_back_returns_session_and_merges_reply(api) -> None:
-    client = TestClient(main.app)
-    first = client.post("/ask", json={"question": "과거와 최근 인구수 비교해줘"}).json()
-    assert first["status"] == "missing_year" and first["session_id"].startswith("A_")
-    assert api["saved"][-1][1:] == ("missing_year", "과거와 최근 인구수 비교해줘")
-
-    api["pending"] = "과거와 최근 인구수 비교해줘"
-    second = client.post(
-        "/ask", json={"question": "2000년", "session_id": first["session_id"]}
-    ).json()
-    assert second["question"] == "2000년과 최근 인구수 비교해줘" and second["status"] == "ok"
-    assert api["saved"][-1] == (first["session_id"], "ok", "2000년과 최근 인구수 비교해줘")
-
-
-def test_ordinary_question_without_session_saves_nothing(api) -> None:
-    res = TestClient(main.app).post("/ask", json={"question": "2025년 서울 인구수"}).json()
-    assert res["session_id"] is None and api["saved"] == []

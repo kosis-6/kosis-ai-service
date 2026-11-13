@@ -38,12 +38,14 @@ function CheckPills({ r, parsed }: { r: Recommendation; parsed?: Parsed }) {
   );
 }
 
-export function TopCard({ r, parsed }: { r: Recommendation; parsed?: Parsed }) {
+type TopCardProps = { r: Recommendation; parsed?: Parsed; badge?: string };
+
+export function TopCard({ r, parsed, badge = "추천 통계표" }: TopCardProps) {
   const path = pathText(r);
   const others = otherVersions(r.family);
   return (
     <article className="card">
-      <span className="card-badge">추천 통계표</span>
+      <span className="card-badge">{badge}</span>
       <h3>{r.tbl_nm}</h3>
       <p className="card-meta">{metaLine(r)}</p>
       {path && <p className="card-path">{path}</p>}
@@ -52,6 +54,7 @@ export function TopCard({ r, parsed }: { r: Recommendation; parsed?: Parsed }) {
         <CheckPills r={r} parsed={parsed} />
       </div>
       {others && <p className="card-versions">{others}</p>}
+      {r.basis && <p className="card-versions">{`기준: ${r.basis}`}</p>}
       <KosisLink url={r.url} className="card-link" />
     </article>
   );
