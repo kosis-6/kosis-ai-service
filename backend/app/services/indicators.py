@@ -35,6 +35,10 @@ from app.services import analysis, population_latest
 POP_TABLE = "DT_1B04006"
 POP_SOURCE = "국가데이터처 (구 통계청), 행정구역(시군구)별/1세별 주민등록인구 (DT_1B04006)"
 POP_BASIS = "주민등록인구, 각 연도 12월 31일 기준"
+AREA_SOURCE = "국토교통부 지적통계, 행정구역별·지목별 국토이용현황_시군구 (DT_MLTM_2300)"
+AREA_TABLE = "DT_MLTM_2300"
+AREA_ORG = "116"  # 카탈로그(catalog·table_meta)에 없는 표라 기관 ID를 적어 둔다
+AREA_BASIS = "지목 전체(계) 면적, 각 연도 12월 31일 기준"
 PROJ_SOURCE = "국가데이터처 (구 통계청), 장래인구추계 시도편 주요 인구지표 (DT_1BPB002)"
 PROJ_BASIS = "2022년 기준 장래인구추계, 각 연도 7월 1일 기준 (외국인 포함)"
 PROJ_TABLE = "DT_1BPB002"
@@ -45,6 +49,7 @@ KOSIS_URL = "https://kosis.kr/statHtml/statHtml.do?orgId={org_id}&tblId={tbl_id}
 #   count : 사람 수   → 차이는 명, 변화는 증감률(%)
 #   ratio : 비율(%)   → 차이·변화는 %p
 #   index : 지수      → 차이·변화는 포인트
+#   value : 그 밖의 값 → 차이는 지표의 diff_unit, 변화는 증감률(%)이 있으면 rate=True
 INDICATORS = {
     "총인구": {
         "unit": "명",
@@ -76,6 +81,17 @@ INDICATORS = {
         # 답변 문장에서 값의 뜻을 풀어 쓸 때 사용 (qa.summary)
         "meaning": "유소년인구(0~14세) 100명당 65세 이상 인구가 {value}명",
     },
+    "인구밀도": {
+        "unit": "명/㎢",
+        "kind": "value",
+        "diff_unit": "명/㎢",
+        "digits": 1,
+        "rate": True,  # 면적이 거의 그대로라 증감률은 인구 증감률과 비슷하다
+        "formula": "주민등록 총인구 ÷ 행정구역 면적(㎢)",
+        "calc": lambda c: c["total"] / c["area"] if c.get("area") else None,
+        "area": True,  # _components가 면적(mart.area)도 붙인다
+        "meaning": "1㎢(가로세로 1km 넓이)마다 평균 {value}명",
+    },
 }
 # 지표의 다른 이름(별칭)은 config/catalog_notes.toml의 지표 사전에서 읽는다 (_get_indicator)
 DIFF_UNIT = {"count": "명", "ratio": "%p", "index": "포인트"}
@@ -106,10 +122,20 @@ def _diff(base, current, kind):
     return (analysis.point_change if kind == "ratio" else analysis.change)(base, current)
 
 
-def _round(v, kind):
+def _diff_unit(ind):
+    """차이의 단위: 지표에 적은 diff_unit, 없으면 kind로 (명 / %p / 포인트)"""
+    return ind.get("diff_unit") or DIFF_UNIT[ind["kind"]]
+
+
+def _round(v, kind, digits=2):
     if v is None:
         return None
-    return int(v) if kind == "count" else round(v, 2)
+    return int(v) if kind == "count" else round(v, digits)
+
+
+def _r(v, ind):
+    """지표 정의에 맞춘 반올림 (사람 수는 정수, 인구밀도는 소수 첫째 자리, 그 밖은 둘째 자리)"""
+    return _round(v, ind["kind"], ind.get("digits", 2))
 
 
 def _data_years():
@@ -226,6 +252,15 @@ def _base(name, ind, status="ok", **extra):
         "tbl_id": POP_TABLE,
         "url": kosis_url(POP_TABLE),
     }
+    if ind.get("area"):  # 인구밀도: 분모인 면적 표도 출처로 밝힌다 (qa.render·sources)
+        out["extra_sources"] = [
+            {
+                "source": AREA_SOURCE,
+                "basis": AREA_BASIS,
+                "tbl_id": AREA_TABLE,
+                "url": KOSIS_URL.format(org_id=AREA_ORG, tbl_id=AREA_TABLE),
+            }
+        ]
     out.update(extra)
     return out
 
@@ -288,9 +323,10 @@ def _out_of_range_reason(lo, hi):
     return reason
 
 
-def _components(codes, y0, y1, sex, band=None):
+def _components(codes, y0, y1, sex, band=None, area=False):
     """연도·지역별 총인구, 0~14세, 15~64세, 65세 이상 (100세 이상 포함)
-    band=(시작 연령, 끝 연령 또는 None)이면 그 구간 인구(band)도 더한다"""
+    band=(시작 연령, 끝 연령 또는 None)이면 그 구간 인구(band)도 더한다
+    area=True면 면적(area, ㎢)도 붙인다 (인구밀도)"""
     marks = ", ".join("?" for _ in codes)
     lo, hi = band or (0, None)
     rows = _rows(
@@ -319,7 +355,53 @@ def _components(codes, y0, y1, sex, band=None):
                     "region_code": code,
                     "band": population_latest.band(m, lo, hi),
                 }
+    if area:
+        _attach_area(out, codes, y1)
     return out
+
+
+def _attach_area(comps, codes, y1):
+    """인구 값에 그해 면적(㎢)을 붙인다. 면적 자료가 아직 없는 해(연간 자료 다음 해의 최신 달 등)는
+    그 전 가장 최근 해의 면적을 쓰고 area_year에 그 해를 적는다"""
+    marks = ", ".join("?" for _ in codes)
+    rows = _rows(
+        "select year, region_code, area_km2 from area"
+        f" where year <= ? and region_code in ({marks})",
+        [y1, *codes],
+    )
+    by_code = {}
+    for r in rows:
+        by_code.setdefault(r["region_code"], {})[r["year"]] = r["area_km2"]
+    for (year, code), comp in comps.items():
+        years = [y for y in by_code.get(code, {}) if y <= year]
+        if years:
+            comp["area"] = by_code[code][max(years)]
+            comp["area_year"] = max(years)
+
+
+def _area_missing(name, ind):
+    """인구밀도인데 면적 자료(mart.area)가 아직 없으면 안내용 dict, 있으면 None"""
+    if not ind.get("area"):
+        return None
+    try:
+        if _rows("select 1 from area limit 1"):
+            return None
+    except StatsTableMissing:
+        pass
+    return _base(
+        name,
+        ind,
+        "missing_data",
+        reason="인구밀도 계산에 쓰는 행정구역 면적 자료가 아직 적재되지 않았습니다.",
+    )
+
+
+def _area_note(comps, year):
+    """면적이 그해 것이 아니면 안내 문장"""
+    for (y, _), c in comps.items():
+        if y == year and c.get("area_year") and c["area_year"] != year:
+            return f"{year}년 면적 자료가 아직 없어 {c['area_year']}년 말 면적으로 계산했습니다"
+    return None
 
 
 def _month_values(codes, sex, year):
@@ -336,7 +418,9 @@ def _month_values(codes, sex, year):
 
 
 def _monthly(code, sex, year):
-    """연간 자료에 없는 해(year)의 월별 값 하나. KOSIS에 아직 없으면 None"""
+    """연간 자료에 없는 해(year)의 월별 값 하나. KOSIS에 아직 없거나 연간 자료가 있는 해면 None"""
+    if year <= _data_years()[1]:  # 연간 값으로 답하는 해: 월별 기준 안내를 붙이지 않는다
+        return None
     return _month_values([code], sex, year).get(code)
 
 
@@ -384,7 +468,7 @@ def _check(name, ind, reg, y0, y1):
             reason=_out_of_range_reason(lo, hi),
             available_years=[lo, hi],
         )
-        if y1 > hi and reg["kind"] in ("전국", "시도"):
+        if y1 > hi and reg["kind"] in ("전국", "시도") and "projection_c3" in ind:
             proj = projection(name, reg["region_code"], y1)
             if proj["status"] == "ok":
                 out["suggestion"] = proj
@@ -421,6 +505,8 @@ def _prepare(indicator, region_names, year=None, ages=None):
             None,
             {"status": "unknown_indicator", "indicator": indicator, "supported": list(specs())},
         )
+    if missing := _area_missing(name, ind):
+        return name, ind, None, missing
     regions = []
     for rn in region_names:
         reg = resolve_region(rn, year, sigungu=True)
@@ -568,6 +654,10 @@ def _region_notes(regs):
     return [r["note"] for r in regs if r.get("note")]
 
 
+def _optional(note):
+    return [note] if note else []
+
+
 def value(indicator, region, year, sex="계", ages=None):
     """단순 조회: 한 지역·한 연도의 지표 값"""
     name, ind, regs, err = _prepare(indicator, [region], year, ages)
@@ -576,9 +666,8 @@ def value(indicator, region, year, sex="계", ages=None):
     reg = regs[0]
     if bad := _check(name, ind, reg, year, year):
         return bad
-    comp = _components([reg["region_code"]], year, year, sex, ind.get("band")).get(
-        (year, reg["region_code"])
-    )
+    comps = _components([reg["region_code"]], year, year, sex, ind.get("band"), ind.get("area"))
+    comp = comps.get((year, reg["region_code"]))
     v = ind["calc"](comp) if comp else None
     out = _base(
         name,
@@ -586,9 +675,12 @@ def value(indicator, region, year, sex="계", ages=None):
         region=reg["display"],
         year=year,
         sex=sex,
-        value=_round(v, ind["kind"]),
-        notes=_region_notes(regs),
+        value=_r(v, ind),
+        notes=_region_notes(regs) + _optional(_area_note(comps, year)),
     )
+    if ind.get("area") and comp and comp.get("area"):
+        out["area_km2"] = round(comp["area"], 2)
+        out["population"] = int(comp["total"])
     return _mark_monthly(out, reg["region_code"], sex, year)
 
 
@@ -600,21 +692,21 @@ def trend(indicator, region, start_year, end_year, sex="계", ages=None):
     reg = regs[0]
     if bad := _check(name, ind, reg, start_year, end_year):
         return bad
-    comps = _components([reg["region_code"]], start_year, end_year, sex, ind.get("band"))
-    series = [
-        {"year": y, "value": _round(ind["calc"](c), ind["kind"])}
-        for (y, _), c in sorted(comps.items())
-    ]
+    comps = _components(
+        [reg["region_code"]], start_year, end_year, sex, ind.get("band"), ind.get("area")
+    )
+    series = [{"year": y, "value": _r(ind["calc"](c), ind)} for (y, _), c in sorted(comps.items())]
+    series = [p for p in series if p["value"] is not None] or series
     first, last = series[0]["value"], series[-1]["value"]
     change = {
         "from_year": series[0]["year"],
         "to_year": series[-1]["year"],
         "diff": _round(_diff(first, last, ind["kind"]), ind["kind"])
         if ind["kind"] == "count"
-        else round(_diff(first, last, ind["kind"]), 2),
-        "diff_unit": DIFF_UNIT[ind["kind"]],
+        else round(_diff(first, last, ind["kind"]), ind.get("digits", 2)),
+        "diff_unit": _diff_unit(ind),
     }
-    if ind["kind"] == "count":
+    if ind["kind"] == "count" or ind.get("rate"):
         change["rate"] = round(analysis.growth_rate(first, last), 2)
         change["rate_unit"] = "%"
     out = _base(
@@ -625,7 +717,8 @@ def trend(indicator, region, start_year, end_year, sex="계", ages=None):
         series=series,
         change=change,
         notes=_change_notes(reg["region_code"], start_year, end_year)
-        + _series_break_notes(start_year, end_year),
+        + _series_break_notes(start_year, end_year)
+        + _optional(_area_note(comps, end_year)),
     )
     if (m := _monthly(reg["region_code"], sex, end_year)) and series[-1]["year"] == end_year:
         hi = _data_years()[1]
@@ -644,14 +737,16 @@ def compare(indicator, regions, year, sex="계", ages=None):
     for reg in regs:
         if bad := _check(name, ind, reg, year, year):
             return bad
-    comps = _components([r["region_code"] for r in regs], year, year, sex, ind.get("band"))
+    comps = _components(
+        [r["region_code"] for r in regs], year, year, sex, ind.get("band"), ind.get("area")
+    )
     values = []
     for reg in regs:
         comp = comps.get((year, reg["region_code"]))
         values.append(
             {
                 "region": reg["display"],
-                "value": _round(ind["calc"](comp), ind["kind"]) if comp else None,
+                "value": _r(ind["calc"](comp), ind) if comp else None,
             }
         )
     values.sort(key=lambda x: (x["value"] is None, -(x["value"] or 0)))
@@ -667,9 +762,9 @@ def compare(indicator, regions, year, sex="계", ages=None):
         lowest=valid[-1]["region"] if valid else None,
         gap=_round(gap, ind["kind"])
         if ind["kind"] == "count"
-        else (round(gap, 2) if gap is not None else None),
-        gap_unit=DIFF_UNIT[ind["kind"]],
-        notes=_region_notes(regs),
+        else (round(gap, ind.get("digits", 2)) if gap is not None else None),
+        gap_unit=_diff_unit(ind),
+        notes=_region_notes(regs) + _optional(_area_note(comps, year)),
     )
     return _mark_monthly(out, regs[0]["region_code"], sex, year)
 
@@ -757,6 +852,8 @@ def rank(indicator, year, level="시도", sido=None, top=None, ascending=False, 
             "indicator": indicator,
             "supported": list(specs()),
         }
+    if missing := _area_missing(name, ind):
+        return missing
     lo, hi = _data_years()
     monthly = year > hi and _monthly("00", "계", year)  # 연간 자료 다음 해: 최신 달 값으로 순위
     if not lo <= year <= hi and not monthly:
@@ -777,13 +874,15 @@ def rank(indicator, year, level="시도", sido=None, top=None, ascending=False, 
     """,
         [min(year, hi), *params],  # 최신 달 순위는 연간 마지막 해에 있던 지역으로
     )
-    comps = _components([r["region_code"] for r in regs], year, year, sex, ind.get("band"))
+    comps = _components(
+        [r["region_code"] for r in regs], year, year, sex, ind.get("band"), ind.get("area")
+    )
     items = []
     for reg in regs:
         comp = comps.get((year, reg["region_code"]))
         v = ind["calc"](comp) if comp else None
         if v is not None:
-            items.append({"region": _display(reg), "value": _round(v, ind["kind"])})
+            items.append({"region": _display(reg), "value": _r(v, ind)})
     items = analysis.rank_rows(items, descending=not ascending)  # 같은 값은 같은 순위
     out = _base(
         name,
@@ -794,6 +893,7 @@ def rank(indicator, year, level="시도", sido=None, top=None, ascending=False, 
         order="낮은 순" if ascending else "높은 순",
         total_regions=len(items),
         ranking=items[:top] if top else items,
+        notes=_optional(_area_note(comps, year)),
     )
     return _mark_monthly(out, "00", "계", year) if monthly else out
 

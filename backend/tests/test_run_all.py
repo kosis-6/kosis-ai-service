@@ -36,6 +36,7 @@ def test_publishes_after_validation(collect: None, monkeypatch: pytest.MonkeyPat
         "publish_stats.py",
         "load_raw.py",
         "region_map.py",
+        "load_area.py",
     ]
     assert calls[0][1]["KOSIS_RAW_DIR"] == str(run_all.SOURCES["collect"])
 
