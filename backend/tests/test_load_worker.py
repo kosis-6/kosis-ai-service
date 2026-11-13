@@ -21,12 +21,14 @@ def _job(reason="manual", attempts=1):
 def calls(monkeypatch: pytest.MonkeyPatch) -> list:
     seen = []
 
-    async def collect(job, table_dir):
-        seen.append(("collect", job.tbl_id))
+    async def collect(job, table_dir, delta=False):
+        seen.append(("collect", job.tbl_id, table_dir.name, delta))
+        table_dir.mkdir(parents=True, exist_ok=True)
         (table_dir / f"{job.tbl_id}.csv").write_text(CSV, encoding="utf-8")
+        (table_dir / f"{job.tbl_id}.meta.json").write_text("{}", encoding="utf-8")
         return table_dir / f"{job.tbl_id}.csv"
 
-    def load(path, tbl_id):
+    def load(path, tbl_id, merge=False):
         seen.append(("load", path.name, path.exists()))
 
     monkeypatch.setattr(w, "collect", collect)
@@ -56,7 +58,7 @@ def test_missing_file_falls_back_to_kosis(tmp_path: Path, calls: list) -> None:
     # CSV만 있고 표 설명(.meta.json)이 없으면 다 받은 표로 보지 않는다
     (tmp_path / "DT_X.csv").write_text(CSV, encoding="utf-8")
     asyncio.run(w.process(_job(), "auto", tmp_path))
-    assert calls[0] == ("collect", "DT_X")
+    assert calls[0][:2] == ("collect", "DT_X")
 
 
 def test_file_only_source_does_not_call_kosis(tmp_path: Path, calls: list) -> None:
@@ -65,11 +67,27 @@ def test_file_only_source_does_not_call_kosis(tmp_path: Path, calls: list) -> No
     assert calls == []
 
 
-def test_update_always_downloads_fresh(tmp_path: Path, calls: list) -> None:
+def test_update_fetches_only_delta_into_separate_folder(tmp_path: Path, calls: list) -> None:
+    """갱신은 받아 둔 원본 대신 KOSIS에서 가져올 부분만 받는다. 원본 파일은 건드리지 않고,
+    받은 일부 자료는 _updates/에 두었다가 적재 뒤 지운다"""
     (tmp_path / "DT_X.csv").write_text(CSV, encoding="utf-8")
     (tmp_path / "DT_X.meta.json").write_text("{}", encoding="utf-8")
     asyncio.run(w.process(_job(reason="update"), "auto", tmp_path))
-    assert calls[0] == ("collect", "DT_X")
+    assert calls == [("collect", "DT_X", w.UPDATE_DIR, True), ("load", "DT_X.csv", True)]
+    assert (tmp_path / "DT_X.csv").read_text(encoding="utf-8") == CSV  # 원본 그대로
+    assert not (tmp_path / w.UPDATE_DIR / "DT_X.csv").exists()
+    assert not (tmp_path / w.UPDATE_DIR / "DT_X.meta.json").exists()
+
+
+def test_update_with_nothing_to_fetch_does_not_load(
+    tmp_path: Path, calls: list, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def nothing(job, table_dir, delta=False):
+        raise w.NothingToFetch(job.tbl_id)
+
+    monkeypatch.setattr(w, "collect", nothing)
+    asyncio.run(w.process(_job(reason="update"), "auto", tmp_path))
+    assert calls == []
 
 
 @pytest.mark.parametrize(

@@ -2,15 +2,18 @@
 
 적재된 표(raw.stat_load)마다 KOSIS 수록 기간(getMeta type=PRD, 요청 1번)을 DB의 마지막 시점과
 비교하고, KOSIS가 새로우면 적재 대기열에 갱신 작업(reason=update)을 넣는다.
-받기·교체는 적재 프로세스(load_worker)가 한다: 갱신 작업은 받아 둔 파일 대신 항상 KOSIS에서
-새로 받고, 검증을 통과해야 표 단위로 바뀐다 (중간에 실패하면 옛 표가 그대로 남는다).
+받기·적재는 적재 프로세스(load_worker)가 한다: 갱신 작업은 표 전체가 아니라 가져올 부분만
+KOSIS에서 받는다 (delta_periods: 빠진 주기는 전체, 새 시점이 생긴 주기는 DB 마지막 시점 다음부터).
+받은 부분은 기존 자료와 합쳐 적재한다 (load_raw: 새 자료에 없는 기존 칸은 그대로 남는다).
+중간에 실패하면 옛 표가 그대로 남는다.
 
 비교 방법
   DB에 있는 주기(raw.stat_value.prd_se: A 연, H 반년, Q 분기, M 월 …)마다 마지막 시점을 KOSIS의
   같은 주기 마지막 시점과 비교한다. KOSIS 표기는 DB 형식으로 바꿔 비교한다
   (연 "2025" → 2025, 월 "2026.09" → 202609, 분기 "2026 3/4" → 202603).
-  수집하지 않은 주기는 보지 않는다
-  예) DT_1B04006은 연간만 적재 → KOSIS 월별 2026.10이 있어도 연간 2025가 같으면 갱신 아님
+  KOSIS에는 있는데 DB에 없는 주기도 갱신 대상이다 (빠진 자료를 가져온다)
+  예) DT_1B04006을 연간 파일로만 적재했으면 KOSIS 월별(2008.01~)도 가져온다
+      분기 요청 형식 버그로 분기가 비어 있던 표도 이렇게 채워진다
   값만 고친 정정(새 시점 없음)은 수록 기간에 드러나지 않아 잡지 못한다.
 
 KOSIS 호출은 분당 PER_MINUTE회 (적재 프로세스·질문 처리 몫을 남긴다). 표 750개면 15분쯤 걸린다.
@@ -92,14 +95,63 @@ def kosis_lasts(periods: list[dict]) -> dict[str, int]:
     return out
 
 
-def needs_update(periods: list[dict], db_lasts: dict[str, int]) -> dict[str, tuple[int, int]]:
-    """DB에 있는 주기 중 KOSIS가 더 새로운 것 {주기 코드: (DB, KOSIS)}. 비어 있으면 최신"""
-    kosis = kosis_lasts(periods)
-    return {
-        code: (db, kosis[code])
-        for code, db in db_lasts.items()
-        if db is not None and code in kosis and kosis[code] > db
-    }
+def needs_update(
+    periods: list[dict], db_lasts: dict[str, int]
+) -> dict[str, tuple[int | None, int]]:
+    """가져와야 할 주기 {주기 코드: (DB 마지막 시점, KOSIS 마지막 시점)}. 비어 있으면 최신.
+    KOSIS가 더 새로운 주기와, KOSIS에는 있는데 DB에 없는 주기(DB 칸이 None)"""
+    if not db_lasts:  # 적재 기록만 있고 자료가 없는 표는 보지 않는다 (적재 쪽 문제)
+        return {}
+    out = {}
+    for code, last in kosis_lasts(periods).items():
+        db = _db_last(db_lasts, code)
+        if db is None or last > db:
+            out[code] = (db, last)
+    return out
+
+
+# 연 단위 주기끼리는 같은 칸으로 본다. 메타데이터에 "2년"·"5년"(다년, F)으로 나오는 표도 자료는
+# 연(A)으로 와서 DB에 A로 들어 있다 (예: DT_182001_A002_2025). 따로 보면 다년 표 361개가 모두
+# "주기 없음"으로 잘못 잡힌다
+YEARLY = ("A", "F")
+
+
+def _db_last(db_lasts: dict[str, int], code: str) -> int | None:
+    if code in YEARLY:
+        years = [db_lasts[c] for c in YEARLY if db_lasts.get(c) is not None]
+        return max(years) if years else None
+    return db_lasts.get(code)
+
+
+def next_period(code: str, last: int) -> str:
+    """DB 마지막 시점 다음 시점 (요청 형식). 월 202612 → 202701, 분기 202504 → 202601"""
+    per_year = {"M": 12, "Q": 4, "H": 2}.get(code)
+    if per_year:
+        year, sub = divmod(last, 100)
+        return f"{year + 1}01" if sub >= per_year else f"{year}{sub + 1:02d}"
+    if code == "D":
+        day = date(last // 10000, last // 100 % 100, last % 100) + timedelta(days=1)
+        return day.strftime("%Y%m%d")
+    return str(last + 1)
+
+
+def delta_periods(periods: list[dict], db_lasts: dict[str, int]) -> list[dict]:
+    """KOSIS 수록 기간(메타데이터 PRD) 중 가져올 부분만 남긴다 (적재 프로세스가 갱신 작업에 씀)
+    DB에 없는 주기      수록 기간 전체
+    KOSIS가 새로운 주기  DB 마지막 시점 다음부터 (시작을 요청 형식으로 바꿔 둔다)
+    DB와 같은 주기       뺀다"""
+    out = []
+    for p in periods:
+        code = period_code(p.get("PRD_SE", ""))
+        end = db_period(code, p.get("END_PRD_DE", "")) if code else None
+        if end is None:
+            continue
+        db = _db_last(db_lasts, code)
+        if db is None:
+            out.append(p)
+        elif end > db:
+            out.append({**p, "STRT_PRD_DE": next_period(code, db)})
+    return out
 
 
 def seconds_until_next_run(now: datetime | None = None) -> float:
@@ -244,8 +296,8 @@ async def check_all(
         else:
             changes = {code: {"db": db, "kosis": k} for code, (db, k) in newer.items()}
             updated.append({"tbl_id": tbl_id, "org_id": org_id, "periods": changes})
-            text = ", ".join(f"{code} {db}→{k}" for code, (db, k) in newer.items())
-            logger.info("%s: 새 시점 %s", tbl_id, text)
+            text = ", ".join(f"{code} {db or '없음'}→{k}" for code, (db, k) in newer.items())
+            logger.info("%s: 가져올 자료 %s", tbl_id, text)
         if i % 100 == 0:
             logger.info("갱신 확인 %d/%d", i, len(tables))
 
@@ -314,7 +366,7 @@ def main() -> None:
     args = parser.parse_args()
     summary = asyncio.run(check_all(args.tables or None, args.dry_run))
     for u in summary["updated"]:
-        text = ", ".join(f"{c} {v['db']}→{v['kosis']}" for c, v in u["periods"].items())
+        text = ", ".join(f"{c} {v['db'] or '없음'}→{v['kosis']}" for c, v in u["periods"].items())
         print(f"{u['tbl_id']}: {text}")
     print(
         f"확인 {summary['checked']}개, 갱신 {len(summary['updated'])}개, "

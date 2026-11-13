@@ -39,14 +39,19 @@ def test_db_period(code, end, value) -> None:
 @pytest.mark.parametrize(
     ("periods", "db", "new"),
     [
-        (POP, {"A": 2025}, {}),  # 연간만 적재: 월별이 새로워도 연간이 같으면 갱신 아님
-        (POP, {"A": 2024}, {"A": (2024, 2025)}),
+        (POP, {"A": 2025}, {"M": (None, 202610)}),  # 연간만 적재: 빠진 월별도 가져온다
+        (POP, {"A": 2024, "M": 202610}, {"A": (2024, 2025)}),
         (POP, {"M": 202609, "A": 2025}, {"M": (202609, 202610)}),
-        # 분기 "2026 3/4"(숫자만 202634)를 월 202609와 견주던 오탐이 없어야 한다
-        (BIRTHS, {"M": 202609, "A": 2025}, {}),
-        (BIRTHS, {"Q": 202602}, {"Q": (202602, 202603)}),
+        (POP, {"M": 202610, "A": 2025}, {}),
+        # 분기 "2026 3/4"(숫자만 202634)를 월 202609와 견주던 오탐 없이, 빠진 분기만 가져온다
+        (BIRTHS, {"M": 202609, "A": 2025}, {"Q": (None, 202603)}),
+        (BIRTHS, {"M": 202609, "Q": 202602, "A": 2025}, {"Q": (202602, 202603)}),
         ([{"PRD_SE": "5년", "END_PRD_DE": "2020"}], {"F": 2015}, {"F": (2015, 2020)}),
+        # 다년 표도 자료는 연(A)으로 와서 DB에 A로 있다 → 같은 연도면 최신
+        ([{"PRD_SE": "2년", "END_PRD_DE": "2025"}], {"A": 2025}, {}),
+        ([{"PRD_SE": "5년", "END_PRD_DE": "2025"}], {"A": 2020}, {"F": (2020, 2025)}),
         ([], {"A": 2025}, {}),
+        (POP, {}, {}),  # DB에 자료가 없는 표는 보지 않는다
     ],
 )
 def test_needs_update(periods, db, new) -> None:
@@ -148,3 +153,33 @@ def test_already_tried() -> None:
         tried, {"A": 2019}, queued + rc.timedelta(hours=1)
     )  # 수록 기간이 또 바뀜
     assert not rc.already_tried(None, {"A": 2018}, queued)
+
+
+@pytest.mark.parametrize(
+    ("code", "last", "nxt"),
+    [
+        ("M", 202609, "202610"),
+        ("M", 202612, "202701"),
+        ("Q", 202504, "202601"),
+        ("Q", 202602, "202603"),
+        ("H", 202502, "202601"),
+        ("A", 2025, "2026"),
+        ("D", 20261231, "20270101"),
+    ],
+)
+def test_next_period(code, last, nxt) -> None:
+    assert rc.next_period(code, last) == nxt
+
+
+def test_delta_periods_fetch_only_what_db_lacks() -> None:
+    periods = [
+        {"PRD_SE": "월", "STRT_PRD_DE": "1970.01", "END_PRD_DE": "2026.10"},
+        {"PRD_SE": "분기", "STRT_PRD_DE": "1970 1/4", "END_PRD_DE": "2026 3/4"},
+        {"PRD_SE": "년", "STRT_PRD_DE": "1970", "END_PRD_DE": "2025"},
+    ]
+    delta = rc.delta_periods(periods, {"M": 202609, "A": 2025})
+    assert delta == [
+        {"PRD_SE": "월", "STRT_PRD_DE": "202610", "END_PRD_DE": "2026.10"},  # 새 달만
+        {"PRD_SE": "분기", "STRT_PRD_DE": "1970 1/4", "END_PRD_DE": "2026 3/4"},  # 없는 주기 전체
+    ]  # 연은 같아서 뺀다
+    assert rc.delta_periods(periods, {"M": 202610, "Q": 202603, "A": 2025}) == []
