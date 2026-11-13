@@ -205,7 +205,8 @@ NEW_REGIONS = [
     ("41593", "효행구", "일반구", 2026),
     ("41595", "병점구", "일반구", 2026),
     ("41597", "동탄구", "일반구", 2026),
-    # 전남광주통합특별시 시군구 (2026-07-01): 이름은 같고 코드만 바뀜. 옛 코드는 REGION_LAST_YEAR에서 2025까지
+    # 전남광주통합특별시 시군구 (2026-07-01): 이름은 같고 코드만 바뀜.
+    # 옛 코드는 REGION_LAST_YEAR에서 2025까지
     ("12110", "목포시", "시군구", 2026),  # 옛 46110
     ("12130", "여수시", "시군구", 2026),  # 옛 46130
     ("12150", "순천시", "시군구", 2026),  # 옛 46150
@@ -370,20 +371,27 @@ def build_regions(con):
         con.execute("update regions set valid_to = ? where region_code = ?", [last, code])
     # 기준 표 이후 출범한 지역 추가 (자료가 없으니 first_year/last_year는 비워 둔다)
     for code, name, kind, valid_from in NEW_REGIONS:
-        # 시군구·일반구는 소속 시도를 채운다 (path도 "인천광역시 > 제물포구" 모양으로)
+        # 시군구·일반구는 소속 시도를 기존 지역과 같은 모양으로 채운다
         sido_code = None if kind == "시도" else code[:2]
-        path = name
+        sido_name = None
         if sido_code:
-            sido_name = con.execute(
+            row = con.execute(
                 "select region_name from regions where region_code = ?", [sido_code]
-            ).fetchone()[0]
-            path = f"{sido_name} > {name}"
+            ).fetchone()
+            if row is None:
+                raise ValueError(
+                    f"NEW_REGIONS: {code} {name}의 시도({sido_code})가 regions에 없습니다. "
+                    "시도를 시군구보다 먼저 적어 주세요"
+                )
+            sido_name = row[0]
+        path = f"{sido_name} > {name}" if sido_name else name
         con.execute(
             """
-            insert into regions (region_code, region_name, kind, sido_code, is_basic, path, valid_from)
-            values (?, ?, ?, ?, false, ?, ?)
+            insert into regions
+                (region_code, region_name, kind, sido_code, sido_name, is_basic, path, valid_from)
+            values (?, ?, ?, ?, ?, ?, ?, ?)
         """,
-            [code, name, kind, sido_code, path, valid_from],
+            [code, name, kind, sido_code, sido_name, kind == "시군구", path, valid_from],
         )
 
     alias_rows = [(a, code) for code, names in SIDO_ALIASES.items() for a in names]
