@@ -157,6 +157,11 @@ REGION_LAST_YEAR = {
 NEW_REGIONS = [
     # (코드, 이름, 종류, 유효 시작 연도)
     ("12", "전남광주통합특별시", "시도", 2026),
+    # 인천 행정체제 개편 (2026-07-01): 중구·동구 → 제물포구·영종구, 서구 → 서해구·검단구
+    ("28125", "제물포구", "시군구", 2026),
+    ("28155", "영종구", "시군구", 2026),
+    ("28275", "서해구", "시군구", 2026),
+    ("28290", "검단구", "시군구", 2026),
 ]
 
 # 출범 전 기간이 0으로 채워진 자리값 → 결측으로 처리 (0을 실제 값으로 답하지 않도록)
@@ -294,12 +299,20 @@ def build_regions(con):
         con.execute("update regions set valid_to = ? where region_code = ?", [last, code])
     # 기준 표 이후 출범한 지역 추가 (자료가 없으니 first_year/last_year는 비워 둔다)
     for code, name, kind, valid_from in NEW_REGIONS:
+        # 시군구·일반구는 소속 시도를 채운다 (path도 "인천광역시 > 제물포구" 모양으로)
+        sido_code = None if kind == "시도" else code[:2]
+        path = name
+        if sido_code:
+            sido_name = con.execute(
+                "select region_name from regions where region_code = ?", [sido_code]
+            ).fetchone()[0]
+            path = f"{sido_name} > {name}"
         con.execute(
             """
-            insert into regions (region_code, region_name, kind, is_basic, path, valid_from)
-            values (?, ?, ?, false, ?, ?)
+            insert into regions (region_code, region_name, kind, sido_code, is_basic, path, valid_from)
+            values (?, ?, ?, ?, false, ?, ?)
         """,
-            [code, name, kind, name, valid_from],
+            [code, name, kind, sido_code, path, valid_from],
         )
 
     alias_rows = [(a, code) for code, names in SIDO_ALIASES.items() for a in names]
