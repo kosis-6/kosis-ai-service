@@ -110,6 +110,17 @@ def test_year_ranges_keep_kosis_bounds():
         ("2015", "2019"), ("2020", "2024"), ("2025", "2025")]
 
 
+def test_request_period_uses_two_digit_quarters():
+    """분기·반년 메타 표기를 숫자만 남기면 "202634"가 되어 KOSIS가 빈 결과를 준다"""
+    assert ca.request_period("2026 3/4", "Q") == "202603"
+    assert ca.request_period("1970 1/4", "Q") == "197001"
+    assert ca.request_period("2026 1/2", "H") == "202601"
+    assert ca.request_period("2026.09", "M") == "202609"
+    assert ca.request_period("2025", "A") == "2025"
+    assert ca.year_ranges("202403", "202603", "Q", 1) == [
+        ("202403", "202404"), ("202501", "202504"), ("202601", "202603")]
+
+
 def test_small_table_one_request(tmp_path):
     client = FakeKosis(["T1", "T2"], [["11", "21"]], [("년", "2020", "2023")])
     run(client, tmp_path)

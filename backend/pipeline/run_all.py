@@ -12,6 +12,8 @@
                       표마다 대조 후 교체하므로 실패해도 그 표의 기존 값은 남는다.
   7. region_map.py    5에서 region_code_map이 기본 표 것으로 바뀌므로, 그 밖에 적재해 둔 표
                       (적재 프로세스·질문 중 적재)의 지역 대응을 다시 만든다.
+  8. load_area.py     인구밀도용 행정구역 면적(지적통계)을 KOSIS에서 받아 mart.area에 넣는다.
+                      KOSIS_API_KEY가 없거나 받지 못하면 건너뛴다 (기존 값 유지).
   옵션
     --preview   export_preview.py: 엑셀로 열어볼 CSV (data/processed/preview/)
     --share     make_share.py: 팀 공유용 zip (dist/), --preview 포함
@@ -91,6 +93,7 @@ def main():
         "publish_stats.py",
         "load_raw.py",
         "region_map.py",
+        "load_area.py",
     ]:
         run(script, env)
     print("\n검증 통과: 서비스 데이터 교체 (실행 중인 서버는 재시작해야 반영)")

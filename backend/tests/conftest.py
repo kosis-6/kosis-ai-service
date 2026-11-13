@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from app.services import ask_session, qa
+from app.services import ask_session, population_latest, qa
 
 
 @pytest.fixture(autouse=True)
@@ -33,3 +33,12 @@ def ask_sessions(monkeypatch: pytest.MonkeyPatch) -> dict:
     monkeypatch.setattr(ask_session, "save", save)
     monkeypatch.setattr(ask_session, "log_turn", log_turn)
     return store
+
+
+@pytest.fixture(autouse=True)
+def no_latest_month(monkeypatch: pytest.MonkeyPatch) -> None:
+    """테스트가 KOSIS에서 최신 달 인구를 받지 않게 한다 (받지 못한 것처럼 None).
+    최신 달을 보는 테스트는 population_latest.components_many를 다시 바꿔 끼운다"""
+    monkeypatch.setattr(
+        population_latest, "components_many", lambda codes, sex="계", period=None: {}
+    )
