@@ -55,6 +55,10 @@ class Settings(BaseSettings):
     # 11/2 통합 개발셋 224문항: filter 168/206, resolve 170/206 (되묻기 적중 둘 다 12/20).
     # 2문항 차이라 임의 선택보다 사용자 선택을 기본으로 한다
     llm_pick_mode: Literal["filter", "pick", "resolve"] = "filter"
+    # /ask의 통계표 찾기에서 계획(질문을 지표로 나누기, HCX-007 1회)을 함께 돌린다
+    # (app/agent/multi.py). 지표가 여럿이면 지표마다 찾은 표를 응답에 덧붙인다.
+    # HCX 한도가 빠듯하면 SEARCH_PLAN=false 로 끈다
+    search_plan: bool = True
 
 
 @lru_cache
