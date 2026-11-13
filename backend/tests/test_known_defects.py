@@ -71,11 +71,30 @@ def test_one_region_value_is_left_alone() -> None:
 
 @pytest.mark.parametrize(
     "question",
-    ["2024년 부산 울산 합계출산율", "시도 전부 보여줘 출생아 수", "2024년 출생아 수 모두 보여줘"],
+    [
+        "2024년 부산 울산 합계출산율",
+        "시도 전부 보여줘 출생아 수",
+        "2024년 출생아 수 모두 보여줘",
+        # 합계 표현을 넓힌 뒤 리뷰에서 나온 오탐: '보다'의 '다', '모두·전부' 뒤의 '합계출산율'
+        "부산과 대구 중 서울보다 합계출산율이 높은 곳은?",
+        "서울과 부산 중 어디가 작년보다 합계출산율이 올랐어?",
+        "서울 부산 모두 합계출산율이 낮아?",
+        "전부 합계출산율 보여줘",
+    ],
 )
 def test_not_a_sum(question: str) -> None:
-    """'합계출산율'의 합계, 목록을 뜻하는 '전부'·'모두'는 합산이 아니다"""
+    """'합계출산율'의 합계, 목록을 뜻하는 '전부'·'모두', '○○보다'는 합산이 아니다"""
     assert not qa.SUM_WORDS.search(question)
+
+
+def test_comparison_with_boda_stays_a_comparison() -> None:
+    """'서울보다 합계출산율이 높은 곳'은 세 지역 비교.
+    합계로 읽으면 합계출산율을 더한 무의미한 값을 답한다"""
+    q = "부산과 대구 중 서울보다 합계출산율이 높은 곳은?"
+    p = qa.correct(
+        q, parsed(type="compare", indicator="합계출산율", regions=["부산", "대구", "서울"]), TODAY
+    )
+    assert (p["type"], p.get("aggregate")) == ("compare", None)
 
 
 # ── 결함 2: 기간 합계 ──────────────────────────────────────────────────
