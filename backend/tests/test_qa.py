@@ -320,10 +320,12 @@ def test_compute_trend_for_each_region(monkeypatch: pytest.MonkeyPatch) -> None:
     assert asked == [("trend", ["서울"]), ("trend", ["부산"])]
     assert r["split_by"] == "region" and [p["region"] for p in r["split"]] == ["서울", "부산"]
     assert r["split"][1]["series"][1]["diff_from_prev"] == -100  # 지역마다 전년 대비도 계산
-    # 지역을 합친 값은 지역마다 나누지 않는다
+    # 기간 합계를 물어도 지역마다 계산한다. 예전에는 지역을 한 번에 넘겼는데
+    # 받는 쪽(_lookup_trend)이 첫 지역만 써서 나머지 지역이 빠졌다
+    # (2026-11-13 결함 1, tests/test_known_defects.py)
     asked.clear()
     qa.compute({**q, "aggregate": "sum"})
-    assert asked == [("trend", ["서울", "부산"])]
+    assert asked == [("trend", ["서울"]), ("trend", ["부산"])]
 
 
 def test_summary_region_trends_ends_with_last_year_comparison() -> None:

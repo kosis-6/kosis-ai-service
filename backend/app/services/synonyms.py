@@ -17,6 +17,7 @@ HCX가 요약한 topic·target에서 단어를 뽑으면 지역·분류 단어('
 """
 
 import json
+import logging
 import re
 import sys
 from functools import cache
@@ -47,8 +48,22 @@ try:
     from kiwipiepy import Kiwi
 
     _KIWI = Kiwi()
-except Exception:  # noqa: BLE001  설치 안 됐으면 정규식만
+except Exception as e:  # noqa: BLE001  설치 안 됐으면 정규식만
     _KIWI = None
+    # 오류 없이 검색 품질만 떨어지므로 알린다 (/health/search의 morph도 regex가 된다)
+    logging.getLogger(__name__).warning(
+        "Kiwi 형태소 분석기를 쓸 수 없어 검색어에서 조사를 떼지 못합니다 (%s: %s). "
+        "uv sync로 kiwipiepy를 설치하세요",
+        type(e).__name__,
+        e,
+    )
+
+
+def morph_backend() -> str:
+    """검색어 정리에 쓰는 방식: kiwi(형태소 분석) 또는 regex(Kiwi가 없어 정규식만)"""
+    return "kiwi" if _KIWI is not None else "regex"
+
+
 # 이 품사로만 된 어절은 검색어가 아니다 (부사 · 접속부사 · 관형사 · 감탄사 · 보조용언 · 의존명사)
 KIWI_DROP = {"MAG", "MAJ", "MM", "IC", "VX", "NNB"}
 KIWI_NOUNISH = ("NN", "NR", "NP", "XR", "SN", "SL", "SH", "XP")
