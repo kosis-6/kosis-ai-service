@@ -116,4 +116,14 @@ describe("분석 보고서", () => {
     // 저장 파일은 혼자 열려야 하므로 스타일을 안에 담는다
     expect(buildReport(data, at)).toContain("<style>");
   });
+  it("지역이 선 색보다 많으면 지역마다 작은 그래프로 그린다 (색을 돌려 쓰지 않는다)", () => {
+    const series = Array.from({ length: 8 }, (_, i) => `지역${i}`);
+    const chart = {
+      type: "line" as const, title: "인구", unit: "명", category: "연도", series,
+      rows: [2023, 2024].map((y) => ({ label: String(y), value: null, values: series.map((_, i) => y + i) })),
+    };
+    const html = buildReport({ ...base, chart });
+    expect(html.match(/class="report-cell"/g)).toHaveLength(8);
+    expect(html).toContain("세로축은 지역마다");
+  });
 });

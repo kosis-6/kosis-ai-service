@@ -330,7 +330,7 @@ def test_compute_trend_for_each_region(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_trend_for_many_regions_keeps_every_region(monkeypatch: pytest.MonkeyPatch) -> None:
     """7곳 이상도 모두 계산한다 (예전에는 앞 6곳만 계산해 7번째부터 수치가 빠졌다).
-    그래프는 겹쳐 그리기 어려워 생략하고 그 이유를 알린다"""
+    차트도 만든다 (화면이 지역마다 작은 그래프로 그린다)"""
     monkeypatch.setattr(qa.indicators, "_data_years", lambda: (2008, 2025))
     monkeypatch.setattr(qa.indicators, "spec", lambda name: {"name": name, "method": "lookup"})
     monkeypatch.setattr(
@@ -342,7 +342,9 @@ def test_trend_for_many_regions_keeps_every_region(monkeypatch: pytest.MonkeyPat
     r = qa.compute({"type": "trend", "indicator": "출생아 수", "regions": names})
     assert [p["region"] for p in r["split"]] == names
     assert not any("앞의" in n for p in r["split"] for n in p.get("notes") or [])
-    assert charts.build(r) is None and "넘어" in charts.omission_reason(r)
+    chart = charts.build(r)
+    assert chart["type"] == "line" and chart["series"] == names
+    assert charts.omission_reason(r) is None
 
 
 def test_summary_region_trends_ends_with_last_year_comparison() -> None:

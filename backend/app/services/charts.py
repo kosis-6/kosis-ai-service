@@ -6,6 +6,7 @@
   결과에 있는 것        차트             이유
   series (연도별 값)    line  꺾은선     시간에 따른 변화
   지역마다 series       line  여러 꺾은선 지역별 추이 (series에 지역 이름, 행마다 지역별 값)
+                                        MAX_LINES곳이 넘으면 화면이 지역마다 작은 그래프로
   values (지역별 값)    bar   가로 막대  크기 비교 (값이 큰 순)
   ranking (순위)        bar   가로 막대  크기 비교 (순위 순, 많으면 위에서 MAX_BARS개)
   parts (구성비)        parts 나뉜 막대  전체가 어떻게 나뉘는지
@@ -19,7 +20,9 @@ from typing import Any
 
 MAX_BARS = 15  # 시군구 순위(200개가 넘는다)는 위에서 이만큼만 그린다
 MAX_PARTS = 6  # 나뉜 막대는 조각이 이보다 많으면 읽기 어렵다 → 가로 막대로
-MAX_LINES = 6  # 꺾은선은 이보다 많으면 색을 구분하기 어렵다 (색을 돌려 쓰지 않는다)
+# 한 그래프에 겹쳐 그리는 선은 이만큼까지 (색을 돌려 쓰지 않는다). 더 많으면 화면이 지역마다
+# 작은 그래프를 나란히 그린다 (Chart.tsx GridView. 행·series 모양은 같다)
+MAX_LINES = 6
 
 
 def _title(*parts: Any) -> str:
@@ -49,8 +52,6 @@ def omission_reason(result: dict | None) -> str | None:
     parts = result.get("split") or []
     if not parts:
         return None
-    if len(parts) > MAX_LINES:
-        return f"지역이 {MAX_LINES}개를 넘어 차트는 생략하고 수치를 표시합니다."
     first = parts[0]
     for part in parts:
         if part.get("split") or not part.get("series"):

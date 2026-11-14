@@ -1,6 +1,7 @@
 // 답변의 차트 (POST /ask 의 chart). 서버가 종류와 행을 정하고 여기서는 그리기만 한다
 //   line   연도별 꺾은선 (막대로 바꿔 볼 수 있다. 다시 조회하지 않는다)
 //          series 가 있으면 지역마다 선 하나 (범례·툴팁·표가 이름을 함께 전한다)
+//          지역이 MAX_OVERLAP(선 색 개수)보다 많으면 지역마다 작은 그래프를 나란히 (GridView)
 //   bar    지역별 가로 막대 (큰 순·순위 순)
 //   parts  구성비 나뉜 막대
 // 모든 차트는 "표"로도 볼 수 있다 (색이나 마우스 없이도 같은 값을 읽을 수 있게)
@@ -20,12 +21,15 @@ import {
 import type { Chart } from "../api/types";
 import {
   LINE_COLORS,
+  MAX_OVERLAP,
   PART_COLORS,
   axisTick,
+  changeText,
   fitsLabel,
   formatValue,
   labelWidth,
   maxAbs,
+  panels,
   rowLabel,
   seriesMax,
   seriesRows,
@@ -236,6 +240,70 @@ function MultiLineView({ chart }: { chart: Chart }) {
   );
 }
 
+type PointTipProps = { active?: boolean; payload?: readonly { value?: unknown }[]; label?: unknown };
+
+// 작은 그래프의 툴팁: 그 해 값
+function PointTip({ active, payload, label, unit }: PointTipProps & { unit: string }) {
+  const value = payload?.[0]?.value;
+  if (!active || typeof value !== "number") return null;
+  return (
+    <div className="chart-tip">
+      <strong>{withUnit(value, unit)}</strong>
+      <span>{`${String(label)}년`}</span>
+    </div>
+  );
+}
+
+// 지역이 많을 때: 지역마다 작은 꺾은선. 색은 한 가지(지역 이름이 칸 제목이라 색으로 구분하지 않는다).
+// 지역 크기가 수십 배 차이 나서(서울·세종) 세로축은 지역마다 따로 둔다. 비교는 칸 머리의 증감률로
+function GridView({ chart }: { chart: Chart }) {
+  const all = panels(chart);
+  const years = chart.rows.map((r) => Number(r.label));
+  const span = years.length ? `${years[0]}~${years[years.length - 1]}년` : "";
+  return (
+    <>
+      <p className="chart-unit">{`지역이 많아 지역마다 따로 그렸습니다. 세로축은 지역마다 다르니 크기는 숫자로 비교해 주세요. 증감률은 ${span} 처음 대비 마지막`}</p>
+      <ul className="chart-grid">
+        {all.map((panel) => {
+          const known = panel.points.filter((p) => p.value != null);
+          const last = known[known.length - 1];
+          const top = Math.max(0, ...known.map((p) => Math.abs(p.value ?? 0)));
+          const label = `${panel.name}: ${known.map((p) => `${p.year}년 ${withUnit(p.value, chart.unit)}`).join(", ")}`;
+          return (
+            <li key={panel.name} className="chart-cell">
+              <div className="chart-cell-head">
+                <h4>{panel.name}</h4>
+                <span className="chart-cell-change">{changeText(panel.change)}</span>
+              </div>
+              <p className="chart-cell-value">{last ? `${last.year}년 ${withUnit(last.value, chart.unit)}` : "–"}</p>
+              <div role="img" aria-label={label}>
+                <ResponsiveContainer width="100%" height={88}>
+                  <LineChart data={panel.points} margin={{ top: 8, right: 8, bottom: 0, left: 8 }}>
+                    <XAxis dataKey="year" type="number" domain={["dataMin", "dataMax"]} hide />
+                    <YAxis domain={["auto", "auto"]} hide tickFormatter={(v: number) => axisTick(v, top)} />
+                    <Tooltip cursor={{ stroke: MUTED, strokeWidth: 1 }} content={(p) => <PointTip {...p} unit={chart.unit} />} />
+                    <Line
+                      dataKey="value"
+                      stroke={SERIES}
+                      strokeWidth={2}
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      dot={false}
+                      activeDot={{ r: 5, fill: SERIES, stroke: SURFACE, strokeWidth: 2 }}
+                      connectNulls={false}
+                      isAnimationActive={false}
+                    />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </>
+  );
+}
+
 // 여러 꺾은선을 막대로: 해마다 지역별 막대를 나란히 (막대 사이 2px 틈)
 function MultiColumnView({ chart }: { chart: Chart }) {
   const rows = seriesRows(chart);
@@ -392,8 +460,13 @@ type View = "line" | "bar" | "table";
 
 export default function ChartCard({ chart }: { chart: Chart }) {
   // 꺾은선은 막대로도 볼 수 있다. 가로 막대·구성비는 차트 하나와 표
-  const views: [View, string][] =
-    chart.type === "line"
+  const crowded = (chart.series?.length ?? 0) > MAX_OVERLAP; // 지역마다 작은 그래프
+  const views: [View, string][] = crowded
+    ? [
+        ["line", "지역별"],
+        ["table", "표"],
+      ]
+    : chart.type === "line"
       ? [
           ["line", "꺾은선"],
           ["bar", "막대"],
@@ -434,6 +507,8 @@ export default function ChartCard({ chart }: { chart: Chart }) {
         <PartsView chart={chart} />
       ) : chart.type === "bar" ? (
         <BarView chart={chart} />
+      ) : crowded ? (
+        <GridView chart={chart} />
       ) : chart.series?.length ? (
         view === "bar" ? <MultiColumnView chart={chart} /> : <MultiLineView chart={chart} />
       ) : view === "bar" ? (
