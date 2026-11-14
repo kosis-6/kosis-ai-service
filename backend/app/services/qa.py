@@ -380,6 +380,7 @@ def correct(question, parsed, today=None):
     if kind == "composition" and parsed.get("by") != "sex" and SEX_SPLIT.search(question):
         fix("by", "sex", "질문의 남녀 구성 표현")
 
+    _full_region_names(question, parsed, fix)
     _ground_regions(question, parsed, fix)
 
     if NATIONWIDE.search(question) and kind not in NO_REGION_TYPES:
@@ -470,6 +471,26 @@ def _ground_regions(question, parsed, fix):
             continue  # 지역을 못 찾으면 계산 단계에서 그대로 안내한다
         parsed["ungrounded_region"] = r
         return
+
+
+def _full_region_names(question, parsed, fix):
+    """HCX가 줄여 쓴 지역 이름을 질문의 정식 이름으로 되돌린다.
+    "광주광역시"를 "광주"로 줄이면 경기 광주시와 겹쳐 되묻게 되므로,
+    질문에 그 이름으로 시작하는 지역 이름이 하나뿐이고 바로 찾아지면 그것을 쓴다"""
+    regions = parsed.get("regions") or []
+    if not regions or parsed.get("group"):
+        return
+    asked = indicators.find_regions(question)
+    out = []
+    for r in regions:
+        short = indicators._norm(r)
+        longer = [n for n in asked if n != short and n.startswith(short)]
+        if short not in asked and len(longer) == 1:
+            if indicators.resolve_region(longer[0]).get("status") == "ok":
+                r = longer[0]
+        out.append(r)
+    if out != regions:
+        fix("regions", out, "질문의 정식 지역 이름")
 
 
 def _merge_regions(regions):

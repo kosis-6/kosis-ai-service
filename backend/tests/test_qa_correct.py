@@ -346,6 +346,16 @@ def test_sub_area_and_ungrounded_region() -> None:
         assert "ungrounded_region" not in qa.correct(q, parsed(regions=[r]), TODAY), q
 
 
+def test_full_region_name_from_question() -> None:
+    # HCX가 "광주광역시"를 "광주"로 줄이면 경기 광주시와 겹쳐 되묻게 된다
+    q = "서울 광주광역시 2018년부터 2024년까지 인구 추이"
+    p = qa.correct(q, parsed(type="trend", indicator="총인구", regions=["서울", "광주"]), TODAY)
+    assert p["regions"] == ["서울", "광주광역시"]
+    # 질문에 "광주"라고만 썼으면 그대로 둔다 (어느 광주인지 되묻는 게 맞다)
+    p = qa.correct("광주 인구 추이", parsed(type="trend", regions=["광주"]), TODAY)
+    assert p["regions"] == ["광주"]
+
+
 def test_other_composition_question() -> None:
     p = qa.correct(
         "2025년 전국 인구 중 남녀 비중은 어떻게 돼?",
