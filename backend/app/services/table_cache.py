@@ -154,19 +154,35 @@ async def _fetch(tbl_id: str, org_id: str, trace: dict, force: bool = False) -> 
     # 잠금을 기다리는 동안 다른 질문이 넣었을 수 있다
     if not force and tbl_id in await load_queue.loaded([tbl_id]):
         return "loaded"
-    table_dir = load_worker.TABLE_DIR
+    # 이미 적재된 표(최근 질문의 갱신)는 DB에 없는 시점만 받아 덧붙인다 (적재 프로세스 갱신과 같음).
+    # 받은 조각은 원본 CSV를 덮어쓰지 않게 _updates/에 두고 적재 뒤 지운다
+    table_dir = load_worker.TABLE_DIR / load_worker.UPDATE_DIR if force else load_worker.TABLE_DIR
     # 시간 제한은 받는 단계에만 건다. 적재는 스레드에서 돌아 중간에 멈출 수 없으므로 끝까지 기다린다
-    if not await asyncio.wait_for(_download(tbl_id, org_id, trace, table_dir), INLINE_TIMEOUT):
+    got = await asyncio.wait_for(
+        _download(tbl_id, org_id, trace, table_dir, delta=force), INLINE_TIMEOUT
+    )
+    if got == "nothing":
+        return "loaded"  # KOSIS 수록 기간에는 있지만 받을 시점이 없다 (지금 자료가 최신)
+    if not got:
         return "too_big"
-    # 적재(load_table)와 적재 후 단계(지역 매핑 등)는 적재 프로세스와 같은 함수를 쓴다
-    await asyncio.to_thread(load_worker._load, table_dir / f"{tbl_id}.csv", tbl_id)
+    path = table_dir / f"{tbl_id}.csv"
+    try:
+        # 적재(load_table)와 적재 후 단계(지역 매핑 등)는 적재 프로세스와 같은 함수를 쓴다
+        merge = (True,) if force else ()  # 갱신이면 기존 표에 덧붙인다
+        await asyncio.to_thread(load_worker._load, path, tbl_id, *merge)
+    finally:
+        if force:
+            for leftover in (path, path.with_suffix(".meta.json")):
+                leftover.unlink(missing_ok=True)
     lookup.clear_table_caches()  # 30초 주기 확인을 기다리지 않고 바로 새 표를 읽게 한다
     return "loaded"
 
 
-async def _download(tbl_id: str, org_id: str, trace: dict, table_dir) -> bool:
-    """KOSIS에서 받아 table_dir에 {tbl_id}.csv + .meta.json으로 둔다. 큰 표면 받지 않고 False"""
+async def _download(tbl_id: str, org_id: str, trace: dict, table_dir, delta: bool = False):
+    """KOSIS에서 받아 table_dir에 {tbl_id}.csv + .meta.json으로 둔다. 큰 표면 받지 않고 False.
+    delta면 DB에 없는 시점만 받는다 (refresh_check.delta_periods). 받을 시점이 없으면 nothing"""
     from app.services.kosis_client import KosisClient
+    from pipeline import load_worker, refresh_check
     from scripts.collect_all import collect_table, plan_table
     from scripts.collect_kosis import fetch_meta
 
@@ -175,6 +191,15 @@ async def _download(tbl_id: str, org_id: str, trace: dict, table_dir) -> bool:
     for _ in range(3):  # 메타 요청 3번(TBL·ITM·PRD)도 분당 호출 수에 넣는다
         await limiter.wait()
     meta = await fetch_meta(client, org_id, tbl_id, pause=0)
+    if delta:
+        lasts, _ = await asyncio.to_thread(load_worker._with_pg, load_worker._db_state_of, tbl_id)
+        periods = refresh_check.delta_periods(meta["periods"], lasts)
+        if not periods:
+            return "nothing"
+        meta = {**meta, "periods": periods}
+        trace["fetch_delta"] = [
+            f"{p['PRD_SE']} {p['STRT_PRD_DE']}~{p['END_PRD_DE']}" for p in periods
+        ]
     n_requests = sum(len(j["requests"]) for j in plan_table(meta))
     trace["fetch_requests"] = n_requests
     if n_requests > INLINE_MAX_REQUESTS:
