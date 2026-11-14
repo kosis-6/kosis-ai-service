@@ -29,8 +29,8 @@ from app.core.stats_db import StatsTableMissing
 from app.prompts.qa import PARSE_SYSTEM
 from app.services import (
     agegroup,
-    ask_followup,
     analysis,
+    ask_followup,
     indicators,
     load_queue,
     lookup,
@@ -1632,8 +1632,8 @@ RECENT_WORDS = re.compile(r"최근|최신|현재|요즘|지금|올해|금년")
 
 async def _refresh_recent(question, parsed, trace):
     """최근·최신을 묻는 조회 지표 질문: 쓰는 표마다 KOSIS에 새 연도가 올라왔는지
-    확인(하루 한 번)하고 있으면 다시 받는다 (table_cache.refresh_if_stale). 바로 못 받으면 갱신 작업을 대기열에 넣고
-    지금 자료로 답하면서 그 사실을 주의사항으로 돌려준다.
+    확인(하루 한 번)하고 있으면 다시 받는다 (table_cache.refresh_if_stale).
+    바로 못 받으면 갱신 작업을 대기열에 넣고 지금 자료로 답하면서 그 사실을 주의사항으로 돌려준다.
 
     계산 지표(총인구 등)는 전처리로 만든 mart.population을 읽어 표를 다시 받아도 반영되지 않으므로
     확인하지 않는다."""
@@ -1727,7 +1727,8 @@ async def ask(question, adjust=None):
     """질문 하나를 끝까지 처리. status, answer, parsed, result, sources, trace를 반환한다.
     status: ok 또는 답변 불가 사유 (indicators.py 결과의 status)
     trace: HCX 원본 출력과 단계별 시간(ms). 요청 로그에만 쓰고 API 응답에는 넣지 않는다
-    adjust: 해석한 조건을 계산 전에 고치는 함수 (대화에서 앞 질문의 조건을 이어받을 때, ask_session.py)"""
+    adjust: 해석한 조건을 계산 전에 고치는 함수
+            (대화에서 앞 질문의 조건을 이어받을 때, ask_session.py)"""
     trace = {}
     start = time.perf_counter()
     parsed = await understand(question, trace)
@@ -1839,4 +1840,7 @@ def log_request(question, res=None, error=None, elapsed_ms=None, path=None, user
         record["fetched"] = trace["fetched"]
     if trace.get("refreshed"):  # 최근·최신 질문에서 KOSIS 새 연도를 확인한 결과
         record["refreshed"] = trace["refreshed"]
+    if "understand_usage" in trace:
+        record["understand_usage"] = trace["understand_usage"]
+        record["understand_max_completion_tokens"] = trace.get("understand_max_completion_tokens")
     _append(path or REQUEST_LOG, record)

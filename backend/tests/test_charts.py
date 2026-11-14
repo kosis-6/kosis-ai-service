@@ -106,3 +106,74 @@ def test_region_trends_are_several_lines() -> None:
     assert charts.build(many) is None  # 색을 돌려 쓰지 않는다
     nested = {"status": "ok", "split_by": "region", "split": [{"split": [seoul]}, busan]}
     assert charts.build(nested) is None  # 지역마다 남녀까지 나뉘면 그리지 않는다
+
+
+def test_region_trends_require_comparable_indicators_units_and_sexes():
+    import copy
+
+    a = {
+        **BASE,
+        "region": "서울",
+        "sex": "계",
+        "series": [
+            {"year": 2022, "value": 10},
+            {"year": 2023, "value": 20},
+        ],
+    }
+    for change in ({"indicator": "다른 지표"}, {"unit": "%"}, {"sex": "여"}, {"unit": None}):
+        result = {
+            "status": "ok",
+            "split_by": "region",
+            "split": [a, {**a, "region": "부산", **change}],
+        }
+        before = copy.deepcopy(result)
+        assert charts.build(result) is None
+        assert "기준이 달라" in charts.omission_reason(result)
+        assert result == before
+
+
+def test_region_trends_require_two_real_points_per_region_and_unique_years():
+    a = {
+        **BASE,
+        "region": "서울",
+        "series": [
+            {"year": 2022, "value": 10},
+            {"year": 2023, "value": 20},
+        ],
+    }
+    for series in (
+        [{"year": 2022, "value": None}, {"year": 2023, "value": 20}],
+        [{"year": 2022, "value": float("inf")}, {"year": 2023, "value": 20}],
+        [{"year": 2022, "value": 10}, {"year": 2022, "value": 20}],
+    ):
+        result = {"status": "ok", "split_by": "region", "split": [a, {**a, "series": series}]}
+        assert charts.build(result) is None
+        assert charts.omission_reason(result)
+
+
+def test_non_finite_values_are_not_sent_to_charts():
+    assert (
+        charts.build(
+            {
+                **BASE,
+                "series": [
+                    {"year": 2020, "value": float("nan")},
+                    {"year": 2021, "value": 10},
+                    {"year": 2022, "value": 20},
+                ],
+            }
+        )["rows"][0]["value"]
+        is None
+    )
+    assert (
+        charts.build(
+            {
+                **BASE,
+                "values": [
+                    {"region": "서울", "value": float("inf")},
+                    {"region": "부산", "value": 1},
+                ],
+            }
+        )
+        is None
+    )

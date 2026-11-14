@@ -49,7 +49,15 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.prompts.qa import FOLLOW_SYSTEM
-from app.services import ask_followup, charts, indicators, qa, table_guide, timeref
+from app.services import (
+    ask_followup,
+    charts,
+    indicators,
+    qa,
+    question_clarify,
+    table_guide,
+    timeref,
+)
 from app.services.hcx_client import HcxClient
 
 logger = logging.getLogger(__name__)
@@ -699,11 +707,80 @@ async def _new(question: str, state: dict | None) -> tuple[dict, dict, str | Non
     return res, sources, notice
 
 
+def _clarification_answer(question: str, clarification: dict) -> dict:
+    return {
+        "status": "clarify_question",
+        "answer": clarification["prompt"],
+        "parsed": {},
+        "result": {"status": "clarify_question"},
+        "sources": [],
+        "chart": None,
+        "trace": {},
+        "question": question,
+        "request_type": REPLY,
+        "clarification": clarification,
+    }
+
+
+async def _clarified(question: str, state: dict):
+    regions = await asyncio.to_thread(indicators.find_regions, question)
+    if clarification := question_clarify.detect(question, regions):
+        return _clarification_answer(question, clarification), {}, None
+    res, sources, notice = await _new(question, state.get("clarification_context"))
+    res["request_type"], res["question"] = REPLY, question
+    return res, sources, notice
+
+
+async def _movement_tables(question: str, user_id: int | None):
+    # 이사 건수는 순이동(전입-전출)과 다르다. 범위가 정해져도 임의의 지표로 계산하지 않는다.
+    sid = table_guide.new_search_session()
+    found = await table_guide.find_tables(question, sid, None, user_id)
+    res = table_guide.tables_answer(found)
+    res.update(question=question, request_type=REPLY, search_session=sid)
+    return (
+        res,
+        {},
+        "선택한 이동 범위로 통계표를 찾았습니다. 이사 건수는 아직 직접 계산하지 않습니다.",
+    )
+
+
 async def _turn(
     state: dict | None, question: str, selections: dict | None = None, user_id: int | None = None
 ) -> tuple[dict, dict, str | None]:
     """이번 말을 처리한다 → (응답, 조건의 출처, 알림)"""
     pending = (state or {}).get("pending")
+    if pending and pending.get("missing") == "question_clarification":
+        original = pending["original_question"]
+        kind = pending["clarification"]["kind"]
+        choice = question
+        if selections and selections.get("clarification_kind") == kind:
+            choice = selections.get("clarification_value") or question
+        if kind == "local_region":
+            regions = await asyncio.to_thread(indicators.find_regions, choice)
+            region = question_clarify.region_reply(
+                choice, regions, bool(indicators.find_in_text(choice))
+            )
+            if region:
+                merged = question_clarify.merge_region(original, region)
+                return await _clarified(merged, state)
+        elif scope := question_clarify.scope_reply(choice):
+            merged = question_clarify.merge_scope(original, scope)
+            return await _movement_tables(merged, user_id)
+        # 미지원 지표라도 새 질문을 선택지 대기에 가두지 않는다.
+        if indicators.find_in_text(question) or re.search(
+            r"몇|얼마|통계|알려|보여|안녕|취소", question
+        ):
+            state = None
+            pending = None
+        else:
+            return _clarification_answer(original, pending["clarification"]), {}, None
+
+    if question_clarify.VAGUE_REGION.search(question) or question_clarify.MOVE_COUNT.search(
+        question
+    ):
+        regions = await asyncio.to_thread(indicators.find_regions, question)
+        if clarification := question_clarify.detect(question, regions):
+            return _clarification_answer(question, clarification), {}, None
     if (state or {}).get("search_session") and (
         selections
         or (
@@ -793,6 +870,24 @@ def next_state(state: dict | None, question: str, res: dict, sources: dict) -> d
     prev = state or {}
     recent = [*(prev.get("recent") or []), question][-RECENT:]
     turn_no = (prev.get("turn_no") or 0) + 1
+    if res.get("clarification"):
+        return {
+            **prev,
+            "clarification_context": prev.get("clarification_context")
+            or {
+                "conditions": prev.get("conditions") or {},
+                "sources": prev.get("sources") or {},
+            },
+            "conditions": {},
+            "sources": {},
+            "pending": {
+                "missing": "question_clarification",
+                "original_question": res["question"],
+                "clarification": res["clarification"],
+            },
+            "recent": recent,
+            "turn_no": turn_no,
+        }
     if res.get("request_type") in (CHART, SUMMARY):
         last = {**prev["last"], "chart": res.get("chart") or prev["last"].get("chart")}
         return {**prev, "last": last, "recent": recent, "turn_no": turn_no}
@@ -876,6 +971,8 @@ async def handle(
         state, expired = await _load(sid)
         res, sources, notice = await _turn(state, question, selections, user_id)
         await _attach_tables(res, state, question, user_id)
+        if not res.get("chart") and (reason := charts.omission_reason(res.get("result"))):
+            notice = " ".join(filter(None, [notice, reason]))
         if expired:
             notice = " ".join(filter(None, ["시간이 지나 이전 조건이 초기화됐습니다.", notice]))
         after = next_state(state, question, res, sources)

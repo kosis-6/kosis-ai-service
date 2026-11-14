@@ -1,10 +1,11 @@
 // 질문의 답 한 건 (POST /ask)
 //   수치로 답함: 알림 + 답변 문장 + 적용한 조건 + 차트 + 수치·계산식 + 통계표 카드 + 출처
 //   통계표만 안내함(status "tables"): 통계표 찾기와 같은 말풍선·표 카드·선택지 (Reply)
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, useState } from "react";
 import type { Applied, AskResponse, Parsed, Recommendation, SearchResponse } from "../api/types";
 import { safeUrl, splitLinks } from "./format";
 import { Reply, TopCard, type Send } from "./Reply";
+import { canReport, downloadReport } from "./report";
 
 // 차트 라이브러리(Recharts)는 차트가 있는 답을 처음 그릴 때 내려받는다
 const ChartCard = lazy(() => import("./Chart"));
@@ -64,9 +65,30 @@ type Props = {
   onAskAgain: () => void;
 };
 
+function ReportButton({ data }: { data: AskResponse }) {
+  const [error, setError] = useState<string | null>(null);
+  return (
+    <div>
+      <button type="button" className="btn secondary card-link" onClick={() => {
+        try {
+          downloadReport(data);
+          setError(null);
+        } catch {
+          setError("보고서를 저장하지 못했습니다. 다시 시도해 주세요.");
+        }
+      }}>
+        보고서 저장 (HTML)
+      </button>
+      {error && <p role="alert">{error}</p>}
+    </div>
+  );
+}
+
 export function Answer({ data, busy, onSend, onOthers, onAskAgain }: Props) {
   const notice = data.notice && <p className="answer-notice">{data.notice}</p>;
   const tables = data.tables;
+  const clarification = data.clarification;
+  const options = clarification?.options ?? [];
 
   // 수치 없이 통계표만 안내한 답 (지원하지 않는 지표 등): 표 카드·선택지를 통계표 찾기 화면과 같게 그린다
   if (data.status === "tables" && tables) {
@@ -102,6 +124,24 @@ export function Answer({ data, busy, onSend, onOthers, onAskAgain }: Props) {
         <div className="bubble">
           <Linked text={data.answer} />
         </div>
+        {clarification && options.length > 0 && (
+          <div className="choices" role="group" aria-label="집계 범위 선택">
+            {options.map((option) => (
+              <button
+                key={option}
+                type="button"
+                className="btn secondary"
+                disabled={busy}
+                onClick={() => onSend(option, {
+                  clarification_kind: clarification.kind,
+                  clarification_value: option,
+                })}
+              >
+                {option}
+              </button>
+            ))}
+          </div>
+        )}
       </>
     );
   }
@@ -116,6 +156,7 @@ export function Answer({ data, busy, onSend, onOthers, onAskAgain }: Props) {
       {notice}
       <div className="bubble">{lead}</div>
       <Conditions applied={data.applied ?? []} />
+      {canReport(data) && <ReportButton data={data} />}
       {data.chart && (
         <Suspense fallback={<div className="chart-card chart-loading">차트를 그리고 있어요</div>}>
           <ChartCard chart={data.chart} />
