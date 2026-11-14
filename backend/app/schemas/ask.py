@@ -69,7 +69,16 @@ class Applied(BaseModel):
     )
 
 
+class QuestionClarification(BaseModel):
+    kind: Literal["local_region", "move_scope"]
+    prompt: str
+    options: list[str] = Field(default_factory=list)
+
+
 class AskResponse(BaseModel):
+    clarification: QuestionClarification | None = Field(
+        default=None, description="지역·이사 집계 범위를 확인하는 질문과 선택지"
+    )
     status: str | None = Field(
         description="ok / tables(수치 없이 통계표만 안내) / 답변 불가 사유 (out_of_range 등)"
     )

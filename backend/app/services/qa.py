@@ -29,8 +29,8 @@ from app.core.stats_db import StatsTableMissing
 from app.prompts.qa import PARSE_SYSTEM
 from app.services import (
     agegroup,
-    ask_followup,
     analysis,
+    ask_followup,
     indicators,
     load_queue,
     lookup,
@@ -186,6 +186,9 @@ TOP_N = re.compile(r"(상위|하위)\s*(\d+)|(\d+)\s*(곳|개|위까지)(?!\s*\S
 # "최근 5년", "과거 10년간", "지난 3년 동안" (timeref와 같은 표현)
 RECENT = timeref.RECENT_N_YEARS
 LATEST = re.compile(r"최근|최신|현재|요즘|지금")
+# 기간 변화를 묻는 표현 ("최근 부산 인구 추이"는 추이, "최근 부산 인구"는 최신 값)
+LATEST_KINDS = ("value", "compare", "rank")  # "최근"이면 마지막 해로 답하는 질문 유형
+CHANGE_ASK = re.compile(r"추이|변화|변동|흐름|증감|추세|늘|줄|증가|감소|동안|사이|년간|그래프")
 SPAN = re.compile(r"((?:19|20)\d{2})\s*년?\s*(대비|부터|에서)\s*((?:19|20)\d{2})\s*년")
 YEAR = re.compile(r"((?:19|20)\d{2})\s*년")
 SINCE = re.compile(r"((?:19|20)\d{2})\s*년\s*(이후|이래|부터)(?!.*까지)")
@@ -380,6 +383,7 @@ def correct(question, parsed, today=None):
     if kind == "composition" and parsed.get("by") != "sex" and SEX_SPLIT.search(question):
         fix("by", "sex", "질문의 남녀 구성 표현")
 
+    _full_region_names(question, parsed, fix)
     _ground_regions(question, parsed, fix)
 
     if NATIONWIDE.search(question) and kind not in NO_REGION_TYPES:
@@ -470,6 +474,26 @@ def _ground_regions(question, parsed, fix):
             continue  # 지역을 못 찾으면 계산 단계에서 그대로 안내한다
         parsed["ungrounded_region"] = r
         return
+
+
+def _full_region_names(question, parsed, fix):
+    """HCX가 줄여 쓴 지역 이름을 질문의 정식 이름으로 되돌린다.
+    "광주광역시"를 "광주"로 줄이면 경기 광주시와 겹쳐 되묻게 되므로,
+    질문에 그 이름으로 시작하는 지역 이름이 하나뿐이고 바로 찾아지면 그것을 쓴다"""
+    regions = parsed.get("regions") or []
+    if not regions or parsed.get("group"):
+        return
+    asked = indicators.find_regions(question)
+    out = []
+    for r in regions:
+        short = indicators._norm(r)
+        longer = [n for n in asked if n != short and n.startswith(short)]
+        if short not in asked and len(longer) == 1:
+            if indicators.resolve_region(longer[0]).get("status") == "ok":
+                r = longer[0]
+        out.append(r)
+    if out != regions:
+        fix("regions", out, "질문의 정식 지역 이름")
 
 
 def _merge_regions(regions):
@@ -570,6 +594,22 @@ def _read_question(question, parsed, fix):
         asked["recent"] = int(m[2])
     elif LATEST.search(question) and not YEAR.search(question) and not timeref.resolve(question):
         asked["latest"] = True  # "최근 서울 인구" → 연도 없이 가장 최근 값 (인구는 최신 달까지)
+        if kind == "trend" and not by_year and not CHANGE_ASK.search(question):
+            # HCX가 "최근"을 최근 몇 년 추이로 읽는 경우: 변화를 묻지 않았으면 최신 값 하나
+            fix("type", "value", "최근 값을 물음 (변화를 묻지 않음)")
+            for key in ("start_year", "end_year"):
+                if parsed.get(key):
+                    fix(key, None, "최근 값을 물음")
+            kind = "value"
+        if kind in LATEST_KINDS and parsed.get("year"):
+            # 질문에 연도가 없으니 HCX가 넣은 연도는 짐작이다. 계산 단계가 표마다 마지막 해를 쓴다
+            fix("year", None, "최근 값은 자료 마지막 해")
+        elif kind == "trend":
+            # "최근 부산 고령인구 비율 추이": 연도를 말하지 않았으므로 HCX가 넣은 기간(2020~2024 등)
+            # 대신 자료 마지막 해까지 (계산 단계가 표마다 마지막 해를 정한다)
+            for key in ("start_year", "end_year", "year"):
+                if parsed.get(key):
+                    fix(key, None, "최근 추이는 자료 마지막 해까지")
     if ask_followup.FROM_PAST.search(question) and not SPAN.search(question):
         # "과거부터 지금까지 합계출산율 추이" → 수록 기간 전체 추이
         asked["from_start"] = True
@@ -847,6 +887,11 @@ def _compute_population(q, ind, kind, regions, year, sex, ages, hi):
 
 def _compute_lookup(q, sp, kind, regions, year, sex, ages):
     """조회 지표 (facts). 남녀 값만 있는 표는 남녀를 따로, 연령 구간이 여럿이면 구간마다 계산"""
+    if (q.get("asked") or {}).get("latest") and kind in LATEST_KINDS and not q.get("year"):
+        # "최근 서울 출생아 수": HCX가 짐작한 연도 대신 그 표의 마지막 해
+        last = _lookup_span(sp, regions[0] if regions else "전국", sex)[1]
+        if last != 9999:
+            year = last
     if not regions and kind in ("value", "trend", "compare", "composition"):
         if not sp.get("national", True):
             return {
@@ -1632,8 +1677,8 @@ RECENT_WORDS = re.compile(r"최근|최신|현재|요즘|지금|올해|금년")
 
 async def _refresh_recent(question, parsed, trace):
     """최근·최신을 묻는 조회 지표 질문: 쓰는 표마다 KOSIS에 새 연도가 올라왔는지
-    확인(하루 한 번)하고 있으면 다시 받는다 (table_cache.refresh_if_stale). 바로 못 받으면 갱신 작업을 대기열에 넣고
-    지금 자료로 답하면서 그 사실을 주의사항으로 돌려준다.
+    확인(하루 한 번)하고 있으면 다시 받는다 (table_cache.refresh_if_stale).
+    바로 못 받으면 갱신 작업을 대기열에 넣고 지금 자료로 답하면서 그 사실을 주의사항으로 돌려준다.
 
     계산 지표(총인구 등)는 전처리로 만든 mart.population을 읽어 표를 다시 받아도 반영되지 않으므로
     확인하지 않는다."""
@@ -1727,7 +1772,8 @@ async def ask(question, adjust=None):
     """질문 하나를 끝까지 처리. status, answer, parsed, result, sources, trace를 반환한다.
     status: ok 또는 답변 불가 사유 (indicators.py 결과의 status)
     trace: HCX 원본 출력과 단계별 시간(ms). 요청 로그에만 쓰고 API 응답에는 넣지 않는다
-    adjust: 해석한 조건을 계산 전에 고치는 함수 (대화에서 앞 질문의 조건을 이어받을 때, ask_session.py)"""
+    adjust: 해석한 조건을 계산 전에 고치는 함수
+            (대화에서 앞 질문의 조건을 이어받을 때, ask_session.py)"""
     trace = {}
     start = time.perf_counter()
     parsed = await understand(question, trace)
@@ -1839,4 +1885,7 @@ def log_request(question, res=None, error=None, elapsed_ms=None, path=None, user
         record["fetched"] = trace["fetched"]
     if trace.get("refreshed"):  # 최근·최신 질문에서 KOSIS 새 연도를 확인한 결과
         record["refreshed"] = trace["refreshed"]
+    if "understand_usage" in trace:
+        record["understand_usage"] = trace["understand_usage"]
+        record["understand_max_completion_tokens"] = trace.get("understand_max_completion_tokens")
     _append(path or REQUEST_LOG, record)

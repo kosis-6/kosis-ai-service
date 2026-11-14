@@ -49,7 +49,15 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.prompts.qa import FOLLOW_SYSTEM
-from app.services import ask_followup, charts, indicators, qa, table_guide, timeref
+from app.services import (
+    ask_followup,
+    charts,
+    indicators,
+    qa,
+    question_clarify,
+    table_guide,
+    timeref,
+)
 from app.services.hcx_client import HcxClient
 
 logger = logging.getLogger(__name__)
@@ -699,11 +707,136 @@ async def _new(question: str, state: dict | None) -> tuple[dict, dict, str | Non
     return res, sources, notice
 
 
+def _clarification_answer(question: str, clarification: dict) -> dict:
+    return {
+        "status": "clarify_question",
+        "answer": clarification["prompt"],
+        "parsed": {},
+        "result": {"status": "clarify_question"},
+        "sources": [],
+        "chart": None,
+        "trace": {},
+        "question": question,
+        "request_type": REPLY,
+        "clarification": clarification,
+    }
+
+
+async def _clarified(question: str, state: dict):
+    regions = await asyncio.to_thread(indicators.find_regions, question)
+    if clarification := question_clarify.detect(question, regions):
+        return _clarification_answer(question, clarification), {}, None
+    res, sources, notice = await _new(question, state.get("clarification_context"))
+    res["request_type"], res["question"] = REPLY, question
+    return res, sources, notice
+
+
+def _gave_up_asking(pending: dict) -> bool:
+    """같은 되묻기를 상한만큼 했는지 (통계표 찾기처럼 끝없이 다시 묻지 않는다)"""
+    return (pending.get("count") or 1) >= question_clarify.MAX_ASKS
+
+
+async def _after_asking(original: str, kind: str, user_id: int | None):
+    """되묻기 상한에 닿았을 때: 이사 범위는 기본값(밖으로 나간 이사만)으로 찾고 알린다.
+    지역은 짐작할 수 없으므로 답하지 않고 다시 질문하는 방법을 알린다"""
+    if kind == "move_scope":
+        merged = question_clarify.merge_scope(original, "exclude")
+        res, sources, notice = await _movement_tables(merged, user_id)
+        told = f"범위를 알아듣지 못해 '{question_clarify.MOVE_OPTIONS[1]}'으로 찾았습니다."
+        return res, sources, " ".join(filter(None, [told, notice]))
+    return (
+        {
+            "status": "unknown_region",
+            "answer": "어느 지역인지 알 수 없어 답하지 못했습니다. "
+            "지역 이름을 넣어 다시 질문해 주세요 (예: 수원시 인구).",
+            "parsed": {},
+            "result": {"status": "unknown_region"},
+            "sources": [],
+            "chart": None,
+            "trace": {},
+            "question": original,
+            "request_type": REPLY,
+        },
+        {},
+        None,
+    )
+
+
+async def _movement_tables(
+    question: str, user_id: int | None, told: str = "선택한 이동 범위로 통계표를 찾았습니다."
+):
+    # 이사 건수는 순이동(전입-전출)과 다르다. 범위가 정해져도 임의의 지표로 계산하지 않는다.
+    sid = table_guide.new_search_session()
+    found = await table_guide.find_tables(question, sid, None, user_id)
+    res = table_guide.tables_answer(found)
+    res.update(question=question, request_type=REPLY, search_session=sid)
+    return (
+        res,
+        {},
+        f"{told} 이사 건수는 아직 직접 계산하지 않습니다.",
+    )
+
+
 async def _turn(
     state: dict | None, question: str, selections: dict | None = None, user_id: int | None = None
 ) -> tuple[dict, dict, str | None]:
     """이번 말을 처리한다 → (응답, 조건의 출처, 알림)"""
     pending = (state or {}).get("pending")
+    if pending and pending.get("missing") == "question_clarification":
+        original = pending["original_question"]
+        kind = pending["clarification"]["kind"]
+        choice = question
+        if selections and selections.get("clarification_kind") == kind:
+            choice = selections.get("clarification_value") or question
+        if kind == "local_region":
+            regions = await asyncio.to_thread(indicators.find_regions, choice)
+            has_indicator = bool(indicators.find_in_text(choice))
+            region = question_clarify.region_reply(choice, regions, has_indicator)
+            name = None if region or has_indicator else question_clarify.bare_region(choice)
+            if name:  # "수원"·"강남"처럼 시·군·구를 뺀 이름
+                found = await asyncio.to_thread(indicators.resolve_region, name)
+                if found["status"] == "ok":
+                    region = found["display"]
+                elif found["status"] == "ambiguous_region" and not _gave_up_asking(pending):
+                    # 같은 이름이 여러 곳(고성 등): 후보를 선택지로 보여 주며 다시 묻는다
+                    again = {
+                        "kind": "local_region",
+                        "prompt": f"'{name}'은(는) 여러 곳에 있습니다. 어느 지역인가요?",
+                        "options": list(found["candidates"]),
+                    }
+                    return _clarification_answer(original, again), {}, None
+            if region:
+                merged = question_clarify.merge_region(original, region)
+                return await _clarified(merged, state)
+        elif scope := question_clarify.scope_reply(choice):
+            merged = question_clarify.merge_scope(original, scope)
+            return await _movement_tables(merged, user_id)
+        # 미지원 지표라도 새 질문을 선택지 대기에 가두지 않는다.
+        if indicators.find_in_text(question) or re.search(
+            r"몇|얼마|통계|알려|보여|안녕|취소", question
+        ):
+            state = None
+            pending = None
+        elif _gave_up_asking(pending):
+            return await _after_asking(original, kind, user_id)
+        else:
+            return _clarification_answer(original, pending["clarification"]), {}, None
+
+    if scope := question_clarify.stated_scope(question):
+        # 범위를 이미 말한 이사 건수 질문: 되묻지 않고, 순이동으로 바꿔 답하지도 않는다
+        told = (
+            "전국 이동 통계표를 찾았습니다."
+            if scope == "nation"
+            else "말씀하신 범위(지역 밖으로 나간 이사)로 통계표를 찾았습니다."
+        )
+        merged = question_clarify.merge_scope(question, scope)
+        return await _movement_tables(merged, user_id, told)
+    if question_clarify.VAGUE_REGION.search(question) or question_clarify.MOVE_COUNT.search(
+        question
+    ):
+        regions = await asyncio.to_thread(indicators.find_regions, question)
+        if clarification := question_clarify.detect(question, regions):
+            return _clarification_answer(question, clarification), {}, None
     if (state or {}).get("search_session") and (
         selections
         or (
@@ -793,6 +926,30 @@ def next_state(state: dict | None, question: str, res: dict, sources: dict) -> d
     prev = state or {}
     recent = [*(prev.get("recent") or []), question][-RECENT:]
     turn_no = (prev.get("turn_no") or 0) + 1
+    if res.get("clarification"):
+        before = prev.get("pending") or {}
+        again = (
+            before.get("missing") == "question_clarification"
+            and before.get("original_question") == res["question"]
+        )
+        return {
+            **prev,
+            "clarification_context": prev.get("clarification_context")
+            or {
+                "conditions": prev.get("conditions") or {},
+                "sources": prev.get("sources") or {},
+            },
+            "conditions": {},
+            "sources": {},
+            "pending": {
+                "missing": "question_clarification",
+                "original_question": res["question"],
+                "clarification": res["clarification"],
+                "count": (before.get("count") or 1) + 1 if again else 1,  # 같은 되묻기 횟수
+            },
+            "recent": recent,
+            "turn_no": turn_no,
+        }
     if res.get("request_type") in (CHART, SUMMARY):
         last = {**prev["last"], "chart": res.get("chart") or prev["last"].get("chart")}
         return {**prev, "last": last, "recent": recent, "turn_no": turn_no}
@@ -876,6 +1033,8 @@ async def handle(
         state, expired = await _load(sid)
         res, sources, notice = await _turn(state, question, selections, user_id)
         await _attach_tables(res, state, question, user_id)
+        if not res.get("chart") and (reason := charts.omission_reason(res.get("result"))):
+            notice = " ".join(filter(None, [notice, reason]))
         if expired:
             notice = " ".join(filter(None, ["시간이 지나 이전 조건이 초기화됐습니다.", notice]))
         after = next_state(state, question, res, sources)

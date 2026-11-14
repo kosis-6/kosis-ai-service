@@ -388,6 +388,8 @@ export interface components {
         };
         /** AskResponse */
         AskResponse: {
+            /** @description 지역·이사 집계 범위를 확인하는 질문과 선택지 */
+            clarification?: components["schemas"]["QuestionClarification"] | null;
             /**
              * Status
              * @description ok / tables(수치 없이 통계표만 안내) / 답변 불가 사유 (out_of_range 등)
@@ -619,6 +621,18 @@ export interface components {
              * @example 통계왕
              */
             nickname: string;
+        };
+        /** QuestionClarification */
+        QuestionClarification: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "local_region" | "move_scope";
+            /** Prompt */
+            prompt: string;
+            /** Options */
+            options?: string[];
         };
         /** SearchRequest */
         SearchRequest: {

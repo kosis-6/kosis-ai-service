@@ -46,3 +46,20 @@ def test_ask_errors(monkeypatch: pytest.MonkeyPatch, error: Exception, status_co
 
     monkeypatch.setattr(qa, "ask", fail)
     assert client.post("/ask", json={"question": "서울 인구"}).status_code == status_code
+
+
+def test_question_clarification_is_exposed_without_ai(monkeypatch):
+    from app.services import indicators
+
+    monkeypatch.setattr(indicators, "find_regions", lambda _: [])
+
+    async def unexpected(*args, **kwargs):
+        raise AssertionError("되묻기 전에 AI를 호출하면 안 된다")
+
+    monkeypatch.setattr(qa, "ask", unexpected)
+    response = client.post("/ask", json={"question": "우리 동네 인구는?"})
+    assert response.status_code == 200
+    assert response.json()["clarification"]["kind"] == "local_region"
+    response = client.post("/ask", json={"question": "수원에서 이사한 건수는?"})
+    assert response.status_code == 200
+    assert len(response.json()["clarification"]["options"]) == 2
