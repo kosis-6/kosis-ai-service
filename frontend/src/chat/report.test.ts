@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AskResponse } from "../api/types";
-import { buildReport, canReport, reportTables } from "./report";
+import { buildPreview, buildReport, canReport, reportFileName, reportTables } from "./report";
 
 const base: AskResponse = {
   status: "ok", question: "서울 출생아 수", answer: "서울의 출생아 수입니다.\n\n※ 계산 기준",
@@ -95,5 +95,25 @@ describe("분석 보고서", () => {
     expect(reportTables(data.result)[0].rows).toEqual([["서울", -100], ["부산", 50], ["합계", -50]]);
     expect(html).not.toMatch(/width="-/);
     expect(JSON.stringify(data)).toBe(before);
+  });
+  it("미리보기는 인라인 스타일·스크립트 없이 파일로 불러오고, 저장할 파일을 그대로 담는다", () => {
+    const at = new Date("2026-11-14T00:00:00Z");
+    const data = { ...base, answer: "</script><script>alert(1)</script>" };
+    const assets = { css: "http://localhost/chat/assets/report.css", script: "http://localhost/chat/assets/report-view.js" };
+    const preview = buildPreview(data, assets, at);
+    // 채팅 화면 CSP(script-src·style-src 'self')에서 막히는 것이 없어야 한다 (저장할 파일 JSON은 데이터라 제외)
+    const markup = preview.replace(/<script type="application\/json"[\s\S]*?<\/script>/, "");
+    expect(markup).not.toMatch(/<style|onclick=|style="/);
+    expect(preview).toContain('<link rel="stylesheet" href="http://localhost/chat/assets/report.css">');
+    expect(preview).toContain('<script src="http://localhost/chat/assets/report-view.js"></script>');
+    expect(preview).toContain('id="report-save"');
+    // 저장할 파일: JSON 안의 </script>가 미리보기의 script 태그를 닫지 않는다
+    const json = preview.match(/<script type="application\/json" id="report-file"[^>]*>([\s\S]*?)<\/script>/)![1];
+    expect(json).not.toContain("<");
+    expect(JSON.parse(json)).toBe(buildReport(data, at));
+    expect(preview).toContain(`data-filename="${reportFileName(at)}"`);
+    expect(reportFileName(at)).toBe("통계보고서-2026-11-14.html");
+    // 저장 파일은 혼자 열려야 하므로 스타일을 안에 담는다
+    expect(buildReport(data, at)).toContain("<style>");
   });
 });

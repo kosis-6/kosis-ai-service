@@ -1,6 +1,9 @@
 /** 표시한 답변으로 독립 HTML 보고서를 만든다. 서버 재조회·LLM 호출·영구 저장은 하지 않는다. */
 import type { AskResponse, Chart } from "../api/types";
 import { safeUrl } from "./format";
+import reportCss from "./report.css?raw";
+import reportCssUrl from "./report.css?url&no-inline";
+import reportViewUrl from "./report-view.js?url&no-inline";
 
 type Row = Record<string, unknown>;
 type Table = { title: string; headings: string[]; rows: unknown[][] };
@@ -94,10 +97,11 @@ function chartSvg(chart: Chart): string {
       if (number(n)) marks += `<rect x="${Math.min(x(0), x(n))}" y="${y}" width="${Math.abs(x(n) - x(0))}" height="20" fill="${colors[i % colors.length]}"/><text x="${Math.max(x(n), x(0)) + 8}" y="${y + 15}">${escape(value(n))}</text>`;
     });
   }
-  return `<figure><h3>${escape(chart.title)}</h3><p>단위: ${escape(chart.unit)}${chart.type === "parts" ? " · 보고서에서는 항목별 막대로 표시" : ""}</p><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escape(chart.title)}"><style>text{font:12px sans-serif}</style>${marks}</svg>${chart.note ? `<p>${escape(chart.note)}</p>` : ""}</figure>`;
+  return `<figure><h3>${escape(chart.title)}</h3><p>단위: ${escape(chart.unit)}${chart.type === "parts" ? " · 보고서에서는 항목별 막대로 표시" : ""}</p><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escape(chart.title)}" font-family="sans-serif" font-size="12">${marks}</svg>${chart.note ? `<p>${escape(chart.note)}</p>` : ""}</figure>`;
 }
 
-export function buildReport(data: AskResponse, at = new Date()): string {
+/** 보고서 본문 (저장 파일·미리보기 공통) */
+function reportBody(data: AskResponse, at: Date): string {
   if (!canReport(data)) throw new Error("수치를 계산한 답변에서 보고서를 저장해 주세요.");
   const title = data.question || "통계 분석 보고서";
   const conditions = (data.applied ?? []).map((c) => `<li>${escape(c.name)}: ${escape(c.value)}${c.source === "inherited" ? " (앞 질문에서 이어받음)" : c.source === "default" ? " (기본값)" : ""}</li>`).join("");
@@ -106,19 +110,61 @@ export function buildReport(data: AskResponse, at = new Date()): string {
     const link = s.url && safeUrl(s.url);
     return `<li>${escape(s.name)} · ${escape(s.basis)}${link ? ` · <a href="${escape(link)}" rel="noopener noreferrer">통계표 보기</a>` : ""}</li>`;
   }).join("");
-  return `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escape(title)}</title><style>
-body{max-width:960px;margin:40px auto;padding:0 24px;font:16px/1.7 system-ui,sans-serif;color:#172d24}h1{font-size:26px}h2{margin-top:32px}pre{white-space:pre-wrap;font:inherit}table{border-collapse:collapse;width:100%;margin:16px 0}th,td{border:1px solid #bbb;padding:8px;text-align:left}svg{width:100%;height:auto}figure{margin:24px 0}a{color:#17653d}footer{margin-top:40px;border-top:1px solid #bbb}button{padding:10px 18px;cursor:pointer}@media print{button{display:none}body{margin:0;max-width:none}tr{break-inside:avoid}thead{display:table-header-group}a{color:inherit}}
-</style></head><body><button type="button" onclick="window.print()">인쇄 · PDF 저장</button><h1>${escape(title)}</h1><p>작성 시각: ${escape(at.toLocaleString("ko-KR", { timeZone: "Asia/Seoul" }))} (한국 시간)</p><h2>분석 조건</h2><ul>${conditions}</ul>${data.notice ? `<p>${escape(data.notice)}</p>` : ""}<h2>요약과 계산 근거</h2><pre>${escape(data.answer)}</pre><h2>전체 수치</h2>${tables}${data.chart ? `<h2>시각화</h2>${chartSvg(data.chart)}` : ""}<h2>출처</h2><ul>${sources}</ul><footer>선택한 답변의 계산 결과로 작성했습니다. 보고서 저장 과정에서 자료를 다시 조회하거나 새로운 숫자를 생성하지 않았습니다. 자료가 없는 칸은 ‘자료 없음’으로 표시합니다.</footer></body></html>`;
+  return `<h1>${escape(title)}</h1><p>작성 시각: ${escape(at.toLocaleString("ko-KR", { timeZone: "Asia/Seoul" }))} (한국 시간)</p><h2>분석 조건</h2><ul>${conditions}</ul>${data.notice ? `<p>${escape(data.notice)}</p>` : ""}<h2>요약과 계산 근거</h2><pre>${escape(data.answer)}</pre><h2>전체 수치</h2>${tables}${data.chart ? `<h2>시각화</h2>${chartSvg(data.chart)}` : ""}<h2>출처</h2><ul>${sources}</ul><footer>선택한 답변의 계산 결과로 작성했습니다. 보고서 저장 과정에서 자료를 다시 조회하거나 새로운 숫자를 생성하지 않았습니다. 자료가 없는 칸은 ‘자료 없음’으로 표시합니다.</footer>`;
 }
 
-export function downloadReport(data: AskResponse): void {
-  const html = buildReport(data);
+function page(data: AskResponse, head: string, body: string): string {
+  const title = escape(data.question || "통계 분석 보고서");
+  return `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title>${head}</head><body>${body}</body></html>`;
+}
+
+export function reportFileName(at = new Date()): string {
+  return `통계보고서-${at.toLocaleDateString("sv-SE", { timeZone: "Asia/Seoul" })}.html`;
+}
+
+/** 저장하는 파일: 스타일을 안에 담아 파일만 열어도 보인다 (파일로 열면 CSP가 없어 인쇄 버튼도 동작) */
+export function buildReport(data: AskResponse, at = new Date()): string {
+  const toolbar = `<div class="report-toolbar"><button type="button" class="primary" onclick="window.print()">인쇄 · PDF 저장</button></div>`;
+  return page(data, `<style>${reportCss}</style>`, toolbar + reportBody(data, at));
+}
+
+/** 새 탭 미리보기: 채팅 화면의 CSP를 물려받아 인라인 스타일·스크립트가 막히므로
+ *  스타일과 버튼 동작은 우리 주소의 파일로 불러온다. 저장할 파일 내용은 JSON으로 함께 넣는다 */
+export function buildPreview(data: AskResponse, assets: { css: string; script: string }, at = new Date()): string {
+  const file = JSON.stringify(buildReport(data, at)).replace(/</g, "\\u003c");
+  const toolbar = `<div class="report-toolbar"><button type="button" class="primary" id="report-save">HTML 파일로 저장</button><button type="button" id="report-print">인쇄 · PDF 저장</button><p>내용을 확인한 뒤 저장하세요. 저장한 파일은 인터넷 없이도 열립니다.</p></div>`;
+  return page(
+    data,
+    `<link rel="stylesheet" href="${escape(assets.css)}">`,
+    toolbar + reportBody(data, at)
+      + `<script type="application/json" id="report-file" data-filename="${escape(reportFileName(at))}">${file}</script>`
+      + `<script src="${escape(assets.script)}"></script>`,
+  );
+}
+
+function saveFile(html: string, name: string): void {
   const url = URL.createObjectURL(new Blob([html], { type: "text/html;charset=utf-8" }));
   const anchor = document.createElement("a");
   anchor.href = url;
-  anchor.download = `통계보고서-${new Date().toISOString().slice(0, 10)}.html`;
+  anchor.download = name;
   document.body.append(anchor);
   anchor.click();
   anchor.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+/** 보고서를 새 탭에 띄운다. 브라우저가 새 탭을 막으면 파일로 바로 저장하고 "saved"를 돌려준다 */
+export function openReport(data: AskResponse): "opened" | "saved" {
+  const at = new Date();
+  const assets = {
+    css: new URL(reportCssUrl, window.location.href).href,
+    script: new URL(reportViewUrl, window.location.href).href,
+  };
+  const html = buildPreview(data, assets, at);
+  // 탭을 새로 고쳐도 보이도록 주소는 바로 지우지 않는다 (채팅 화면을 닫으면 함께 사라진다)
+  const url = URL.createObjectURL(new Blob([html], { type: "text/html;charset=utf-8" }));
+  if (window.open(url, "_blank")) return "opened";
+  URL.revokeObjectURL(url);
+  saveFile(buildReport(data, at), reportFileName(at));
+  return "saved";
 }

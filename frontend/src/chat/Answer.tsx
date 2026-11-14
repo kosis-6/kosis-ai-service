@@ -5,7 +5,7 @@ import { lazy, Suspense, useState } from "react";
 import type { Applied, AskResponse, Parsed, Recommendation, SearchResponse } from "../api/types";
 import { safeUrl, splitLinks } from "./format";
 import { Reply, TopCard, type Send } from "./Reply";
-import { canReport, downloadReport } from "./report";
+import { canReport, openReport } from "./report";
 
 // 차트 라이브러리(Recharts)는 차트가 있는 답을 처음 그릴 때 내려받는다
 const ChartCard = lazy(() => import("./Chart"));
@@ -65,21 +65,24 @@ type Props = {
   onAskAgain: () => void;
 };
 
+// 보고서는 새 탭에 띄워 확인한 뒤 그 탭에서 저장한다 (새 탭이 막히면 파일로 바로 저장)
 function ReportButton({ data }: { data: AskResponse }) {
-  const [error, setError] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
   return (
     <div>
       <button type="button" className="btn secondary card-link" onClick={() => {
         try {
-          downloadReport(data);
-          setError(null);
+          const how = openReport(data);
+          setMessage(how === "saved"
+            ? "브라우저가 새 탭을 막아 보고서를 파일로 바로 저장했습니다. 새 탭으로 보려면 이 사이트의 팝업을 허용해 주세요."
+            : null);
         } catch {
-          setError("보고서를 저장하지 못했습니다. 다시 시도해 주세요.");
+          setMessage("보고서를 열지 못했습니다. 다시 시도해 주세요.");
         }
       }}>
-        보고서 저장 (HTML)
+        보고서 보기
       </button>
-      {error && <p role="alert">{error}</p>}
+      {message && <p role="alert">{message}</p>}
     </div>
   );
 }
