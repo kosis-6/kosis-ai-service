@@ -74,3 +74,28 @@ export function seriesMax(chart: Pick<Chart, "rows">): number {
 export function fitsLabel(share: number): boolean {
   return share >= 9;
 }
+
+/** 한 그래프에 겹쳐 그리는 선의 최대 개수 (색을 돌려 쓰지 않는다. 서버 charts.MAX_LINES와 같다).
+ *  지역이 이보다 많으면 지역마다 작은 그래프를 나란히 그린다 */
+export const MAX_OVERLAP = LINE_COLORS.length;
+
+export type Panel = { name: string; points: { year: number; value: number | null }[]; change: number | null };
+
+/** 여러 꺾은선 → 지역마다 작은 그래프 하나. change: 값이 있는 처음 해 대비 마지막 해 증감률(%) */
+export function panels(chart: Pick<Chart, "rows" | "series">): Panel[] {
+  return (chart.series ?? []).map((name, i) => {
+    const points = chart.rows.map((r) => ({ year: Number(r.label), value: r.values?.[i] ?? null }));
+    const known = points.filter((p): p is { year: number; value: number } => p.value != null);
+    const first = known[0]?.value;
+    const last = known[known.length - 1]?.value;
+    const change =
+      known.length >= 2 && first ? Math.round(((last! - first) / Math.abs(first)) * 1000) / 10 : null;
+    return { name, points, change };
+  });
+}
+
+/** 증감률 글자: "+2.3%", "-4.4%", 변화 없음 "0%" */
+export function changeText(change: number | null): string {
+  if (change == null) return "";
+  return `${change > 0 ? "+" : ""}${full.format(change)}%`;
+}

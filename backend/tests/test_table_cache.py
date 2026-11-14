@@ -164,6 +164,39 @@ def test_slow_download_times_out(kosis, monkeypatch) -> None:
     assert kosis["loads"] == []
 
 
+def test_refresh_fetches_only_missing_periods_and_merges(kosis, monkeypatch, tmp_path) -> None:
+    """이미 적재된 표의 최근 갱신: 표 전체가 아니라 DB에 없는 시점만 받아 덧붙인다"""
+    from pipeline import refresh_check
+
+    seen = {}
+
+    async def fetch_meta(client, org_id, tbl_id, pause=1.0):
+        period = {"PRD_SE": "년", "STRT_PRD_DE": "2000", "END_PRD_DE": "2025"}
+        return {"tbl_nm": "시험 표", "items": [], "classes": [], "periods": [period]}
+
+    def plan_table(meta):
+        seen["periods"] = meta["periods"]
+        return [{"requests": [{}]}]
+
+    def load(path, tbl_id, merge=False):
+        seen["load"] = (path.parent.name, tbl_id, merge)
+
+    monkeypatch.setattr(collect_kosis, "fetch_meta", fetch_meta)
+    monkeypatch.setattr(collect_all, "plan_table", plan_table)
+    monkeypatch.setattr(load_worker, "_load", load)
+    monkeypatch.setattr(load_worker, "_with_pg", lambda fn, *a: ({"A": 2024}, None))
+    trace: dict = {}
+    assert asyncio.run(table_cache._fetch("T", "101", trace, force=True)) == "loaded"
+    assert seen["periods"][0]["STRT_PRD_DE"] == "2025"  # 2025년만
+    assert seen["load"] == (load_worker.UPDATE_DIR, "T", True)  # 원본 CSV와 따로, 덧붙이기
+    # 받을 시점이 없으면 받지 않는다
+    monkeypatch.setattr(load_worker, "_with_pg", lambda fn, *a: ({"A": 2025}, None))
+    seen.clear()
+    assert asyncio.run(table_cache._fetch("T", "101", {}, force=True)) == "loaded"
+    assert "load" not in seen
+    assert refresh_check  # 같은 규칙(delta_periods)을 쓴다
+
+
 def test_same_table_is_fetched_once_for_concurrent_questions(kosis) -> None:
     kosis["slow"] = 0.05
 

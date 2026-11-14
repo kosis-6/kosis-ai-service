@@ -685,3 +685,163 @@ def test_context_dependent_question_still_extracts_changes(talk: Talk, question:
     talk.say("부산 출생아 최근 5년 보여 줘")
     talk.say(question)
     assert talk.extracted == [question]
+
+
+# ---- 의미가 모호한 질문의 확인 --------------------------------------------------------------
+
+
+def test_local_region_is_asked_before_ai_and_not_inherited(talk: Talk):
+    talk.say("2024년 부산 출생아 수")
+    calls = list(talk.asked)
+    res = talk.say("2024년 우리 동네 출생아 수")
+    assert res["status"] == "clarify_question"
+    assert res["clarification"]["kind"] == "local_region"
+    assert talk.asked == calls and talk.extracted == []
+    talk.parsed = {**BASE, "regions": ["서울"]}
+    res = talk.say("서울이요")
+    assert res["request_type"] == "reply"
+    assert talk.asked[-1] == "2024년 서울 출생아 수"
+    assert "우리 동네" not in res["question"]
+    assert talk.store[talk.sid][0]["pending"] is None
+
+
+@pytest.mark.parametrize("reply,indicator", [("포함해줘", "이동자 수"), ("2번", "전출자 수")])
+def test_movement_scope_answers_with_matching_indicator_not_net_migration(
+    talk: Talk, reply, indicator
+):
+    talk.parsed = {**BASE, "indicator": "순이동", "regions": ["부산"]}  # HCX가 순이동으로 읽어도
+    res = talk.say("2024년 부산에서 이사한 건수는?")
+    assert res["clarification"]["kind"] == "move_scope"
+    assert talk.asked == talk.extracted == []
+    res = talk.say(reply)
+    assert res["status"] == "ok" and res["parsed"]["indicator"] == indicator
+    assert talk.asked == ["2024년 부산에서 이사한 건수는?"] and talk.searched == []
+
+
+def test_movement_falls_back_to_tables_when_not_computable(talk: Talk):
+    talk.parsed = {**BASE, "regions": ["부산"]}
+    talk.fail_when = lambda parsed: parsed.get("indicator") == "전출자 수"
+    talk.say("2024년 부산에서 이사한 건수는?")
+    res = talk.say("2번")
+    assert res["status"] == "tables" and "나간 전출 이동자수" in talk.searched[-1][0]
+    assert "통계표" in res["notice"]
+
+
+def test_movement_scope_button_and_local_then_scope(talk: Talk):
+    res = talk.say("2024년 우리 동네에서 이사한 건수")
+    assert res["clarification"]["kind"] == "local_region"
+    res = talk.say("부산")
+    assert res["clarification"]["kind"] == "move_scope"
+    res = talk.say(
+        "선택",
+        selections={
+            "clarification_kind": "move_scope",
+            "clarification_value": "지역 안에서의 이사도 포함",
+        },
+    )
+    assert res["status"] == "ok" and res["parsed"]["indicator"] == "이동자 수"
+    assert talk.asked[-1] == "2024년 부산에서 이사한 건수"
+
+
+def test_uncertain_clarification_reply_keeps_question_but_new_question_cancels(talk: Talk):
+    talk.say("우리 동네 출생아 수")
+    assert talk.say("모르겠어")["status"] == "clarify_question"
+    assert talk.asked == []
+    talk.parsed = {**BASE, "regions": ["서울"]}
+    res = talk.say("2024년 서울 합계출산율 알려줘")
+    assert res["status"] == "ok" and talk.asked == ["2024년 서울 합계출산율 알려줘"]
+    assert talk.store[talk.sid][0]["pending"] is None
+
+
+def test_clarification_is_asked_at_most_twice_then_defaults(talk: Talk):
+    # 이사 범위: 두 번까지 묻고, 그래도 모르면 '밖으로 나간 이사만'으로 찾고 알린다
+    talk.say("부산에서 이사한 건수")
+    assert talk.say("응")["status"] == "clarify_question"
+    res = talk.say("모르겠어")
+    assert res["status"] == "ok" and res["parsed"]["indicator"] == "전출자 수"
+    assert "알아듣지 못해" in res["notice"]
+    assert talk.store[talk.sid][0]["pending"] is None
+    # 지역: 두 번까지 묻고, 그래도 모르면 답하지 않고 다시 질문하라고 알린다
+    talk.say("우리 동네 출생아 수")
+    assert talk.say("모르겠어")["status"] == "clarify_question"
+    res = talk.say("글쎄")
+    assert res["status"] == "unknown_region" and "다시 질문" in res["answer"]
+    assert talk.asked == ["부산에서 이사한 건수"] and talk.store[talk.sid][0]["pending"] is None
+
+
+def test_stated_scope_answers_without_asking_not_net_migration(talk: Talk):
+    talk.parsed = {**BASE, "indicator": "순이동", "regions": ["수원"]}
+    res = talk.say("수원에서 이사 나간 사람 몇 명이야?")
+    assert res["status"] == "ok" and res["parsed"]["indicator"] == "전출자 수"
+    res = talk.say("전국에서 이사한 사람 수")
+    assert res["status"] == "ok" and res["parsed"]["indicator"] == "이동자 수"
+    assert talk.searched == []
+
+
+def test_region_reply_without_suffix_and_ambiguous_name(talk: Talk):
+    talk.say("2024년 우리 동네 출생아 수")
+    talk.parsed = {**BASE, "regions": ["경기도 수원시"]}
+    res = talk.say("수원")
+    assert res["request_type"] == "reply" and talk.asked[-1] == "2024년 경기도 수원시 출생아 수"
+    # 같은 이름이 여러 곳이면 후보를 선택지로 다시 묻는다
+    talk.say("2024년 우리 동네 출생아 수")
+    res = talk.say("고성")
+    assert res["status"] == "clarify_question"
+    assert {"강원특별자치도 고성군", "경상남도 고성군"} <= set(res["clarification"]["options"])
+
+
+def test_scope_pending_does_not_swallow_unsupported_new_question(talk: Talk):
+    talk.say("부산에서 이사한 건수")
+    talk.parsed = {**BASE, "indicator": "반려동물 수"}
+    res = talk.say("강아지 통계 알려줘")
+    assert res["status"] == "tables"
+    assert talk.asked == ["강아지 통계 알려줘"]
+    assert "집계 범위" not in talk.searched[-1][0]
+
+
+def test_region_clarification_keeps_compatible_previous_period(talk: Talk):
+    talk.say("부산 출생아 수 2020년부터 2024년까지")
+    talk.say("우리 동네 출생아 수 추이는?")
+    talk.parsed = {**BASE, "regions": ["서울"], "start_year": 2022, "end_year": 2025}
+    res = talk.say("서울")
+    assert res["parsed"]["regions"] == ["서울"]
+    assert (res["parsed"]["start_year"], res["parsed"]["end_year"]) == (2020, 2024)
+    assert "기간" in res["notice"]
+
+
+def test_invalid_region_chart_has_notice_and_keeps_numeric_answer(talk: Talk, monkeypatch):
+    async def answer(question, adjust=None):
+        return {
+            "status": "ok",
+            "answer": "서울·부산의 계산 결과입니다.",
+            "parsed": dict(BASE),
+            "sources": [],
+            "trace": {},
+            "result": {
+                "status": "ok",
+                "split_by": "region",
+                "split": [
+                    {
+                        "status": "ok",
+                        "indicator": "인구",
+                        "unit": "명",
+                        "region": "서울",
+                        "series": [{"year": 2023, "value": 1}, {"year": 2024, "value": 2}],
+                    },
+                    {
+                        "status": "ok",
+                        "indicator": "인구",
+                        "unit": "%",
+                        "region": "부산",
+                        "series": [{"year": 2023, "value": 1}, {"year": 2024, "value": 2}],
+                    },
+                ],
+            },
+        }
+
+    monkeypatch.setattr(qa, "ask", answer)
+    res = talk.say("지역별 인구 추이")
+    assert res["chart"] is None
+    assert res["answer"] == "서울·부산의 계산 결과입니다."
+    assert "기준이 달라" in res["notice"]
+    assert len(res["result"]["split"]) == 2

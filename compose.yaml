@@ -26,6 +26,13 @@ services:
         condition: service_healthy
     # 개발용: 시작할 때 DB 구조를 최신으로 맞춘다. 운영에서는 배포 단계에서 한 번만 실행한다
     command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+    # 마이그레이션이 끝나고 서버가 응답해야 healthy (워커가 이것을 기다린다)
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 10s
 
   # 화면 빌드 (개발용): frontend/ 를 고칠 때마다 다시 빌드해 frontend/dist 에 쓴다.
   # api 가 그 폴더를 /chat 으로 서빙하므로 Node 를 깔지 않아도 docker compose up 만으로 화면이 뜬다.
@@ -58,9 +65,10 @@ services:
     depends_on:
       db:
         condition: service_healthy
-      # DB 구조(마이그레이션)는 api가 시작할 때 맞춘다
+      # DB 구조(마이그레이션)는 api가 시작할 때 맞춘다. 끝난 뒤(healthy) 시작해야
+      # 새 테이블(예: raw.stat_value_history)이 없어 갱신 적재가 실패하지 않는다
       api:
-        condition: service_started
+        condition: service_healthy
     restart: unless-stopped
     command: python -m pipeline.load_worker
 

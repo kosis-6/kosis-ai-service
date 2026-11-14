@@ -85,3 +85,16 @@ def qa_record(status: str | None) -> dict:
         "parsed": (res or {}).get("parsed"),
         "result": (res or {}).get("result"),
     }
+
+
+def test_question_token_usage_is_saved_without_changing_limits(tmp_path):
+    res = answered()
+    usage = {"promptTokens": 124, "completionTokens": 387, "totalTokens": 511}
+    res["trace"].update(understand_usage=usage, understand_max_completion_tokens=5120)
+    path = tmp_path / "tokens.jsonl"
+    qa.log_request("서울 인구", res, path=path)
+    [row] = read(path)
+    assert row["understand_usage"] == usage
+    assert row["understand_max_completion_tokens"] == 5120
+    qa.log_request("요약해줘", {"trace": {}}, path=path)
+    assert "understand_usage" not in read(path)[1]

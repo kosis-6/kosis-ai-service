@@ -457,9 +457,10 @@ def _mark_monthly(out, code, sex, year):
 def _check(name, ind, reg, y0, y1):
     """수록 기간·지역 유효 기간 확인. 문제가 있으면 안내용 dict, 없으면 None"""
     lo, hi = _data_years()
-    if y1 > hi and y0 >= lo and _monthly(reg["region_code"], "계", y1):
-        return None  # 연간 자료 다음 해: 같은 표의 최신 달 값으로 답한다 (_components)
-    if y0 < lo or y1 > hi:
+    # 연간 자료 다음 해는 같은 표의 최신 달 값으로 답한다 (_components). 기간은 맞는 것으로 보되
+    # 아래 지역 유효 기간 확인은 그대로 한다 (예: 2023년에 생긴 군위군을 2020년부터 물으면 안내)
+    monthly = y1 > hi and y0 >= lo and _monthly(reg["region_code"], "계", y1)
+    if not monthly and (y0 < lo or y1 > hi):
         out = _base(
             name,
             ind,
@@ -874,25 +875,45 @@ def rank(indicator, year, level="시도", sido=None, top=None, ascending=False, 
     if isinstance(cond, dict):
         return {**cond, "indicator": name}
     where, params, _ = cond
-    regs = _rows(
-        f"""
-        select distinct r.region_code, r.region_name, r.kind, r.sido_name
-        from regions r join population p on p.region_code = r.region_code and p.year = ?
-        where {where}
-        order by r.region_code
-    """,
-        [min(year, hi), *params],  # 최신 달 순위는 연간 마지막 해에 있던 지역으로
-    )
+    if monthly:
+        # 최신 달 순위는 그해에 있는 지역으로 (연간 마지막 해의 지역으로 하면 그 뒤 생기거나
+        # 합쳐진 지역(2026 전남광주 등)이 최신 달 자료와 코드가 달라 조용히 빠진다)
+        regs = _rows(
+            f"""
+            select r.region_code, r.region_name, r.kind, r.sido_name
+            from regions r
+            where {where} and (r.valid_from is null or r.valid_from <= ?)
+              and (r.valid_to is null or r.valid_to >= ?)
+            order by r.region_code
+        """,
+            [*params, year, year],
+        )
+    else:
+        regs = _rows(
+            f"""
+            select distinct r.region_code, r.region_name, r.kind, r.sido_name
+            from regions r join population p on p.region_code = r.region_code and p.year = ?
+            where {where}
+            order by r.region_code
+        """,
+            [year, *params],
+        )
     comps = _components(
         [r["region_code"] for r in regs], year, year, sex, ind.get("band"), ind.get("area")
     )
-    items = []
+    items, missing = [], []
     for reg in regs:
         comp = comps.get((year, reg["region_code"]))
         v = ind["calc"](comp) if comp else None
         if v is not None:
             items.append({"region": _display(reg), "value": _r(v, ind)})
+        else:
+            missing.append(_display(reg))
     items = analysis.rank_rows(items, descending=not ascending)  # 같은 값은 같은 순위
+    notes = _optional(_area_note(comps, year))
+    if missing:  # 빠진 지역을 알리지 않으면 "150곳 중 1위"처럼 전체인 것처럼 보인다
+        shown = ", ".join(missing[:5]) + (f" 외 {len(missing) - 5}곳" if len(missing) > 5 else "")
+        notes.append(f"자료를 받지 못한 {len(missing)}곳은 순위에서 빠졌습니다 ({shown})")
     out = _base(
         name,
         ind,
@@ -902,7 +923,7 @@ def rank(indicator, year, level="시도", sido=None, top=None, ascending=False, 
         order="낮은 순" if ascending else "높은 순",
         total_regions=len(items),
         ranking=items[:top] if top else items,
-        notes=_optional(_area_note(comps, year)),
+        notes=notes,
     )
     return _mark_monthly(out, "00", "계", year) if monthly else out
 

@@ -13,9 +13,10 @@ DB에 고유 인덱스가 없으므로(용량) 이 중복 검사가 중복을 �
   새 칸은 넣고, 이미 있던 칸은 새 값으로 바꾸며 값이 달랐으면 예전 값을 이력에 남긴다.
   기존 행을 복사하지 않아 큰 표(수천만 행)도 받은 만큼만 일한다
 
-표 전체를 다시 넣을 때도 기존 값은 지우지 않는다 (carry_missing, archive_changed)
-  새 자료에 없는 칸     예) KOSIS가 뺀 예전 시점. 새 표에 그대로 옮겨 질문에 계속 답한다
-  값이 바뀐 칸          새 값으로 답하고, 예전 값은 raw.stat_value_history에 바뀐 시각과 함께 남긴다
+표 전체를 다시 넣을 때도 기존 값은 지우지 않는다 (carry_missing, archive_changed, archive_dropped)
+  새 자료에 없는 시점의 칸  예) KOSIS가 뺀 예전 시점. 새 표에 그대로 옮겨 질문에 계속 답한다
+  같은 시점에서 빠진 칸     예) 코드가 바뀐 지역(강원 42 → 51). 옮기면 두 번 세므로 이력에만 남긴다
+  값이 바뀐 칸              새 값으로 답하고, 예전 값은 raw.stat_value_history에 남긴다
   CSV와의 행 수·합계 대조는 옮기기 전(새 자료만)에 한다.
   raw.stat_load에는 옮긴 칸까지 센 값을 적는다
 
@@ -237,6 +238,7 @@ class Kept:
     first_period: int | None = None
     last_period: int | None = None
     archived: int = 0  # 값이 바뀌어 이력으로 보낸 예전 값
+    dropped: int = 0  # 새 자료의 같은 시점에서 빠진 칸 (코드가 바뀐 지역 등). 이력으로만 남긴다
 
 
 def _old(tbl_key: int) -> sql.Composable:
@@ -259,21 +261,27 @@ def archive_changed(
             "INSERT INTO raw.stat_value_history ({names}) SELECT {cols} FROM {old} JOIN {new} n"
             " ON {same} WHERE o.value IS DISTINCT FROM n.value OR o.flag IS DISTINCT FROM n.flag"
             " OR o.unit_key IS DISTINCT FROM n.unit_key"
-        ).format(
-            names=_NAMES, cols=_OLD_COLS, old=old or _old(tbl_key), new=new, same=SAME_CELL
-        )
+        ).format(names=_NAMES, cols=_OLD_COLS, old=old or _old(tbl_key), new=new, same=SAME_CELL)
     ).rowcount
 
 
+def _new_periods(new: sql.Composable) -> sql.Composable:
+    """새 자료에 있는 시점 (주기와 함께)"""
+    return sql.SQL("(o.prd_se, o.period) IN (SELECT DISTINCT prd_se, period FROM {})").format(new)
+
+
 def carry_missing(pg: psycopg.Connection, new: sql.Composable, tbl_key: int) -> Kept:
-    """새 자료에 없는 기존 칸 → new에 옮겨 넣는다 (교체 뒤에도 남아 질문에 답한다).
+    """새 자료에 없는 시점의 기존 칸 → new에 옮겨 넣는다 (교체 뒤에도 남아 질문에 답한다).
+    예) KOSIS가 수록 기간에서 뺀 예전 시점.
+    새 자료에 있는 시점에서 빠진 칸은 옮기지 않는다 (archive_dropped가 이력으로만 남긴다):
+    KOSIS가 지역 코드를 바꾸면(강원 42 → 51) 예전 코드 칸이 새 자료에서 빠지는데,
+    그것을 옮기면 같은 지역·시점이 두 코드로 두 번 들어가 합계·순위가 틀어진다.
     새 자료를 CSV와 대조한 뒤에 부른다. 처음 적재하는 표는 기존 칸이 없어 아무것도 하지 않는다"""
     pg.execute("DROP TABLE IF EXISTS pg_temp.carried")
     pg.execute(
-        sql.SQL(
-            "CREATE TEMP TABLE carried AS SELECT {cols} FROM {old}"
-            " WHERE NOT EXISTS (SELECT 1 FROM {new} n WHERE {same})"
-        ).format(cols=_OLD_COLS, old=_old(tbl_key), new=new, same=SAME_CELL)
+        sql.SQL("CREATE TEMP TABLE carried AS SELECT {cols} FROM {old} WHERE NOT {periods}").format(
+            cols=_OLD_COLS, old=_old(tbl_key), periods=_new_periods(new)
+        )
     )
     count, total, first, last = pg.execute(
         "SELECT count(*), coalesce(sum(value), 0), min(period), max(period) FROM pg_temp.carried"
@@ -284,6 +292,24 @@ def carry_missing(pg: psycopg.Connection, new: sql.Composable, tbl_key: int) -> 
         ))  # fmt: skip
     pg.execute("DROP TABLE pg_temp.carried")
     return Kept(count, total, first, last)
+
+
+def archive_dropped(pg: psycopg.Connection, new: sql.Composable, tbl_key: int) -> int:
+    """새 자료의 같은 시점에서 빠진 기존 칸 → raw.stat_value_history (교체와 같은 트랜잭션).
+    carry_missing이 옮기지 않은 칸이다. 지우기 전에 예전 값을 이력에 남긴다. 보낸 행 수"""
+    return pg.execute(
+        sql.SQL(
+            "INSERT INTO raw.stat_value_history ({names}) SELECT {cols} FROM {old}"
+            " WHERE {periods} AND NOT EXISTS (SELECT 1 FROM {new} n WHERE {same})"
+        ).format(
+            names=_NAMES,
+            cols=_OLD_COLS,
+            old=_old(tbl_key),
+            periods=_new_periods(new),
+            new=new,
+            same=SAME_CELL,
+        )
+    ).rowcount
 
 
 def replace_big(pg: psycopg.Connection, tbl_key: int, rows, scan: Scan, name: str) -> Kept:
@@ -306,6 +332,7 @@ def replace_big(pg: psycopg.Connection, tbl_key: int, rows, scan: Scan, name: st
     old = sql.Identifier("raw", part)
     with pg.transaction():
         kept.archived = archive_changed(pg, new, tbl_key)
+        kept.dropped = archive_dropped(pg, new, tbl_key)
         # 전에 작은 표였으면 기본 파티션에 남은 행을 지운다 (붙일 때 겹치면 실패한다)
         pg.execute("DELETE FROM raw.stat_value_small WHERE tbl_key = %s", [tbl_key])
         if pg.execute("SELECT to_regclass(%s)", [f"raw.{part}"]).fetchone()[0]:
@@ -330,6 +357,7 @@ def replace_small(pg: psycopg.Connection, tbl_key: int, rows, scan: Scan, name: 
         check_loaded(pg, target, scan, name)
         kept = carry_missing(pg, target, tbl_key)
         kept.archived = archive_changed(pg, target, tbl_key)
+        kept.dropped = archive_dropped(pg, target, tbl_key)
         pg.execute("DELETE FROM raw.stat_value WHERE tbl_key = %s", [tbl_key])
         part = sql.Identifier("raw", f"stat_value_t{tbl_key}")
         if pg.execute("SELECT to_regclass(%s)", [f"raw.stat_value_t{tbl_key}"]).fetchone()[0]:
@@ -463,7 +491,8 @@ def load_table(pg: psycopg.Connection, path: Path, merge: bool = False) -> None:
     kind = "전용 파티션" if big else "기본 파티션"
     kept_text = (
         f", 남긴 기존 칸 {kept.carried:,}개, 이력으로 보낸 예전 값 {kept.archived:,}개"
-        if kept.carried or kept.archived
+        f", 같은 시점에서 빠져 이력으로만 남긴 칸 {kept.dropped:,}개"
+        if kept.carried or kept.archived or kept.dropped
         else ""
     )
     print(

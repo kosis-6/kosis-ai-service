@@ -350,6 +350,14 @@ body[data-page="chat"] {
 .chart-tip .chart-tip-row { display: flex; align-items: center; gap: 6px; color: var(--ink); font-size: 12px; }
 .chart-tip .chart-tip-row strong { margin-left: auto; padding-left: 12px; font-size: 13px; line-height: 19px; }
 
+/* 지역이 많은 추이: 지역마다 작은 꺾은선 (칸 제목 = 지역, 머리에 마지막 값·증감률) */
+.chart-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 10px; margin: 0; padding: 0; list-style: none; }
+.chart-cell { padding: 10px 12px 6px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); }
+.chart-cell-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.chart-cell h4 { margin: 0; font-size: 13px; font-weight: 700; line-height: 19px; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chart-cell-change { flex: none; color: var(--ink); font-size: 12px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.chart-cell-value { margin: 0; color: var(--muted); font-size: 11px; line-height: 17px; font-variant-numeric: tabular-nums; }
+
 .chart-table { width: 100%; border-collapse: collapse; font-size: 12px; line-height: 18px; font-variant-numeric: tabular-nums; }
 .chart-table th, .chart-table td { padding: 8px 10px; border-bottom: 1px solid var(--line); text-align: right; }
 .chart-table th:first-child { text-align: left; }

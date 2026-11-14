@@ -11,6 +11,7 @@
   3. 적재 후   AFTER_LOAD 단계
                 지역 매핑 mart.region_code_map (pipeline/region_map.map_table): 이게 있어야
                 지역 조건으로 조회된다. 지역 분류가 없는 표는 전국 값만 나온다
+                주민등록인구 표면 mart.population 다시 만들기 (pipeline/population_mart.py)
   4. 기록      done / 일시 오류면 run_after 뒤 다시 시도 / 그 밖의 오류는 failed + 오류 내용
 
 약속 (app/services/load_queue.py와 함께 지킨다)
@@ -39,12 +40,13 @@ import os
 import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import httpx
 import psycopg
 
+from pipeline import population_mart
 from pipeline.load_raw import load_table
 from pipeline.region_map import map_table
 from pipeline.stats_build import conninfo
@@ -83,6 +85,8 @@ class Job:
 # 적재 후 단계: (이름, 함수(pg, tbl_id)). 표 하나 단위로 나눈 전처리를 여기에 넣는다
 AFTER_LOAD: list[tuple[str, Callable[[psycopg.Connection, str], object]]] = [
     ("지역 매핑", map_table),
+    # 주민등록인구(DT_1B04006)면 계산 지표가 읽는 mart.population도 다시 만든다 (다른 표는 넘어감)
+    ("인구 집계 표", population_mart.rebuild),
 ]
 
 
@@ -227,8 +231,15 @@ async def collect(job: Job, table_dir: Path = TABLE_DIR, delta: bool = False) ->
     meta = None
     if delta:
         meta = await fetch_meta(client, job.org_id, job.tbl_id)
-        lasts = await asyncio.to_thread(_with_pg, _db_lasts_of, job.tbl_id)
-        periods = refresh_check.delta_periods(meta["periods"], lasts)
+        lasts, when = await asyncio.to_thread(_with_pg, _db_state_of, job.tbl_id)
+        revised = {}
+        if when is not None:
+            try:  # KOSIS가 적재 뒤에 값을 다시 보낸 최근 시점 (확인하지 못하면 새 시점만 받는다)
+                sent = await refresh_check.kosis_sent(client, job.org_id, job.tbl_id)
+                revised = refresh_check.revised_periods(sent, lasts, when)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("%s: 값 수정 확인 실패 (%s)", job.tbl_id, type(e).__name__)
+        periods = refresh_check.delta_periods(meta["periods"], lasts, revised)
         if not periods:
             raise NothingToFetch(job.tbl_id)
         text = ", ".join(f"{p['PRD_SE']} {p['STRT_PRD_DE']}~{p['END_PRD_DE']}" for p in periods)
@@ -240,13 +251,16 @@ async def collect(job: Job, table_dir: Path = TABLE_DIR, delta: bool = False) ->
     return table_dir / f"{job.tbl_id}.csv"
 
 
-def _db_lasts_of(pg: psycopg.Connection, tbl_id: str) -> dict[str, int]:
+def _db_state_of(pg: psycopg.Connection, tbl_id: str) -> tuple[dict[str, int], datetime | None]:
+    """그 표의 주기별 마지막 시점과 마지막 적재 시각"""
     from pipeline import refresh_check
 
     row = pg.execute(
         "select tbl_key from catalog.stat_table where tbl_id = %s", [tbl_id]
     ).fetchone()
-    return refresh_check.db_lasts(pg, row[0]) if row else {}
+    if not row:
+        return {}, None
+    return refresh_check.db_lasts(pg, row[0]), refresh_check.loaded_at(pg, row[0])
 
 
 async def process(job: Job, source: str = LOAD_SOURCE, table_dir: Path = TABLE_DIR) -> None:

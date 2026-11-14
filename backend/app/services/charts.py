@@ -6,6 +6,7 @@
   결과에 있는 것        차트             이유
   series (연도별 값)    line  꺾은선     시간에 따른 변화
   지역마다 series       line  여러 꺾은선 지역별 추이 (series에 지역 이름, 행마다 지역별 값)
+                                        MAX_LINES곳이 넘으면 화면이 지역마다 작은 그래프로
   values (지역별 값)    bar   가로 막대  크기 비교 (값이 큰 순)
   ranking (순위)        bar   가로 막대  크기 비교 (순위 순, 많으면 위에서 MAX_BARS개)
   parts (구성비)        parts 나뉜 막대  전체가 어떻게 나뉘는지
@@ -14,11 +15,14 @@
 "막대그래프로 보여줘" 같은 뒤 요청은 다시 조회하지 않고 화면이 종류만 바꾼다 (line ↔ bar).
 """
 
+from math import isfinite
 from typing import Any
 
 MAX_BARS = 15  # 시군구 순위(200개가 넘는다)는 위에서 이만큼만 그린다
 MAX_PARTS = 6  # 나뉜 막대는 조각이 이보다 많으면 읽기 어렵다 → 가로 막대로
-MAX_LINES = 6  # 꺾은선은 이보다 많으면 색을 구분하기 어렵다 (색을 돌려 쓰지 않는다)
+# 한 그래프에 겹쳐 그리는 선은 이만큼까지 (색을 돌려 쓰지 않는다). 더 많으면 화면이 지역마다
+# 작은 그래프를 나란히 그린다 (Chart.tsx GridView. 행·series 모양은 같다)
+MAX_LINES = 6
 
 
 def _title(*parts: Any) -> str:
@@ -37,8 +41,46 @@ def _sex(result: dict) -> str | None:
     return f"({sex})" if sex and sex != "계" else None
 
 
+def _number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and isfinite(value)
+
+
+def omission_reason(result: dict | None) -> str | None:
+    """여러 지역 추이를 그리지 못하는 이유. 원래 수치 결과는 수정하지 않는다."""
+    if not result or result.get("status") != "ok" or result.get("split_by") != "region":
+        return None
+    parts = result.get("split") or []
+    if not parts:
+        return None
+    first = parts[0]
+    for part in parts:
+        if part.get("split") or not part.get("series"):
+            return "지역별 결과를 하나의 추이 차트로 묶기 어려워 수치로 표시합니다."
+        if (
+            not part.get("indicator")
+            or part.get("unit") is None
+            or (part.get("indicator"), part.get("unit"), part.get("sex") or "계")
+            != (first.get("indicator"), first.get("unit"), first.get("sex") or "계")
+        ):
+            return "지역별 지표·단위·성별 기준이 달라 차트는 생략하고 수치를 표시합니다."
+        series = part["series"]
+        years = [s.get("year") for s in series]
+        if any(not isinstance(y, int) or isinstance(y, bool) for y in years) or len(
+            set(years)
+        ) != len(years):
+            return "연도 정보를 하나의 추이로 정렬할 수 없어 차트는 생략하고 수치를 표시합니다."
+        if sum(_number(s.get("value")) for s in series) < 2:
+            return (
+                "지역별로 값이 있는 연도가 2개 이상이어야 하므로 차트는 생략하고 수치를 표시합니다."
+            )
+    return None
+
+
 def _line(result: dict) -> dict | None:
-    rows = [{"label": f"{s['year']}", "value": s["value"]} for s in result["series"]]
+    rows = [
+        {"label": f"{s['year']}", "value": s["value"] if _number(s.get("value")) else None}
+        for s in result["series"]
+    ]
     if sum(r["value"] is not None for r in rows) < 2:
         return None
     years = f"{rows[0]['label']}~{rows[-1]['label']}년"
@@ -54,10 +96,13 @@ def _lines(result: dict) -> dict | None:
     """여러 지역의 추이 → 꺾은선 여러 개. 행은 연도, values는 series(지역) 순서의 값.
     지역마다 남녀를 또 나눈 결과처럼 겹이 더 있으면 그리지 않는다 (문장·수치 목록이 전한다)"""
     parts = result["split"]
-    if len(parts) > MAX_LINES or any(p.get("split") or not p.get("series") for p in parts):
+    if omission_reason(result):
         return None
     names = [p.get("region") or "" for p in parts]
-    by_year = [{s["year"]: s["value"] for s in p["series"]} for p in parts]
+    by_year = [
+        {s["year"]: s["value"] if _number(s.get("value")) else None for s in p["series"]}
+        for p in parts
+    ]
     years = sorted({y for values in by_year for y in values})
     rows = [
         {"label": f"{y}", "value": None, "values": [values.get(y) for values in by_year]}
@@ -78,7 +123,7 @@ def _lines(result: dict) -> dict | None:
 
 
 def _bar(result: dict, items: list[dict], order: str | None = None) -> dict | None:
-    rows = [{"label": i["region"], "value": i["value"]} for i in items if i["value"] is not None]
+    rows = [{"label": i["region"], "value": i["value"]} for i in items if _number(i.get("value"))]
     if len(rows) < 2:
         return None
     note = None
@@ -99,7 +144,7 @@ def _parts(result: dict) -> dict | None:
     rows = [
         {"label": p["label"], "value": p["share"], "count": p.get("count")}
         for p in result["parts"]
-        if p.get("share") is not None
+        if _number(p.get("share"))
     ]
     if len(rows) < 2:
         return None

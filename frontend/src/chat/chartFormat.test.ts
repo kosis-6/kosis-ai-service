@@ -2,11 +2,14 @@ import { describe, expect, it } from "vitest";
 import { splitAnswer } from "./Answer";
 import {
   LINE_COLORS,
+  MAX_OVERLAP,
   PART_COLORS,
   axisTick,
+  changeText,
   fitsLabel,
   formatValue,
   labelWidth,
+  panels,
   rowLabel,
   seriesMax,
   seriesRows,
@@ -88,5 +91,30 @@ describe("답변 나누기", () => {
       lead: "지역별 인구통계 질문에만 답할 수 있습니다.",
       detail: "",
     });
+  });
+});
+
+describe("지역마다 작은 그래프", () => {
+  const chart = {
+    series: ["서울", "세종"],
+    rows: [
+      { label: "2018", value: null, values: [100, null] },
+      { label: "2019", value: null, values: [90, 30] },
+      { label: "2020", value: null, values: [95.5, 33] },
+    ],
+  };
+
+  it("지역마다 연도별 점과 처음 대비 마지막 증감률을 만든다", () => {
+    const [seoul, sejong] = panels(chart);
+    expect(seoul.points.map((p) => p.value)).toEqual([100, 90, 95.5]);
+    expect(seoul.change).toBe(-4.5);
+    expect(sejong.change).toBe(10); // 값이 있는 처음 해(2019)부터
+    expect(changeText(seoul.change)).toBe("-4.5%");
+    expect(changeText(sejong.change)).toBe("+10%");
+    expect(changeText(null)).toBe("");
+  });
+
+  it("겹쳐 그리는 선은 색 개수까지", () => {
+    expect(MAX_OVERLAP).toBe(LINE_COLORS.length);
   });
 });

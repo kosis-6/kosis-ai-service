@@ -346,6 +346,45 @@ def test_sub_area_and_ungrounded_region() -> None:
         assert "ungrounded_region" not in qa.correct(q, parsed(regions=[r]), TODAY), q
 
 
+def test_full_region_name_from_question() -> None:
+    # HCX가 "광주광역시"를 "광주"로 줄이면 경기 광주시와 겹쳐 되묻게 된다
+    q = "서울 광주광역시 2018년부터 2024년까지 인구 추이"
+    p = qa.correct(q, parsed(type="trend", indicator="총인구", regions=["서울", "광주"]), TODAY)
+    assert p["regions"] == ["서울", "광주광역시"]
+    # 질문에 "광주"라고만 썼으면 그대로 둔다 (어느 광주인지 되묻는 게 맞다)
+    p = qa.correct("광주 인구 추이", parsed(type="trend", regions=["광주"]), TODAY)
+    assert p["regions"] == ["광주"]
+
+
+def test_latest_without_change_is_latest_value() -> None:
+    # HCX가 "최근"을 최근 몇 년 추이로 읽어도, 변화를 묻지 않았으면 최신 값 하나
+    def hcx() -> dict:
+        return parsed(
+            type="trend", indicator="고령인구 비율", regions=["부산"], year=2025,
+            start_year=2020, end_year=2025,
+        )  # fmt: skip
+
+    p = qa.correct("최근 부산 고령인구 비율", hcx(), TODAY)
+    assert (p["type"], p.get("start_year"), p.get("end_year")) == ("value", None, None)
+    assert p["asked"]["latest"] and p.get("year") is None  # 연도는 표마다 마지막 해
+    p = qa.correct(
+        "최근 서울 출생아 수", parsed(indicator="출생아 수", regions=["서울"], year=2024), TODAY
+    )
+    assert p.get("year") is None
+    for q in ["최근 부산 고령인구 비율 추이", "요즘 부산 고령인구 비율이 늘었어?",
+              "최근 5년 부산 고령인구 비율"]:  # fmt: skip
+        assert qa.correct(q, hcx(), TODAY)["type"] == "trend", q
+    # 최근 추이: HCX가 넣은 기간을 지워 자료 마지막 해까지 본다 ("최근 5년"은 따로 N개년)
+    p = qa.correct("최근 부산 고령인구 비율 추이", hcx(), TODAY)
+    assert (p.get("start_year"), p.get("end_year"), p.get("year")) == (None, None, None)
+
+
+def test_unit_suffix_in_indicator_name_is_dropped() -> None:
+    q = "2024년 서울 출생아 수"
+    p = qa.correct(q, parsed(indicator="출생아 수(명)", regions=["서울"]), TODAY)
+    assert p["indicator"] == "출생아 수"
+
+
 def test_other_composition_question() -> None:
     p = qa.correct(
         "2025년 전국 인구 중 남녀 비중은 어떻게 돼?",
