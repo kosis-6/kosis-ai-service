@@ -13,17 +13,21 @@ const number = (v: unknown): v is number => typeof v === "number" && Number.isFi
 const value = (v: unknown) => v == null || (typeof v === "number" && !Number.isFinite(v))
   ? "자료 없음" : typeof v === "number" ? v.toLocaleString("ko-KR", { maximumFractionDigits: 20 }) : String(v);
 
+const STATUS_HEADING = "자료 상태";
+// 연도·순위 같은 이름 칸은 숫자여도 쉼표 없이 쓴다 (2,024가 아니라 2024)
+const label = (v: unknown) => v == null ? v : String(v);
+
 /** 차트의 15개 표시 제한과 관계없이 실제 계산 결과의 전체 행을 사용한다. */
 export function reportTables(input: unknown): Table[] {
   const r = record(input);
   if (Array.isArray(r.split)) return r.split.flatMap(reportTables);
   const title = [r.region, r.indicator, r.sex, r.year ? `${r.year}년` : null, r.unit].filter(Boolean).join(" · ");
-  if (r.status !== "ok") return [{ title, headings: ["자료 상태"], rows: [[r.reason ?? "자료 없음"]] }];
-  if (list(r.series).length) return [{ title, headings: ["연도", "값"], rows: list(r.series).map((s) => [s.year, s.value]) }];
+  if (r.status !== "ok") return [{ title, headings: [STATUS_HEADING], rows: [[r.reason ?? "자료 없음"]] }];
+  if (list(r.series).length) return [{ title, headings: ["연도", "값"], rows: list(r.series).map((s) => [label(s.year), s.value]) }];
   if (list(r.values).length) return [{ title, headings: ["지역", "값"], rows: list(r.values).map((s) => [s.region, s.value]) }];
-  if (list(r.ranking).length) return [{ title, headings: ["순위", "지역", "값"], rows: list(r.ranking).map((s) => [s.rank, s.region, s.value]) }];
+  if (list(r.ranking).length) return [{ title, headings: ["순위", "지역", "값"], rows: list(r.ranking).map((s) => [label(s.rank), s.region, s.value]) }];
   if (list(r.parts).length) return [{
-    title, headings: ["항목", `원래 값 (${r.count_unit ?? "원자료 단위"})`, "비중 (%)"],
+    title, headings: ["항목", `원래 값 (${r.count_unit ?? "명"})`, "비중 (%)"],
     rows: list(r.parts).map((s) => [s.label, s.count, s.share]),
   }];
   if (list(r.members).length) return [{
@@ -35,7 +39,9 @@ export function reportTables(input: unknown): Table[] {
 }
 
 export function canReport(data: AskResponse): boolean {
-  return data.status === "ok" && !data.result.reused && reportTables(data.result).length > 0;
+  // 수치 표가 하나도 없으면(빈 결과·실패한 결과만 있음) 빈 보고서가 되므로 만들지 않는다
+  return data.status === "ok" && !data.result.reused
+    && reportTables(data.result).some((t) => t.headings[0] !== STATUS_HEADING);
 }
 
 const colors = ["#276749", "#2b6cb0", "#a65c00", "#805ad5", "#b83280", "#157a86"];

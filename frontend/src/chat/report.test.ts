@@ -26,6 +26,23 @@ describe("분석 보고서", () => {
     expect(reportTables(data.result)[0].rows).toHaveLength(25);
   });
 
+  it("수치 표가 없는 결과(빈 결과·실패만)에서는 보고서를 만들지 않는다", () => {
+    expect(canReport({ ...base, result: {} })).toBe(false);
+    expect(canReport({ ...base, result: { status: "ok", split: [{ status: "no_data", reason: "없음" }] } })).toBe(false);
+    expect(canReport(base)).toBe(true);
+  });
+
+  it("연도·순위는 쉼표 없이, 구성비 원래 값 단위가 없으면 명으로 쓴다", () => {
+    const series = [{ year: 2024, value: 9331828 }];
+    const trend = buildReport({ ...base, result: { status: "ok", unit: "명", series } });
+    expect(trend).toContain("<td>2024</td>");
+    expect(trend).not.toContain("2,024");
+    expect(trend).toContain("<td>9,331,828</td>");
+    const parts = [{ label: "가", count: 1000, share: 10 }, { label: "나", count: 9000, share: 90 }];
+    const composition = buildReport({ ...base, result: { status: "ok", unit: "%", parts } });
+    expect(composition).toContain("원래 값 (명)");
+  });
+
   it("추이 그래프에서 결측 구간의 선을 연결하지 않는다", () => {
     const html = buildReport({ ...base, chart: {
       type: "line", title: "추이", unit: "명", category: "연도",
