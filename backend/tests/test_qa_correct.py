@@ -366,10 +366,17 @@ def test_latest_without_change_is_latest_value() -> None:
 
     p = qa.correct("최근 부산 고령인구 비율", hcx(), TODAY)
     assert (p["type"], p.get("start_year"), p.get("end_year")) == ("value", None, None)
-    assert p["asked"]["latest"]
+    assert p["asked"]["latest"] and p.get("year") is None  # 연도는 표마다 마지막 해
+    p = qa.correct(
+        "최근 서울 출생아 수", parsed(indicator="출생아 수", regions=["서울"], year=2024), TODAY
+    )
+    assert p.get("year") is None
     for q in ["최근 부산 고령인구 비율 추이", "요즘 부산 고령인구 비율이 늘었어?",
               "최근 5년 부산 고령인구 비율"]:  # fmt: skip
         assert qa.correct(q, hcx(), TODAY)["type"] == "trend", q
+    # 최근 추이: HCX가 넣은 기간을 지워 자료 마지막 해까지 본다 ("최근 5년"은 따로 N개년)
+    p = qa.correct("최근 부산 고령인구 비율 추이", hcx(), TODAY)
+    assert (p.get("start_year"), p.get("end_year"), p.get("year")) == (None, None, None)
 
 
 def test_other_composition_question() -> None:

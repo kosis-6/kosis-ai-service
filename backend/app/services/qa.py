@@ -187,6 +187,7 @@ TOP_N = re.compile(r"(상위|하위)\s*(\d+)|(\d+)\s*(곳|개|위까지)(?!\s*\S
 RECENT = timeref.RECENT_N_YEARS
 LATEST = re.compile(r"최근|최신|현재|요즘|지금")
 # 기간 변화를 묻는 표현 ("최근 부산 인구 추이"는 추이, "최근 부산 인구"는 최신 값)
+LATEST_KINDS = ("value", "compare", "rank")  # "최근"이면 마지막 해로 답하는 질문 유형
 CHANGE_ASK = re.compile(r"추이|변화|변동|흐름|증감|추세|늘|줄|증가|감소|동안|사이|년간|그래프")
 SPAN = re.compile(r"((?:19|20)\d{2})\s*년?\s*(대비|부터|에서)\s*((?:19|20)\d{2})\s*년")
 YEAR = re.compile(r"((?:19|20)\d{2})\s*년")
@@ -600,6 +601,15 @@ def _read_question(question, parsed, fix):
                 if parsed.get(key):
                     fix(key, None, "최근 값을 물음")
             kind = "value"
+        if kind in LATEST_KINDS and parsed.get("year"):
+            # 질문에 연도가 없으니 HCX가 넣은 연도는 짐작이다. 계산 단계가 표마다 마지막 해를 쓴다
+            fix("year", None, "최근 값은 자료 마지막 해")
+        elif kind == "trend":
+            # "최근 부산 고령인구 비율 추이": 연도를 말하지 않았으므로 HCX가 넣은 기간(2020~2024 등)
+            # 대신 자료 마지막 해까지 (계산 단계가 표마다 마지막 해를 정한다)
+            for key in ("start_year", "end_year", "year"):
+                if parsed.get(key):
+                    fix(key, None, "최근 추이는 자료 마지막 해까지")
     if ask_followup.FROM_PAST.search(question) and not SPAN.search(question):
         # "과거부터 지금까지 합계출산율 추이" → 수록 기간 전체 추이
         asked["from_start"] = True
@@ -877,6 +887,11 @@ def _compute_population(q, ind, kind, regions, year, sex, ages, hi):
 
 def _compute_lookup(q, sp, kind, regions, year, sex, ages):
     """조회 지표 (facts). 남녀 값만 있는 표는 남녀를 따로, 연령 구간이 여럿이면 구간마다 계산"""
+    if (q.get("asked") or {}).get("latest") and kind in LATEST_KINDS and not q.get("year"):
+        # "최근 서울 출생아 수": HCX가 짐작한 연도 대신 그 표의 마지막 해
+        last = _lookup_span(sp, regions[0] if regions else "전국", sex)[1]
+        if last != 9999:
+            year = last
     if not regions and kind in ("value", "trend", "compare", "composition"):
         if not sp.get("national", True):
             return {
