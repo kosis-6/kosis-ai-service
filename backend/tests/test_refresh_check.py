@@ -183,3 +183,12 @@ def test_delta_periods_fetch_only_what_db_lacks() -> None:
         {"PRD_SE": "분기", "STRT_PRD_DE": "1970 1/4", "END_PRD_DE": "2026 3/4"},  # 없는 주기 전체
     ]  # 연은 같아서 뺀다
     assert rc.delta_periods(periods, {"M": 202610, "Q": 202603, "A": 2025}) == []
+
+
+def test_db_period_reads_compact_dates() -> None:
+    # KOSIS가 구분자 없이 "202609"처럼 주면 연도(2026)로만 읽어 새 달을 놓쳤다
+    assert rc.db_period("M", "202609") == 202609
+    assert rc.db_period("Q", "202603") == 202603
+    assert rc.db_period("D", "20261031") == 20261031
+    assert rc.db_period("A", "2025") == 2025
+    assert rc.db_period("M", "2026.09") == 202609

@@ -740,10 +740,8 @@ async def _after_asking(original: str, kind: str, user_id: int | None):
     """되묻기 상한에 닿았을 때: 이사 범위는 기본값(밖으로 나간 이사만)으로 찾고 알린다.
     지역은 짐작할 수 없으므로 답하지 않고 다시 질문하는 방법을 알린다"""
     if kind == "move_scope":
-        merged = question_clarify.merge_scope(original, "exclude")
-        res, sources, notice = await _movement_tables(merged, user_id)
-        told = f"범위를 알아듣지 못해 '{question_clarify.MOVE_OPTIONS[1]}'으로 찾았습니다."
-        return res, sources, " ".join(filter(None, [told, notice]))
+        told = f"범위를 알아듣지 못해 '{question_clarify.MOVE_OPTIONS[1]}'으로 답했습니다."
+        return await _movement(original, "exclude", user_id, told)
     return (
         {
             "status": "unknown_region",
@@ -762,19 +760,35 @@ async def _after_asking(original: str, kind: str, user_id: int | None):
     )
 
 
-async def _movement_tables(
-    question: str, user_id: int | None, told: str = "선택한 이동 범위로 통계표를 찾았습니다."
-):
-    # 이사 건수는 순이동(전입-전출)과 다르다. 범위가 정해져도 임의의 지표로 계산하지 않는다.
+# 범위가 정해진 이사 질문의 지표: 밖으로 나간 이사만 = 전출자 수, 지역 안 이사도 = 이동자 수(총전출)
+MOVE_INDICATOR = {"exclude": "전출자 수", "include": "이동자 수", "nation": "이동자 수"}
+MOVE_TYPES = ("value", "trend", "compare", "rank")
+
+
+async def _movement(question: str, scope: str, user_id: int | None, told: str | None = None):
+    """범위가 정해진 이사 건수 질문. 순이동(전입-전출)으로 바꾸지 않고 범위에 맞는 지표로 답한다.
+    지역·연도 해석은 HCX에 맡기고 지표만 정해 준다. 계산하지 못하면 그 범위의 통계표를 안내한다"""
+    indicator = MOVE_INDICATOR[scope]
+
+    def adjust(parsed: dict) -> dict:
+        kind = parsed.get("type") if parsed.get("type") in MOVE_TYPES else "value"
+        return {**parsed, "indicator": indicator, "type": kind}
+
+    res = await qa.ask(question, adjust=adjust)
+    if res.get("status") == "ok":
+        res["chart"] = charts.build(res.get("result"))
+        res.update(question=question, request_type=REPLY)
+        return res, sources_of(question, res.get("parsed") or {}), told
+    return await _movement_tables(question_clarify.merge_scope(question, scope), user_id, told)
+
+
+async def _movement_tables(question: str, user_id: int | None, told: str | None = None):
+    """이사 건수를 계산하지 못했을 때(지역·연도 자료 없음 등) 그 범위의 통계표를 안내한다"""
     sid = table_guide.new_search_session()
     found = await table_guide.find_tables(question, sid, None, user_id)
     res = table_guide.tables_answer(found)
     res.update(question=question, request_type=REPLY, search_session=sid)
-    return (
-        res,
-        {},
-        f"{told} 이사 건수는 아직 직접 계산하지 않습니다.",
-    )
+    return res, {}, " ".join(filter(None, [told, "수치로 답하지 못해 통계표를 찾았습니다."]))
 
 
 async def _turn(
@@ -809,8 +823,7 @@ async def _turn(
                 merged = question_clarify.merge_region(original, region)
                 return await _clarified(merged, state)
         elif scope := question_clarify.scope_reply(choice):
-            merged = question_clarify.merge_scope(original, scope)
-            return await _movement_tables(merged, user_id)
+            return await _movement(original, scope, user_id)
         # 미지원 지표라도 새 질문을 선택지 대기에 가두지 않는다.
         if indicators.find_in_text(question) or re.search(
             r"몇|얼마|통계|알려|보여|안녕|취소", question
@@ -824,13 +837,7 @@ async def _turn(
 
     if scope := question_clarify.stated_scope(question):
         # 범위를 이미 말한 이사 건수 질문: 되묻지 않고, 순이동으로 바꿔 답하지도 않는다
-        told = (
-            "전국 이동 통계표를 찾았습니다."
-            if scope == "nation"
-            else "말씀하신 범위(지역 밖으로 나간 이사)로 통계표를 찾았습니다."
-        )
-        merged = question_clarify.merge_scope(question, scope)
-        return await _movement_tables(merged, user_id, told)
+        return await _movement(question, scope, user_id)
     if question_clarify.VAGUE_REGION.search(question) or question_clarify.MOVE_COUNT.search(
         question
     ):

@@ -228,16 +228,20 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)  # 요청 주소(apiKey 포함)를 찍지 않는다
 
+    # run_all.py의 마지막 단계: 받지 못하거나 응답 모양이 달라도(KOSIS가 분류 이름을 바꿈,
+    # JSON이 아닌 오류 화면 등) 앞 단계 결과와 기존 mart.area는 그대로 두고 건너뛴다
     try:
         rows = fetch()
-    except (RuntimeError, httpx.HTTPError) as e:
-        # run_all.py의 마지막 단계: 받지 못해도 앞 단계 결과와 기존 mart.area는 그대로 둔다
+    except Exception as e:  # noqa: BLE001 - 어떤 이유든 이 단계만 건너뛴다
         # httpx 오류 문구에는 요청 주소(apiKey 포함)가 들어갈 수 있어 종류만 남긴다
         why = str(e) if isinstance(e, RuntimeError) else type(e).__name__
         print(f"면적 자료를 받지 못해 건너뜁니다 (기존 mart.area 유지): {why}")
         return
     with psycopg.connect(conninfo()) as pg:
         area, missed = match(rows, _regions(pg))
+        if not area:
+            print("면적 자료에서 맞춘 지역이 없어 건너뜁니다 (기존 mart.area 유지)")
+            return
         years = sorted({y for y, _ in area})
         print(f"{SOURCE}: {years[0]}~{years[-1]}년, {len(area):,}개 (연도·지역)")
         if missed:

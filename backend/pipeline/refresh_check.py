@@ -62,6 +62,7 @@ PRIORITY_UPDATE = 2  # app/services/load_queue.PRIORITY["update"]와 같다 (질
 # KOSIS 수록주기 이름 → DB 주기 코드 (KOSIS 자료 응답의 PRD_SE와 같다)
 PERIOD_CODE = {"년": "A", "반년": "H", "분기": "Q", "월": "M", "일": "D", "부정기": "IR"}
 MULTI_YEAR = re.compile(r"^\d+년$")  # "2년", "5년" → 다년(F)
+COMPACT_DATE = re.compile(r"(\d{4})(\d{2})(\d{2})?")
 KOSIS_DATE = re.compile(r"(\d{4})(?:\D+(\d{1,2}))?(?:\D+(\d{1,2}))?")
 
 
@@ -74,7 +75,10 @@ def period_code(label: str) -> str | None:
 
 def db_period(code: str, end: str) -> int | None:
     """KOSIS 수록 시점 표기 → DB period 형식. 모르는 형식이면 None"""
-    m = KOSIS_DATE.match(str(end).strip())
+    text = str(end).strip()
+    if compact := COMPACT_DATE.fullmatch(text):  # "202609", "20261031" (구분자 없이 붙여 씀)
+        text = ".".join(part for part in compact.groups() if part)
+    m = KOSIS_DATE.match(text)
     if not m:
         return None
     year, a, b = int(m[1]), m[2], m[3]

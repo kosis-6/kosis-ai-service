@@ -379,6 +379,12 @@ def test_latest_without_change_is_latest_value() -> None:
     assert (p.get("start_year"), p.get("end_year"), p.get("year")) == (None, None, None)
 
 
+def test_unit_suffix_in_indicator_name_is_dropped() -> None:
+    q = "2024년 서울 출생아 수"
+    p = qa.correct(q, parsed(indicator="출생아 수(명)", regions=["서울"]), TODAY)
+    assert p["indicator"] == "출생아 수"
+
+
 def test_other_composition_question() -> None:
     p = qa.correct(
         "2025년 전국 인구 중 남녀 비중은 어떻게 돼?",

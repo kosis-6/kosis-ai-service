@@ -185,6 +185,7 @@ ASCENDING = re.compile(r"꼴찌|최하위|가장\s*(낮|적)|제일\s*(낮|적)"
 TOP_N = re.compile(r"(상위|하위)\s*(\d+)|(\d+)\s*(곳|개|위까지)(?!\s*\S*\s*중)")
 # "최근 5년", "과거 10년간", "지난 3년 동안" (timeref와 같은 표현)
 RECENT = timeref.RECENT_N_YEARS
+UNIT_SUFFIX = re.compile(r"\s*\([^()]*\)\s*$")  # 지표 이름 뒤의 "(명)"·"(%)"
 LATEST = re.compile(r"최근|최신|현재|요즘|지금")
 # 기간 변화를 묻는 표현 ("최근 부산 인구 추이"는 추이, "최근 부산 인구"는 최신 값)
 LATEST_KINDS = ("value", "compare", "rank")  # "최근"이면 마지막 해로 답하는 질문 유형
@@ -304,6 +305,13 @@ def correct(question, parsed, today=None):
     def fix(key, value, reason):
         fixes.append(f"{key}: {parsed.get(key)!r} → {value!r} ({reason})")
         parsed[key] = value
+
+    name = parsed.get("indicator")
+    if name and indicators.spec(name) is None:
+        # HCX가 "전출자 수(명)"·"고령인구 비율 (%)"처럼 단위를 붙여 쓰면 지표를 못 찾는다
+        bare = UNIT_SUFFIX.sub("", name)
+        if bare != name and indicators.spec(bare) is not None:
+            fix("indicator", bare, "지표 이름 뒤의 단위 표기")
 
     if kind == "other" and CAUSAL.search(question):
         fix("type", "causal", "원인·효과를 묻는 질문")
@@ -708,7 +716,9 @@ def _read_question(question, parsed, fix):
             parsed["share_of"] = "전국"
 
 
-MAX_TREND_REGIONS = 6  # 여러 지역 추이는 이만큼까지 (꺾은선 색을 돌려 쓰지 않는 개수)
+# 여러 지역 추이는 이만큼까지 계산한다 (시도 17곳을 모두 담는다). 그래프는 charts.MAX_LINES곳까지만
+# 겹쳐 그리고, 넘으면 수치로만 보여 주며 이유를 알린다 (charts.omission_reason)
+MAX_TREND_REGIONS = 20
 MAX_INDICATORS = 3  # 한 질문에서 함께 답하는 지표 수
 
 
