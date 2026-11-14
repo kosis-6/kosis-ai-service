@@ -356,6 +356,22 @@ def test_full_region_name_from_question() -> None:
     assert p["regions"] == ["광주"]
 
 
+def test_latest_without_change_is_latest_value() -> None:
+    # HCX가 "최근"을 최근 몇 년 추이로 읽어도, 변화를 묻지 않았으면 최신 값 하나
+    def hcx() -> dict:
+        return parsed(
+            type="trend", indicator="고령인구 비율", regions=["부산"], year=2025,
+            start_year=2020, end_year=2025,
+        )  # fmt: skip
+
+    p = qa.correct("최근 부산 고령인구 비율", hcx(), TODAY)
+    assert (p["type"], p.get("start_year"), p.get("end_year")) == ("value", None, None)
+    assert p["asked"]["latest"]
+    for q in ["최근 부산 고령인구 비율 추이", "요즘 부산 고령인구 비율이 늘었어?",
+              "최근 5년 부산 고령인구 비율"]:  # fmt: skip
+        assert qa.correct(q, hcx(), TODAY)["type"] == "trend", q
+
+
 def test_other_composition_question() -> None:
     p = qa.correct(
         "2025년 전국 인구 중 남녀 비중은 어떻게 돼?",

@@ -186,6 +186,8 @@ TOP_N = re.compile(r"(상위|하위)\s*(\d+)|(\d+)\s*(곳|개|위까지)(?!\s*\S
 # "최근 5년", "과거 10년간", "지난 3년 동안" (timeref와 같은 표현)
 RECENT = timeref.RECENT_N_YEARS
 LATEST = re.compile(r"최근|최신|현재|요즘|지금")
+# 기간 변화를 묻는 표현 ("최근 부산 인구 추이"는 추이, "최근 부산 인구"는 최신 값)
+CHANGE_ASK = re.compile(r"추이|변화|변동|흐름|증감|추세|늘|줄|증가|감소|동안|사이|년간|그래프")
 SPAN = re.compile(r"((?:19|20)\d{2})\s*년?\s*(대비|부터|에서)\s*((?:19|20)\d{2})\s*년")
 YEAR = re.compile(r"((?:19|20)\d{2})\s*년")
 SINCE = re.compile(r"((?:19|20)\d{2})\s*년\s*(이후|이래|부터)(?!.*까지)")
@@ -591,6 +593,13 @@ def _read_question(question, parsed, fix):
         asked["recent"] = int(m[2])
     elif LATEST.search(question) and not YEAR.search(question) and not timeref.resolve(question):
         asked["latest"] = True  # "최근 서울 인구" → 연도 없이 가장 최근 값 (인구는 최신 달까지)
+        if kind == "trend" and not by_year and not CHANGE_ASK.search(question):
+            # HCX가 "최근"을 최근 몇 년 추이로 읽는 경우: 변화를 묻지 않았으면 최신 값 하나
+            fix("type", "value", "최근 값을 물음 (변화를 묻지 않음)")
+            for key in ("start_year", "end_year"):
+                if parsed.get(key):
+                    fix(key, None, "최근 값을 물음")
+            kind = "value"
     if ask_followup.FROM_PAST.search(question) and not SPAN.search(question):
         # "과거부터 지금까지 합계출산율 추이" → 수록 기간 전체 추이
         asked["from_start"] = True
