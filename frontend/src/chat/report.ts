@@ -50,9 +50,27 @@ export function canReport(data: AskResponse): boolean {
 const colors = ["#276749", "#2b6cb0", "#a65c00", "#805ad5", "#b83280", "#157a86"];
 
 /** HTML 파일만 열어도 보이도록 외부 스크립트·차트 라이브러리 없이 SVG를 넣는다. */
+/** 지역이 선 색보다 많으면 지역마다 작은 꺾은선 (화면 Chart.tsx GridView와 같은 규칙, 세로축은 지역마다) */
+function gridSvg(chart: Chart): string {
+  const cells = (chart.series ?? []).map((name, j) => {
+    const pts = chart.rows
+      .map((r, i) => ({ i, v: r.values?.[j] }))
+      .filter((p): p is { i: number; v: number } => number(p.v));
+    if (!pts.length) return "";
+    const lo = Math.min(...pts.map((p) => p.v)), hi = Math.max(...pts.map((p) => p.v)), span = hi - lo || 1;
+    const x = (i: number) => 8 + (i / Math.max(1, chart.rows.length - 1)) * 204;
+    const y = (v: number) => 70 - ((v - lo) / span) * 56;
+    const line = pts.map((p) => `${x(p.i)},${y(p.v)}`).join(" ");
+    const lastPt = pts[pts.length - 1];
+    return `<div class="report-cell"><h4>${escape(name)}</h4><p>${escape(`${chart.rows[lastPt.i].label}년 ${value(lastPt.v)} ${chart.unit}`)}</p><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 78" role="img" aria-label="${escape(name)}"><polyline points="${line}" fill="none" stroke="#245941" stroke-width="2"/></svg></div>`;
+  }).join("");
+  return `<figure><h3>${escape(chart.title)}</h3><p>단위: ${escape(chart.unit)} · 지역이 많아 지역마다 따로 그렸습니다. 세로축은 지역마다 다릅니다</p><div class="report-grid">${cells}</div></figure>`;
+}
+
 function chartSvg(chart: Chart): string {
   const rows = chart.rows;
   if (!rows.length) return "";
+  if (chart.type === "line" && (chart.series?.length ?? 0) > colors.length) return gridSvg(chart);
   const width = 780, left = 150, right = 730;
   let marks = "";
   let height = 300;

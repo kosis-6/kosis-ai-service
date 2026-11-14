@@ -62,6 +62,7 @@ PRIORITY_UPDATE = 2  # app/services/load_queue.PRIORITY["update"]와 같다 (질
 # KOSIS 수록주기 이름 → DB 주기 코드 (KOSIS 자료 응답의 PRD_SE와 같다)
 PERIOD_CODE = {"년": "A", "반년": "H", "분기": "Q", "월": "M", "일": "D", "부정기": "IR"}
 MULTI_YEAR = re.compile(r"^\d+년$")  # "2년", "5년" → 다년(F)
+COMPACT_DATE = re.compile(r"(\d{4})(\d{2})(\d{2})?")
 KOSIS_DATE = re.compile(r"(\d{4})(?:\D+(\d{1,2}))?(?:\D+(\d{1,2}))?")
 
 
@@ -74,7 +75,10 @@ def period_code(label: str) -> str | None:
 
 def db_period(code: str, end: str) -> int | None:
     """KOSIS 수록 시점 표기 → DB period 형식. 모르는 형식이면 None"""
-    m = KOSIS_DATE.match(str(end).strip())
+    text = str(end).strip()
+    if compact := COMPACT_DATE.fullmatch(text):  # "202609", "20261031" (구분자 없이 붙여 씀)
+        text = ".".join(part for part in compact.groups() if part)
+    m = KOSIS_DATE.match(text)
     if not m:
         return None
     year, a, b = int(m[1]), m[2], m[3]
@@ -135,9 +139,12 @@ def next_period(code: str, last: int) -> str:
     return str(last + 1)
 
 
-def delta_periods(periods: list[dict], db_lasts: dict[str, int]) -> list[dict]:
+def delta_periods(
+    periods: list[dict], db_lasts: dict[str, int], revised: dict[str, int] | None = None
+) -> list[dict]:
     """KOSIS 수록 기간(메타데이터 PRD) 중 가져올 부분만 남긴다 (적재 프로세스가 갱신 작업에 씀)
     DB에 없는 주기      수록 기간 전체
+    KOSIS가 고친 시점    그 시점부터 (revised_periods. 새 시점이 있으면 그것까지 함께)
     KOSIS가 새로운 주기  DB 마지막 시점 다음부터 (시작을 요청 형식으로 바꿔 둔다)
     DB와 같은 주기       뺀다"""
     out = []
@@ -147,11 +154,56 @@ def delta_periods(periods: list[dict], db_lasts: dict[str, int]) -> list[dict]:
         if end is None:
             continue
         db = _db_last(db_lasts, code)
+        fixed = _revised_from(revised or {}, code)
         if db is None:
             out.append(p)
+        elif fixed is not None:
+            out.append({**p, "STRT_PRD_DE": str(fixed)})
         elif end > db:
             out.append({**p, "STRT_PRD_DE": next_period(code, db)})
     return out
+
+
+# ---- 값만 고친 시점 -------------------------------------------------------------------------
+# KOSIS는 새 시점 없이 값만 고치기도 한다 (잠정치 → 확정치 등). 메타데이터 NCD가 시점마다
+# 자료를 보낸 날(SEND_DE)을 주는데, 새로 낼 때 표 전체를 다시 보내 1970년 자료까지 같은 날로
+# 찍히기도 한다 (DT_1B26001: 모든 달이 2026-10-15). 그래서 최근 REVISE_LAST개 시점만 보고,
+# 그중 우리가 적재한 날 뒤에 보낸 시점부터 다시 받는다. 바뀐 값은 덧붙일 때 이력에 남는다
+REVISE_LAST = 3
+
+
+def revised_periods(
+    sent: list[dict], db_lasts: dict[str, int], loaded_at: datetime, last_n: int = REVISE_LAST
+) -> dict[str, int]:
+    """DB에 있는 최근 시점 중 적재한 날 뒤에 KOSIS가 다시 보낸 시점 → {주기 코드: 다시 받을 첫 시점}
+    sent: 메타데이터 NCD 행 (PRD_SE, PRD_DE, SEND_DE).
+    DB에 아직 없는 새 시점은 needs_update가 본다"""
+    loaded = loaded_at.astimezone(KST).date()
+    by_code: dict[str, list[tuple[int, date]]] = {}
+    for r in sent:
+        code = period_code(r.get("PRD_SE", ""))
+        period = db_period(code, r.get("PRD_DE", "")) if code else None
+        db = _db_last(db_lasts, code) if code else None
+        if period is None or db is None or period > db:
+            continue
+        try:
+            sent_on = date.fromisoformat(str(r.get("SEND_DE", ""))[:10])
+        except ValueError:
+            continue
+        by_code.setdefault(code, []).append((period, sent_on))
+    out = {}
+    for code, rows in by_code.items():
+        changed = [period for period, on in sorted(rows)[-last_n:] if on > loaded]
+        if changed:
+            out[code] = min(changed)
+    return out
+
+
+def _revised_from(revised: dict[str, int], code: str) -> int | None:
+    """연 단위 주기(A·F)는 같은 칸으로 본다 (_db_last와 같은 규칙)"""
+    keys = YEARLY if code in YEARLY else (code,)
+    found = [revised[k] for k in keys if k in revised]
+    return min(found) if found else None
 
 
 def seconds_until_next_run(now: datetime | None = None) -> float:
@@ -233,6 +285,25 @@ async def _kosis_periods(client, org_id: str, tbl_id: str) -> list[dict]:
     )
 
 
+async def kosis_sent(client, org_id: str, tbl_id: str) -> list[dict]:
+    """시점마다 KOSIS가 자료를 보낸 날 (메타데이터 NCD: PRD_SE, PRD_DE, SEND_DE)"""
+    from scripts.collect_kosis import call
+
+    return await call(
+        client,
+        "/statisticsData.do",
+        {"method": "getMeta", "orgId": org_id, "tblId": tbl_id, "type": "NCD"},
+        pause=0,
+    )
+
+
+def loaded_at(pg: psycopg.Connection, tbl_key: int) -> datetime | None:
+    """그 표를 마지막으로 적재한 시각 (덧붙이기도 고친다)"""
+    row = pg.execute("select loaded_at from raw.stat_load where tbl_key = %s", [tbl_key])
+    found = row.fetchone()
+    return found[0] if found else None
+
+
 def last_update_done(pg: psycopg.Connection, tbl_id: str) -> datetime | None:
     """그 표의 갱신 작업이 마지막으로 끝난 시각"""
     return pg.execute(
@@ -254,6 +325,25 @@ def already_tried(tried: dict | None, kosis: dict[str, int], done_at: datetime |
     if not tried or tried.get("kosis") != kosis or done_at is None:
         return False
     return done_at >= datetime.fromisoformat(tried["queued_at"])
+
+
+async def _check_revised(client, limiter, org_id, tbl_id, tbl_key, lasts) -> dict[str, int]:
+    """새 시점이 없는 표: 최근 시점을 KOSIS가 적재 뒤에 다시 보냈는가. 확인하지 못하면 빈 dict
+    (값 수정 확인은 덤이라 실패해도 그 표를 실패로 세지 않는다)"""
+    from app.services.kosis_client import mask_key
+
+    when = await asyncio.to_thread(_with_pg, loaded_at, tbl_key)
+    if when is None or not lasts:
+        return {}
+    await limiter.wait()
+    try:
+        sent = await kosis_sent(client, org_id, tbl_id)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "%s: 값 수정 확인 실패 %s", tbl_id, mask_key(f"{type(e).__name__}: {e}")[:200]
+        )
+        return {}
+    return revised_periods(sent, lasts, when)
 
 
 async def check_all(
@@ -284,6 +374,14 @@ async def check_all(
         newer = needs_update(periods, lasts)
         if not newer:
             tried.pop(tbl_id, None)  # 다 받았다
+            revised = await _check_revised(client, limiter, org_id, tbl_id, tbl_key, lasts)
+            if revised:
+                changes = {
+                    code: {"db": lasts.get(code), "revised_from": p} for code, p in revised.items()
+                }
+                updated.append({"tbl_id": tbl_id, "org_id": org_id, "periods": changes})
+                text = ", ".join(f"{code} {p}부터" for code, p in revised.items())
+                logger.info("%s: KOSIS가 값을 다시 보낸 시점 %s", tbl_id, text)
         elif already_tried(
             tried.get(tbl_id),
             {code: k for code, (_, k) in newer.items()},
@@ -305,8 +403,9 @@ async def check_all(
         pairs = [(u["tbl_id"], u["org_id"]) for u in updated]
         await asyncio.to_thread(_with_pg, enqueue_updates, pairs)
         for u in updated:
-            kosis = {code: v["kosis"] for code, v in u["periods"].items()}
-            tried[u["tbl_id"]] = {"kosis": kosis, "queued_at": datetime.now(KST).isoformat()}
+            kosis = {code: v["kosis"] for code, v in u["periods"].items() if "kosis" in v}
+            if kosis:  # 새 시점을 받으러 넣은 표만 (값을 고친 표는 적재 시각으로 다시 막힌다)
+                tried[u["tbl_id"]] = {"kosis": kosis, "queued_at": datetime.now(KST).isoformat()}
     if not dry_run:
         tried_path.parent.mkdir(parents=True, exist_ok=True)
         tried_path.write_text(json.dumps(tried, ensure_ascii=False, indent=2), encoding="utf-8")

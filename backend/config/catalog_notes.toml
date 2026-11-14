@@ -623,6 +623,47 @@ national = false
 desc = "전입 − 전출 (양수면 순유입, 음수면 순유출). 가장 많이 빠져나간 곳은 낮은 순"
 sources = [{ table = "DT_1B26002", item_id = "T60", level = "시군구", filters = { c2_id = "0", c3_id = "000" } }]
 
+# 이동자 수 (DT_1B26001 시군구별 이동자수). "지역 밖"이 지역 단위마다 달라 수준별로 항목을 고른다.
+#   시도: 밖 = 시도간 (T50 전출, T40 전입)
+#   시군구: 밖 = 시도내 다른 시군구 (T32 전출, T31 전입) + 다른 시도 (T50, T40)
+#   전국: 전국 안의 모든 이동 (T20 총전출 = T10 총전입)
+#   지역 안 이사까지 = 총전출 (T20 = 지역 안 이동 + 밖으로 나간 이동)
+
+[[indicators]]
+name = "전출자 수"
+aliases = ["전출자", "전출자수", "전출 인구", "전출 인원", "전출 건수", "전출", "이사 나간 사람", "나간 사람 수", "다른 지역으로 이사한 사람"]
+unit = "명"
+method = "lookup"
+desc = "그 지역 밖으로 이사해 나간 사람 수 (지역 안 이사는 뺌). 시군구는 다른 시군구·시도로 나간 사람"
+note = "시도는 다른 시도로, 시군구는 다른 시군구(같은 시도 포함)로 나간 사람. 지역 안에서 옮긴 사람은 빼고 셈"
+sources = [
+  { table = "DT_1B26001", item_id = "T20", level = "전국", by_sex = { "계" = { filters = { c2_id = "0" } }, "남" = { filters = { c2_id = "1" } }, "여" = { filters = { c2_id = "2" } } }, age_dim = "c3", age_total = "000" },
+  { table = "DT_1B26001", item_id = "T50", level = "시도", by_sex = { "계" = { filters = { c2_id = "0" } }, "남" = { filters = { c2_id = "1" } }, "여" = { filters = { c2_id = "2" } } }, age_dim = "c3", age_total = "000" },
+  { table = "DT_1B26001", item_id = ["T32", "T50"], level = "시군구", by_sex = { "계" = { filters = { c2_id = "0" } }, "남" = { filters = { c2_id = "1" } }, "여" = { filters = { c2_id = "2" } } }, age_dim = "c3", age_total = "000" },
+]
+
+[[indicators]]
+name = "전입자 수"
+aliases = ["전입자", "전입자수", "전입 인구", "전입 인원", "전입 건수", "전입", "이사 온 사람 수", "들어온 사람 수", "다른 지역에서 이사 온 사람"]
+unit = "명"
+method = "lookup"
+desc = "다른 지역에서 그 지역으로 이사 온 사람 수 (지역 안 이사는 뺌)"
+note = "시도는 다른 시도에서, 시군구는 다른 시군구(같은 시도 포함)에서 온 사람. 지역 안에서 옮긴 사람은 빼고 셈"
+sources = [
+  { table = "DT_1B26001", item_id = "T10", level = "전국", by_sex = { "계" = { filters = { c2_id = "0" } }, "남" = { filters = { c2_id = "1" } }, "여" = { filters = { c2_id = "2" } } }, age_dim = "c3", age_total = "000" },
+  { table = "DT_1B26001", item_id = "T40", level = "시도", by_sex = { "계" = { filters = { c2_id = "0" } }, "남" = { filters = { c2_id = "1" } }, "여" = { filters = { c2_id = "2" } } }, age_dim = "c3", age_total = "000" },
+  { table = "DT_1B26001", item_id = ["T31", "T40"], level = "시군구", by_sex = { "계" = { filters = { c2_id = "0" } }, "남" = { filters = { c2_id = "1" } }, "여" = { filters = { c2_id = "2" } } }, age_dim = "c3", age_total = "000" },
+]
+
+[[indicators]]
+name = "이동자 수"
+aliases = ["이동자", "이동자수", "인구 이동", "인구이동", "이사한 사람 수", "이사 건수", "이사한 건수", "이사 횟수", "이사 간 사람"]
+unit = "명"
+method = "lookup"
+desc = "그 지역에서 이사한 사람 수. 지역 안에서 옮긴 사람과 밖으로 나간 사람을 모두 셈 (총전출)"
+note = "지역 안 이사(같은 시군구·시도 안)와 지역 밖으로 나간 이사를 모두 포함한 총전출 기준"
+sources = [{ table = "DT_1B26001", item_id = "T20", level = "시군구", by_sex = { "계" = { filters = { c2_id = "0" } }, "남" = { filters = { c2_id = "1" } }, "여" = { filters = { c2_id = "2" } } }, age_dim = "c3", age_total = "000" }]
+
 [[indicators]]
 name = "전입 사유 구성"
 aliases = ["이사 온 이유", "이사 온 사유", "전입 사유", "이사 이유", "이사한 이유", "일자리 때문에", "이사 온 사람 중", "이주 사유"]

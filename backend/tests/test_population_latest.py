@@ -76,6 +76,14 @@ def test_next_year_is_answered_with_latest_month(october: dict) -> None:
     assert qa.summary(r).startswith(f"{year}년 10월 말 서울특별시의 총인구는 9,274,392명")
 
 
+def test_latest_month_keeps_region_validity_check(october: dict) -> None:
+    # 최신 달로 답하는 해까지 물어도, 그 지역이 없던 해부터 물으면 안내한다
+    # (2023년에 대구로 편입된 군위군을 2020년부터 물음)
+    year = october["year"]
+    r = indicators.trend("총인구", "대구 군위군", 2020, year)
+    assert r["status"] == "region_not_in_year" and "2023년부터" in r["reason"]
+
+
 def test_without_latest_month_projection_is_kept() -> None:
     year = indicators._data_years()[1] + 1
     r = indicators.value("총인구", "서울", year)  # conftest: 최신 달을 받지 못함
@@ -97,9 +105,27 @@ def test_recent_question_uses_latest_month(october: dict) -> None:
 def test_rank_with_latest_month(october: dict) -> None:
     r = indicators.rank("총인구", october["year"], "시도", top=3)
     assert r["status"] == "ok" and r["as_of"] == f"{october['year']}년 10월 말"
-    assert r["total_regions"] >= 17 and r["ranking"][0]["value"] == 9274392
+    # 최신 달 순위는 그해 지역으로: 2026년은 광주·전남이 전남광주통합특별시(12)로 합쳐져 16곳
+    # (예전에는 연간 마지막 해의 지역 29·46으로 찾아 최신 달 자료에 없어 조용히 빠졌다)
+    assert r["total_regions"] == 16 and r["ranking"][0]["value"] == 9274392
+    every = indicators.rank("총인구", october["year"], "시도")["ranking"]
+    assert "전남광주통합특별시" in [i["region"] for i in every]
     assert qa.summary(r).startswith(f"{october['year']}년 10월 말")
     assert charts.build(r)["title"].startswith(f"{october['year']}년 10월 말 총인구")
+
+
+def test_latest_month_rank_notes_regions_it_could_not_get(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 최신 달 자료를 일부 지역만 받으면 빠진 지역을 알린다 (전체 순위처럼 보이지 않게)
+    hi = indicators._data_years()[1]
+    comp = population_latest._parse([{**r, "PRD_DE": f"{hi + 1}10"} for r in ROWS])
+    monkeypatch.setattr(
+        population_latest,
+        "components_many",
+        lambda codes, sex="계", period=None: {c: comp for c in codes if c != "11"},
+    )
+    r = indicators.rank("총인구", hi + 1, "시도")
+    assert r["status"] == "ok" and "서울특별시" not in [i["region"] for i in r["ranking"]]
+    assert any("순위에서 빠졌습니다" in n and "서울특별시" in n for n in r["notes"])
 
 
 def test_composition_with_latest_month(october: dict) -> None:

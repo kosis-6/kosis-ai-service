@@ -705,18 +705,26 @@ def test_local_region_is_asked_before_ai_and_not_inherited(talk: Talk):
     assert talk.store[talk.sid][0]["pending"] is None
 
 
-@pytest.mark.parametrize(
-    "reply,fragment", [("포함해줘", "지역 내 이동과"), ("2번", "나간 전출 이동자수")]
-)
-def test_movement_scope_is_sent_to_search_not_net_migration(talk: Talk, reply, fragment):
+@pytest.mark.parametrize("reply,indicator", [("포함해줘", "이동자 수"), ("2번", "전출자 수")])
+def test_movement_scope_answers_with_matching_indicator_not_net_migration(
+    talk: Talk, reply, indicator
+):
+    talk.parsed = {**BASE, "indicator": "순이동", "regions": ["부산"]}  # HCX가 순이동으로 읽어도
     res = talk.say("2024년 부산에서 이사한 건수는?")
     assert res["clarification"]["kind"] == "move_scope"
     assert talk.asked == talk.extracted == []
     res = talk.say(reply)
-    assert res["status"] == "tables" and fragment in talk.searched[-1][0]
-    assert "2024년 부산" in talk.searched[-1][0]
-    assert talk.asked == talk.answered == []
-    assert res["question"] == talk.searched[-1][0]
+    assert res["status"] == "ok" and res["parsed"]["indicator"] == indicator
+    assert talk.asked == ["2024년 부산에서 이사한 건수는?"] and talk.searched == []
+
+
+def test_movement_falls_back_to_tables_when_not_computable(talk: Talk):
+    talk.parsed = {**BASE, "regions": ["부산"]}
+    talk.fail_when = lambda parsed: parsed.get("indicator") == "전출자 수"
+    talk.say("2024년 부산에서 이사한 건수는?")
+    res = talk.say("2번")
+    assert res["status"] == "tables" and "나간 전출 이동자수" in talk.searched[-1][0]
+    assert "통계표" in res["notice"]
 
 
 def test_movement_scope_button_and_local_then_scope(talk: Talk):
@@ -731,9 +739,8 @@ def test_movement_scope_button_and_local_then_scope(talk: Talk):
             "clarification_value": "지역 안에서의 이사도 포함",
         },
     )
-    assert res["status"] == "tables"
-    assert "2024년 부산에서" in talk.searched[-1][0]
-    assert "모두 포함" in talk.searched[-1][0]
+    assert res["status"] == "ok" and res["parsed"]["indicator"] == "이동자 수"
+    assert talk.asked[-1] == "2024년 부산에서 이사한 건수"
 
 
 def test_uncertain_clarification_reply_keeps_question_but_new_question_cancels(talk: Talk):
@@ -751,7 +758,7 @@ def test_clarification_is_asked_at_most_twice_then_defaults(talk: Talk):
     talk.say("부산에서 이사한 건수")
     assert talk.say("응")["status"] == "clarify_question"
     res = talk.say("모르겠어")
-    assert res["status"] == "tables" and "나간 전출 이동자수" in talk.searched[-1][0]
+    assert res["status"] == "ok" and res["parsed"]["indicator"] == "전출자 수"
     assert "알아듣지 못해" in res["notice"]
     assert talk.store[talk.sid][0]["pending"] is None
     # 지역: 두 번까지 묻고, 그래도 모르면 답하지 않고 다시 질문하라고 알린다
@@ -759,16 +766,16 @@ def test_clarification_is_asked_at_most_twice_then_defaults(talk: Talk):
     assert talk.say("모르겠어")["status"] == "clarify_question"
     res = talk.say("글쎄")
     assert res["status"] == "unknown_region" and "다시 질문" in res["answer"]
-    assert talk.asked == [] and talk.store[talk.sid][0]["pending"] is None
+    assert talk.asked == ["부산에서 이사한 건수"] and talk.store[talk.sid][0]["pending"] is None
 
 
-def test_stated_scope_goes_to_tables_not_net_migration(talk: Talk):
+def test_stated_scope_answers_without_asking_not_net_migration(talk: Talk):
+    talk.parsed = {**BASE, "indicator": "순이동", "regions": ["수원"]}
     res = talk.say("수원에서 이사 나간 사람 몇 명이야?")
-    assert res["status"] == "tables" and talk.asked == []  # 순이동으로 계산하지 않는다
-    assert "나간 전출 이동자수" in talk.searched[-1][0]
+    assert res["status"] == "ok" and res["parsed"]["indicator"] == "전출자 수"
     res = talk.say("전국에서 이사한 사람 수")
-    assert res["status"] == "tables" and talk.asked == []
-    assert talk.searched[-1][0] == "전국에서 이사한 사람 수"
+    assert res["status"] == "ok" and res["parsed"]["indicator"] == "이동자 수"
+    assert talk.searched == []
 
 
 def test_region_reply_without_suffix_and_ambiguous_name(talk: Talk):
