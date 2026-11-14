@@ -706,7 +706,7 @@ def test_local_region_is_asked_before_ai_and_not_inherited(talk: Talk):
 
 
 @pytest.mark.parametrize(
-    "reply,fragment", [("포함해줘", "지역 내 이동과"), ("2번", "지역 내 이동 제외")]
+    "reply,fragment", [("포함해줘", "지역 내 이동과"), ("2번", "나간 전출 이동자수")]
 )
 def test_movement_scope_is_sent_to_search_not_net_migration(talk: Talk, reply, fragment):
     res = talk.say("2024년 부산에서 이사한 건수는?")
@@ -744,6 +744,43 @@ def test_uncertain_clarification_reply_keeps_question_but_new_question_cancels(t
     res = talk.say("2024년 서울 합계출산율 알려줘")
     assert res["status"] == "ok" and talk.asked == ["2024년 서울 합계출산율 알려줘"]
     assert talk.store[talk.sid][0]["pending"] is None
+
+
+def test_clarification_is_asked_at_most_twice_then_defaults(talk: Talk):
+    # 이사 범위: 두 번까지 묻고, 그래도 모르면 '밖으로 나간 이사만'으로 찾고 알린다
+    talk.say("부산에서 이사한 건수")
+    assert talk.say("응")["status"] == "clarify_question"
+    res = talk.say("모르겠어")
+    assert res["status"] == "tables" and "나간 전출 이동자수" in talk.searched[-1][0]
+    assert "알아듣지 못해" in res["notice"]
+    assert talk.store[talk.sid][0]["pending"] is None
+    # 지역: 두 번까지 묻고, 그래도 모르면 답하지 않고 다시 질문하라고 알린다
+    talk.say("우리 동네 출생아 수")
+    assert talk.say("모르겠어")["status"] == "clarify_question"
+    res = talk.say("글쎄")
+    assert res["status"] == "unknown_region" and "다시 질문" in res["answer"]
+    assert talk.asked == [] and talk.store[talk.sid][0]["pending"] is None
+
+
+def test_stated_scope_goes_to_tables_not_net_migration(talk: Talk):
+    res = talk.say("수원에서 이사 나간 사람 몇 명이야?")
+    assert res["status"] == "tables" and talk.asked == []  # 순이동으로 계산하지 않는다
+    assert "나간 전출 이동자수" in talk.searched[-1][0]
+    res = talk.say("전국에서 이사한 사람 수")
+    assert res["status"] == "tables" and talk.asked == []
+    assert talk.searched[-1][0] == "전국에서 이사한 사람 수"
+
+
+def test_region_reply_without_suffix_and_ambiguous_name(talk: Talk):
+    talk.say("2024년 우리 동네 출생아 수")
+    talk.parsed = {**BASE, "regions": ["경기도 수원시"]}
+    res = talk.say("수원")
+    assert res["request_type"] == "reply" and talk.asked[-1] == "2024년 경기도 수원시 출생아 수"
+    # 같은 이름이 여러 곳이면 후보를 선택지로 다시 묻는다
+    talk.say("2024년 우리 동네 출생아 수")
+    res = talk.say("고성")
+    assert res["status"] == "clarify_question"
+    assert {"강원특별자치도 고성군", "경상남도 고성군"} <= set(res["clarification"]["options"])
 
 
 def test_scope_pending_does_not_swallow_unsupported_new_question(talk: Talk):

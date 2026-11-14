@@ -40,6 +40,8 @@ def test_outgoing_moves_ask_scope(question):
         "수원에서 이사한 건수에 지역 내 이동도 포함해줘",
         "수원의 순이동은?",
         "수원 전출 건수는?",
+        "수원에서 이사 나간 사람 몇 명이야?",
+        "전국에서 이사한 사람 수",
     ],
 )
 def test_explicit_or_different_movement_question_is_not_overridden(question):
@@ -55,9 +57,28 @@ def test_explicit_or_different_movement_question_is_not_overridden(question):
         ("2번", "exclude"),
         ("제외이요", "exclude"),
         (c.MOVE_OPTIONS[1], "exclude"),
-        ("포함하지 마", None),
-        ("1번 말고 2번", None),
+        ("포함하지 마", "exclude"),
+        ("1번 말고 2번", "exclude"),
         ("2024년 서울 출생아 수", None),
+        # 리뷰에서 받은 자유로운 답 (핵심 낱말·번호·서수로 읽는다)
+        ("밖으로 나간 사람만", "exclude"),
+        ("나간 것만", "exclude"),
+        ("밖으로만", "exclude"),
+        ("아니 밖으로만", "exclude"),
+        ("빼고", "exclude"),
+        ("두 번째", "exclude"),
+        ("안에서 옮긴 것도 포함", "include"),
+        ("다 포함", "include"),
+        ("응 포함해줘", "include"),
+        ("전부", "include"),
+        ("모두요", "include"),
+        ("첫 번째", "include"),
+        ("둘 다요", "include"),
+        # 뜻을 알 수 없거나 서로 어긋나면 짐작하지 않는다
+        ("응", None),
+        ("모르겠어", None),
+        ("수원", None),
+        ("밖으로 나간 것도 포함", None),
     ],
 )
 def test_scope_reply_does_not_guess(reply, scope):
@@ -77,4 +98,27 @@ def test_selected_scope_is_preserved_in_search_question():
     original = "2024년 수원에서 이사한 건수"
     assert c.merge_scope(original, "include").startswith(original)
     assert "지역 내 이동과 지역 밖" in c.merge_scope(original, "include")
-    assert "지역 내 이동 제외" in c.merge_scope(original, "exclude")
+    assert "나간 전출 이동자수" in c.merge_scope(original, "exclude")
+
+
+@pytest.mark.parametrize(
+    "reply,name",
+    [("수원", "수원"), ("수원이요", "수원"), ("강남요", "강남"), ("해운대", "해운대"), ("", None)],
+)
+def test_bare_region_keeps_only_the_name(reply, name):
+    assert c.bare_region(reply) == name
+
+
+@pytest.mark.parametrize(
+    "question,scope",
+    [
+        ("수원에서 이사 나간 사람 몇 명이야?", "exclude"),
+        ("부산에서 이사 떠난 사람 수", "exclude"),
+        ("전국에서 이사한 사람 수", "nation"),
+        ("수원에서 이사한 사람 몇 명이야?", None),  # 범위를 안 말함 → 되묻는다
+        ("수원에서 이사한 이유는?", None),  # 다른 지표
+    ],
+)
+def test_stated_scope_skips_asking(question, scope):
+    assert c.stated_scope(question) == scope
+    assert c.merge_scope(question, "nation") == question
