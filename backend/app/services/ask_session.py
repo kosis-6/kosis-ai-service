@@ -50,6 +50,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.prompts.qa import FOLLOW_SYSTEM
 from app.services import (
+    answer_summary,
     ask_followup,
     charts,
     indicators,
@@ -544,8 +545,16 @@ def chart_with_view(chart: dict | None, view: str) -> dict | None:
 
 
 def lead(answer: str) -> str:
-    """답변의 첫 문단 (핵심 문장). 요약 요청에는 이 문장을 다시 준다: 새 숫자를 만들지 않는다"""
+    """답변의 첫 문단 (핵심 문장). 턴 기록과 HCX에 보여 줄 직전 답에 쓴다"""
     return answer.split("\n\n")[0].strip()
+
+
+def summary_text(last: dict, question: str) -> str:
+    """ "요약해줘"의 답: 직전 답의 요약 (answer_summary.py). "한 줄로"면 핵심 문장만.
+    요약이 없는 답(답변 불가, 통계표 안내)은 답변의 첫 문단을 다시 준다"""
+    if last.get("summary"):
+        return answer_summary.text(last["summary"], answer_summary.one_line(question))
+    return lead(last["answer"])
 
 
 def state_text(conditions: dict, sources: dict) -> str:
@@ -636,6 +645,7 @@ def _reuse(state: dict, answer: str, chart: dict | None, request_type: str) -> d
     """직전 답을 다시 쓰는 응답 (차트 바꾸기·요약). 계산하지 않는다"""
     last = state["last"]
     return {
+        "summary": last.get("summary"),
         "status": last.get("status"),
         "answer": answer,
         "parsed": state["conditions"],
@@ -920,7 +930,7 @@ async def _turn(
     if has_last and (delta is None or delta["request_type"] == SUMMARY):
         last = state["last"]
         return (
-            _reuse(state, lead(last["answer"]), last.get("chart"), SUMMARY),
+            _reuse(state, summary_text(last, question), last.get("chart"), SUMMARY),
             state["sources"],
             None,
         )
@@ -991,6 +1001,7 @@ def next_state(state: dict | None, question: str, res: dict, sources: dict) -> d
             "answer": res.get("answer") or "",
             "sources": res.get("sources") or [],
             "chart": res.get("chart"),
+            "summary": res.get("summary"),
         },
         "pending": pending_of(res.get("result") or {}, asked),
         "search_session": prev.get("search_session"),
@@ -1027,6 +1038,15 @@ async def _attach_tables(res: dict, state: dict | None, question: str, user_id: 
         res["tables"] = {"status": "ok", "recommendations": cards}
 
 
+def _summary(result: dict | None) -> dict | None:
+    """답의 요약. 요약을 만들다 실패해도 답은 그대로 준다"""
+    try:
+        return answer_summary.build(result)
+    except Exception:
+        logger.exception("답변 요약 실패")
+        return None
+
+
 async def handle(
     session_id: str | None,
     question: str,
@@ -1040,6 +1060,8 @@ async def handle(
         state, expired = await _load(sid)
         res, sources, notice = await _turn(state, question, selections, user_id)
         await _attach_tables(res, state, question, user_id)
+        if "summary" not in res:  # 직전 답을 다시 쓴 응답(_reuse)은 그 요약을 이미 들고 있다
+            res["summary"] = _summary(res.get("result"))
         if not res.get("chart") and (reason := charts.omission_reason(res.get("result"))):
             notice = " ".join(filter(None, [notice, reason]))
         if expired:

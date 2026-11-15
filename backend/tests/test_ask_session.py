@@ -264,6 +264,13 @@ class Talk:
             years = range(parsed["start_year"], parsed["end_year"] + 1)
             result = {"status": "ok", "series": [{"year": y, "value": y - 2000} for y in years]}
             result.update(indicator=parsed["indicator"], region=regions[0], unit="명")
+            first, last = years[0], years[-1]
+            result["change"] = {
+                "from_year": first,
+                "to_year": last,
+                "diff": last - first,
+                "diff_unit": "명",
+            }
         else:
             result = {"status": "ok", "value": 1}
         text = f"{parsed.get('type')} {regions} {s.period_text(parsed)}"
@@ -368,11 +375,27 @@ def test_chart_and_summary_reuse_last_answer(talk: Talk) -> None:
     assert res["chart"]["rows"] == first["chart"]["rows"] and res["sources"] == first["sources"]
     assert talk.extracted == [] and talk.answered == []  # HCX도 계산도 부르지 않는다
     res = talk.say("요약해줘")
-    assert res["request_type"] == "summary" and res["answer"] == "trend ['부산'] 2020~2024년"
+    # 답변 문장을 되풀이하지 않고 직전 계산 결과의 요약으로 답한다 (answer_summary.py)
+    headline = "부산의 출생아 수는 2020~2024년에 4명 증가했습니다(20명 → 24명)."
+    assert res["request_type"] == "summary" and res["summary"] == first["summary"]
+    assert res["answer"].split("\n")[0] == headline == first["summary"]["headline"]
+    assert "\n\n" not in res["answer"]  # 화면은 첫 빈 줄 앞까지만 말풍선에 쓴다
+    assert talk.say("한 줄로 요약해줘")["answer"] == headline
+    assert talk.extracted == [] and talk.answered == []  # 요약도 HCX·계산을 부르지 않는다
     # 조건은 그대로라 다음 변경이 이어진다
     res = talk.say("2022년만", request_type="change", changes={"year": 2022})
     assert res["parsed"]["regions"] == ["부산"]
-    assert [t[1] for t in talk.turns] == ["new", "chart", "summary", "change"]
+    assert [t[1] for t in talk.turns] == ["new", "chart", "summary", "summary", "change"]
+
+
+def test_summary_of_an_answer_without_numbers_repeats_its_lead(talk: Talk) -> None:
+    talk.say("부산 출생아 최근 5년 보여 줘")
+    talk.fail_when = lambda parsed: True
+    res = talk.say("2022년만", request_type="change", changes={"year": 2022})
+    assert res["status"] == "out_of_range" and res["summary"] is None
+    res = talk.say("요약해줘")
+    assert res["request_type"] == "summary" and res["summary"] is None
+    assert res["answer"] == "value ['부산'] 2022년"
 
 
 def test_chart_that_cannot_be_drawn_is_asked_back(talk: Talk) -> None:

@@ -69,6 +69,16 @@ class Applied(BaseModel):
     )
 
 
+class Summary(BaseModel):
+    """답의 요약 (app/services/answer_summary.py). 계산 결과에서 코드로 뽑는다"""
+
+    headline: str = Field(description="핵심 한 문장")
+    points: list[str] = Field(default_factory=list, description="덧붙일 사실 (최대 4개)")
+    cautions: list[str] = Field(
+        default_factory=list, description="함께 알릴 주의 (추계값, 인과 판단 안 함 등. 최대 2개)"
+    )
+
+
 class QuestionClarification(BaseModel):
     kind: Literal["local_region", "move_scope"]
     prompt: str
@@ -88,6 +98,11 @@ class AskResponse(BaseModel):
     sources: list[Source] = Field(description="답변에 쓴 통계표")
     chart: Chart | None = Field(
         default=None, description="그릴 차트. 값 하나짜리 답이나 답변 불가면 null"
+    )
+    summary: Summary | None = Field(
+        default=None,
+        description="답의 요약. 수치로 답하지 못했으면 null."
+        " '요약해줘'라고 하면 이 내용을 answer로 준다 ('한 줄로'면 headline만)",
     )
     session_id: str | None = Field(
         default=None, description="대화 id. 다음 요청에 함께 보내면 조건을 이어 간다 (1시간)"
