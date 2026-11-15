@@ -46,3 +46,31 @@ it("수치 계산 결과에는 보고서 보기를 표시하고 재사용 응답
   expect(render(data)).toContain("보고서 보기");
   expect(render({ ...data, result: { status: "ok", reused: true } })).not.toContain("보고서 보기");
 });
+
+describe("직전 답을 다시 쓰는 응답", () => {
+  const chart = { type: "line" as const, title: "출생아 수", unit: "명", category: "연도", rows: [] };
+  const answer = "핵심 문장입니다.\n\n- 2020년: 1명\n출처: 통계청 (기준)";
+  const data: AskResponse = {
+    status: "ok", answer, parsed: {}, sources: [], chart, result: { status: "ok", reused: true },
+  };
+
+  it("더 자세히(detail)는 차트가 있어도 수치와 계산식을 펼친다", () => {
+    expect(render(data)).not.toContain("open=\"\"");
+    expect(render({ ...data, request_type: "detail" })).toContain("open=\"\"");
+  });
+
+  it("출처(source)는 말풍선의 통계표 주소를 링크로 만든다", () => {
+    const html = render({
+      ...data, chart: null, request_type: "source",
+      answer: "직전 답은 아래 통계표의 수치로 만들었습니다.\n통계표: https://kosis.kr/statHtml/statHtml.do?orgId=101&tblId=DT_X",
+    });
+    expect(html).toContain("href=\"https://kosis.kr/statHtml/statHtml.do?orgId=101&amp;tblId=DT_X\"");
+    expect(html).not.toContain("수치와 계산식 보기");
+  });
+
+  it("인사(chat)는 말풍선만 보여 준다", () => {
+    const html = render({ ...data, status: "chat", request_type: "chat", chart: null, answer: "네. 이어서 질문해 주세요." });
+    expect(html).toContain("네. 이어서 질문해 주세요.");
+    expect(html).not.toContain("보고서 보기");
+  });
+});

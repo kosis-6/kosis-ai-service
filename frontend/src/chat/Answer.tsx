@@ -157,7 +157,10 @@ export function Answer({ data, busy, onSend, onOthers, onAskAgain }: Props) {
   return (
     <>
       {notice}
-      <div className="bubble">{lead}</div>
+      {/* 출처를 물은 답(request_type "source")은 말풍선에 통계표 주소가 있어 링크로 만든다 */}
+      <div className="bubble">
+        <Linked text={lead} />
+      </div>
       <Conditions applied={data.applied ?? []} />
       {canReport(data) && <ReportButton data={data} />}
       {data.chart && (
@@ -166,8 +169,8 @@ export function Answer({ data, busy, onSend, onOthers, onAskAgain }: Props) {
         </Suspense>
       )}
       {detail && data.request_type !== "chart" && data.request_type !== "summary" && (
-        // 차트가 없으면(값 하나) 계산식이 답의 일부라 펼쳐 둔다
-        <details className="answer-detail" open={!data.chart}>
+        // 차트가 없으면(값 하나) 계산식이 답의 일부라 펼쳐 둔다. "더 자세히"라고 했을 때도 펼친다
+        <details className="answer-detail" open={!data.chart || data.request_type === "detail"}>
           <summary>수치와 계산식 보기</summary>
           <p>
             <Linked text={detail} />
