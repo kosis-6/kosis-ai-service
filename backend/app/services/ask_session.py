@@ -69,6 +69,7 @@ RECENT = 10  # 세션에 남기는 최근 사용자 말 수
 REPLY_MAX_CHARS = 25  # 되묻기 답은 이보다 짧다 (길면 새 질문)
 FOLLOW_MAX_TOKENS = 512  # 변경 추출 응답의 최대 길이
 
+DETAIL = "detail"  # 직전 답을 자세히 (문장 + 수치 목록 그대로)
 NEW, CHANGE, CHART, SUMMARY, REPLY, UNCLEAR = (
     "new",
     "change",
@@ -553,6 +554,19 @@ def lead(answer: str) -> str:
     return answer.split("\n\n")[0].strip()
 
 
+# 직전 답을 더 자세히 보여 달라는 말. HCX는 이 말을 요약 요청으로 읽는다 ("더 자세히 설명해줘")
+DETAIL_REQUEST = re.compile(r"자세히|자세하게|상세히|상세하게|구체적으로|풀어서")
+
+
+def detail_request(question: str) -> bool:
+    """지표를 새로 말하지 않고 자세히만 보여 달라는 말 ("서울 출생아 수 자세히"는 질문이다)"""
+    return (
+        len(question.strip()) <= REPLY_MAX_CHARS
+        and bool(DETAIL_REQUEST.search(question))
+        and not indicators.find_in_text(question)
+    )
+
+
 def summary_text(last: dict, question: str) -> str:
     """ "요약해줘"의 답: 직전 답의 요약 (answer_summary.py). "한 줄로"면 핵심 문장만.
     요약이 없는 답(답변 불가, 통계표 안내)은 답변의 첫 문단을 다시 준다"""
@@ -916,6 +930,10 @@ async def _turn(
     has_last = bool((state.get("last") or {}).get("answer"))
     view = chart_request(question) if has_last else None
     delta = None
+    if has_last and view is None and detail_request(question):
+        # "요약하지 말고 더 자세히": 요약이 아니라 직전 답 전체(문장 + 수치 목록)를 다시 준다
+        last = state["last"]
+        return _reuse(state, last["answer"], last.get("chart"), DETAIL), state["sources"], None
     if view is None and not (has_last and summary_request(question)):
         trace: dict = {}
         delta = await extract(state, question, trace)
@@ -930,6 +948,8 @@ async def _turn(
             delta.update(request_type=CHANGE, unclear=None, changes={**changes, "year": year})
         if delta["unclear"]:
             return _unclear(state, delta["unclear"]), state["sources"], None
+        if delta["request_type"] == SUMMARY and delta["changes"]:
+            delta["request_type"] = CHANGE  # "2022년만 요약해줘": 조건을 바꾼 답이 먼저다
         if delta["request_type"] == CHANGE:
             conditions, changed = apply_changes(state["conditions"], delta["changes"])
             if changed:
@@ -992,7 +1012,7 @@ def next_state(state: dict | None, question: str, res: dict, sources: dict) -> d
             "recent": recent,
             "turn_no": turn_no,
         }
-    if res.get("request_type") in (CHART, SUMMARY):
+    if res.get("request_type") in (CHART, SUMMARY, DETAIL):
         last = {**prev["last"], "chart": res.get("chart") or prev["last"].get("chart")}
         return {**prev, "last": last, "recent": recent, "turn_no": turn_no}
     if res.get("request_type") == UNCLEAR:
@@ -1037,7 +1057,12 @@ def next_state(state: dict | None, question: str, res: dict, sources: dict) -> d
 
 async def _attach_tables(res: dict, state: dict | None, question: str, user_id: int | None) -> None:
     """답에 통계표를 붙인다 (table_guide.py). 표 찾기가 실패해도 수치 답은 그대로 준다"""
-    if res.get("tables") is not None or res.get("request_type") in (CHART, SUMMARY, UNCLEAR):
+    if res.get("tables") is not None or res.get("request_type") in (
+        CHART,
+        SUMMARY,
+        DETAIL,
+        UNCLEAR,
+    ):
         return
     asked = res.get("question") or question
     if res.get("status") in table_guide.SEARCH_INSTEAD:

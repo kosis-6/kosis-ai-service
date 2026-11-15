@@ -110,7 +110,7 @@ class AskResponse(BaseModel):
     request_type: str | None = Field(
         default=None,
         description="이번 말을 읽은 방식: new(새 질문) / change(조건 변경) / chart(차트 바꾸기)"
-        " / summary(요약) / reply(되묻기에 대한 답) / unclear(되물음)",
+        " / summary(요약) / detail(직전 답을 자세히) / reply(되묻기에 대한 답) / unclear(되물음)",
     )
     applied: list[Applied] = Field(default_factory=list, description="이번 답에 적용한 조건과 출처")
     notice: str | None = Field(

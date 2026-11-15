@@ -396,3 +396,4 @@ def test_text_has_no_blank_line_and_one_line_is_the_headline() -> None:
     assert text.split("\n") == [s["headline"], *(f"- {p}" for p in s["points"]), "※ 주의."]
     assert a.text(s, one_line=True) == s["headline"]
     assert a.one_line("한 줄로 요약해줘") and not a.one_line("요약해줘")
+    assert a.one_line("한마디로 하면?") and a.one_line("한 문장으로 말해줘")

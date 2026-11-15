@@ -898,6 +898,25 @@ def test_invalid_region_chart_has_notice_and_keeps_numeric_answer(talk: Talk, mo
     assert len(res["result"]["split"]) == 2
 
 
+def test_detail_request_repeats_the_whole_answer_not_the_summary(talk: Talk) -> None:
+    first = talk.say("부산 출생아 최근 5년 보여 줘")
+    for said in ("더 자세히 설명해줘", "요약하지 말고 더 자세히 알려줘"):
+        res = talk.say(said)
+        assert res["request_type"] == "detail" and res["answer"] == first["answer"]
+        assert res["chart"] == first["chart"] and res["sources"] == first["sources"]
+    assert talk.extracted == [] and talk.answered == []  # HCX도 계산도 부르지 않는다
+    assert not s.detail_request("서울 출생아 수 자세히 알려줘")  # 지표를 말하면 질문이다
+    res = talk.say("2022년만", request_type="change", changes={"year": 2022})
+    assert res["parsed"]["regions"] == ["부산"]  # 조건은 그대로 이어진다
+
+
+def test_summary_with_a_change_answers_the_changed_conditions(talk: Talk) -> None:
+    talk.say("부산 출생아 최근 5년 보여 줘")
+    res = talk.say("2022년만 요약해줘", request_type="summary", changes={"year": 2022})
+    assert res["request_type"] == "change" and res["parsed"]["year"] == 2022
+    assert len(talk.answered) == 1  # 앞 답의 요약이 아니라 바뀐 조건으로 다시 계산한다
+
+
 def test_summary_with_nothing_to_summarize_is_not_read_as_a_question(talk: Talk) -> None:
     res = talk.say("요약해줘")  # 첫 말
     assert res["status"] == "unclear" and res["request_type"] == "unclear"

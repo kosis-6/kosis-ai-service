@@ -28,7 +28,7 @@ MAX_POINTS = 4
 MAX_CAUTIONS = 2
 MAX_LISTED = 5  # 목록(높은 순, 합친 지역)은 이만큼까지만 적는다
 SENTENCE_END = re.compile(r"(?<=니다\.)\s+")
-ONE_LINE = re.compile(r"한\s*줄")
+ONE_LINE = re.compile(r"한\s*(줄|마디|문장)")
 
 
 def _sentences(text: str) -> list[str]:
@@ -314,7 +314,7 @@ def build(result: dict[str, Any] | None) -> dict[str, Any] | None:
 
 
 def one_line(question: str) -> bool:
-    """ "한 줄로 요약해줘"처럼 한 문장만 달라는 말인지"""
+    """ "한 줄로 요약해줘", "한마디로 하면?"처럼 한 문장만 달라는 말인지"""
     return bool(ONE_LINE.search(question))
 
 
