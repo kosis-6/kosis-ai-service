@@ -213,6 +213,39 @@ def test_compute_composition(monkeypatch: pytest.MonkeyPatch) -> None:
     assert calls == [("서울", 2025, "sex", "계")]
 
 
+def test_compute_composition_without_parts_answers_the_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """구성 항목이 없는 지표에 구성비를 물으면(대화 중 "구성비로 보여줘") 오류 대신 값으로 답한다.
+    전에는 "계산 중 오류가 났습니다: 'parts_dim'"이 그대로 나갔다"""
+    note = "나눠 볼 구성 항목이 없어 구성비 대신 값으로 답했습니다"
+    value = {"status": "ok", "indicator": "출생아 수", "region": "서울특별시", "year": 2024}
+    value["value"] = 1
+    spec = {"name": "출생아 수", "method": "lookup", "sources": [{"table": "T"}]}
+    monkeypatch.setattr(qa.indicators, "_data_years", lambda: (2008, 2025))
+    monkeypatch.setattr(qa.indicators, "spec", lambda name: spec)
+    monkeypatch.setattr(qa.indicators, "canonical_name", lambda term: term)
+    monkeypatch.setattr(qa.lookup, "needs_split", lambda sp, sex: False)
+    monkeypatch.setattr(qa.lookup, "value", lambda *args: dict(value))
+    asked = {"type": "composition", "indicator": "출생아 수", "regions": ["서울"], "year": 2024}
+    r = qa.compute(asked)
+    assert r["status"] == "ok" and r["value"] == 1
+    assert r["notes"] == [f"출생아 수는 {note}"]
+    assert "parts_dim" not in qa.summary(r) and f"※ 출생아 수는 {note}" in qa.render(r)
+
+    # 계산 지표(주민등록인구로 계산)도 같다. 전에는 "알 수 없는 질문 유형"이었다
+    spec = {"name": "고령인구 비율", "method": "population"}
+    monkeypatch.setattr(qa.indicators, "value", lambda *args: {**value, "notes": ["기존 주의"]})
+    r = qa.compute({**asked, "indicator": "고령인구 비율"})
+    assert r["status"] == "ok" and r["notes"] == ["기존 주의", f"고령인구 비율은 {note}"]
+    # 값도 못 구하면 그 사유 그대로
+    monkeypatch.setattr(qa.indicators, "value", lambda *args: {"status": "missing_data"})
+    assert qa.compute({**asked, "indicator": "고령인구 비율"}) == {
+        "status": "missing_data",
+        "asked": {"top": None},
+    }
+
+
 def test_summary_causal_prefix() -> None:
     r = {**TREND, "causal_question": "원인은 판단하지 않습니다."}
     assert qa.summary(r).startswith("원인은 판단하지 않습니다. 대구광역시의 총인구는")

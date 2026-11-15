@@ -860,8 +860,22 @@ def compute(q):
     return result
 
 
+def _value_instead(result, name):
+    """구성 항목이 없는 지표에 구성비를 물었을 때: 값으로 답하고 그 사실을 알린다.
+    첫 질문은 correct가 값 질문으로 고치지만, 대화 중 "구성비로 보여줘"는 correct를 거치지 않는다
+    (전에는 "계산 중 오류가 났습니다: 'parts_dim'"으로 답했다)"""
+    if result.get("status") == "ok":
+        note = f"{_josa(name, '은는')} 나눠 볼 구성 항목이 없어 구성비 대신 값으로 답했습니다"
+        for r in _leaves(result):
+            r["notes"] = [*(r.get("notes") or []), note]
+    return result
+
+
 def _compute_population(q, ind, kind, regions, year, sex, ages, hi):
     """계산 지표 (주민등록인구)"""
+    if kind == "composition":  # 총인구의 구성비는 compute가 먼저 처리한다
+        result = _compute_population(q, ind, "value", regions, year, sex, ages, hi)
+        return _value_instead(result, ind)
     if kind in ("value", "trend", "compare") and not regions:
         return {"status": "missing_region", "reason": "어느 지역인지 질문에 없습니다."}
     if (q.get("asked") or {}).get("latest") and kind in ("value", "compare", "rank"):
@@ -897,6 +911,9 @@ def _compute_population(q, ind, kind, regions, year, sex, ages, hi):
 
 def _compute_lookup(q, sp, kind, regions, year, sex, ages):
     """조회 지표 (facts). 남녀 값만 있는 표는 남녀를 따로, 연령 구간이 여럿이면 구간마다 계산"""
+    if kind == "composition" and not any(s.get("parts_dim") for s in sp["sources"]):
+        result = _compute_lookup(q, sp, "value", regions, year, sex, ages)
+        return _value_instead(result, sp["name"])
     if (q.get("asked") or {}).get("latest") and kind in LATEST_KINDS and not q.get("year"):
         # "최근 서울 출생아 수": HCX가 짐작한 연도 대신 그 표의 마지막 해
         last = _lookup_span(sp, regions[0] if regions else "전국", sex)[1]
