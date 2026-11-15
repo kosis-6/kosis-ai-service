@@ -1,6 +1,19 @@
 import pytest
 
+from app.core import stats_db
 from app.services import charts, qa
+
+
+@pytest.fixture(autouse=True)
+def no_stats_db(monkeypatch: pytest.MonkeyPatch) -> None:
+    """수치 계산을 대체한 단위 테스트는 적재 버전 확인도 실제 DB에 보내지 않는다."""
+
+    def no_db():
+        pytest.fail("QA 단위 테스트에서 실제 통계 DB를 호출했습니다")
+
+    monkeypatch.setattr(stats_db, "_engine", no_db)
+    monkeypatch.setattr(qa.lookup, "refresh_if_reloaded", lambda: None)
+
 
 # indicators.trend()가 돌려주는 형태 (DB 없이 테스트하기 위해 직접 만든 값)
 TREND = {
@@ -198,6 +211,39 @@ def test_compute_composition(monkeypatch: pytest.MonkeyPatch) -> None:
     assert qa.compute({"type": "composition", "regions": []})["status"] == "missing_region"
     qa.compute({"type": "composition", "indicator": "남녀 비중", "regions": ["서울"], "by": "sex"})
     assert calls == [("서울", 2025, "sex", "계")]
+
+
+def test_compute_composition_without_parts_answers_the_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """구성 항목이 없는 지표에 구성비를 물으면(대화 중 "구성비로 보여줘") 오류 대신 값으로 답한다.
+    전에는 "계산 중 오류가 났습니다: 'parts_dim'"이 그대로 나갔다"""
+    note = "나눠 볼 구성 항목이 없어 구성비 대신 값으로 답했습니다"
+    value = {"status": "ok", "indicator": "출생아 수", "region": "서울특별시", "year": 2024}
+    value["value"] = 1
+    spec = {"name": "출생아 수", "method": "lookup", "sources": [{"table": "T"}]}
+    monkeypatch.setattr(qa.indicators, "_data_years", lambda: (2008, 2025))
+    monkeypatch.setattr(qa.indicators, "spec", lambda name: spec)
+    monkeypatch.setattr(qa.indicators, "canonical_name", lambda term: term)
+    monkeypatch.setattr(qa.lookup, "needs_split", lambda sp, sex: False)
+    monkeypatch.setattr(qa.lookup, "value", lambda *args: dict(value))
+    asked = {"type": "composition", "indicator": "출생아 수", "regions": ["서울"], "year": 2024}
+    r = qa.compute(asked)
+    assert r["status"] == "ok" and r["value"] == 1
+    assert r["notes"] == [f"출생아 수는 {note}"]
+    assert "parts_dim" not in qa.summary(r) and f"※ 출생아 수는 {note}" in qa.render(r)
+
+    # 계산 지표(주민등록인구로 계산)도 같다. 전에는 "알 수 없는 질문 유형"이었다
+    spec = {"name": "고령인구 비율", "method": "population"}
+    monkeypatch.setattr(qa.indicators, "value", lambda *args: {**value, "notes": ["기존 주의"]})
+    r = qa.compute({**asked, "indicator": "고령인구 비율"})
+    assert r["status"] == "ok" and r["notes"] == ["기존 주의", f"고령인구 비율은 {note}"]
+    # 값도 못 구하면 그 사유 그대로
+    monkeypatch.setattr(qa.indicators, "value", lambda *args: {"status": "missing_data"})
+    assert qa.compute({**asked, "indicator": "고령인구 비율"}) == {
+        "status": "missing_data",
+        "asked": {"top": None},
+    }
 
 
 def test_summary_causal_prefix() -> None:
@@ -421,3 +467,31 @@ def test_compute_each_indicator(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "더 높습니다" not in text  # 다른 지표끼리 견주지 않는다
     assert [s["tbl_id"] for s in qa.sources(r)] == ["T_출생아 수", "T_사망자 수"]
     assert "혼인 건수은(는) 이 조건으로 답할 수 없어 뺐습니다" in qa.render(r)
+
+
+def test_compute_population_rank_passes_the_asked_region(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ "부산은 고령인구 비율이 몇 위야?": 계산 지표 순위도 물은 지역을 넘긴다.
+    전에는 조회 지표만 넘겨, 답에 부산 순위 없이 1위와 최하위만 나왔다"""
+    calls = []
+    target = {"region": "부산광역시", "rank": 2, "value": 24.5}
+    ranking = [
+        {"region": "전라남도", "value": 27.2, "rank": 1},
+        {"region": "부산광역시", "value": 24.5, "rank": 2},
+    ]
+    ranked = {"status": "ok", "indicator": "고령인구 비율", "unit": "%", "year": 2024}
+    ranked.update(level="시도", order="높은 순", total_regions=2, ranking=ranking, target=target)
+
+    def fake_rank(*args):
+        calls.append(args)
+        return dict(ranked)
+
+    monkeypatch.setattr(qa.indicators, "_data_years", lambda: (2008, 2025))
+    monkeypatch.setattr(qa.indicators, "spec", lambda name: {"name": name, "method": "population"})
+    monkeypatch.setattr(qa.indicators, "canonical_name", lambda term: term)
+    monkeypatch.setattr(qa.indicators, "rank", fake_rank)
+    q = {"type": "rank", "indicator": "고령인구 비율", "regions": ["부산"], "target": "부산"}
+    r = qa.compute({**q, "year": 2024, "level": "시도"})
+    assert calls[0][-1] == "부산"
+    assert qa.summary(r) == (
+        "2024년 부산광역시의 고령인구 비율은 24.5%로 시도 2곳 중 높은 순으로 2위입니다."
+    )

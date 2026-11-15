@@ -69,6 +69,16 @@ class Applied(BaseModel):
     )
 
 
+class Summary(BaseModel):
+    """답의 요약 (app/services/answer_summary.py). 계산 결과에서 코드로 뽑는다"""
+
+    headline: str = Field(description="핵심 한 문장")
+    points: list[str] = Field(default_factory=list, description="덧붙일 사실 (최대 4개)")
+    cautions: list[str] = Field(
+        default_factory=list, description="함께 알릴 주의 (추계값, 인과 판단 안 함 등. 최대 2개)"
+    )
+
+
 class QuestionClarification(BaseModel):
     kind: Literal["local_region", "move_scope"]
     prompt: str
@@ -80,7 +90,8 @@ class AskResponse(BaseModel):
         default=None, description="지역·이사 집계 범위를 확인하는 질문과 선택지"
     )
     status: str | None = Field(
-        description="ok / tables(수치 없이 통계표만 안내) / 답변 불가 사유 (out_of_range 등)"
+        description="ok / tables(수치 없이 통계표만 안내) / chat(인사에 대한 답)"
+        " / 답변 불가 사유 (out_of_range 등)"
     )
     answer: str = Field(description="답변 문장 + 수치·출처 (화면에 그대로 보여줄 답변)")
     parsed: dict[str, Any] = Field(description="1단계 질문 분석 결과")
@@ -89,13 +100,19 @@ class AskResponse(BaseModel):
     chart: Chart | None = Field(
         default=None, description="그릴 차트. 값 하나짜리 답이나 답변 불가면 null"
     )
+    summary: Summary | None = Field(
+        default=None,
+        description="답의 요약. 수치로 답하지 못했으면 null."
+        " '요약해줘'라고 하면 이 내용을 answer로 준다 ('한 줄로'면 headline만)",
+    )
     session_id: str | None = Field(
         default=None, description="대화 id. 다음 요청에 함께 보내면 조건을 이어 간다 (1시간)"
     )
     request_type: str | None = Field(
         default=None,
         description="이번 말을 읽은 방식: new(새 질문) / change(조건 변경) / chart(차트 바꾸기)"
-        " / summary(요약) / reply(되묻기에 대한 답) / unclear(되물음)",
+        " / summary(요약) / detail(직전 답을 자세히) / source(직전 답의 출처·계산식)"
+        " / chat(인사·감사) / reply(되묻기에 대한 답) / unclear(되물음)",
     )
     applied: list[Applied] = Field(default_factory=list, description="이번 답에 적용한 조건과 출처")
     notice: str | None = Field(

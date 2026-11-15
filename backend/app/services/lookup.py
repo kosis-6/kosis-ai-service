@@ -688,6 +688,15 @@ def composition(spec, region, year, sex="계", ages=None, top=None):
     if isinstance(prep, dict):
         return prep
     (reg,), src, age_codes, label, notes = prep
+    if "parts_dim" not in src:  # 이 연도에 쓰는 표에는 구성 항목이 없다
+        return _base(
+            spec,
+            src,
+            "missing_data",
+            label=label,
+            region=reg["display"],
+            reason=f"{reg['display']} {year}년 {spec['name']}의 구성 자료가 없습니다.",
+        )
     dim = src["parts_dim"]
     code = reg["region_code"]
     filters = {k: v for k, v in src.get("filters", {}).items() if k != f"{dim}_id"}

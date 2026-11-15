@@ -853,8 +853,19 @@ def rank_where(level, sido=None):
     return where, params, scope
 
 
-def rank(indicator, year, level="시도", sido=None, top=None, ascending=False, sex="계", ages=None):
-    """순위: 시도 전체 또는 시군구(기초자치단체) 전체 순위. sido를 주면 그 시도 안의 시군구만"""
+def rank(
+    indicator,
+    year,
+    level="시도",
+    sido=None,
+    top=None,
+    ascending=False,
+    sex="계",
+    ages=None,
+    target=None,
+):
+    """순위: 시도 전체 또는 시군구(기초자치단체) 전체 순위. sido를 주면 그 시도 안의 시군구만.
+    target: "부산은 몇 위?"처럼 한 지역의 순위를 물었으면 그 지역 (lookup.rank와 같다)"""
     name, ind = _get_indicator(indicator, ages)
     if name is None:
         return {
@@ -925,6 +936,15 @@ def rank(indicator, year, level="시도", sido=None, top=None, ascending=False, 
         ranking=items[:top] if top else items,
         notes=notes,
     )
+    if target:
+        t = resolve_region(target, year)
+        if t["status"] == "ok":
+            hit = next((it for it in items if it["region"] == t["display"]), None)
+            out["target"] = {
+                "region": t["display"],
+                "rank": hit["rank"] if hit else None,
+                "value": hit["value"] if hit else None,
+            }
     return _mark_monthly(out, "00", "계", year) if monthly else out
 
 

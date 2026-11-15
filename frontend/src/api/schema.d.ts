@@ -309,6 +309,7 @@ export interface paths {
          *     응답의 session_id를 다음 요청에 함께 보내면 대화를 이어 간다 (app/services/ask_session.py).
          *     - "서울도 같이", "2022년만", "남자만", "낮은 순으로": 바뀐 조건만 고쳐 다시 계산한다
          *     - "막대그래프로", "표로 보여줘", "요약해줘": 다시 계산하지 않고 직전 답으로 답한다
+         *       (요약은 응답의 summary: 핵심 한 문장 + 덧붙일 사실, app/services/answer_summary.py)
          *     - 새 질문은 말하지 않은 지역·기간을 앞 질문에서 이어받고, 이어받은 조건을 notice로 알린다
          *     - 수치로 답하면 답에 쓴 통계표를, 수치로 답할 수 없는 질문이면 통계표 찾기 결과를 tables로 준다
          *       (통계표 선택지에 답할 때는 selections를 함께 보낸다)
@@ -392,7 +393,7 @@ export interface components {
             clarification?: components["schemas"]["QuestionClarification"] | null;
             /**
              * Status
-             * @description ok / tables(수치 없이 통계표만 안내) / 답변 불가 사유 (out_of_range 등)
+             * @description ok / tables(수치 없이 통계표만 안내) / chat(인사에 대한 답) / 답변 불가 사유 (out_of_range 등)
              */
             status: string | null;
             /**
@@ -421,6 +422,8 @@ export interface components {
             sources: components["schemas"]["Source"][];
             /** @description 그릴 차트. 값 하나짜리 답이나 답변 불가면 null */
             chart?: components["schemas"]["Chart"] | null;
+            /** @description 답의 요약. 수치로 답하지 못했으면 null. '요약해줘'라고 하면 이 내용을 answer로 준다 ('한 줄로'면 headline만) */
+            summary?: components["schemas"]["Summary"] | null;
             /**
              * Session Id
              * @description 대화 id. 다음 요청에 함께 보내면 조건을 이어 간다 (1시간)
@@ -428,7 +431,7 @@ export interface components {
             session_id?: string | null;
             /**
              * Request Type
-             * @description 이번 말을 읽은 방식: new(새 질문) / change(조건 변경) / chart(차트 바꾸기) / summary(요약) / reply(되묻기에 대한 답) / unclear(되물음)
+             * @description 이번 말을 읽은 방식: new(새 질문) / change(조건 변경) / chart(차트 바꾸기) / summary(요약) / detail(직전 답을 자세히) / source(직전 답의 출처·계산식) / chat(인사·감사) / reply(되묻기에 대한 답) / unclear(되물음)
              */
             request_type?: string | null;
             /**
@@ -737,6 +740,27 @@ export interface components {
              * @description KOSIS 통계표 화면 주소
              */
             url?: string | null;
+        };
+        /**
+         * Summary
+         * @description 답의 요약 (app/services/answer_summary.py). 계산 결과에서 코드로 뽑는다
+         */
+        Summary: {
+            /**
+             * Headline
+             * @description 핵심 한 문장
+             */
+            headline: string;
+            /**
+             * Points
+             * @description 덧붙일 사실 (최대 4개)
+             */
+            points?: string[];
+            /**
+             * Cautions
+             * @description 함께 알릴 주의 (추계값, 인과 판단 안 함 등. 최대 2개)
+             */
+            cautions?: string[];
         };
         /** Token */
         Token: {
