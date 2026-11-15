@@ -1016,3 +1016,12 @@ def test_sex_that_the_data_does_not_split_is_told() -> None:
         "split": [{"status": "ok", "sex": "계"}, {"status": "ok", "sex": "남"}],
     }
     assert not s.sex_not_split({"sex": "남"}, split)
+
+
+def test_composition_view_request_changes_the_view_without_hcx(talk: Talk) -> None:
+    talk.say("부산 출생아 최근 5년 보여 줘")
+    res = talk.say("구성비로 보여줘")
+    assert res["request_type"] == "change" and res["parsed"]["type"] == "composition"
+    assert talk.extracted == [] and res["parsed"]["regions"] == ["부산"]
+    assert not s.composition_request("2022년 구성비로 보여줘")  # 연도·지표를 말하면 HCX에 맡긴다
+    assert not s.composition_request("출생아 수 구성비 알려줘")

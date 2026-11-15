@@ -15,7 +15,7 @@ SRC = {"source": "테스트 출처", "basis": "테스트 기준", "tbl_id": "DT_
 def trend(region: str, values: list[float], start: int = 2020, **more) -> dict:
     """연도별 값으로 추이 결과를 만든다 (전년 대비·최고·최저 해는 qa가 붙이는 그대로)"""
     series = [{"year": start + i, "value": v} for i, v in enumerate(values)]
-    diff = values[-1] - values[0]
+    diff = round(values[-1] - values[0], 3)  # 실제 계산 결과도 반올림한 값이다
     r = {
         "status": "ok",
         "indicator": "출생아 수",
@@ -397,3 +397,30 @@ def test_text_has_no_blank_line_and_one_line_is_the_headline() -> None:
     assert a.text(s, one_line=True) == s["headline"]
     assert a.one_line("한 줄로 요약해줘") and not a.one_line("요약해줘")
     assert a.one_line("한마디로 하면?") and a.one_line("한 문장으로 말해줘")
+
+
+def test_parallel_trends_share_one_short_sentence() -> None:
+    """남편·아내처럼 따로 공표되는 지표의 추이: 갈래마다 문장을 잇지 않는다 (전에는 150자 넘음)"""
+    husband = trend("서울특별시", [33.0, 33.5, 34.0], indicator="평균 초혼연령(남편)", unit="세")
+    wife = trend("서울특별시", [31.0, 31.2, 31.8], indicator="평균 초혼연령(아내)", unit="세")
+    for r in (husband, wife):
+        r["kind"], r["change"]["diff_unit"] = "value", "세"
+    s = a.build({"status": "ok", "split": [husband, wife], **SRC})
+    assert s["headline"] == (
+        "서울특별시의 평균 초혼연령(남편)은 2020~2022년에 1세 증가, "
+        "평균 초혼연령(아내)은 0.8세 증가했습니다."
+    )
+    assert s["points"] == [
+        "평균 초혼연령(남편): 33세 → 34세, +3.03%",
+        "평균 초혼연령(아내): 31세 → 31.8세, +2.58%",
+    ]
+    assert a.text(s, one_line=True) == s["headline"]
+
+
+def test_two_long_sentences_are_not_joined_into_the_headline() -> None:
+    men = {**COMPARE, "indicator": "일반혼인율(남자)"}
+    women = {**COMPARE, "indicator": "일반혼인율(여자)"}
+    s = a.build({"status": "ok", "split": [men, women], **SRC})
+    assert s["headline"].startswith("2025년 일반혼인율(남자)이 가장 높은 지역은")
+    assert len(s["headline"]) <= a.MAX_HEADLINE
+    assert s["points"][0].startswith("2025년 일반혼인율(여자)이 가장 높은 지역은")

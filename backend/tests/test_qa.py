@@ -467,3 +467,31 @@ def test_compute_each_indicator(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "더 높습니다" not in text  # 다른 지표끼리 견주지 않는다
     assert [s["tbl_id"] for s in qa.sources(r)] == ["T_출생아 수", "T_사망자 수"]
     assert "혼인 건수은(는) 이 조건으로 답할 수 없어 뺐습니다" in qa.render(r)
+
+
+def test_compute_population_rank_passes_the_asked_region(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ "부산은 고령인구 비율이 몇 위야?": 계산 지표 순위도 물은 지역을 넘긴다.
+    전에는 조회 지표만 넘겨, 답에 부산 순위 없이 1위와 최하위만 나왔다"""
+    calls = []
+    target = {"region": "부산광역시", "rank": 2, "value": 24.5}
+    ranking = [
+        {"region": "전라남도", "value": 27.2, "rank": 1},
+        {"region": "부산광역시", "value": 24.5, "rank": 2},
+    ]
+    ranked = {"status": "ok", "indicator": "고령인구 비율", "unit": "%", "year": 2024}
+    ranked.update(level="시도", order="높은 순", total_regions=2, ranking=ranking, target=target)
+
+    def fake_rank(*args):
+        calls.append(args)
+        return dict(ranked)
+
+    monkeypatch.setattr(qa.indicators, "_data_years", lambda: (2008, 2025))
+    monkeypatch.setattr(qa.indicators, "spec", lambda name: {"name": name, "method": "population"})
+    monkeypatch.setattr(qa.indicators, "canonical_name", lambda term: term)
+    monkeypatch.setattr(qa.indicators, "rank", fake_rank)
+    q = {"type": "rank", "indicator": "고령인구 비율", "regions": ["부산"], "target": "부산"}
+    r = qa.compute({**q, "year": 2024, "level": "시도"})
+    assert calls[0][-1] == "부산"
+    assert qa.summary(r) == (
+        "2024년 부산광역시의 고령인구 비율은 24.5%로 시도 2곳 중 높은 순으로 2위입니다."
+    )

@@ -568,6 +568,20 @@ def chart_request(question: str) -> str | None:
     return None
 
 
+# 구성비로 바꿔 보자는 말. HCX는 이 말을 그림 바꾸기로 읽고 모양을 정하지 못한다
+COMPOSITION_REQUEST = re.compile(r"구성비|구성\s*으로|비중\s*으로")
+
+
+def composition_request(question: str) -> bool:
+    q = question.strip()
+    return (
+        len(q) <= REPLY_MAX_CHARS
+        and bool(COMPOSITION_REQUEST.search(q) and CHART_REQUEST.search(q))
+        and not ask_followup.has_explicit_year(q)
+        and not indicators.find_in_text(q)
+    )
+
+
 def summary_request(question: str) -> bool:
     return len(question.strip()) <= REPLY_MAX_CHARS and bool(SUMMARY_REQUEST.search(question))
 
@@ -1062,7 +1076,10 @@ async def _turn(
         return _reuse(state, text, state["last"].get("chart"), SUMMARY), state["sources"], None
     if view is None and not (has_last and summary_request(question)):
         trace: dict = {}
-        delta = await extract(state, question, trace)
+        if composition_request(question):  # "구성비로 보여줘": 보는 방식만 바꾼다
+            delta = parse_delta('{"request_type": "change", "changes": {"type": "composition"}}')
+        else:
+            delta = await extract(state, question, trace)
         year = follow_year(question, state["conditions"])
         if year and not names_indicator(question, {}):
             # 상대 시점은 HCX가 아니라 코드가 푼다 ("작년은?"을 2020년의 다음 해로 읽던 문제)

@@ -905,6 +905,7 @@ def _compute_population(q, ind, kind, regions, year, sex, ages, hi):
             bool(q.get("ascending")),
             sex,
             ages,
+            q.get("target"),
         )
     return {"status": "parse_error", "reason": f"알 수 없는 질문 유형: {kind}"}
 

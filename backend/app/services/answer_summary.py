@@ -25,6 +25,7 @@ from typing import Any
 from app.services import qa
 
 MAX_POINTS = 4
+MAX_HEADLINE = 110  # 두 갈래의 문장을 이어 이보다 길면 둘째는 덧붙임으로 내린다
 MAX_CAUTIONS = 2
 MAX_LISTED = 5  # 목록(높은 순, 합친 지역)은 이만큼까지만 적는다
 SENTENCE_END = re.compile(r"(?<=니다\.)\s+")
@@ -264,6 +265,35 @@ def _values_together(parts: list[dict]) -> str | None:
     return f"{qa._when(parts[0])} {parts[0]['region']}의 {listed}입니다."
 
 
+def _trends_together(leaves: list[dict]) -> tuple[str, list[str]] | None:
+    """한 지역·같은 기간의 추이 여럿(남편·아내, 지표 여럿)을 한 문장으로. 처음 → 끝은 덧붙임으로.
+    예) 서울특별시의 평균 초혼연령(남편)은 2020~2025년에 0.57세 증가, 평균 초혼연령(아내)은
+        0.8세 증가했습니다.
+    갈래마다 문장을 이으면 핵심 문장이 150자를 넘는다"""
+    changes = [r.get("change") for r in leaves]
+    if not all(r.get("series") and c and c["diff"] for r, c in zip(leaves, changes, strict=True)):
+        return None
+    names = [qa._subject(r) for r in leaves]
+    if len(set(names)) != len(names) or len({r.get("region") for r in leaves}) != 1:
+        return None
+    if len({(c["from_year"], c["to_year"]) for c in changes}) != 1:
+        return None
+    span = f"{changes[0]['from_year']}~{changes[0]['to_year']}년에 "
+    moved = [
+        f"{qa._josa(n, '은는')} {span if i == 0 else ''}"
+        f"{qa._val(abs(c['diff']), c['diff_unit'])} {'증가' if c['diff'] > 0 else '감소'}"
+        for i, (n, c) in enumerate(zip(names, changes, strict=True))
+    ]
+    points = []
+    for n, r, c in zip(names, leaves, changes, strict=True):
+        unit = r.get("unit", "")
+        first, last = r["series"][0]["value"], r["series"][-1]["value"]
+        rate = f", {c['rate']:+}{c['rate_unit']}" if "rate" in c else ""
+        ends = f"{qa._val(first, unit, full=True)} → {qa._val(last, qa._tail(unit))}{rate}"
+        points.append(f"{n}: {ends}")
+    return f"{leaves[0]['region']}의 {', '.join(moved)}했습니다.", points
+
+
 def _split(result: dict) -> tuple[str, list[str]]:
     parts = result["split"]
     if result.get("split_by") == "region" and (grouped := _region_trends(result)):
@@ -272,10 +302,14 @@ def _split(result: dict) -> tuple[str, list[str]]:
         tail = _sentences(qa._split_text(result))[-1]  # 값 둘이면 어느 쪽이 높은지
         return together, [tail] if tail.endswith("더 높습니다.") else []
     # 지역 안에서 성별·연령을 다시 나눈 결과도 맨 아래 계산 결과까지 펼친다.
+    if 1 < len(qa._leaves(result)) <= MAX_POINTS and (
+        together := _trends_together(qa._leaves(result))
+    ):
+        return together
     leaves = [_leaf(p) for p in qa._leaves(result)]
-    # 남녀·지표·연령 구간: 갈래마다 핵심 한 문장. 둘이면 한 줄에 함께, 더 많으면 첫 갈래 뒤로
+    # 남녀·지표·연령 구간: 갈래마다 핵심 한 문장. 짧은 둘이면 한 줄에 함께, 아니면 첫 갈래 뒤로
     headlines = [h for h, _ in leaves]
-    if len(leaves) == 2:
+    if len(leaves) == 2 and len(" ".join(headlines)) <= MAX_HEADLINE:
         return " ".join(headlines), []
     return headlines[0], headlines[1:]
 
