@@ -1,6 +1,19 @@
 import pytest
 
+from app.core import stats_db
 from app.services import charts, qa
+
+
+@pytest.fixture(autouse=True)
+def no_stats_db(monkeypatch: pytest.MonkeyPatch) -> None:
+    """수치 계산을 대체한 단위 테스트는 적재 버전 확인도 실제 DB에 보내지 않는다."""
+
+    def no_db():
+        pytest.fail("QA 단위 테스트에서 실제 통계 DB를 호출했습니다")
+
+    monkeypatch.setattr(stats_db, "_engine", no_db)
+    monkeypatch.setattr(qa.lookup, "refresh_if_reloaded", lambda: None)
+
 
 # indicators.trend()가 돌려주는 형태 (DB 없이 테스트하기 위해 직접 만든 값)
 TREND = {

@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import main
+from app.core import stats_db
 from app.services import ask_session as s
 from app.services import indicators, qa, table_guide
 
@@ -29,6 +30,21 @@ USER = {"indicator": "user", "regions": "user", "period": "user", "sex": "defaul
 
 @pytest.fixture(autouse=True)
 def names(monkeypatch: pytest.MonkeyPatch) -> None:
+    def no_db():
+        pytest.fail("대화 단위 테스트에서 실제 통계 DB를 호출했습니다")
+
+    def resolve_region(name):
+        if name == "수원":
+            return {"status": "ok", "display": "경기도 수원시"}
+        if name == "고성":
+            return {
+                "status": "ambiguous_region",
+                "candidates": ["강원특별자치도 고성군", "경상남도 고성군"],
+            }
+        return {"status": "unknown_region", "region": name}
+
+    monkeypatch.setattr(stats_db, "_engine", no_db)
+    monkeypatch.setattr(indicators, "resolve_region", resolve_region)
     known = {"출생아 수", "사망자 수", "합계출산율", "고령인구 비율"}
     monkeypatch.setattr(indicators, "canonical_name", lambda n: n if n in known else None)
     monkeypatch.setattr(
