@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import main
+from app.core import stats_db
 from app.services import ask_session as s
 from app.services import indicators, qa, table_guide
 
@@ -29,6 +30,23 @@ USER = {"indicator": "user", "regions": "user", "period": "user", "sex": "defaul
 
 @pytest.fixture(autouse=True)
 def names(monkeypatch: pytest.MonkeyPatch) -> None:
+    def no_db():
+        pytest.fail("대화 단위 테스트에서 실제 통계 DB를 호출했습니다")
+
+    def resolve_region(name):
+        if name == "수원":
+            return {"status": "ok", "display": "경기도 수원시"}
+        if name == "고성":
+            return {
+                "status": "ambiguous_region",
+                "candidates": ["강원특별자치도 고성군", "경상남도 고성군"],
+            }
+        if name in ("부산", "서울"):
+            return {"status": "ok", "display": name, "kind": "시도"}
+        return {"status": "unknown_region", "region": name}
+
+    monkeypatch.setattr(stats_db, "_engine", no_db)
+    monkeypatch.setattr(indicators, "resolve_region", resolve_region)
     known = {"출생아 수", "사망자 수", "합계출산율", "고령인구 비율"}
     monkeypatch.setattr(indicators, "canonical_name", lambda n: n if n in known else None)
     monkeypatch.setattr(
@@ -206,7 +224,19 @@ def test_chart_view_and_summary() -> None:
     assert s.chart_with_view({"type": "parts", "rows": []}, "line") is None
     assert s.chart_with_view(None, "bar") is None
     assert s.summary_request("요약해줘") and s.summary_request("한 줄로 정리해 줘")
+    for said in (
+        "요약",
+        "정리해줘",
+        "짧게 요약 좀",
+        "한줄로 요약해줘",
+        "요약 부탁해",
+        "요약해 주세요.",
+    ):
+        assert s.summary_request(said), said
     assert not s.summary_request("서울 인구 요약 통계 알려줘")
+    # 요약·정리로 시작해도 뒤에 다른 말이 오면 질문이다
+    for said in ("요약 통계 보여줘", "정리해고 통계 알려줘", "요약해서 표로 보여줘"):
+        assert not s.summary_request(said), said
     assert s.lead("핵심 문장입니다.\n\n- 2020년: 1\n출처: ...") == "핵심 문장입니다."
 
 
@@ -264,6 +294,13 @@ class Talk:
             years = range(parsed["start_year"], parsed["end_year"] + 1)
             result = {"status": "ok", "series": [{"year": y, "value": y - 2000} for y in years]}
             result.update(indicator=parsed["indicator"], region=regions[0], unit="명")
+            first, last = years[0], years[-1]
+            result["change"] = {
+                "from_year": first,
+                "to_year": last,
+                "diff": last - first,
+                "diff_unit": "명",
+            }
         else:
             result = {"status": "ok", "value": 1}
         text = f"{parsed.get('type')} {regions} {s.period_text(parsed)}"
@@ -368,11 +405,27 @@ def test_chart_and_summary_reuse_last_answer(talk: Talk) -> None:
     assert res["chart"]["rows"] == first["chart"]["rows"] and res["sources"] == first["sources"]
     assert talk.extracted == [] and talk.answered == []  # HCX도 계산도 부르지 않는다
     res = talk.say("요약해줘")
-    assert res["request_type"] == "summary" and res["answer"] == "trend ['부산'] 2020~2024년"
+    # 답변 문장을 되풀이하지 않고 직전 계산 결과의 요약으로 답한다 (answer_summary.py)
+    headline = "부산의 출생아 수는 2020~2024년에 4명 증가했습니다(20명 → 24명)."
+    assert res["request_type"] == "summary" and res["summary"] == first["summary"]
+    assert res["answer"].split("\n")[0] == headline == first["summary"]["headline"]
+    assert "\n\n" not in res["answer"]  # 화면은 첫 빈 줄 앞까지만 말풍선에 쓴다
+    assert talk.say("한 줄로 요약해줘")["answer"] == headline
+    assert talk.extracted == [] and talk.answered == []  # 요약도 HCX·계산을 부르지 않는다
     # 조건은 그대로라 다음 변경이 이어진다
     res = talk.say("2022년만", request_type="change", changes={"year": 2022})
     assert res["parsed"]["regions"] == ["부산"]
-    assert [t[1] for t in talk.turns] == ["new", "chart", "summary", "change"]
+    assert [t[1] for t in talk.turns] == ["new", "chart", "summary", "summary", "change"]
+
+
+def test_summary_of_an_answer_without_numbers_repeats_its_lead(talk: Talk) -> None:
+    talk.say("부산 출생아 최근 5년 보여 줘")
+    talk.fail_when = lambda parsed: True
+    res = talk.say("2022년만", request_type="change", changes={"year": 2022})
+    assert res["status"] == "out_of_range" and res["summary"] is None
+    res = talk.say("요약해줘")
+    assert res["request_type"] == "summary" and res["summary"] is None
+    assert res["answer"] == "value ['부산'] 2022년"
 
 
 def test_chart_that_cannot_be_drawn_is_asked_back(talk: Talk) -> None:
@@ -845,3 +898,259 @@ def test_invalid_region_chart_has_notice_and_keeps_numeric_answer(talk: Talk, mo
     assert res["answer"] == "서울·부산의 계산 결과입니다."
     assert "기준이 달라" in res["notice"]
     assert len(res["result"]["split"]) == 2
+
+
+def test_detail_request_repeats_the_whole_answer_not_the_summary(talk: Talk) -> None:
+    first = talk.say("부산 출생아 최근 5년 보여 줘")
+    for said in ("더 자세히 설명해줘", "요약하지 말고 더 자세히 알려줘"):
+        res = talk.say(said)
+        assert res["request_type"] == "detail" and res["answer"] == first["answer"]
+        assert res["chart"] == first["chart"] and res["sources"] == first["sources"]
+    assert talk.extracted == [] and talk.answered == []  # HCX도 계산도 부르지 않는다
+    assert not s.detail_request("서울 출생아 수 자세히 알려줘")  # 지표를 말하면 질문이다
+    res = talk.say("2022년만", request_type="change", changes={"year": 2022})
+    assert res["parsed"]["regions"] == ["부산"]  # 조건은 그대로 이어진다
+
+
+def test_summary_with_a_change_answers_the_changed_conditions(talk: Talk) -> None:
+    talk.say("부산 출생아 최근 5년 보여 줘")
+    res = talk.say("2022년만 요약해줘", request_type="summary", changes={"year": 2022})
+    assert res["request_type"] == "change" and res["parsed"]["year"] == 2022
+    assert len(talk.answered) == 1  # 앞 답의 요약이 아니라 바뀐 조건으로 다시 계산한다
+
+
+def test_summary_with_nothing_to_summarize_is_not_read_as_a_question(talk: Talk) -> None:
+    res = talk.say("요약해줘")  # 첫 말
+    assert res["status"] == "unclear" and res["request_type"] == "unclear"
+    assert res["answer"].startswith("요약할 답이 아직 없습니다.") and res["summary"] is None
+    assert talk.asked == [] and talk.extracted == []  # HCX를 부르지 않는다
+    res = talk.say("부산 출생아 최근 5년 보여 줘")  # 그 뒤 질문은 그대로 새 질문
+    assert res["status"] == "ok" and res["request_type"] == "new"
+
+
+def test_summary_after_tables_only_answer_repeats_its_lead(talk: Talk) -> None:
+    talk.parsed = {**BASE, "type": "value", "indicator": "반려동물 수"}
+    first = talk.say("반려동물 키우는 집 몇 곳이야?")
+    assert first["status"] == "tables"
+    asked = len(talk.asked)
+    res = talk.say("요약해줘")
+    assert res["request_type"] == "summary" and res["summary"] is None
+    assert res["answer"] == first["answer"].split("\n\n")[0]
+    assert len(talk.asked) == asked and len(talk.searched) == 1  # 다시 해석·검색하지 않는다
+
+
+# ---- 돌려 말한 말: 인사, 출처, 원인, 지표만 바꾸기, 성별 구분 없는 지표 --------------------
+
+
+def test_bare_indicator_question_keeps_the_view_and_period() -> None:
+    """ "사망자 수는?"처럼 지표만 말하면 보는 방식(추이)·기간·지역을 그대로 이어받는다.
+    전에는 값 하나로 읽어 두 지역 추이 뒤에 첫 지역의 한 해 값만 답했다"""
+    prev = {**BASE, "regions": ["부산", "서울"]}
+    new = {"type": "value", "indicator": "사망자 수", "regions": [], "year": 2025, "sex": "계"}
+    plain = {"indicator": "user", "regions": "default", "period": "default", "sex": "default"}
+    p, src = s.inherit(new, plain, prev, USER, "사망자 수는?")
+    assert p["type"] == "trend" and p["regions"] == ["부산", "서울"]
+    assert (p["start_year"], p["end_year"]) == (2020, 2024) and p["indicator"] == "사망자 수"
+    assert src["regions"] == "inherited" and src["period"] == "inherited"
+    # 보는 방식을 말했으면 그 방식대로 (기간은 방식이 다르면 이어받지 않는다)
+    p, src = s.inherit(new, plain, prev, USER, "사망자 수가 가장 많은 곳은?")
+    assert p["type"] == "compare" and p["year"] == 2025 and src["period"] == "default"
+
+
+def test_value_question_with_several_inherited_regions_compares_them() -> None:
+    prev = {**BASE, "regions": ["부산", "서울"]}
+    new = {"type": "value", "indicator": "사망자 수", "regions": [], "year": 2022, "sex": "계"}
+    said = {"indicator": "user", "regions": "default", "period": "user", "sex": "default"}
+    p, src = s.inherit(new, said, prev, USER, "2022년 사망자 수는?")
+    assert p["type"] == "compare" and p["regions"] == ["부산", "서울"] and p["year"] == 2022
+    one = s.inherit(new, said, BASE, USER, "2022년 사망자 수는?")[0]
+    assert one["type"] == "value" and one["regions"] == ["부산"]  # 한 지역이면 값 하나 그대로
+
+
+def test_greeting_is_answered_without_hcx_and_keeps_conditions(talk: Talk) -> None:
+    res = talk.say("안녕하세요")  # 첫 말
+    assert res["status"] == "chat" and res["request_type"] == "chat" and res["sources"] == []
+    talk.say("부산 출생아 최근 5년 보여 줘")
+    for said in ("고마워", "감사합니다!", "네", "ㅇㅋ"):
+        res = talk.say(said)
+        assert res["request_type"] == "chat" and "이어서 질문해 주세요" in res["answer"], said
+        assert [a["value"] for a in res["applied"]][:2] == ["출생아 수", "부산"]
+    assert len(talk.asked) == 1 and talk.extracted == [] and talk.searched == []
+    res = talk.say("2022년만", request_type="change", changes={"year": 2022})
+    assert res["parsed"]["regions"] == ["부산"]  # 조건은 그대로 이어진다
+    assert s.chat_reply("고마워 그런데 서울은?") is None and s.chat_reply("네이버 통계") is None
+
+
+def test_source_question_repeats_the_source_lines(talk: Talk, monkeypatch) -> None:
+    answer = "핵심 문장.\n\n- 2020년: 1\n※ 계산식: A ÷ B\n출처: 통계청 (기준)\n통계표: https://kosis.kr/x"
+    result = talk._result
+    monkeypatch.setattr(talk, "_result", lambda *a: {**result(*a), "answer": answer})
+    first = talk.say("부산 출생아 최근 5년 보여 줘")
+    for said in ("이 통계 출처가 뭐야?", "언제 기준이야?", "어떻게 계산한 거야?"):
+        res = talk.say(said)
+        assert res["request_type"] == "source" and res["sources"] == first["sources"], said
+        assert res["answer"].split("\n")[1:] == [
+            "※ 계산식: A ÷ B",
+            "출처: 통계청 (기준)",
+            "통계표: https://kosis.kr/x",
+        ]
+    assert talk.extracted == [] and talk.answered == [] and talk.searched == []
+    assert not s.source_request("출생아 수 출처 통계표 찾아줘")  # 지표를 말하면 질문이다
+
+
+def test_why_question_says_no_cause_and_repeats_the_summary(talk: Talk) -> None:
+    first = talk.say("부산 출생아 최근 5년 보여 줘")
+    res = talk.say("왜 늘어난 거야?")
+    assert res["request_type"] == "summary" and talk.extracted == []
+    assert res["answer"].split("\n")[:2] == [s.NO_CAUSE, first["summary"]["headline"]]
+    assert not s.why_request("왜 서울 출생아 수가 줄었어?")  # 지표를 말하면 새 질문 (qa의 causal)
+
+
+def test_sex_that_the_data_does_not_split_is_told() -> None:
+    result = {"status": "ok", "sex": "계", "value": 1}
+    assert s.sex_not_split({"sex": "남"}, result)
+    assert s.effective({"sex": "남", "type": "value"}, result)["sex"] == "계"
+    assert not s.sex_not_split({"sex": "남"}, {**result, "sex": "남"})
+    assert not s.sex_not_split({"sex": "계"}, result)
+    assert not s.sex_not_split({"sex": "남"}, {"status": "out_of_range"})
+    split = {
+        "status": "ok",
+        "split": [{"status": "ok", "sex": "계"}, {"status": "ok", "sex": "남"}],
+    }
+    assert not s.sex_not_split({"sex": "남"}, split)
+
+
+def test_composition_view_request_changes_the_view_without_hcx(talk: Talk) -> None:
+    talk.say("부산 출생아 최근 5년 보여 줘")
+    res = talk.say("구성비로 보여줘")
+    assert res["request_type"] == "change" and res["parsed"]["type"] == "composition"
+    assert talk.extracted == [] and res["parsed"]["regions"] == ["부산"]
+    assert not s.composition_request("2022년 구성비로 보여줘")  # 연도·지표를 말하면 HCX에 맡긴다
+    assert not s.composition_request("출생아 수 구성비 알려줘")
+
+
+# ---- PR #136 리뷰: 자세히·출처·원인 규칙이 다른 뜻의 말까지 잡던 경우 ----------------------
+
+NOT_ABOUT_LAST = [
+    # 새 통계표를 찾는 말 (출처 질문이 아니다)
+    "다문화 관련 어떤 통계가 있어?",
+    "이민자는 어떤 자료가 있어?",
+    "어느 통계표를 보면 돼?",
+    "외국인은 무슨 조사로 알 수 있어?",
+    # 지역 이름·새 질문 (원인 질문이 아니다)
+    "왜관읍은?",
+    "칠곡군 왜관읍도 같이",
+    "고령화 영향 큰 곳은?",
+    "정책 효과 있는 지역은?",
+    # 나눠서 보자는 말 (직전 답을 다시 달라는 말이 아니다)
+    "구별로 자세히 보여줘",
+    "연령별로 자세하게",
+    "남녀로 나눠서 구체적으로",
+    # 조건을 함께 말함
+    "서울은 왜 줄었어?",
+    "2022년은 출처가 뭐야?",
+    "부산만 자세히",
+]
+
+
+@pytest.mark.parametrize("said", NOT_ABOUT_LAST)
+def test_rules_leave_other_meanings_to_hcx(talk: Talk, said: str) -> None:
+    """규칙은 HCX 없이 바로 답하고 끝나므로, 직전 답만 가리키는 말이 아니면 잡지 않는다"""
+    assert not (s.detail_request(said) or s.source_request(said) or s.why_request(said)), said
+    talk.say("부산 출생아 최근 5년 보여 줘")
+    res = talk.say(said)
+    assert res["request_type"] not in ("detail", "source", "summary"), said
+    if said == "구별로 자세히 보여줘":  # 보던 시도 안의 시군구로 조건 변경
+        assert res["request_type"] == "change" and res["parsed"]["sido"] == "부산"
+        assert res["parsed"]["level"] == "시군구" and len(talk.answered) == 1
+    elif res["status"] == "tables":  # 통계표를 찾는 말은 통계표 찾기로
+        assert [q for q, *_ in talk.searched] == [said]
+    else:
+        assert talk.extracted == [said]  # 나머지는 HCX 변경 추출로 넘어갔다
+
+
+@pytest.mark.parametrize(
+    ("said", "rule"),
+    [
+        ("더 자세히 설명해줘", "detail"),
+        ("요약하지 말고 더 자세히 알려줘", "detail"),
+        ("이 통계 출처가 뭐야?", "source"),
+        ("어디서 나온 숫자야?", "source"),
+        ("언제 기준이야?", "source"),
+        ("무슨 자료야?", "source"),
+        ("이 답은 어느 통계표에서 나온 거야?", "source"),
+        ("왜 줄어든 거야?", "why"),
+        ("왜?", "why"),
+        ("이유가 뭐야?", "why"),
+    ],
+)
+def test_rules_still_catch_remarks_about_the_last_answer(said: str, rule: str) -> None:
+    hit = {"detail": s.detail_request, "source": s.source_request, "why": s.why_request}
+    assert [name for name, test in hit.items() if test(said)] == [rule], said
+
+
+@pytest.mark.parametrize(
+    "said",
+    [
+        "다문화 관련 어떤 통계가 있어?",
+        "이민자는 어떤 자료가 있어?",
+        "어느 통계표를 보면 돼?",
+        "외국인은 무슨 조사로 알 수 있어?",
+    ],
+)
+def test_table_seeking_question_goes_to_table_search(talk: Talk, said: str) -> None:
+    """수치 답 뒤에 다른 주제의 통계표를 물으면 앞 지표·지역을 이어받지 않고 통계표를 찾는다"""
+    talk.say("부산 출생아 최근 5년 보여 줘")
+    res = talk.say(said)
+    assert res["status"] == "tables" and res["request_type"] == "new" and res["applied"] == []
+    assert res["tables"]["recommendations"] == [{"tbl_id": "DT_X"}]
+    assert [q for q, *_ in talk.searched] == [said] and len(talk.asked) == 1
+    assert not s.table_question("이 답은 어느 통계표에서 나온 거야?")  # 출처 질문
+    assert not s.table_question("출생아 수 통계표 찾아줘")  # 지표를 말하면 수치 질문 경로
+
+
+def test_gu_ranking_stays_in_the_province_being_viewed() -> None:
+    """ "구별로 보여줘": HCX가 질문에 없는 시도(서울)를 채워도 앞에서 보던 시도 안에서 본다"""
+    rank = {**BASE, "type": "rank", "regions": [], "level": "시군구", "sido": "서울"}
+    plain = {"indicator": "user", "regions": "default", "period": "default", "sex": "default"}
+    p, src = s.inherit(rank, plain, BASE, USER, "구별로 보여줘")
+    assert p["sido"] == "부산" and src["regions"] == "inherited"
+    said = s.inherit(rank, plain, BASE, USER, "서울 구별로 보여줘")[0]
+    assert said["sido"] == "서울"  # 말한 시도는 그대로
+    two = {**BASE, "regions": ["부산", "서울"]}
+    assert s.inherit(rank, plain, two, USER, "구별로 보여줘")[0]["sido"] is None  # 보던 곳이 여럿
+
+
+def test_by_district_request_ranks_inside_the_province_being_viewed(talk: Talk) -> None:
+    talk.say("부산 출생아 최근 5년 보여 줘")
+    res = talk.say("구별로 자세히 보여줘")
+    assert res["request_type"] == "change" and talk.extracted == [] and len(talk.asked) == 1
+    p = res["parsed"]
+    assert (p["type"], p["level"], p["sido"], p["regions"]) == ("rank", "시군구", "부산", [])
+    assert p["indicator"] == "출생아 수"
+    res = talk.say("시도별로 보여줘")
+    assert (res["parsed"]["level"], res["parsed"]["sido"]) == ("시도", None)
+    # 보던 지역이 여럿이거나 지역·지표·연도를 함께 말하면 HCX에 맡긴다
+    assert s.region_split_changes("구별로 보여줘", {**BASE, "regions": ["부산", "서울"]}) is None
+    assert s.region_split_changes("서울 구별로 보여줘", BASE) is None
+    assert s.region_split_changes("구별 출생아 수", BASE) is None
+
+
+@pytest.mark.parametrize(
+    "said",
+    [
+        "남녀로 나눠서 구별로 자세히 보여줘",
+        "연령별로 구별로 보여줘",
+        "구별로 낮은 순으로 보여줘",
+        "구별로 상위 3개만 보여줘",
+        "구별로 비교해서 보여줘",
+        "인구별로 자세히 보여줘",
+        "2022년 구별로 보여줘",
+    ],
+)
+def test_region_split_keeps_additional_conditions_for_hcx(talk: Talk, said: str) -> None:
+    talk.say("부산 출생아 최근 5년 보여 줘")
+    assert s.region_split_changes(said, BASE) is None
+    res = talk.say(said)
+    assert res["request_type"] not in ("detail", "source", "summary")
+    assert talk.extracted == [said]
