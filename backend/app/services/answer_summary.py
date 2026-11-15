@@ -131,11 +131,15 @@ def _region_trends(result: dict) -> tuple[str, list[str]] | None:
     key = "rate" if by_rate else "diff"
     unit = changes[0]["rate_unit"] if by_rate else changes[0]["diff_unit"]
     moved = sorted(
-        ((p["region"], c[key]) for p, c in zip(parts, changes, strict=True)),
+        ((p["region"], c[key]) for p, c in zip(parts, changes, strict=True) if c["diff"] != 0),
         key=lambda x: x[1],
     )
-    low, high = moved[0], moved[-1]
-    if low[1] != high[1]:
+    if moved:
+        low, high = moved[0], moved[-1]
+    if len(moved) == 1:
+        word = "늘어난" if ups else "줄어든"
+        points.append(f"{word} 곳은 {moved[0][0]}({qa._signed(moved[0][1], unit)})입니다.")
+    elif moved and low[1] != high[1]:
         if ups and downs:
             a, b = ("가장 크게 늘어난 곳", high), ("가장 크게 줄어든 곳", low)
         elif ups:
@@ -267,10 +271,11 @@ def _split(result: dict) -> tuple[str, list[str]]:
     if together := _values_together(parts):
         tail = _sentences(qa._split_text(result))[-1]  # 값 둘이면 어느 쪽이 높은지
         return together, [tail] if tail.endswith("더 높습니다.") else []
-    leaves = [_leaf(p) for p in parts]
+    # 지역 안에서 성별·연령을 다시 나눈 결과도 맨 아래 계산 결과까지 펼친다.
+    leaves = [_leaf(p) for p in qa._leaves(result)]
     # 남녀·지표·연령 구간: 갈래마다 핵심 한 문장. 둘이면 한 줄에 함께, 더 많으면 첫 갈래 뒤로
     headlines = [h for h, _ in leaves]
-    if len(parts) == 2:
+    if len(leaves) == 2:
         return " ".join(headlines), []
     return headlines[0], headlines[1:]
 

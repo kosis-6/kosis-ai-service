@@ -194,6 +194,56 @@ def test_region_trends_with_different_periods_are_listed() -> None:
     assert s["points"][0].startswith("부산광역시의 출생아 수는 2018~2019년에")
 
 
+@pytest.mark.parametrize("end, word", [(110, "늘어난"), (90, "줄어든")])
+@pytest.mark.parametrize("with_rate", [True, False])
+def test_region_trends_exclude_unchanged_regions(end: int, word: str, with_rate: bool) -> None:
+    parts = [trend("서울", [100, end]), trend("부산", [100, 100])]
+    if not with_rate:
+        for p in parts:
+            p["change"].pop("rate")
+    s = a.build(qa._combine(parts, by="region"))
+    assert "1곳은 변동이 없습니다" in s["headline"]
+    signed = f"{end - 100:+.1f}%" if with_rate else f"{end - 100:+}명"
+    assert s["points"][0] == f"{word} 곳은 서울({signed})입니다."
+
+
+@pytest.mark.parametrize("ends", [[110, 120, 100], [90, 80, 100], [110, 90, 100]])
+def test_region_trend_extremes_only_name_changed_regions(ends: list[int]) -> None:
+    parts = [
+        trend(region, [100, end])
+        for region, end in zip(("서울", "대구", "부산"), ends, strict=True)
+    ]
+    s = a.build(qa._combine(parts, by="region"))
+    assert "서울" in s["points"][0] and "대구" in s["points"][0]
+    assert "부산" not in s["points"][0]
+
+
+def test_region_trends_all_unchanged_have_no_movement_point() -> None:
+    parts = [trend("서울", [100, 100]), trend("부산", [100, 100])]
+    s = a.build(qa._combine(parts, by="region"))
+    assert "2곳은 변동이 없습니다" in s["headline"]
+    assert s["points"] == ["2021년에는 2곳이 모두 같습니다."]
+
+
+def test_nested_region_and_sex_trends_summarize_every_leaf() -> None:
+    parts = [
+        qa._combine([trend(region, [100, end], sex=sex) for sex, end in (("남", 110), ("여", 90))])
+        for region in ("서울", "부산")
+    ]
+    s = a.build(qa._combine(parts, by="region"))
+    expected = [a.build(p)["headline"] for part in parts for p in part["split"]]
+    assert [s["headline"], *s["points"]] == expected
+
+
+def test_nested_splits_with_two_leaves_share_the_headline() -> None:
+    parts = [trend("서울", [100, 110]), trend("부산", [100, 90])]
+    # 한 갈래만 있는 묶음도 중첩 깊이에 관계없이 처리한다.
+    result = qa._combine([qa._combine([qa._combine([p])]) for p in parts])
+    s = a.build(result)
+    assert s["headline"] == " ".join(a.build(p)["headline"] for p in parts)
+    assert s["points"] == []
+
+
 def test_rank_adds_runners_up_and_the_other_end() -> None:
     s = a.build(RANK)
     assert s["headline"] == "2025년 고령인구 비율이 가장 높은 시도는 전라남도(27.2%)입니다."
