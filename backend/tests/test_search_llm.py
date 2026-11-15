@@ -12,6 +12,7 @@ from app.services import search_llm
 from app.services.hcx_client import ChatResult, HcxClient, HcxError
 from app.services.search_llm import GemmaClient, to_openai_body
 
+MESSAGES = [{"role": "user", "content": "x"}]
 OK_BODY = {
     "choices": [{"message": {"role": "assistant", "content": '{"a": 1}'}, "finish_reason": "stop"}],
     "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8},
@@ -146,8 +147,8 @@ def test_chat_goes_to_the_configured_llm(monkeypatch, setting: str, expected: st
     monkeypatch.setattr(HcxClient, "chat", hcx)
     monkeypatch.setattr(GemmaClient, "chat", gemma)
     monkeypatch.setattr(search_llm.get_settings(), "search_llm", setting, raising=False)
-    result = asyncio.run(search_llm.chat("HCX-007", [{"role": "user", "content": "x"}]))
-    assert result.content == expected
+    result, answered = asyncio.run(search_llm.ask("HCX-007", lambda llm: (MESSAGES, {})))
+    assert (result.content, answered) == (expected, expected)
 
 
 def test_gemma_prompts_add_to_the_hcx_prompts_without_changing_them() -> None:
@@ -193,4 +194,92 @@ def test_default_setting_is_auto() -> None:
     from app.core.config import Settings
 
     assert Settings.model_fields["search_llm"].default == "auto"
+
+
+@pytest.fixture
+def gemma_by_address(monkeypatch):
+    """기본 설정(auto) + Gemma 서버 주소가 있는 상태. Gemma · HCX 호출은 calls 에 적힌다"""
+    settings = search_llm.get_settings()
+    monkeypatch.setattr(settings, "search_llm", "auto", raising=False)
+    monkeypatch.setattr(settings, "gemma_base_url", "http://gemma.test/v1", raising=False)
+    monkeypatch.setattr(search_llm, "_down_until", 0.0)
+    calls: list[str] = []
+    state = {"gemma_up": True}
+
+    async def gemma(self, model, messages, **options):
+        calls.append(f"gemma:{messages[0]['content']}")
+        if not state["gemma_up"]:
+            raise HcxError("gemma_unreachable", "ConnectError: refused")
+        return ChatResult(content="gemma", finish_reason="stop")
+
+    async def hcx(self, model, messages, **options):
+        calls.append(f"hcx:{messages[0]['content']}")
+        return ChatResult(content="hcx", finish_reason="stop")
+
+    monkeypatch.setattr(GemmaClient, "chat", gemma)
+    monkeypatch.setattr(HcxClient, "chat", hcx)
+    return calls, state
+
+
+def _request(llm: str):
+    return [{"role": "user", "content": f"{llm} 프롬프트"}], {}
+
+
+def test_gemma_down_falls_back_to_hcx_with_the_hcx_request(gemma_by_address) -> None:
+    calls, state = gemma_by_address
+    result, answered = asyncio.run(search_llm.ask("HCX-007", _request))
+    assert (result.content, answered) == ("gemma", "gemma") and not search_llm.falling_back()
+
+    state["gemma_up"] = False
+    result, answered = asyncio.run(search_llm.ask("HCX-007", _request))
+    assert (result.content, answered) == ("hcx", "hcx")  # 그 호출을 HCX 로 다시 보낸다
+    assert calls[-2:] == ["gemma:gemma 프롬프트", "hcx:hcx 프롬프트"]  # HCX 에는 HCX 용 요청을
+    assert search_llm.falling_back()
+
+
+def test_gemma_is_skipped_while_down_and_tried_again_later(gemma_by_address, monkeypatch) -> None:
+    calls, state = gemma_by_address
+    state["gemma_up"] = False
+    asyncio.run(search_llm.ask("HCX-007", _request))
+    calls.clear()
+    asyncio.run(search_llm.ask("HCX-007", _request))
+    assert calls == ["hcx:hcx 프롬프트"]  # 꺼진 서버를 질문마다 다시 부르지 않는다
+
+    state["gemma_up"] = True
+    monkeypatch.setattr(search_llm, "_down_until", 0.0)  # 건너뛰는 시간이 지났다
+    calls.clear()
+    _, answered = asyncio.run(search_llm.ask("HCX-007", _request))
+    assert answered == "gemma" and calls == ["gemma:gemma 프롬프트"]  # 서버가 돌아오면 다시 Gemma
+    assert not search_llm.falling_back()
+
+
+def test_fixed_gemma_does_not_fall_back(gemma_by_address, monkeypatch) -> None:
+    """SEARCH_LLM=gemma 로 고정하면 실패를 그대로 올린다 (측정에 HCX 답이 섞이지 않게)"""
+    calls, state = gemma_by_address
+    monkeypatch.setattr(search_llm.get_settings(), "search_llm", "gemma", raising=False)
+    state["gemma_up"] = False
+    with pytest.raises(HcxError):
+        asyncio.run(search_llm.ask("HCX-007", _request))
+    assert calls == ["gemma:gemma 프롬프트"] and not search_llm.falling_back()
+
+
+def test_fallback_does_not_wait_for_retries(monkeypatch) -> None:
+    """넘어갈 곳이 있으면 Gemma 를 기다렸다 다시 부르지 않는다"""
+    settings = search_llm.get_settings()
+    monkeypatch.setattr(settings, "search_llm", "auto", raising=False)
+    monkeypatch.setattr(settings, "gemma_base_url", "http://gemma.test/v1", raising=False)
+    monkeypatch.setattr(search_llm, "_down_until", 0.0)
+    tried = []
+
+    async def once(self, body):
+        tried.append(1)
+        raise HcxError("gemma_503", "loading", 503)
+
+    async def hcx(self, model, messages, **options):
+        return ChatResult(content="hcx", finish_reason="stop")
+
+    monkeypatch.setattr(GemmaClient, "_chat_once", once)
+    monkeypatch.setattr(HcxClient, "chat", hcx)
+    _, answered = asyncio.run(search_llm.ask("HCX-007", _request))
+    assert answered == "hcx" and len(tried) == 1
 

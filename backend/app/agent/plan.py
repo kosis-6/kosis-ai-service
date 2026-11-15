@@ -26,14 +26,17 @@ Plan = dict[str, Any]
 
 async def call(question: str) -> Plan:
     """계획 LLM 호출 (보정 전). 실패하면 HcxError가 그대로 올라간다"""
-    system = SYSTEM_GEMMA if search_llm.is_gemma() else SYSTEM
-    result = await search_llm.chat(
-        MODEL,
-        [{"role": "system", "content": system}, {"role": "user", "content": question}],
-        thinking={"effort": "none"},
-        maxCompletionTokens=MAX_TOKENS,
-        responseFormat={"type": "json", "schema": SCHEMA},
-    )
+
+    def request(llm: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        system = SYSTEM_GEMMA if llm == "gemma" else SYSTEM
+        messages = [{"role": "system", "content": system}, {"role": "user", "content": question}]
+        return messages, {
+            "thinking": {"effort": "none"},
+            "maxCompletionTokens": MAX_TOKENS,
+            "responseFormat": {"type": "json", "schema": SCHEMA},
+        }
+
+    result, _ = await search_llm.ask(MODEL, request)
     return parse(result.content)
 
 

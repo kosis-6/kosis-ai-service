@@ -156,22 +156,20 @@ def empty_slots(question: str) -> dict[str, Any]:
 
 
 async def _chat(question: str) -> str:
-    result = await search_llm.chat(
-        MODEL,
-        [
-            {
-                "role": "system",
-                "content": SLOT_SYSTEM_GEMMA if search_llm.is_gemma() else SLOT_SYSTEM,
-            },
-            {"role": "user", "content": question},
-        ],
-        thinking={"effort": "none"},
-        topP=0.8,
-        topK=0,
-        maxCompletionTokens=512,
-        temperature=0.1,
-        repetitionPenalty=1.1,
-    )
+
+    def request(llm: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        system = SLOT_SYSTEM_GEMMA if llm == "gemma" else SLOT_SYSTEM
+        messages = [{"role": "system", "content": system}, {"role": "user", "content": question}]
+        return messages, {
+            "thinking": {"effort": "none"},
+            "topP": 0.8,
+            "topK": 0,
+            "maxCompletionTokens": 512,
+            "temperature": 0.1,
+            "repetitionPenalty": 1.1,
+        }
+
+    result, _ = await search_llm.ask(MODEL, request)
     return result.content
 
 

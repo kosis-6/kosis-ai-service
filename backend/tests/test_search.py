@@ -569,15 +569,16 @@ def test_llm_pick_asks_gemma_with_its_own_prompt_at_temperature_zero(monkeypatch
 
     from app.services import llm_pick as lp
     from app.services import search_llm
-    from app.services.hcx_client import ChatResult
+    from app.services.hcx_client import ChatResult, HcxClient
 
     seen = []
 
-    async def chat(model, messages, **options):
+    async def chat(self, model, messages, **options):
         seen.append((messages[0]["content"], options.get("temperature")))
         return ChatResult(content='{"pick": "A1", "match": "exact"}', finish_reason="stop")
 
-    monkeypatch.setattr(search_llm, "chat", chat)
+    monkeypatch.setattr(HcxClient, "chat", chat)
+    monkeypatch.setattr(search_llm.GemmaClient, "chat", chat)
     cands = se.prepare([_t("A1", "인구 - 시도", 2015, 2025, "FA")])
     for name in ("hcx", "gemma"):
         monkeypatch.setattr(lp.get_settings(), "search_llm", name, raising=False)
@@ -1265,4 +1266,50 @@ def test_husband_and_wife_items_count_as_sex_values() -> None:
     )[0]  # fmt: skip
     # '남자연상'은 성별 값이 아니다
     assert (older["male_value"], older["female_value"]) == (False, False)
+
+
+def test_llm_pick_uses_hcx_rules_when_gemma_is_down(monkeypatch) -> None:
+    """Gemma 가 응답하지 않아 HCX 가 검토했으면 HCX 방식(거르기만)으로: 고른 표로 바꾸지 않는다"""
+    import asyncio
+
+    from app.services import llm_pick as lp
+    from app.services import search_llm
+    from app.services.hcx_client import ChatResult, HcxClient, HcxError
+
+    tables = se.prepare(
+        [
+            _t("A1", "인구 - 시도", 2015, 2025, "FA", survey_name="조사"),
+            _t("B1", "혼인 - 시도", 2015, 2025, "FB", survey_name="조사"),
+        ]
+    )
+    base = se.find(tables, _slots("통계 자료", "통계 자료"), dense=[0.9, 0.3])
+    settings = lp.get_settings()
+    monkeypatch.setattr(settings, "llm_pick", True, raising=False)
+    monkeypatch.setattr(settings, "llm_pick_mode", None, raising=False)
+    monkeypatch.setattr(settings, "search_llm", "auto", raising=False)
+    monkeypatch.setattr(settings, "gemma_base_url", "http://gemma.test/v1", raising=False)
+    monkeypatch.setattr(search_llm, "_down_until", 0.0)
+    seen = []
+
+    async def gemma(self, model, messages, **options):
+        return ChatResult(content='{"pick": "B1", "match": "exact"}', finish_reason="stop")
+
+    async def gemma_down(self, model, messages, **options):
+        raise HcxError("gemma_unreachable", "ConnectError: refused")
+
+    async def hcx(self, model, messages, **options):
+        seen.append((messages[0]["content"], options.get("temperature")))
+        return ChatResult(content='{"pick": "B1", "match": "exact"}', finish_reason="stop")
+
+    monkeypatch.setattr(HcxClient, "chat", hcx)
+    monkeypatch.setattr(search_llm.GemmaClient, "chat", gemma)
+    trace: dict = {}
+    out = asyncio.run(lp.review("혼인", dict(base), tables, trace))
+    assert out["table"]["tbl_id"] == "B1" and trace["llm_pick"]["llm"] == "gemma"  # Gemma: 교체
+
+    monkeypatch.setattr(search_llm.GemmaClient, "chat", gemma_down)
+    trace = {}
+    out = asyncio.run(lp.review("혼인", dict(base), tables, trace))
+    assert out["table"]["tbl_id"] == "A1" and trace["llm_pick"]["llm"] == "hcx"  # HCX: 거르기만
+    assert seen == [(lp.SYSTEM, None)]  # HCX 에는 HCX 프롬프트 · 기본 temperature
 

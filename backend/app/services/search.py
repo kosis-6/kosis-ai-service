@@ -368,7 +368,9 @@ def status() -> dict[str, Any]:
         "retrieval": "hybrid" if _vectors is not None else "keyword",
         "adapter": vector_search.adapter_loaded(),
         "morph": synonyms.morph_backend(),
-        "search_llm": search_llm.provider(),  # 지금 쓰는 쪽: hcx 또는 gemma
+        "search_llm": search_llm.provider(),  # 쓰도록 설정된 쪽: hcx 또는 gemma
+        # Gemma 가 응답하지 않아 지금은 HCX 로 넘어가 있는가
+        "search_llm_fallback": search_llm.falling_back(),
     }
 
 

@@ -207,15 +207,16 @@ def test_slot_prompt_follows_the_search_llm(monkeypatch) -> None:
     import asyncio
 
     from app.services import search_llm
-    from app.services.hcx_client import ChatResult
+    from app.services.hcx_client import ChatResult, HcxClient
 
     seen = []
 
-    async def chat(model, messages, **options):
+    async def chat(self, model, messages, **options):
         seen.append(messages[0]["content"])
         return ChatResult(content="{}", finish_reason="stop")
 
-    monkeypatch.setattr(search_llm, "chat", chat)
+    monkeypatch.setattr(HcxClient, "chat", chat)
+    monkeypatch.setattr(search_llm.GemmaClient, "chat", chat)
     for name in ("hcx", "gemma"):
         monkeypatch.setattr(search_llm.get_settings(), "search_llm", name, raising=False)
         asyncio.run(sl._chat("인구"))

@@ -52,6 +52,7 @@ OFF_DOMAIN = re.compile(
 
 
 CAND_VALUES = 12  # 후보 설명에 보여 줄 분류 값 개수 (넘으면 '외 N개')
+ANSWERED_BY = "_llm"  # _ask 가 검토 결과에 붙이는 칸: 답한 LLM ("hcx" · "gemma")
 
 
 def class_values_text(c: dict[str, Any]) -> str:
@@ -99,10 +100,12 @@ def norm_pick(parsed: dict[str, Any] | None, cands: list[str]) -> str | None:
     return "__unknown__"
 
 
-def pick_mode() -> str:
-    """검토 모드. LLM_PICK_MODE 를 비워 두면 통계표 찾기에 쓰는 LLM 에 맞춘다
-    (11/15 까지 잰 조합: HCX → filter, Gemma → pick_decided)"""
-    return get_settings().llm_pick_mode or ("pick_decided" if search_llm.is_gemma() else "filter")
+def pick_mode(answered: str | None = None) -> str:
+    """검토 모드. LLM_PICK_MODE 를 비워 두면 검토에 답한 LLM 에 맞춘다
+    (11/15 까지 잰 조합: HCX → filter, Gemma → pick_decided).
+    answered: 이번 검토에 실제로 답한 LLM. Gemma 가 응답하지 않아 HCX 가 답했으면 "hcx" 다"""
+    llm = answered or search_llm.provider()
+    return get_settings().llm_pick_mode or ("pick_decided" if llm == "gemma" else "filter")
 
 
 async def _ask(question: str, cands: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -110,33 +113,39 @@ async def _ask(question: str, cands: list[dict[str, Any]]) -> dict[str, Any] | N
         cand_text(t, i + 1) for i, t in enumerate(cands)
     )
     ids = [t["tbl_id"] for t in cands]
-    gemma = search_llm.is_gemma()
-    result = await search_llm.chat(
-        MODEL,
-        [
+
+    def request(llm: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        gemma = llm == "gemma"
+        messages = [
             {"role": "system", "content": SYSTEM_GEMMA if gemma else SYSTEM},
             {"role": "user", "content": user},
-        ],
-        thinking={"effort": "none"},
-        maxCompletionTokens=300,
-        # Gemma 는 고른 표로 실제로 바꾸므로(pick_decided) 같은 질문에 같은 표가 나오게 0 으로 둔다.
-        # HCX 는 지금까지처럼 서버 기본값
-        **({"temperature": 0} if gemma else {}),
-        responseFormat={
-            "type": "json",
-            "schema": {
-                "type": "object",
-                "properties": {
-                    "pick": {"type": "string", "enum": [*ids, "none"]},
-                    "match": {"type": "string", "enum": ["exact", "partial", "none"]},
-                    "item": {"type": "string"},
-                    "reason": {"type": "string"},
+        ]
+        return messages, {
+            "thinking": {"effort": "none"},
+            "maxCompletionTokens": 300,
+            # Gemma 는 고른 표로 실제로 바꾸므로(pick_decided) 같은 질문에 같은 표가 나오게
+            # 0 으로 둔다. HCX 는 지금까지처럼 서버 기본값
+            **({"temperature": 0} if gemma else {}),
+            "responseFormat": {
+                "type": "json",
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "pick": {"type": "string", "enum": [*ids, "none"]},
+                        "match": {"type": "string", "enum": ["exact", "partial", "none"]},
+                        "item": {"type": "string"},
+                        "reason": {"type": "string"},
+                    },
+                    "required": ["pick", "match", "item", "reason"],
                 },
-                "required": ["pick", "match", "item", "reason"],
             },
-        },
-    )
-    return parse(result.content)
+        }
+
+    result, llm = await search_llm.ask(MODEL, request)
+    parsed = parse(result.content)
+    if parsed is not None:
+        parsed[ANSWERED_BY] = llm  # review 가 꺼내 검토 모드를 정한다
+    return parsed
 
 
 async def review(
@@ -181,12 +190,15 @@ async def review(
         logger.warning("LLM 검토 실패 → 검색 결과 그대로: %s: %s", type(e).__name__, e)
         trace["llm_pick"] = {"error": f"{type(e).__name__}: {e}"}
         return result
+    answered = parsed.pop(ANSWERED_BY, None) if parsed else None
     pick = norm_pick(parsed, cand_ids)
     trace["llm_pick"] = {
         "raw": parsed,
         "pick": pick,
         "ms": round((time.perf_counter() - start) * 1000),
     }
+    if answered:
+        trace["llm_pick"]["llm"] = answered
     # 거절은 match=none 일 때만. partial(조건이 조금 다른 표)은 안내한다 (실험실·레포 측정: 옛
     # 판·넓은 표를
     # 거절해 생기던 거짓 거절 6건 대응). answerable(구 형식)도 받는다
@@ -204,7 +216,7 @@ async def review(
         return {**result, "llm_pick": trace["llm_pick"]}
     from app.services import search as se  # 순환 참조를 피해 여기서 읽는다
 
-    mode = pick_mode()
+    mode = pick_mode(answered)
     # 멤버 되묻기(clarify)만 LLM 이 확정한다. 패밀리 모호(ambiguous)는 1위 패밀리를 두는 편이 나았음
     # (레포 측정 §68-4: LLM 이 같은 조사의 형제 패밀리로 바꿔 8건 손실, 얻은 건 1건)
     undecided = result["status"] == "clarify"
