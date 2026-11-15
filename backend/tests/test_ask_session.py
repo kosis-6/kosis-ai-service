@@ -41,6 +41,8 @@ def names(monkeypatch: pytest.MonkeyPatch) -> None:
                 "status": "ambiguous_region",
                 "candidates": ["강원특별자치도 고성군", "경상남도 고성군"],
             }
+        if name in ("부산", "서울"):
+            return {"status": "ok", "display": name, "kind": "시도"}
         return {"status": "unknown_region", "region": name}
 
     monkeypatch.setattr(stats_db, "_engine", no_db)
@@ -1025,3 +1027,130 @@ def test_composition_view_request_changes_the_view_without_hcx(talk: Talk) -> No
     assert talk.extracted == [] and res["parsed"]["regions"] == ["부산"]
     assert not s.composition_request("2022년 구성비로 보여줘")  # 연도·지표를 말하면 HCX에 맡긴다
     assert not s.composition_request("출생아 수 구성비 알려줘")
+
+
+# ---- PR #136 리뷰: 자세히·출처·원인 규칙이 다른 뜻의 말까지 잡던 경우 ----------------------
+
+NOT_ABOUT_LAST = [
+    # 새 통계표를 찾는 말 (출처 질문이 아니다)
+    "다문화 관련 어떤 통계가 있어?",
+    "이민자는 어떤 자료가 있어?",
+    "어느 통계표를 보면 돼?",
+    "외국인은 무슨 조사로 알 수 있어?",
+    # 지역 이름·새 질문 (원인 질문이 아니다)
+    "왜관읍은?",
+    "칠곡군 왜관읍도 같이",
+    "고령화 영향 큰 곳은?",
+    "정책 효과 있는 지역은?",
+    # 나눠서 보자는 말 (직전 답을 다시 달라는 말이 아니다)
+    "구별로 자세히 보여줘",
+    "연령별로 자세하게",
+    "남녀로 나눠서 구체적으로",
+    # 조건을 함께 말함
+    "서울은 왜 줄었어?",
+    "2022년은 출처가 뭐야?",
+    "부산만 자세히",
+]
+
+
+@pytest.mark.parametrize("said", NOT_ABOUT_LAST)
+def test_rules_leave_other_meanings_to_hcx(talk: Talk, said: str) -> None:
+    """규칙은 HCX 없이 바로 답하고 끝나므로, 직전 답만 가리키는 말이 아니면 잡지 않는다"""
+    assert not (s.detail_request(said) or s.source_request(said) or s.why_request(said)), said
+    talk.say("부산 출생아 최근 5년 보여 줘")
+    res = talk.say(said)
+    assert res["request_type"] not in ("detail", "source", "summary"), said
+    if said == "구별로 자세히 보여줘":  # 보던 시도 안의 시군구로 조건 변경
+        assert res["request_type"] == "change" and res["parsed"]["sido"] == "부산"
+        assert res["parsed"]["level"] == "시군구" and len(talk.answered) == 1
+    elif res["status"] == "tables":  # 통계표를 찾는 말은 통계표 찾기로
+        assert [q for q, *_ in talk.searched] == [said]
+    else:
+        assert talk.extracted == [said]  # 나머지는 HCX 변경 추출로 넘어갔다
+
+
+@pytest.mark.parametrize(
+    ("said", "rule"),
+    [
+        ("더 자세히 설명해줘", "detail"),
+        ("요약하지 말고 더 자세히 알려줘", "detail"),
+        ("이 통계 출처가 뭐야?", "source"),
+        ("어디서 나온 숫자야?", "source"),
+        ("언제 기준이야?", "source"),
+        ("무슨 자료야?", "source"),
+        ("이 답은 어느 통계표에서 나온 거야?", "source"),
+        ("왜 줄어든 거야?", "why"),
+        ("왜?", "why"),
+        ("이유가 뭐야?", "why"),
+    ],
+)
+def test_rules_still_catch_remarks_about_the_last_answer(said: str, rule: str) -> None:
+    hit = {"detail": s.detail_request, "source": s.source_request, "why": s.why_request}
+    assert [name for name, test in hit.items() if test(said)] == [rule], said
+
+
+@pytest.mark.parametrize(
+    "said",
+    [
+        "다문화 관련 어떤 통계가 있어?",
+        "이민자는 어떤 자료가 있어?",
+        "어느 통계표를 보면 돼?",
+        "외국인은 무슨 조사로 알 수 있어?",
+    ],
+)
+def test_table_seeking_question_goes_to_table_search(talk: Talk, said: str) -> None:
+    """수치 답 뒤에 다른 주제의 통계표를 물으면 앞 지표·지역을 이어받지 않고 통계표를 찾는다"""
+    talk.say("부산 출생아 최근 5년 보여 줘")
+    res = talk.say(said)
+    assert res["status"] == "tables" and res["request_type"] == "new" and res["applied"] == []
+    assert res["tables"]["recommendations"] == [{"tbl_id": "DT_X"}]
+    assert [q for q, *_ in talk.searched] == [said] and len(talk.asked) == 1
+    assert not s.table_question("이 답은 어느 통계표에서 나온 거야?")  # 출처 질문
+    assert not s.table_question("출생아 수 통계표 찾아줘")  # 지표를 말하면 수치 질문 경로
+
+
+def test_gu_ranking_stays_in_the_province_being_viewed() -> None:
+    """ "구별로 보여줘": HCX가 질문에 없는 시도(서울)를 채워도 앞에서 보던 시도 안에서 본다"""
+    rank = {**BASE, "type": "rank", "regions": [], "level": "시군구", "sido": "서울"}
+    plain = {"indicator": "user", "regions": "default", "period": "default", "sex": "default"}
+    p, src = s.inherit(rank, plain, BASE, USER, "구별로 보여줘")
+    assert p["sido"] == "부산" and src["regions"] == "inherited"
+    said = s.inherit(rank, plain, BASE, USER, "서울 구별로 보여줘")[0]
+    assert said["sido"] == "서울"  # 말한 시도는 그대로
+    two = {**BASE, "regions": ["부산", "서울"]}
+    assert s.inherit(rank, plain, two, USER, "구별로 보여줘")[0]["sido"] is None  # 보던 곳이 여럿
+
+
+def test_by_district_request_ranks_inside_the_province_being_viewed(talk: Talk) -> None:
+    talk.say("부산 출생아 최근 5년 보여 줘")
+    res = talk.say("구별로 자세히 보여줘")
+    assert res["request_type"] == "change" and talk.extracted == [] and len(talk.asked) == 1
+    p = res["parsed"]
+    assert (p["type"], p["level"], p["sido"], p["regions"]) == ("rank", "시군구", "부산", [])
+    assert p["indicator"] == "출생아 수"
+    res = talk.say("시도별로 보여줘")
+    assert (res["parsed"]["level"], res["parsed"]["sido"]) == ("시도", None)
+    # 보던 지역이 여럿이거나 지역·지표·연도를 함께 말하면 HCX에 맡긴다
+    assert s.region_split_changes("구별로 보여줘", {**BASE, "regions": ["부산", "서울"]}) is None
+    assert s.region_split_changes("서울 구별로 보여줘", BASE) is None
+    assert s.region_split_changes("구별 출생아 수", BASE) is None
+
+
+@pytest.mark.parametrize(
+    "said",
+    [
+        "남녀로 나눠서 구별로 자세히 보여줘",
+        "연령별로 구별로 보여줘",
+        "구별로 낮은 순으로 보여줘",
+        "구별로 상위 3개만 보여줘",
+        "구별로 비교해서 보여줘",
+        "인구별로 자세히 보여줘",
+        "2022년 구별로 보여줘",
+    ],
+)
+def test_region_split_keeps_additional_conditions_for_hcx(talk: Talk, said: str) -> None:
+    talk.say("부산 출생아 최근 5년 보여 줘")
+    assert s.region_split_changes(said, BASE) is None
+    res = talk.say(said)
+    assert res["request_type"] not in ("detail", "source", "summary")
+    assert talk.extracted == [said]
