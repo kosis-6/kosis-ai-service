@@ -935,3 +935,84 @@ def test_summary_after_tables_only_answer_repeats_its_lead(talk: Talk) -> None:
     assert res["request_type"] == "summary" and res["summary"] is None
     assert res["answer"] == first["answer"].split("\n\n")[0]
     assert len(talk.asked) == asked and len(talk.searched) == 1  # 다시 해석·검색하지 않는다
+
+
+# ---- 돌려 말한 말: 인사, 출처, 원인, 지표만 바꾸기, 성별 구분 없는 지표 --------------------
+
+
+def test_bare_indicator_question_keeps_the_view_and_period() -> None:
+    """ "사망자 수는?"처럼 지표만 말하면 보는 방식(추이)·기간·지역을 그대로 이어받는다.
+    전에는 값 하나로 읽어 두 지역 추이 뒤에 첫 지역의 한 해 값만 답했다"""
+    prev = {**BASE, "regions": ["부산", "서울"]}
+    new = {"type": "value", "indicator": "사망자 수", "regions": [], "year": 2025, "sex": "계"}
+    plain = {"indicator": "user", "regions": "default", "period": "default", "sex": "default"}
+    p, src = s.inherit(new, plain, prev, USER, "사망자 수는?")
+    assert p["type"] == "trend" and p["regions"] == ["부산", "서울"]
+    assert (p["start_year"], p["end_year"]) == (2020, 2024) and p["indicator"] == "사망자 수"
+    assert src["regions"] == "inherited" and src["period"] == "inherited"
+    # 보는 방식을 말했으면 그 방식대로 (기간은 방식이 다르면 이어받지 않는다)
+    p, src = s.inherit(new, plain, prev, USER, "사망자 수가 가장 많은 곳은?")
+    assert p["type"] == "compare" and p["year"] == 2025 and src["period"] == "default"
+
+
+def test_value_question_with_several_inherited_regions_compares_them() -> None:
+    prev = {**BASE, "regions": ["부산", "서울"]}
+    new = {"type": "value", "indicator": "사망자 수", "regions": [], "year": 2022, "sex": "계"}
+    said = {"indicator": "user", "regions": "default", "period": "user", "sex": "default"}
+    p, src = s.inherit(new, said, prev, USER, "2022년 사망자 수는?")
+    assert p["type"] == "compare" and p["regions"] == ["부산", "서울"] and p["year"] == 2022
+    one = s.inherit(new, said, BASE, USER, "2022년 사망자 수는?")[0]
+    assert one["type"] == "value" and one["regions"] == ["부산"]  # 한 지역이면 값 하나 그대로
+
+
+def test_greeting_is_answered_without_hcx_and_keeps_conditions(talk: Talk) -> None:
+    res = talk.say("안녕하세요")  # 첫 말
+    assert res["status"] == "chat" and res["request_type"] == "chat" and res["sources"] == []
+    talk.say("부산 출생아 최근 5년 보여 줘")
+    for said in ("고마워", "감사합니다!", "네", "ㅇㅋ"):
+        res = talk.say(said)
+        assert res["request_type"] == "chat" and "이어서 질문해 주세요" in res["answer"], said
+        assert [a["value"] for a in res["applied"]][:2] == ["출생아 수", "부산"]
+    assert len(talk.asked) == 1 and talk.extracted == [] and talk.searched == []
+    res = talk.say("2022년만", request_type="change", changes={"year": 2022})
+    assert res["parsed"]["regions"] == ["부산"]  # 조건은 그대로 이어진다
+    assert s.chat_reply("고마워 그런데 서울은?") is None and s.chat_reply("네이버 통계") is None
+
+
+def test_source_question_repeats_the_source_lines(talk: Talk, monkeypatch) -> None:
+    answer = "핵심 문장.\n\n- 2020년: 1\n※ 계산식: A ÷ B\n출처: 통계청 (기준)\n통계표: https://kosis.kr/x"
+    result = talk._result
+    monkeypatch.setattr(talk, "_result", lambda *a: {**result(*a), "answer": answer})
+    first = talk.say("부산 출생아 최근 5년 보여 줘")
+    for said in ("이 통계 출처가 뭐야?", "언제 기준이야?", "어떻게 계산한 거야?"):
+        res = talk.say(said)
+        assert res["request_type"] == "source" and res["sources"] == first["sources"], said
+        assert res["answer"].split("\n")[1:] == [
+            "※ 계산식: A ÷ B",
+            "출처: 통계청 (기준)",
+            "통계표: https://kosis.kr/x",
+        ]
+    assert talk.extracted == [] and talk.answered == [] and talk.searched == []
+    assert not s.source_request("출생아 수 출처 통계표 찾아줘")  # 지표를 말하면 질문이다
+
+
+def test_why_question_says_no_cause_and_repeats_the_summary(talk: Talk) -> None:
+    first = talk.say("부산 출생아 최근 5년 보여 줘")
+    res = talk.say("왜 늘어난 거야?")
+    assert res["request_type"] == "summary" and talk.extracted == []
+    assert res["answer"].split("\n")[:2] == [s.NO_CAUSE, first["summary"]["headline"]]
+    assert not s.why_request("왜 서울 출생아 수가 줄었어?")  # 지표를 말하면 새 질문 (qa의 causal)
+
+
+def test_sex_that_the_data_does_not_split_is_told() -> None:
+    result = {"status": "ok", "sex": "계", "value": 1}
+    assert s.sex_not_split({"sex": "남"}, result)
+    assert s.effective({"sex": "남", "type": "value"}, result)["sex"] == "계"
+    assert not s.sex_not_split({"sex": "남"}, {**result, "sex": "남"})
+    assert not s.sex_not_split({"sex": "계"}, result)
+    assert not s.sex_not_split({"sex": "남"}, {"status": "out_of_range"})
+    split = {
+        "status": "ok",
+        "split": [{"status": "ok", "sex": "계"}, {"status": "ok", "sex": "남"}],
+    }
+    assert not s.sex_not_split({"sex": "남"}, split)

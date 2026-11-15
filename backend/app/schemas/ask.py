@@ -90,7 +90,8 @@ class AskResponse(BaseModel):
         default=None, description="지역·이사 집계 범위를 확인하는 질문과 선택지"
     )
     status: str | None = Field(
-        description="ok / tables(수치 없이 통계표만 안내) / 답변 불가 사유 (out_of_range 등)"
+        description="ok / tables(수치 없이 통계표만 안내) / chat(인사에 대한 답)"
+        " / 답변 불가 사유 (out_of_range 등)"
     )
     answer: str = Field(description="답변 문장 + 수치·출처 (화면에 그대로 보여줄 답변)")
     parsed: dict[str, Any] = Field(description="1단계 질문 분석 결과")
@@ -110,7 +111,8 @@ class AskResponse(BaseModel):
     request_type: str | None = Field(
         default=None,
         description="이번 말을 읽은 방식: new(새 질문) / change(조건 변경) / chart(차트 바꾸기)"
-        " / summary(요약) / detail(직전 답을 자세히) / reply(되묻기에 대한 답) / unclear(되물음)",
+        " / summary(요약) / detail(직전 답을 자세히) / source(직전 답의 출처·계산식)"
+        " / chat(인사·감사) / reply(되묻기에 대한 답) / unclear(되물음)",
     )
     applied: list[Applied] = Field(default_factory=list, description="이번 답에 적용한 조건과 출처")
     notice: str | None = Field(

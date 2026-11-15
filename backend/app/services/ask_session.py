@@ -70,6 +70,8 @@ REPLY_MAX_CHARS = 25  # 되묻기 답은 이보다 짧다 (길면 새 질문)
 FOLLOW_MAX_TOKENS = 512  # 변경 추출 응답의 최대 길이
 
 DETAIL = "detail"  # 직전 답을 자세히 (문장 + 수치 목록 그대로)
+SOURCE = "source"  # 직전 답의 출처·계산식
+CHAT = "chat"  # 인사·감사 (통계 질문이 아님)
 NEW, CHANGE, CHART, SUMMARY, REPLY, UNCLEAR = (
     "new",
     "change",
@@ -185,7 +187,19 @@ def effective(parsed: dict, result: dict) -> dict:
         c.pop("asked", None)  # 기간 표현("최근 5년")은 연도로 바꿔 적었다
     elif result.get("status") == "ok" and result.get("year"):
         c["year"] = result["year"]
+    if sex_not_split(parsed, result):
+        c["sex"] = "계"  # 화면의 조건도 실제로 답한 대로
     return c
+
+
+def sex_not_split(parsed: dict, result: dict) -> bool:
+    """남자·여자만 보자고 했는데 성별로 나뉜 자료가 없어 전체 값으로 답했는가"""
+    leaves = qa._leaves(result) if result.get("status") == "ok" else []
+    return (
+        parsed.get("sex") in ("남", "여")
+        and bool(leaves)
+        and all(r.get("sex") == "계" for r in leaves)
+    )
 
 
 def inherited_notice(conditions: dict, sources: dict[str, str]) -> str | None:
@@ -408,9 +422,28 @@ def inherit(
                 p[key] = copy.deepcopy(prev[key])
         p.pop("unsupported", None)
         s["indicator"] = "inherited"
+    if (
+        question
+        and kind == "value"
+        and prev.get("type") in ("trend", "compare", "rank")
+        and s.get("regions") == "default"
+        and s.get("period") == "default"
+        and not VIEW_ASK.search(question)
+        and names_indicator(question, parsed)
+    ):
+        # "사망자 수는?"처럼 지표만 말했다: 보는 방식(추이·순위)과 기간도 그대로 이어받는다.
+        # 전에는 값 하나로 읽어, 두 지역 추이 뒤에 물으면 첫 지역의 한 해 값만 답했다
+        for key in KEEP_VIEW:
+            p[key] = copy.deepcopy(prev.get(key))
+        kind = p.get("type")
+        if prev_sources.get("period") in ("user", "inherited"):
+            s["period"] = "inherited"
     if s.get("regions") == "default" and kind != "rank" and prev.get("regions"):
         p["regions"] = list(prev["regions"])
         s["regions"] = "inherited"
+    if p.get("type") == "value" and s.get("regions") == "inherited" and len(p["regions"]) > 1:
+        if p.get("aggregate") != "sum":
+            p["type"] = kind = "compare"  # 값 하나는 한 지역만 본다: 이어받은 지역이 여럿이면 비교
     if (
         s.get("period") == "default"
         and prev_sources.get("period") in ("user", "inherited")
@@ -567,6 +600,76 @@ def detail_request(question: str) -> bool:
     )
 
 
+# 인사·감사·맞장구만 한 말. 통계 질문으로 해석하지 않는다
+# (HCX가 질문으로 읽어 10초쯤 뒤 "통계표를 찾지 못했습니다"로 답하던 문제)
+_END = r"[\s.!~?ㅎㅋ^]*$"
+HELLO = re.compile(r"^\s*(안녕(하세요|하십니까)?|하이|헬로|hi|hello|ㅎㅇ)" + _END, re.I)
+THANKS = re.compile(
+    r"^\s*(정말\s*|너무\s*)?(고마워요?|고맙습니다|감사(합니다|해요|드려요)?|땡큐|thanks?|thank you"
+    r"|ㄳ|ㄱㅅ|수고(하세요|했어요|하셨습니다)?)" + _END,
+    re.I,
+)
+OKAY = re.compile(
+    r"^\s*(네|넵|넹|응|ㅇㅇ|ㅇㅋ|오케이|ok|okay|알겠어요?|알겠습니다|알았어요?|좋아요?|굿|good"
+    r"|잘\s*가요?|바이|bye)" + _END,
+    re.I,
+)
+
+
+def chat_reply(question: str) -> str | None:
+    """인사·감사·맞장구면 바로 돌려줄 말, 아니면 None"""
+    more = "더 궁금한 통계가 있으면 이어서 질문해 주세요."
+    if HELLO.search(question):
+        return "안녕하세요. 인구 통계를 질문해 주세요 (예: 최근 5년 부산 출생아 수 추이)."
+    if THANKS.search(question):
+        return f"도움이 되었다니 다행입니다. {more}"
+    if OKAY.search(question):
+        return f"네. {more}"
+    return None
+
+
+# 직전 답의 출처·기준·계산식을 묻는 말 ("이 통계 출처가 뭐야?", "언제 기준이야?")
+SOURCE_REQUEST = re.compile(
+    r"출처|근거|어디서\s*(나온|나왔|가져|난|온)|(어느|무슨|어떤)\s*(통계표?|자료|조사|데이터)"
+    r"|기준이?\s*(뭐|언제|어떻게)|언제\s*기준|계산식|어떻게\s*(계산|구한|구했)"
+)
+SOURCE_LINE = re.compile(r"^(※ 계산식:|출처:|통계표:)")
+
+
+def source_request(question: str) -> bool:
+    return (
+        len(question.strip()) <= REPLY_MAX_CHARS
+        and bool(SOURCE_REQUEST.search(question))
+        and not indicators.find_in_text(question)
+    )
+
+
+def source_text(last: dict) -> str | None:
+    """직전 답의 출처·계산식 줄 (답변의 수치 목록 아래에 이미 있는 줄 그대로). 없으면 None"""
+    lines = [ln for ln in (last.get("answer") or "").split("\n") if SOURCE_LINE.match(ln)]
+    if not lines or not last.get("sources"):
+        return None
+    return "\n".join(["직전 답은 아래 통계표의 수치로 만들었습니다.", *dict.fromkeys(lines)])
+
+
+# 직전 답의 원인을 묻는 말 ("왜 줄어든 거야?"). 지표·지역을 새로 말하면 새 질문이다
+WHY_REQUEST = re.compile(r"왜|이유|원인|때문|탓|어째서|효과|영향")
+NO_CAUSE = "원인이나 정책 효과는 통계 수치만으로 판단할 수 없어 수치 변화만 보여드립니다."
+
+
+def why_request(question: str) -> bool:
+    return (
+        len(question.strip()) <= REPLY_MAX_CHARS
+        and bool(WHY_REQUEST.search(question))
+        and not indicators.find_in_text(question)
+    )
+
+
+# 보는 방식을 말한 질문 ("사망자 수 추이는?"). 없으면 지표만 바꾼 말로 본다 ("사망자 수는?")
+VIEW_ASK = re.compile(r"추이|변화|추세|비교|차이|순위|몇\s*위|가장|제일|구성|별로|마다|어디")
+KEEP_VIEW = ("type", "year", "start_year", "end_year", "level", "sido", "top", "ascending")
+
+
 def summary_text(last: dict, question: str) -> str:
     """ "요약해줘"의 답: 직전 답의 요약 (answer_summary.py). "한 줄로"면 핵심 문장만.
     요약이 없는 답(답변 불가, 통계표 안내)은 답변의 첫 문단을 다시 준다"""
@@ -684,6 +787,20 @@ def _unclear(state: dict, reason: str) -> dict:
         "sources": [],
         "chart": None,
         "request_type": UNCLEAR,
+        "trace": {},
+    }
+
+
+def _chat_answer(state: dict | None, reply: str) -> dict:
+    """인사·감사에 대한 답. 조건은 그대로 둔다 (다음 "서울도 같이"가 이어진다)"""
+    return {
+        "status": "chat",
+        "answer": reply,
+        "parsed": (state or {}).get("conditions") or {},
+        "result": {"status": "chat"},
+        "sources": [],
+        "chart": None,
+        "request_type": CHAT,
         "trace": {},
     }
 
@@ -913,6 +1030,8 @@ async def _turn(
             res["request_type"] = REPLY
             return res, {**state["sources"], "regions": "user"}, None
 
+    if reply := chat_reply(question):
+        return _chat_answer(state, reply), {}, None
     usable = bool(state and (state.get("conditions") or {}).get("type") not in NO_CONDITIONS)
     if not usable and summary_request(question):
         # 이어 갈 조건이 없을 때(첫 말, 통계표만 안내한 뒤)의 "요약해줘": 질문으로 해석하지 않는다
@@ -934,6 +1053,13 @@ async def _turn(
         # "요약하지 말고 더 자세히": 요약이 아니라 직전 답 전체(문장 + 수치 목록)를 다시 준다
         last = state["last"]
         return _reuse(state, last["answer"], last.get("chart"), DETAIL), state["sources"], None
+    if has_last and view is None and source_request(question):
+        if text := source_text(state["last"]):
+            return _reuse(state, text, None, SOURCE), state["sources"], None
+    if has_last and view is None and why_request(question) and state["last"].get("summary"):
+        # "왜 줄어든 거야?": 원인은 판단하지 않는다고 알리고 직전 답의 요약을 다시 준다
+        text = f"{NO_CAUSE}\n{answer_summary.text(state['last']['summary'])}"
+        return _reuse(state, text, state["last"].get("chart"), SUMMARY), state["sources"], None
     if view is None and not (has_last and summary_request(question)):
         trace: dict = {}
         delta = await extract(state, question, trace)
@@ -1012,10 +1138,10 @@ def next_state(state: dict | None, question: str, res: dict, sources: dict) -> d
             "recent": recent,
             "turn_no": turn_no,
         }
-    if res.get("request_type") in (CHART, SUMMARY, DETAIL):
+    if res.get("request_type") in (CHART, SUMMARY, DETAIL, SOURCE):
         last = {**prev["last"], "chart": res.get("chart") or prev["last"].get("chart")}
         return {**prev, "last": last, "recent": recent, "turn_no": turn_no}
-    if res.get("request_type") == UNCLEAR:
+    if res.get("request_type") in (UNCLEAR, CHAT):
         return {**prev, "recent": recent, "turn_no": turn_no}
     if res.get("status") == TABLES:
         # 수치 없이 표만 안내했다: 수치 조건은 이어 가지 않는다 (다음 "서울도 같이"는 새 질문).
@@ -1061,7 +1187,9 @@ async def _attach_tables(res: dict, state: dict | None, question: str, user_id: 
         CHART,
         SUMMARY,
         DETAIL,
+        SOURCE,
         UNCLEAR,
+        CHAT,
     ):
         return
     asked = res.get("question") or question
@@ -1112,6 +1240,10 @@ async def handle(
         await _attach_tables(res, state, question, user_id)
         if "summary" not in res:  # 직전 답을 다시 쓴 응답(_reuse)은 그 요약을 이미 들고 있다
             res["summary"] = _summary(res.get("result"))
+        if sex_not_split(res.get("parsed") or {}, res.get("result") or {}):
+            word = "남자" if res["parsed"]["sex"] == "남" else "여자"
+            told = f"이 지표는 성별로 나뉜 자료가 없어 {word}만 보지 못하고 전체 값으로 답했습니다."
+            notice = " ".join(filter(None, [notice, told]))
         if not res.get("chart") and (reason := charts.omission_reason(res.get("result"))):
             notice = " ".join(filter(None, [notice, reason]))
         if expired:
