@@ -89,7 +89,11 @@ CHART_WORDS = {
     "line": re.compile(r"꺾은\s*선|선\s*그래프|라인"),
 }
 CHART_REQUEST = re.compile(r"(보여|바꿔|그려|볼래|보고|줘|주세요|로$|으로$)")
-SUMMARY_REQUEST = re.compile(r"^\s*(한\s*줄로\s*|짧게\s*|간단히\s*)?(요약|정리)(해|좀|\s|$)")
+# 요약만 해 달라는 말. "요약 통계 보여줘", "정리해고 통계"처럼 뒤에 다른 말이 오면 질문이다
+SUMMARY_REQUEST = re.compile(
+    r"^\s*((한|두|세)\s*줄로|짧게|간단히|간단하게|간략히)?\s*(요약|정리)\s*"
+    r"(좀\s*)?(해\s*(줘요?|주세요|줄래요?|봐요?|주라)?|부탁\s*(해요?|합니다|드려요)?)?\s*[.!?~]*$"
+)
 SEX_WORDS = re.compile(r"남자|여자|남성|여성|남녀|성별")
 
 LABELS = {"indicator": "지표", "regions": "지역", "period": "기간", "sex": "성별"}
@@ -670,6 +674,20 @@ def _unclear(state: dict, reason: str) -> dict:
     }
 
 
+def _nothing_to_summarize() -> dict:
+    reason = "요약할 답이 아직 없습니다."
+    return {
+        "status": "unclear",
+        "answer": f"{reason} 먼저 통계 질문을 해 주세요 (예: 최근 5년 부산 출생아 수 추이).",
+        "parsed": {},
+        "result": {"status": "unclear", "reason": reason},
+        "sources": [],
+        "chart": None,
+        "request_type": UNCLEAR,
+        "trace": {},
+    }
+
+
 async def _answer(conditions: dict, trace: dict | None = None) -> dict:
     res = await qa.answer(conditions, trace if trace is not None else {})
     res["chart"] = charts.build(res.get("result"))
@@ -882,6 +900,13 @@ async def _turn(
             return res, {**state["sources"], "regions": "user"}, None
 
     usable = bool(state and (state.get("conditions") or {}).get("type") not in NO_CONDITIONS)
+    if not usable and summary_request(question):
+        # 이어 갈 조건이 없을 때(첫 말, 통계표만 안내한 뒤)의 "요약해줘": 질문으로 해석하지 않는다
+        # (HCX가 통계 질문으로 읽어 "통계표를 찾지 못했습니다"로 답하던 문제)
+        if ((state or {}).get("last") or {}).get("answer"):
+            last = state["last"]
+            return _reuse(state, summary_text(last, question), None, SUMMARY), {}, None
+        return _nothing_to_summarize(), {}, None
     if not usable:
         return await _new(question, None)
 

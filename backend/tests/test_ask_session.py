@@ -222,7 +222,19 @@ def test_chart_view_and_summary() -> None:
     assert s.chart_with_view({"type": "parts", "rows": []}, "line") is None
     assert s.chart_with_view(None, "bar") is None
     assert s.summary_request("요약해줘") and s.summary_request("한 줄로 정리해 줘")
+    for said in (
+        "요약",
+        "정리해줘",
+        "짧게 요약 좀",
+        "한줄로 요약해줘",
+        "요약 부탁해",
+        "요약해 주세요.",
+    ):
+        assert s.summary_request(said), said
     assert not s.summary_request("서울 인구 요약 통계 알려줘")
+    # 요약·정리로 시작해도 뒤에 다른 말이 오면 질문이다
+    for said in ("요약 통계 보여줘", "정리해고 통계 알려줘", "요약해서 표로 보여줘"):
+        assert not s.summary_request(said), said
     assert s.lead("핵심 문장입니다.\n\n- 2020년: 1\n출처: ...") == "핵심 문장입니다."
 
 
@@ -884,3 +896,23 @@ def test_invalid_region_chart_has_notice_and_keeps_numeric_answer(talk: Talk, mo
     assert res["answer"] == "서울·부산의 계산 결과입니다."
     assert "기준이 달라" in res["notice"]
     assert len(res["result"]["split"]) == 2
+
+
+def test_summary_with_nothing_to_summarize_is_not_read_as_a_question(talk: Talk) -> None:
+    res = talk.say("요약해줘")  # 첫 말
+    assert res["status"] == "unclear" and res["request_type"] == "unclear"
+    assert res["answer"].startswith("요약할 답이 아직 없습니다.") and res["summary"] is None
+    assert talk.asked == [] and talk.extracted == []  # HCX를 부르지 않는다
+    res = talk.say("부산 출생아 최근 5년 보여 줘")  # 그 뒤 질문은 그대로 새 질문
+    assert res["status"] == "ok" and res["request_type"] == "new"
+
+
+def test_summary_after_tables_only_answer_repeats_its_lead(talk: Talk) -> None:
+    talk.parsed = {**BASE, "type": "value", "indicator": "반려동물 수"}
+    first = talk.say("반려동물 키우는 집 몇 곳이야?")
+    assert first["status"] == "tables"
+    asked = len(talk.asked)
+    res = talk.say("요약해줘")
+    assert res["request_type"] == "summary" and res["summary"] is None
+    assert res["answer"] == first["answer"].split("\n\n")[0]
+    assert len(talk.asked) == asked and len(talk.searched) == 1  # 다시 해석·검색하지 않는다
