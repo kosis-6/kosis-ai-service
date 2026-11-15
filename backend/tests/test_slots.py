@@ -229,3 +229,14 @@ def test_student_words():
     assert llm_pick.OFF_DOMAIN.search("한 반에 학생 수")
     a = agegroup.resolve("초등학생인 다문화 가정 아이")
     assert (a.lo, a.hi) == (7, 12)
+
+
+def test_single_age_becomes_an_item_condition() -> None:
+    """나이 하나만 말하면 분류 값 조건으로. LLM 이 나이 조건을 이미 냈거나 구간이면 그대로"""
+    assert _slots("서른 살 여성의 출산율")["conditions"]["items"] == ["30세"]
+    assert _slots("30세 여성의 출산율", items=["30대"])["conditions"]["items"] == ["30대"]
+    assert _slots("65세 이상 인구")["conditions"]["items"] == []
+    assert _slots("나이를 한 살 단위로")["conditions"]["items"] == []
+    out = _slots("서른 살 여성의 출산율")
+    assert any(f["key"] == "items" and "30세" in f["reason"] for f in out["fixes"])
+

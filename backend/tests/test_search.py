@@ -1220,3 +1220,49 @@ def test_ground_conditions_keeps_age_and_education_axes():
     assert s["conditions"]["items"] == ["35세", "미혼"]
     s = se.ground_conditions(_gslots("대학 나온 사람이 결혼을 더 많이 하는지", ["학력"], ["결혼"]))
     assert s["conditions"]["classes"] == ["학력"]
+
+
+def test_fertility_with_an_age_expands_to_age_specific_rate() -> None:
+    """나이를 말한 질문의 '출산율'은 합계출산율이 아니라 연령별 출산율로 넓힌다"""
+    table = {"출산율": "합계출산율", "여성": "여성인구"}
+    aged = se.synonyms.keyword_text("서른 살 여성의 출산율", table)
+    assert "30세" in aged and "연령별 출산율" in aged and "합계출산율" not in aged
+    assert "합계출산율" in se.synonyms.keyword_text("요즘 출산율", table)
+
+
+def test_fertility_tables_cover_the_female_condition() -> None:
+    t = se.prepare([_t("A", "시도/모의 연령별 출산율", 2000, 2024, "FA", sex_coverage="none")])[0]
+    assert se.check(t, _slots("여성 출산율", "출산율", sex="여"))["sex"] is True
+    assert se.check(t, _slots("남성 출산율", "출산율", sex="남"))["sex"] is False
+
+
+def test_parent_nationality_is_the_nationality_axis() -> None:
+    t = se.prepare(
+        [_t("A", "국제결혼가정 자녀", 2015, 2015, "FA",
+            classifications=[{"name": "국적별", "sample_values": ["베트남"]}])]
+    )[0]  # fmt: skip
+    checks = se.check(t, _slots("부모 국적별 자녀", "자녀", classes=["부모 국적"]))
+    assert checks["class:부모 국적"] is True
+
+
+def test_husband_and_wife_items_count_as_sex_values() -> None:
+    """혼인 표는 성별을 남편 · 아내로 쓴다. 기존 판정(남자인구수 · 여자인구수)은 그대로 통과한다"""
+    wed = se.prepare(
+        [_t("A", "시도별 평균초혼연령", 2000, 2024, "FA", sex_coverage="none",
+            items=[{"name": "남편"}, {"name": "아내"}])]
+    )[0]  # fmt: skip
+    both = _slots("남녀 평균 초혼 연령", "초혼 연령", classes=["성별"])
+    assert se.check(wed, both)["class:성별"] is True
+    assert se.check(wed, _slots("남자 평균 초혼 연령", "초혼 연령", sex="남"))["sex"] is True
+    pop = se.prepare(
+        [_t("B", "행정구역(시군구)별, 성별 인구수", 1992, 2025, "FB", sex_coverage="none",
+            items=[{"name": "총인구수"}, {"name": "남자인구수"}, {"name": "여자인구수"}])]
+    )[0]  # fmt: skip
+    assert se.check(pop, _slots("남녀 인구", "인구", classes=["성별"]))["class:성별"] is True
+    older = se.prepare(
+        [_t("C", "초혼부부의 연령차별 혼인", 1990, 2025, "FC", sex_coverage="none",
+            classifications=[{"name": "연령차별", "values": ["남자연상", "여자연상", "동갑"]}])]
+    )[0]  # fmt: skip
+    # '남자연상'은 성별 값이 아니다
+    assert (older["male_value"], older["female_value"]) == (False, False)
+

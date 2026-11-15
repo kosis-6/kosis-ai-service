@@ -65,6 +65,9 @@ CLASS_ALIAS = {
     "연령계층": "연령",
     "학력": "교육정도",
     "국적": "국적",
+    # '부모 국적별'은 표의 '국적별' 축이다 (국적별 축이 있는 표가 모두 '부모 국적 ✘'로 나오던 문제)
+    "부모국적": "국적",
+    "부모의국적": "국적",
 }
 # 특정 집단만 조사한 통계는 질문에 그 집단 말이 없으면 감점 (개발셋 d57 '평균 몇 살까지 사는지'에
 # 사할린 '결혼 여부' 표,
@@ -145,7 +148,14 @@ STOPWORDS = {
 SUFFIXES = ("한", "된", "을", "를", "의", "은", "는", "이", "가", "에", "별", "인", "자")
 MIGRATION = re.compile(r"이동|전입|전출|이주|이사")
 # 대상 집단이 여성뿐인 표 ('기혼여성인구', '부인수'. 카탈로그에 남성뿐인 표는 없다)
-FEMALE_ONLY_TABLE = re.compile(r"여성|부인")
+# 출산율 · 모(母)의 연령 · 가임 표도 여성만 다룬다 ('서른 살 여성의 출산율' → '모의 연령별 출산율'이
+# 성별 분류가 없어 '여 ✘'로 나오던 문제)
+FEMALE_ONLY_TABLE = re.compile(r"여성|부인|출산율|출산률|모의연령|가임")
+# 분류 값 · 항목 이름이 이 말과 같으면 그 성별을 담은 표다.
+# 혼인 · 이혼 표는 성별을 남편 · 아내로 쓴다
+# ('평균초혼연령'의 항목이 남편 · 아내라 '성별 ✘'로 나오던 문제). 기존 판정이 ✘ 일 때만 보탠다
+MALE_VALUES = frozenset({"남자", "남성", "남편"})
+FEMALE_VALUES = frozenset({"여자", "여성", "아내"})
 PROJECTION_TABLE = re.compile(r"추계|장래")
 
 TABLES_SQL = """
@@ -253,6 +263,13 @@ def prepare(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         # 이어 붙인 글자에서 찾으면 '고령'이 '고령군'에 걸리므로 값(또는 괄호 안 등 조각)과
         # 같을 때만 본다 (value_keys)
         t["values_n"] = {k for c in classes for v in c.get("values") or [] for k in value_keys(v)}
+        named = {
+            k.removesuffix("수")
+            for name in [v for c in classes for v in c.get("values") or []]
+            + [i["name"] for i in t["items"] or []]
+            for k in value_keys(name)
+        }
+        t["male_value"], t["female_value"] = bool(named & MALE_VALUES), bool(named & FEMALE_VALUES)
         t["age_cov"] = age_coverage(
             t["name_n"], t["class_n"], t["meta_n"], t.get("table_name") or ""
         )
@@ -646,6 +663,7 @@ def check(t: dict[str, Any], slots: dict[str, Any]) -> dict[str, bool]:
             or t["sex"] == sex
             or (sex == "여" and bool(FEMALE_ONLY_TABLE.search(t["name_n"])))
             or has_value(t, "남자" if sex == "남" else "여자")
+            or bool(t.get("male_value" if sex == "남" else "female_value"))
         )
     elif sex == "전체" and t["sex_coverage"] != "none":
         out["sex"] = t["has_total"] is not False
@@ -664,7 +682,9 @@ def check(t: dict[str, Any], slots: dict[str, Any]) -> dict[str, bool]:
         if (
             cls == "성별" and not ok
         ):  # 항목이 남자/여자로 갈라진 표도 성별을 담는다 (주민등록 시군구별 성별 인구수)
-            ok = has_value(t, "남자") and has_value(t, "여자")
+            ok = (has_value(t, "남자") and has_value(t, "여자")) or bool(
+                t.get("male_value") and t.get("female_value")
+            )
         out[f"class:{cls}"] = ok
     for item in c["items"]:
         key = norm(item)

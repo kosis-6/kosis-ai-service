@@ -1,5 +1,7 @@
 from datetime import date
 
+import pytest
+
 from app.services import agegroup, timeref
 from app.services import slots as sl
 
@@ -164,3 +166,34 @@ def test_age_span_and_item_check() -> None:
     # 연령 표현 말고 남는 말('자녀 셋')이 표에 없으면 연령 축만으로 통과시키지 않는다
     s["conditions"]["items"] = ["미성년 자녀 셋 이상"]
     assert se.check(mom, s)["item:미성년 자녀 셋 이상"] is False
+
+
+@pytest.mark.parametrize(
+    ("text", "digits", "single"),
+    [
+        ("서른 살 여성의 출산율", "30세 여성의 출산율", "30세"),
+        ("스물다섯 살", "25세", "25세"),
+        ("스무 살 남자", "20세 남자", "20세"),
+        ("서른한 살", "31세", "31세"),
+        ("한 살 단위로", "1세 단위로", None),  # 간격이지 한 나이가 아니다
+        ("몇 살", "몇 살", None),
+        ("두 살림", "두 살림", None),  # '살림'은 나이가 아니다
+        ("혼자 살고 있는", "혼자 살고 있는", None),
+        ("65세 이상", "65세 이상", None),  # 구간
+        ("만 13세~만 15세", "만 13세~만 15세", None),  # 구간의 끝
+        ("20세와 30세", "20세와 30세", None),  # 나이가 둘
+    ],
+)
+def test_native_age_words_become_digits(text: str, digits: str, single: str | None) -> None:
+    from app.services import agegroup
+
+    assert agegroup.native_to_digits(text) == digits
+    assert agegroup.single_age(text) == single
+
+
+def test_age_said() -> None:
+    from app.services import agegroup
+
+    assert all(agegroup.said(q) for q in ("서른 살 여성", "20대 인구", "노인 인구"))
+    assert not agegroup.said("몇 살에 결혼하는지") and not agegroup.said("서울 인구")
+

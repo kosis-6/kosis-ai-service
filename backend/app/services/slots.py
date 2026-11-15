@@ -365,6 +365,11 @@ def correct(question: str, slots: dict[str, Any]) -> dict[str, Any]:
         [v for v in c["items"] if v not in SEX_VALUES and v != slots["topic"]],
         "성별 값·주제 제외",
     )
+    # 나이 하나만 말했으면('서른 살', '30세') 그 나이를 분류 값 조건으로 넣는다.
+    # LLM 이 나이 조건을 이미 냈으면('30대', '30세') 그대로 둔다
+    age = agegroup.single_age(question)
+    if age and not any(agegroup.span(v) or AGE_VALUE.search(v) for v in c["items"]):
+        fix("items", [*c["items"], age], f"질문의 나이 {age}")
 
     slots["fixes"] = fixes
     return slots
@@ -458,6 +463,7 @@ def spouse_of(question: str) -> str | None:
     return "외국인 아내" if wife else "외국인 남편"
 
 
+AGE_VALUE = re.compile(r"\d+\s*(?:세|살|대)")
 OUR_DISTRICT = re.compile(r"우리\s*(구|군)(로|에서|에|는|은|의|가|를|도)?(?![가-힣])")
 DISTRICT_TAGS = ("NNG", "NR", "NNB")  # Kiwi 가 '우리 구'의 '구'에 붙이는 품사
 _SIDO_HEAD = re.compile(

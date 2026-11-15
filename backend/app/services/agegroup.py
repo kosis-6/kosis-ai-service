@@ -109,6 +109,52 @@ AGE_SPANS = [
 ]
 
 
+# 고유어 나이 ('서른 살', '스물다섯 살', '스무 살', '한 살'). 표와 조건은 'N세'로 쓴다
+NATIVE_TENS = {
+    "열": 10, "스물": 20, "스무": 20, "서른": 30, "마흔": 40, "쉰": 50,
+    "예순": 60, "일흔": 70, "여든": 80, "아흔": 90,
+}  # fmt: skip
+NATIVE_UNITS = {
+    "하나": 1, "한": 1, "둘": 2, "두": 2, "셋": 3, "세": 3, "석": 3, "넷": 4, "네": 4,
+    "다섯": 5, "여섯": 6, "일곱": 7, "여덟": 8, "아홉": 9,
+}  # fmt: skip
+# '살' 뒤가 '살림 · 살고 · 살던'처럼 다른 낱말이면 나이가 아니다 ('두 살림', '한 살고')
+NATIVE_AGE = re.compile(
+    rf"(?<![가-힣])({'|'.join(sorted(NATIVE_TENS, key=len, reverse=True))})?\s*"
+    rf"({'|'.join(sorted(NATIVE_UNITS, key=len, reverse=True))})?\s*살(?![림고던며면았아기])"
+)
+# 한 나이만 말한 경우. '1세 단위'(간격), '60세 넘어서도' · '65세부터'(구간)는 한 나이가 아니다
+SINGLE_AGE = re.compile(
+    r"(?<![\d~\-])(\d{1,3})\s*(?:세|살)"
+    r"(?!\s*(?:이상|이하|미만|초과|넘|부터|까지|이후|이전|전후|안팎|단위|간격|별|[~\-]))"
+)
+
+
+def native_to_digits(text: str) -> str:
+    """'서른 살' → '30세', '스물다섯 살' → '25세'. 고유어 수가 없으면('몇 살') 그대로"""
+
+    def repl(m: re.Match) -> str:
+        if not (m[1] or m[2]):
+            return m[0]
+        return f"{NATIVE_TENS.get(m[1], 0) + NATIVE_UNITS.get(m[2], 0)}세"
+
+    return NATIVE_AGE.sub(repl, text)
+
+
+def said(text: str) -> bool:
+    """나이를 말했는가 ('30세', '20대', '서른 살', '노인')"""
+    t = native_to_digits(text)
+    return bool(NUMERIC_AGE.search(t)) or span(t) is not None
+
+
+def single_age(text: str) -> str | None:
+    """나이 하나만 말했으면 그 나이('30세'). 구간이거나 여럿이면 None"""
+    # '만 13세~만 15세'의 뒤 나이도 구간의 끝이다 ('~' 와 숫자 사이의 '만'을 지우고 본다)
+    t = re.sub(r"([~\-])\s*만\s*(?=\d)", r"\1", native_to_digits(text))
+    ages = {f"{int(m[1])}세" for m in SINGLE_AGE.finditer(t)}
+    return ages.pop() if len(ages) == 1 else None
+
+
 def span(text: str) -> AgeRef | None:
     """'20대', '30대 이상', '15~19세', '청소년' 같은 연령 표현 하나 → 구간. 연령 표현이 아니면 None"""
     for pat, fn in AGE_SPANS:
