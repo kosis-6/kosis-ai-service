@@ -100,8 +100,8 @@ def norm_pick(parsed: dict[str, Any] | None, cands: list[str]) -> str | None:
 
 
 def pick_mode() -> str:
-    """검토 모드. LLM_PICK_MODE 를 비워 두면 SEARCH_LLM 에 맞춘다
-    (11/15 까지 잰 조합: hcx → filter, gemma → pick_decided)"""
+    """검토 모드. LLM_PICK_MODE 를 비워 두면 통계표 찾기에 쓰는 LLM 에 맞춘다
+    (11/15 까지 잰 조합: HCX → filter, Gemma → pick_decided)"""
     return get_settings().llm_pick_mode or ("pick_decided" if search_llm.is_gemma() else "filter")
 
 

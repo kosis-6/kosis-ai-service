@@ -36,7 +36,7 @@ from datetime import date
 
 from app.services import slots as slot_parser
 from app.services import slots as slots_mod
-from app.services import agegroup, synonyms, timeref, vector_search
+from app.services import agegroup, search_llm, synonyms, timeref, vector_search
 
 logger = logging.getLogger(__name__)
 # 앱에 로그 설정이 없어 INFO가 안 보이므로, 서버 시작 메시지는 uvicorn 로그로 낸다
@@ -368,7 +368,7 @@ def status() -> dict[str, Any]:
         "retrieval": "hybrid" if _vectors is not None else "keyword",
         "adapter": vector_search.adapter_loaded(),
         "morph": synonyms.morph_backend(),
-        "search_llm": vector_search.get_settings().search_llm,
+        "search_llm": search_llm.provider(),  # 지금 쓰는 쪽: hcx 또는 gemma
     }
 
 

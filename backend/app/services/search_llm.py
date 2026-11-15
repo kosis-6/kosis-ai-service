@@ -1,16 +1,16 @@
-"""통계표 찾기의 LLM 호출 창구: 설정 SEARCH_LLM 으로 HCX-007(기본) / Gemma 4 31B 를 고른다
+"""통계표 찾기의 LLM 호출 창구: Gemma 서버 주소가 있으면 Gemma 4 31B, 없으면 HCX-007
 
 조건 추출(slots) · 계획(agent/plan) · 최종 검토(llm_pick)가 여기의 chat() 을 부른다.
 부르는 쪽은 HcxClient.chat 과 같은 모양(model, messages, **options)으로 부르고, Gemma 일 때는
 GemmaClient 가 옵션 이름을 OpenAI 호환 형식으로 바꿔 보낸다.
 
-Gemma 로 바꾸는 법 (.env):
-  SEARCH_LLM=gemma
+Gemma 로 쓰는 법 (.env). 주소만 넣으면 된다:
   GEMMA_BASE_URL=http://<서버>:8000/v1     vLLM 등 OpenAI 호환 서버
   GEMMA_API_KEY=...                        서버가 키를 받지 않으면 생략
   GEMMA_MODEL=gemma-4-31b                  서버가 띄운 모델 이름
+SEARCH_LLM 으로 고정할 수도 있다: auto(기본, 주소가 있으면 Gemma) / hcx / gemma
 
-프롬프트와 검토 방식도 SEARCH_LLM 을 따라간다 (HCX 는 지금 그대로, Gemma 는 11/15 에 잰 조합):
+프롬프트와 검토 방식도 고른 LLM 을 따라간다 (HCX 는 지금 그대로, Gemma 는 11/15 에 잰 조합):
   app/prompts/{search,plan,llm_pick}.py 의 *_GEMMA, llm_pick 의 pick_decided 모드 · temperature 0
 
 수치 답변(qa) · 연속 대화(ask_session)는 여기를 거치지 않고 HCX-007 을 그대로 쓴다.
@@ -30,7 +30,12 @@ DEFAULT_MAX_TOKENS = 1024
 
 
 def provider() -> str:
-    return get_settings().search_llm
+    """통계표 찾기에 지금 쓰는 LLM: "hcx" 또는 "gemma".
+    SEARCH_LLM=auto(기본)면 GEMMA_BASE_URL 이 있을 때 Gemma, 없으면 HCX"""
+    settings = get_settings()
+    if settings.search_llm == "auto":
+        return "gemma" if settings.gemma_base_url.strip() else "hcx"
+    return settings.search_llm
 
 
 def is_gemma() -> bool:
@@ -103,9 +108,7 @@ class GemmaClient:
     async def chat(self, model: str, messages: list[dict[str, Any]], **options: Any) -> ChatResult:
         """HcxClient.chat 과 같은 모양. model(HCX 모델 이름)은 쓰지 않고 self.model 로 보낸다"""
         if not self.base_url:
-            raise HcxError(
-                "gemma_not_configured", "SEARCH_LLM=gemma 인데 GEMMA_BASE_URL 이 없습니다"
-            )
+            raise HcxError("gemma_not_configured", "GEMMA_BASE_URL 이 없습니다")
         body = to_openai_body(self.model, messages, **options)
         for wait in (*self.retry_waits, None):
             try:

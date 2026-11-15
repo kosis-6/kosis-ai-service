@@ -20,10 +20,12 @@ class Settings(BaseSettings):
     hcx_base_url: str = "https://clovastudio.stream.ntruss.com"
 
     # 통계표 찾기(조건 추출·계획·최종 검토)에 쓰는 LLM (app/services/search_llm.py)
-    # hcx: HCX-007 (기본) / gemma: Gemma 4 31B, OpenAI 호환 서버(vLLM)의 /chat/completions
+    # auto(기본): GEMMA_BASE_URL이 있으면 Gemma 4 31B, 없으면 HCX-007
+    # hcx / gemma: 주소와 관계없이 그 모델로 고정 (gemma인데 주소가 없으면 호출이 실패한다)
+    # Gemma는 OpenAI 호환 서버(vLLM)의 /chat/completions로 부른다.
     # 수치 답변(qa)과 연속 대화(ask_session)는 이 설정과 관계없이 HCX-007을 쓴다 (Gemma로 재지 않음)
-    search_llm: Literal["hcx", "gemma"] = "hcx"
-    gemma_base_url: str = ""  # 예: http://gemma-host:8000/v1
+    search_llm: Literal["auto", "hcx", "gemma"] = "auto"
+    gemma_base_url: str = ""  # 예: http://gemma-host:8000/v1. 넣으면 통계표 찾기가 Gemma로 간다
     gemma_api_key: str = ""  # 서버가 키를 받지 않으면 비워 둔다
     gemma_model: str = "gemma-4-31b"  # 서버가 띄운 모델 이름
     gemma_timeout: float = 120.0  # 초. 응답 시간 중앙값이 HCX의 약 2배(9초)다
@@ -66,7 +68,7 @@ class Settings(BaseSettings):
     # pick_decided: 되묻기(멤버·지역) 상태가 아닐 때만 고른 표로 바꾼다. Gemma에서 pick은
     # 최종 정답을 올렸지만(11/15 실험실: 표 하나 408문항 323 → 363) 되묻기 상태에서 쓰면
     # 되묻기 적중이 떨어졌다.
-    # 비워 두면 SEARCH_LLM에 맞춘다 (hcx → filter, gemma → pick_decided)
+    # 비워 두면 통계표 찾기에 쓰는 LLM에 맞춘다 (HCX → filter, Gemma → pick_decided)
     llm_pick_mode: Literal["filter", "pick", "pick_decided", "resolve"] | None = None
     # /ask의 통계표 찾기에서 계획(질문을 지표로 나누기, HCX-007 1회)을 함께 돌린다
     # (app/agent/multi.py). 지표가 여럿이면 지표마다 찾은 표를 응답에 덧붙인다.

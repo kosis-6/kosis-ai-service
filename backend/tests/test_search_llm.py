@@ -167,3 +167,30 @@ def test_swap_fails_loudly_when_the_sentence_is_gone() -> None:
     assert swap("가 나 다", "나", "라") == "가 라 다"
     with pytest.raises(ValueError):
         swap("가 나 다", "마", "라")
+
+
+@pytest.mark.parametrize(
+    ("setting", "base_url", "expected"),
+    [
+        ("auto", "http://gemma.test/v1", "gemma"),  # 주소가 있으면 Gemma
+        ("auto", "", "hcx"),  # 없으면 HCX
+        ("auto", "   ", "hcx"),
+        ("hcx", "http://gemma.test/v1", "hcx"),  # 직접 정하면 주소와 관계없이 그 모델
+        ("gemma", "", "gemma"),
+    ],
+)
+def test_provider_follows_the_gemma_address(
+    monkeypatch, setting: str, base_url: str, expected: str
+) -> None:
+    settings = search_llm.get_settings()
+    monkeypatch.setattr(settings, "search_llm", setting, raising=False)
+    monkeypatch.setattr(settings, "gemma_base_url", base_url, raising=False)
+    assert search_llm.provider() == expected
+    assert search_llm.is_gemma() is (expected == "gemma")
+
+
+def test_default_setting_is_auto() -> None:
+    from app.core.config import Settings
+
+    assert Settings.model_fields["search_llm"].default == "auto"
+
