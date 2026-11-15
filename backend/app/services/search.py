@@ -279,6 +279,8 @@ RAW_AGE_RANGE = re.compile(r"(\d+)\s*세?\s*[~\-]\s*(?:만\s*)?(\d+)\s*세")
 
 
 OUR_PLACE = re.compile(r"우리\s*(?:구|군|시|동네)|동네")
+# '우리 구'라고만 해서 어느 시도인지 되묻는 결과의 reason. 최종 검토(llm_pick)가 이 결과를 알아본다
+REGION_ASK = "어느 지역인지 알려 주세요"
 SIDO_PREFIX = re.compile(
     r"(서울특별시|부산광역시|대구광역시|인천광역시|광주광역시|대전광역시|울산광역시|세종특별자치시|경기도|강원(?:특별자치)?도|"
     r"충청북도|충청남도|전라북도|전북특별자치도|전라남도|경상북도|경상남도|제주특별자치도)\s*"
@@ -349,6 +351,7 @@ def status() -> dict[str, Any]:
         "retrieval": "hybrid" if _vectors is not None else "keyword",
         "adapter": vector_search.adapter_loaded(),
         "morph": synonyms.morph_backend(),
+        "search_llm": vector_search.get_settings().search_llm,
     }
 
 
@@ -1028,7 +1031,7 @@ def find(
                  "score": round(f["score"], 3), **_brief(f["table"])}
                 for f in same[:17]
             ]  # fmt: skip
-            return {**result, "status": "ambiguous", "reason": "어느 지역인지 알려 주세요"}
+            return {**result, "status": "ambiguous", "reason": REGION_ASK}
     if len(families) > 1 and top["score"] - families[1]["score"] < gap:
         close = [o for o in others if top["score"] - o["score"] < gap]
         result["options"] = [

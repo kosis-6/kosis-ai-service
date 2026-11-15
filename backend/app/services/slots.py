@@ -24,9 +24,9 @@ import sys
 from datetime import date
 from typing import Any
 
-from app.prompts.search import SLOT_SYSTEM
-from app.services import agegroup, timeref
-from app.services.hcx_client import HcxClient, HcxError
+from app.prompts.search import SLOT_SYSTEM, SLOT_SYSTEM_GEMMA
+from app.services import agegroup, search_llm, synonyms, timeref
+from app.services.hcx_client import HcxError
 
 MODEL = "HCX-007"
 QUERY_TYPES = {"find_table", "ambiguous", "not_statistics"}
@@ -156,10 +156,13 @@ def empty_slots(question: str) -> dict[str, Any]:
 
 
 async def _chat(question: str) -> str:
-    result = await HcxClient().chat(
+    result = await search_llm.chat(
         MODEL,
         [
-            {"role": "system", "content": SLOT_SYSTEM},
+            {
+                "role": "system",
+                "content": SLOT_SYSTEM_GEMMA if search_llm.is_gemma() else SLOT_SYSTEM,
+            },
             {"role": "user", "content": question},
         ],
         thinking={"effort": "none"},
@@ -296,14 +299,9 @@ def correct(question: str, slots: dict[str, Any]) -> dict[str, Any]:
     region = c["region"]
     if region and region.replace(" ", "") in SIDO_ALIAS:
         fix("region", SIDO_ALIAS[region.replace(" ", "")], "시도 정식 이름")
-    # '우리 구로 이사 오는': '구로'는 '우리 구' + 조사 '로'다. HCX 가 '구로'(구로구)로
-    # 읽으면 지운다 (질문에 '구로구'가 따로 있으면 그대로)
-    if (
-        c["region"]
-        and (m := OUR_DISTRICT.search(question))
-        and c["region"].replace(" ", "") in (m[1] + (m[2] or ""), m[1])
-        and f"{c['region']}구" not in question
-    ):
+    # '우리 구로 이사 오는': '구로'는 '우리 구' + 조사 '로'다. LLM 이 '구로'(HCX) · '구로구' ·
+    # '서울 구로구'(Gemma)로 읽으면 지운다 (질문에 '구로구'가 따로 있으면 그대로)
+    if our_district_misread(question, c["region"]):
         fix("region", None, "'우리 구'의 조사를 지역 이름으로 읽음")
     # '서울 말고 시도별 인구': 빼 달라고 한 지역을 HCX 가 지역 슬롯에 넣었으면 지운다
     excluded_regions = {SIDO_ALIAS.get(w.rstrip("은는을를이가"), w) for w in slots["exclude"]}
@@ -461,6 +459,56 @@ def spouse_of(question: str) -> str | None:
 
 
 OUR_DISTRICT = re.compile(r"우리\s*(구|군)(로|에서|에|는|은|의|가|를|도)?(?![가-힣])")
+DISTRICT_TAGS = ("NNG", "NR", "NNB")  # Kiwi 가 '우리 구'의 '구'에 붙이는 품사
+_SIDO_HEAD = re.compile(
+    "^(?:" + "|".join(sorted({*SIDO_ALIAS, *SIDO_ALIAS.values()}, key=len, reverse=True)) + ")"
+)
+
+
+def our_district_misread(question: str, region: str | None) -> bool:
+    """region 이 '우리 구/군' + 조사를 지역 이름으로 읽은 값인가 ('구로', '구로구', '서울 구로구').
+    Kiwi 가 있으면 형태소로(구/NNG + 로/JKB 인지 구로구/NNP 인지), 없으면 정규식으로 본다"""
+    if not region:
+        return False
+    if synonyms.morph_backend() == "kiwi":
+        return _misread_by_morph(question, region)
+    return _misread_by_regex(question, region)
+
+
+def _district_stem(region: str) -> tuple[str, str]:
+    """'서울 구로구' → ('구로구', '구로'): 시도 이름을 뗀 값과, 거기서 끝의 구 · 군까지 뗀 값"""
+    plain = region.replace(" ", "")
+    base = _SIDO_HEAD.sub("", plain) or plain
+    return base, (base[:-1] if len(base) > 1 and base.endswith(("구", "군")) else base)
+
+
+def _misread_by_regex(question: str, region: str) -> bool:
+    if not (m := OUR_DISTRICT.search(question)):
+        return False
+    base, stem = _district_stem(region)
+    if stem not in (m[1] + (m[2] or ""), m[1]):
+        return False
+    full = base if base != stem else f"{stem}{m[1]}"
+    return full not in question
+
+
+def _misread_by_morph(question: str, region: str) -> bool:
+    """'우리(NP) + 구 · 군 [+ 조사]'가 있고 region 이 거기서 나온 값인데, 그 지역 이름이
+    질문에 고유명사(NNP)로 따로 없으면 잘못 읽은 것"""
+    toks = synonyms.tokenize(question)
+    our = None
+    for a, b in zip(toks, toks[1:], strict=False):
+        if (a.form, a.tag) == ("우리", "NP") and b.form in ("구", "군") and b.tag in DISTRICT_TAGS:
+            our = b
+            break
+    if our is None:
+        return False
+    base, stem = _district_stem(region)
+    josa = next((t.form for t in toks if t.start == our.end and t.tag.startswith("J")), "")
+    if stem not in (our.form, our.form + josa):  # '우리 구(+조사)'에서 나온 값이 아니다
+        return False
+    proper = {t.form for t in toks if t.tag == "NNP"}
+    return not ({base, stem, f"{stem}{our.form}"} & proper)
 
 
 def _level_of(region: str) -> str | None:

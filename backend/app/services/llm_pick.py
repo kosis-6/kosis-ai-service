@@ -22,8 +22,8 @@ import time
 from typing import Any
 
 from app.core.config import get_settings
-from app.prompts.llm_pick import SYSTEM
-from app.services.hcx_client import HcxClient
+from app.prompts.llm_pick import SYSTEM, SYSTEM_GEMMA
+from app.services import search_llm
 
 
 def se_norm(value: str) -> str:
@@ -99,16 +99,29 @@ def norm_pick(parsed: dict[str, Any] | None, cands: list[str]) -> str | None:
     return "__unknown__"
 
 
+def pick_mode() -> str:
+    """검토 모드. LLM_PICK_MODE 를 비워 두면 SEARCH_LLM 에 맞춘다
+    (11/15 까지 잰 조합: hcx → filter, gemma → pick_decided)"""
+    return get_settings().llm_pick_mode or ("pick_decided" if search_llm.is_gemma() else "filter")
+
+
 async def _ask(question: str, cands: list[dict[str, Any]]) -> dict[str, Any] | None:
     user = f"질문: {question}\n\n후보:\n" + "\n".join(
         cand_text(t, i + 1) for i, t in enumerate(cands)
     )
     ids = [t["tbl_id"] for t in cands]
-    result = await HcxClient().chat(
+    gemma = search_llm.is_gemma()
+    result = await search_llm.chat(
         MODEL,
-        [{"role": "system", "content": SYSTEM}, {"role": "user", "content": user}],
+        [
+            {"role": "system", "content": SYSTEM_GEMMA if gemma else SYSTEM},
+            {"role": "user", "content": user},
+        ],
         thinking={"effort": "none"},
         maxCompletionTokens=300,
+        # Gemma 는 고른 표로 실제로 바꾸므로(pick_decided) 같은 질문에 같은 표가 나오게 0 으로 둔다.
+        # HCX 는 지금까지처럼 서버 기본값
+        **({"temperature": 0} if gemma else {}),
         responseFormat={
             "type": "json",
             "schema": {
@@ -189,10 +202,19 @@ async def review(
         }
     if pick == "__unknown__":
         return {**result, "llm_pick": trace["llm_pick"]}
-    mode = get_settings().llm_pick_mode
+    from app.services import search as se  # 순환 참조를 피해 여기서 읽는다
+
+    mode = pick_mode()
     # 멤버 되묻기(clarify)만 LLM 이 확정한다. 패밀리 모호(ambiguous)는 1위 패밀리를 두는 편이 나았음
     # (레포 측정 §68-4: LLM 이 같은 조사의 형제 패밀리로 바꿔 8건 손실, 얻은 건 1건)
     undecided = result["status"] == "clarify"
+    if mode == "pick_decided":  # 멤버 되묻기 상태에서는 거르기만, 그 밖에는 고른 표로 바꾼다
+        mode = "filter" if undecided else "pick"
+    # '우리 구로 이사 오는'에 어느 시도인지 되묻는 결과는 어느 모드에서도 다른 표로 바꾸지 않는다
+    # (11/15 실험실: pick 이 '구로'를 서울 구로구로 읽어 서울 표로 확정했다).
+    # 범위 밖 거르기는 위에서 이미 했다
+    if result["status"] == "ambiguous" and result.get("reason") == se.REGION_ASK:
+        mode = "filter"
     if mode == "filter" or (mode == "resolve" and not undecided):
         return {**result, "llm_pick": trace["llm_pick"]}
     picked = by[pick]
@@ -201,8 +223,6 @@ async def review(
     )
     if picked["family_id"] == current and not undecided:
         return {**result, "llm_pick": trace["llm_pick"]}
-    from app.services import search as se  # 순환 참조를 피해 여기서 읽는다
-
     slots = dict(result["slots"])
     if undecided:  # 되묻기 대신 LLM 이 고른 표로 멤버·판까지 확정
         from app.services import synonyms

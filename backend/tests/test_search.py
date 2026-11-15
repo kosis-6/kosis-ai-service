@@ -1,3 +1,5 @@
+import pytest
+
 from app.services import search as se
 from app.services import slots as sl
 
@@ -479,6 +481,108 @@ def test_llm_resolve_mode_settles_clarify_but_keeps_decided_results(monkeypatch)
     assert (
         out["status"] in ("ok", "partial_match") and out["table"]["tbl_id"] == "B1"
     )  # 멤버 되묻기는 LLM 이 확정
+
+
+def test_llm_pick_decided_mode_switches_only_when_not_asking(monkeypatch) -> None:
+    """pick_decided(Gemma 기본): 확정 · 패밀리 모호는 고른 표로, 멤버 되묻기는 그대로"""
+    import asyncio
+
+    from app.services import llm_pick as lp
+
+    tables = se.prepare(
+        [
+            _t("A1", "인구 - 시도", 2015, 2025, "FA", survey_name="조사"),
+            _t("B1", "혼인 - 시도", 2015, 2025, "FB", survey_name="조사"),
+        ]
+    )
+    base = se.find(tables, _slots("통계 자료", "통계 자료"), dense=[0.9, 0.3])
+    monkeypatch.setattr(lp.get_settings(), "llm_pick", True, raising=False)
+    monkeypatch.setattr(lp.get_settings(), "llm_pick_mode", "pick_decided", raising=False)
+
+    async def pick_b(question, cands):
+        return {"pick": "B1", "match": "exact", "item": "계", "reason": "혼인 표"}
+
+    monkeypatch.setattr(lp, "_ask", pick_b)
+    out = asyncio.run(lp.review("혼인", dict(base), tables, {}))
+    assert out["table"]["tbl_id"] == "B1"  # 확정 결과는 고른 표로
+    cla = {**base, "status": "clarify", "table": None, "family": {"family_id": "FA"}}
+    out = asyncio.run(lp.review("혼인", cla, tables, {}))
+    assert out["status"] == "clarify" and out["family"] == {"family_id": "FA"}  # 되묻기는 그대로
+
+    async def none(question, cands):
+        return {"pick": "none", "match": "none", "item": "", "reason": "주제 없음"}
+
+    monkeypatch.setattr(lp, "_ask", none)
+    out = asyncio.run(lp.review("집값", cla, tables, {}))
+    assert out["status"] == "out_of_scope"  # 거르기는 한다
+
+
+@pytest.mark.parametrize("mode", ["pick", "pick_decided"])
+def test_llm_pick_does_not_replace_the_region_question(monkeypatch, mode: str) -> None:
+    """'우리 구'에 어느 시도인지 되묻는 결과는 검토가 다른 표로 확정하지 않는다. 거르기는 한다"""
+    import asyncio
+
+    from app.services import llm_pick as lp
+
+    tables = se.prepare(
+        [
+            _t("A1", "서울특별시 시군구 각세별 이동자수", 2015, 2025, "FA", survey_name="조사"),
+            _t("B1", "부산광역시 시군구 각세별 이동자수", 2015, 2025, "FB", survey_name="조사"),
+        ]
+    )
+    base = se.find(tables, _slots("통계 자료", "통계 자료"), dense=[0.9, 0.3])
+    ask = {**base, "status": "ambiguous", "reason": se.REGION_ASK, "table": None}
+    monkeypatch.setattr(lp.get_settings(), "llm_pick", True, raising=False)
+    monkeypatch.setattr(lp.get_settings(), "llm_pick_mode", mode, raising=False)
+
+    async def pick_b(question, cands):
+        return {"pick": "B1", "match": "exact", "item": "계", "reason": "구로구"}
+
+    monkeypatch.setattr(lp, "_ask", pick_b)
+    out = asyncio.run(lp.review("우리 구로 이사 오는 사람", ask, tables, {}))
+    assert out["status"] == "ambiguous" and out["reason"] == se.REGION_ASK
+    assert out["llm_pick"]["pick"] == "B1"  # 고른 값은 기록만 남는다
+
+    async def none(question, cands):
+        return {"pick": "none", "match": "none", "item": "", "reason": "주제 없음"}
+
+    monkeypatch.setattr(lp, "_ask", none)
+    out = asyncio.run(lp.review("우리 구 집값", ask, tables, {}))
+    assert out["status"] == "out_of_scope"
+
+
+def test_llm_pick_mode_follows_the_search_llm_unless_set(monkeypatch) -> None:
+    from app.services import llm_pick as lp
+
+    settings = lp.get_settings()
+    monkeypatch.setattr(settings, "llm_pick_mode", None, raising=False)
+    monkeypatch.setattr(settings, "search_llm", "hcx", raising=False)
+    assert lp.pick_mode() == "filter"
+    monkeypatch.setattr(settings, "search_llm", "gemma", raising=False)
+    assert lp.pick_mode() == "pick_decided"
+    monkeypatch.setattr(settings, "llm_pick_mode", "resolve", raising=False)
+    assert lp.pick_mode() == "resolve"  # 직접 정하면 그 값
+
+
+def test_llm_pick_asks_gemma_with_its_own_prompt_at_temperature_zero(monkeypatch) -> None:
+    import asyncio
+
+    from app.services import llm_pick as lp
+    from app.services import search_llm
+    from app.services.hcx_client import ChatResult
+
+    seen = []
+
+    async def chat(model, messages, **options):
+        seen.append((messages[0]["content"], options.get("temperature")))
+        return ChatResult(content='{"pick": "A1", "match": "exact"}', finish_reason="stop")
+
+    monkeypatch.setattr(search_llm, "chat", chat)
+    cands = se.prepare([_t("A1", "인구 - 시도", 2015, 2025, "FA")])
+    for name in ("hcx", "gemma"):
+        monkeypatch.setattr(lp.get_settings(), "search_llm", name, raising=False)
+        asyncio.run(lp._ask("인구", cands))
+    assert seen == [(lp.SYSTEM, None), (lp.SYSTEM_GEMMA, 0)]
 
 
 def test_scope_by_llm_skips_threshold_rejection() -> None:

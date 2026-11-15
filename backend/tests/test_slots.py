@@ -1,5 +1,7 @@
 import asyncio
 
+import pytest
+
 from app.services import slots as sl
 
 
@@ -169,6 +171,55 @@ def test_our_district_particle_is_not_guro():
     b2 = copy.deepcopy(base)
     b2["conditions"]["region"] = "구로구"
     assert sl.correct("구로구로 이사 오는 사람", b2)["conditions"]["region"] == "구로구"
+
+
+OUR_DISTRICT_CASES = [
+    # (질문, LLM 이 쓴 region, 잘못 읽은 값인가)
+    ("우리 구로 이사 오는 사람들 나이", "구로", True),
+    ("우리 구로 이사 오는 사람들 나이", "구로구", True),  # Gemma 는 '구로구'로 쓴다
+    ("우리 구로 이사 오는 사람들 나이", "서울 구로구", True),
+    ("우리 구로 이사 오는 사람들 나이", "서울특별시 구로구", True),
+    ("우리 구로 이사 오는 사람들 나이", "구", True),
+    ("우리구로 이사 오는 사람", "구로구", True),
+    ("우리 군에서 태어난 아이", "군", True),
+    ("구로구 우리 구로 이사 오는 사람", "구로구", False),  # 질문에 구로구가 따로 있다
+    ("우리 구에 사는 외국인", "중구", False),
+    ("부산 해운대구 인구", "해운대구", False),
+    ("서울 구로 이사 오는 사람", "구로구", False),  # '우리'가 없다
+    ("구로로 이사 오는 사람", "구로", False),
+]
+
+
+@pytest.mark.parametrize(("question", "region", "misread"), OUR_DISTRICT_CASES)
+def test_our_district_misread(question: str, region: str, misread: bool) -> None:
+    assert sl.our_district_misread(question, region) is misread
+    assert sl._misread_by_regex(question, region) is misread  # Kiwi 가 없을 때의 정규식도 같다
+
+
+def test_our_district_misread_clears_the_region_gemma_wrote() -> None:
+    s = sl.empty_slots("우리 구로 이사 오는 사람들 나이")
+    s["conditions"]["region"] = "서울 구로구"
+    out = sl.correct("우리 구로 이사 오는 사람들 나이", s)
+    assert out["conditions"]["region"] is None and out["conditions"]["region_level"] == "시군구"
+
+
+def test_slot_prompt_follows_the_search_llm(monkeypatch) -> None:
+    import asyncio
+
+    from app.services import search_llm
+    from app.services.hcx_client import ChatResult
+
+    seen = []
+
+    async def chat(model, messages, **options):
+        seen.append(messages[0]["content"])
+        return ChatResult(content="{}", finish_reason="stop")
+
+    monkeypatch.setattr(search_llm, "chat", chat)
+    for name in ("hcx", "gemma"):
+        monkeypatch.setattr(search_llm.get_settings(), "search_llm", name, raising=False)
+        asyncio.run(sl._chat("인구"))
+    assert seen == [sl.SLOT_SYSTEM, sl.SLOT_SYSTEM_GEMMA]
 
 
 def test_student_words():

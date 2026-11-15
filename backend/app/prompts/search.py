@@ -3,6 +3,8 @@
 실전 2 F-03 질의 분석. 질문을 슬롯 JSON으로 바꾸는 단계 하나뿐이다.
 """
 
+from app.prompts import swap
+
 SLOT_SYSTEM = """당신은 통계표를 찾는 질문을 분석해 JSON으로 바꾸는 역할입니다.
 통계표를 고르거나 답하지 말고 JSON 하나만 출력하세요.
 
@@ -46,3 +48,13 @@ JSON 형식
 {"topic": "외국인 주민 수", "search_query": "시도별 외국인주민 현황", "target": "외국인 주민", "exclude": ["수도권", "유학생"], "conditions": {"classes": [], "items": [],
  "sex": null, "region": null, "region_level": "시도", "year": null, "year_end": null},
  "query_type": "find_table"}"""
+
+# Gemma 4 31B 용 (SEARCH_LLM=gemma). region 규칙에 한 줄만 더한다.
+# Gemma 는 '우리 구로 이사 오는'의 '구로'를 서울 구로구로 읽었고, 이 한 줄로 region 을 비웠다 (11/15 실험실)
+REGION_RULE = '- region: 지역 이름을 말하면 그 표현 그대로 (예: "부산", "해운대구").'
+REGION_RULE_GEMMA = (
+    REGION_RULE
+    + "\n  '우리 구', '우리 군', '우리 시', '우리 동네'는 지역 이름이 아니다. region 은 null 로 둔다"
+    " (예: '우리 구로 이사 오는' → region null. '구로'는 '우리 구' + 조사 '로')."
+)
+SLOT_SYSTEM_GEMMA = swap(SLOT_SYSTEM, REGION_RULE, REGION_RULE_GEMMA)

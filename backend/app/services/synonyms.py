@@ -64,6 +64,11 @@ def morph_backend() -> str:
     return "kiwi" if _KIWI is not None else "regex"
 
 
+def tokenize(text: str) -> list:
+    """Kiwi 형태소 목록 (form · tag · start · end). Kiwi 가 없으면 빈 목록"""
+    return _KIWI.tokenize(text) if _KIWI is not None else []
+
+
 # 이 품사로만 된 어절은 검색어가 아니다 (부사 · 접속부사 · 관형사 · 감탄사 · 보조용언 · 의존명사)
 KIWI_DROP = {"MAG", "MAJ", "MM", "IC", "VX", "NNB"}
 KIWI_NOUNISH = ("NN", "NR", "NP", "XR", "SN", "SL", "SH", "XP")
