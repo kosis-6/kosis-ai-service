@@ -1,6 +1,6 @@
 // 관리자 화면의 두 보기(대화·통계표 찾기)가 함께 쓰는 조각: 불러오기, 거르는 줄, 상태 표시
 import { type ReactNode, useEffect, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Navigate } from "react-router-dom";
 import { ApiError, type Who } from "./api";
 import { statusLabel } from "./format";
 
@@ -119,30 +119,10 @@ export const WHO: Option<Who>[] = [
   { value: "guest", label: "손님" },
 ];
 
-/** 불러오지 못했을 때: 무엇이 문제이고 어떻게 하면 되는지 */
+/** 불러오지 못했을 때: 무엇이 문제이고 어떻게 하면 되는지. 권한이 없으면 화면을 떠난다 */
 export function Problem({ error, onRetry }: { error: ApiError; onRetry?: () => void }) {
-  if (error.status === 401) {
-    return (
-      <div className="state" role="alert">
-        <p className="state-title">로그인이 필요해요</p>
-        <p className="state-text">관리자 계정으로 로그인하면 사용 기록을 볼 수 있어요.</p>
-        <Link className="btn primary state-btn" to="/login">
-          로그인하러 가기
-        </Link>
-      </div>
-    );
-  }
-  if (error.status === 403) {
-    return (
-      <div className="state" role="alert">
-        <p className="state-title">관리자만 볼 수 있는 화면이에요</p>
-        <p className="state-text">지금 계정에는 관리자 권한이 없어요. 권한은 다른 관리자가 줄 수 있어요.</p>
-        <Link className="btn secondary state-btn" to="/">
-          통계 찾기로 돌아가기
-        </Link>
-      </div>
-    );
-  }
+  // 로그인이 풀렸거나 관리자 권한이 빠진 경우: 관리자 화면을 보여 주지 않고 통계 찾기로 보낸다
+  if (error.status === 401 || error.status === 403) return <Navigate to="/" replace />;
   return (
     <div className="state" role="alert">
       <p className="state-title">기록을 불러오지 못했어요</p>
