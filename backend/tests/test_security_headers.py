@@ -51,3 +51,18 @@ def test_auth_responses_are_not_cached(monkeypatch) -> None:
 def test_hsts_only_on_https() -> None:
     assert "strict-transport-security" in headers_for("/health", "https")
     assert "strict-transport-security" not in headers_for("/health", "http")
+
+
+def test_api_docs_are_closed_unless_turned_on(monkeypatch) -> None:
+    """설정을 빠뜨린 배포 서버에서 API 문서(관리자 API 목록)가 열려 있지 않아야 한다"""
+    from fastapi import FastAPI
+
+    from app.core.config import Settings
+
+    monkeypatch.delenv("API_DOCS", raising=False)
+    assert Settings(_env_file=None).api_docs is False
+    monkeypatch.setenv("API_DOCS", "true")
+    assert Settings(_env_file=None).api_docs is True
+    # main.py 가 닫을 때 넘기는 값: 세 주소 모두 사라진다
+    closed = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+    assert [r.path for r in closed.routes] == []

@@ -1,6 +1,11 @@
+import os
 from pathlib import Path
 
 import pytest
+
+# API 문서(/docs)는 기본이 닫힘이다. 문서 화면의 보안 헤더를 보는 테스트가 있어 테스트에서는 연다
+# (app 을 불러오기 전에 정해야 한다)
+os.environ.setdefault("API_DOCS", "true")
 
 from app.services import admin_audit, ask_session, population_latest, qa, search_llm
 
