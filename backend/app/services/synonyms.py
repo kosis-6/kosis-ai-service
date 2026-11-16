@@ -23,6 +23,8 @@ import sys
 from functools import cache
 from pathlib import Path
 
+from app.services import agegroup
+
 SYNONYMS_PATH = Path(__file__).resolve().parents[2] / "config" / "synonyms.json"
 
 # 검색에 방해되는 말 (실험실 정규식). 부분 문자열로 지우므로 단어 안에서도 지워진다.
@@ -64,6 +66,11 @@ def morph_backend() -> str:
     return "kiwi" if _KIWI is not None else "regex"
 
 
+def tokenize(text: str) -> list:
+    """Kiwi 형태소 목록 (form · tag · start · end). Kiwi 가 없으면 빈 목록"""
+    return _KIWI.tokenize(text) if _KIWI is not None else []
+
+
 # 이 품사로만 된 어절은 검색어가 아니다 (부사 · 접속부사 · 관형사 · 감탄사 · 보조용언 · 의존명사)
 KIWI_DROP = {"MAG", "MAJ", "MM", "IC", "VX", "NNB"}
 KIWI_NOUNISH = ("NN", "NR", "NP", "XR", "SN", "SL", "SH", "XP")
@@ -101,6 +108,7 @@ def clean_query(question: str) -> str:
 
 
 NEGATION_MARKS = ("아닌", "아니고", "아니라", "말고", "빼고", "제외", "않은", "안 ")
+FERTILITY = re.compile(r"출산율|출산률")
 
 
 def expand(
@@ -137,6 +145,13 @@ def keyword_text(
 ) -> str:
     """키워드 검색어: 정리한 질문 + 원문에서 찾은 사전 용어.
     사전 키에 군더더기 말이 들어 있어('우리 동네', '몇 명 태어') 정리한 글에서 찾으면 안 맞는다"""
+    # 고유어 나이는 표가 쓰는 꼴로 ('서른 살' → '30세')
+    question = agegroup.native_to_digits(question)
+    table = load() if table is None else table
+    if agegroup.said(question):
+        # 나이를 말한 질문의 '출산율'은 나이를 합친 합계출산율이 아니라 연령별 출산율이다
+        # ('서른 살 여성의 출산율' → '모의 연령별 출산율' 표가 7위에서 1위로)
+        table = {k: "연령별 출산율" if FERTILITY.fullmatch(k) else v for k, v in table.items()}
     return expand(clean_query(question), table, exclude, source=question)
 
 

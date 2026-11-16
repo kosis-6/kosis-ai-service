@@ -1,5 +1,7 @@
 import asyncio
 
+import pytest
+
 from app.services import slots as sl
 
 
@@ -171,6 +173,56 @@ def test_our_district_particle_is_not_guro():
     assert sl.correct("구로구로 이사 오는 사람", b2)["conditions"]["region"] == "구로구"
 
 
+OUR_DISTRICT_CASES = [
+    # (질문, LLM 이 쓴 region, 잘못 읽은 값인가)
+    ("우리 구로 이사 오는 사람들 나이", "구로", True),
+    ("우리 구로 이사 오는 사람들 나이", "구로구", True),  # Gemma 는 '구로구'로 쓴다
+    ("우리 구로 이사 오는 사람들 나이", "서울 구로구", True),
+    ("우리 구로 이사 오는 사람들 나이", "서울특별시 구로구", True),
+    ("우리 구로 이사 오는 사람들 나이", "구", True),
+    ("우리구로 이사 오는 사람", "구로구", True),
+    ("우리 군에서 태어난 아이", "군", True),
+    ("구로구 우리 구로 이사 오는 사람", "구로구", False),  # 질문에 구로구가 따로 있다
+    ("우리 구에 사는 외국인", "중구", False),
+    ("부산 해운대구 인구", "해운대구", False),
+    ("서울 구로 이사 오는 사람", "구로구", False),  # '우리'가 없다
+    ("구로로 이사 오는 사람", "구로", False),
+]
+
+
+@pytest.mark.parametrize(("question", "region", "misread"), OUR_DISTRICT_CASES)
+def test_our_district_misread(question: str, region: str, misread: bool) -> None:
+    assert sl.our_district_misread(question, region) is misread
+    assert sl._misread_by_regex(question, region) is misread  # Kiwi 가 없을 때의 정규식도 같다
+
+
+def test_our_district_misread_clears_the_region_gemma_wrote() -> None:
+    s = sl.empty_slots("우리 구로 이사 오는 사람들 나이")
+    s["conditions"]["region"] = "서울 구로구"
+    out = sl.correct("우리 구로 이사 오는 사람들 나이", s)
+    assert out["conditions"]["region"] is None and out["conditions"]["region_level"] == "시군구"
+
+
+def test_slot_prompt_follows_the_search_llm(monkeypatch) -> None:
+    import asyncio
+
+    from app.services import search_llm
+    from app.services.hcx_client import ChatResult, HcxClient
+
+    seen = []
+
+    async def chat(self, model, messages, **options):
+        seen.append(messages[0]["content"])
+        return ChatResult(content="{}", finish_reason="stop")
+
+    monkeypatch.setattr(HcxClient, "chat", chat)
+    monkeypatch.setattr(search_llm.GemmaClient, "chat", chat)
+    for name in ("hcx", "gemma"):
+        monkeypatch.setattr(search_llm.get_settings(), "search_llm", name, raising=False)
+        asyncio.run(sl._chat("인구"))
+    assert seen == [sl.SLOT_SYSTEM, sl.SLOT_SYSTEM_GEMMA]
+
+
 def test_student_words():
     from app.services import agegroup, llm_pick
     assert llm_pick.OFF_DOMAIN.search("대학생 수") is None
@@ -178,3 +230,14 @@ def test_student_words():
     assert llm_pick.OFF_DOMAIN.search("한 반에 학생 수")
     a = agegroup.resolve("초등학생인 다문화 가정 아이")
     assert (a.lo, a.hi) == (7, 12)
+
+
+def test_single_age_becomes_an_item_condition() -> None:
+    """나이 하나만 말하면 분류 값 조건으로. LLM 이 나이 조건을 이미 냈거나 구간이면 그대로"""
+    assert _slots("서른 살 여성의 출산율")["conditions"]["items"] == ["30세"]
+    assert _slots("30세 여성의 출산율", items=["30대"])["conditions"]["items"] == ["30대"]
+    assert _slots("65세 이상 인구")["conditions"]["items"] == []
+    assert _slots("나이를 한 살 단위로")["conditions"]["items"] == []
+    out = _slots("서른 살 여성의 출산율")
+    assert any(f["key"] == "items" and "30세" in f["reason"] for f in out["fixes"])
+

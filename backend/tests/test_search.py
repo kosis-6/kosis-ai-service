@@ -1,3 +1,5 @@
+import pytest
+
 from app.services import search as se
 from app.services import slots as sl
 
@@ -479,6 +481,109 @@ def test_llm_resolve_mode_settles_clarify_but_keeps_decided_results(monkeypatch)
     assert (
         out["status"] in ("ok", "partial_match") and out["table"]["tbl_id"] == "B1"
     )  # 멤버 되묻기는 LLM 이 확정
+
+
+def test_llm_pick_decided_mode_switches_only_when_not_asking(monkeypatch) -> None:
+    """pick_decided(Gemma 기본): 확정 · 패밀리 모호는 고른 표로, 멤버 되묻기는 그대로"""
+    import asyncio
+
+    from app.services import llm_pick as lp
+
+    tables = se.prepare(
+        [
+            _t("A1", "인구 - 시도", 2015, 2025, "FA", survey_name="조사"),
+            _t("B1", "혼인 - 시도", 2015, 2025, "FB", survey_name="조사"),
+        ]
+    )
+    base = se.find(tables, _slots("통계 자료", "통계 자료"), dense=[0.9, 0.3])
+    monkeypatch.setattr(lp.get_settings(), "llm_pick", True, raising=False)
+    monkeypatch.setattr(lp.get_settings(), "llm_pick_mode", "pick_decided", raising=False)
+
+    async def pick_b(question, cands):
+        return {"pick": "B1", "match": "exact", "item": "계", "reason": "혼인 표"}
+
+    monkeypatch.setattr(lp, "_ask", pick_b)
+    out = asyncio.run(lp.review("혼인", dict(base), tables, {}))
+    assert out["table"]["tbl_id"] == "B1"  # 확정 결과는 고른 표로
+    cla = {**base, "status": "clarify", "table": None, "family": {"family_id": "FA"}}
+    out = asyncio.run(lp.review("혼인", cla, tables, {}))
+    assert out["status"] == "clarify" and out["family"] == {"family_id": "FA"}  # 되묻기는 그대로
+
+    async def none(question, cands):
+        return {"pick": "none", "match": "none", "item": "", "reason": "주제 없음"}
+
+    monkeypatch.setattr(lp, "_ask", none)
+    out = asyncio.run(lp.review("집값", cla, tables, {}))
+    assert out["status"] == "out_of_scope"  # 거르기는 한다
+
+
+@pytest.mark.parametrize("mode", ["pick", "pick_decided"])
+def test_llm_pick_does_not_replace_the_region_question(monkeypatch, mode: str) -> None:
+    """'우리 구'에 어느 시도인지 되묻는 결과는 검토가 다른 표로 확정하지 않는다. 거르기는 한다"""
+    import asyncio
+
+    from app.services import llm_pick as lp
+
+    tables = se.prepare(
+        [
+            _t("A1", "서울특별시 시군구 각세별 이동자수", 2015, 2025, "FA", survey_name="조사"),
+            _t("B1", "부산광역시 시군구 각세별 이동자수", 2015, 2025, "FB", survey_name="조사"),
+        ]
+    )
+    base = se.find(tables, _slots("통계 자료", "통계 자료"), dense=[0.9, 0.3])
+    ask = {**base, "status": "ambiguous", "reason": se.REGION_ASK, "table": None}
+    monkeypatch.setattr(lp.get_settings(), "llm_pick", True, raising=False)
+    monkeypatch.setattr(lp.get_settings(), "llm_pick_mode", mode, raising=False)
+
+    async def pick_b(question, cands):
+        return {"pick": "B1", "match": "exact", "item": "계", "reason": "구로구"}
+
+    monkeypatch.setattr(lp, "_ask", pick_b)
+    out = asyncio.run(lp.review("우리 구로 이사 오는 사람", ask, tables, {}))
+    assert out["status"] == "ambiguous" and out["reason"] == se.REGION_ASK
+    assert out["llm_pick"]["pick"] == "B1"  # 고른 값은 기록만 남는다
+
+    async def none(question, cands):
+        return {"pick": "none", "match": "none", "item": "", "reason": "주제 없음"}
+
+    monkeypatch.setattr(lp, "_ask", none)
+    out = asyncio.run(lp.review("우리 구 집값", ask, tables, {}))
+    assert out["status"] == "out_of_scope"
+
+
+def test_llm_pick_mode_follows_the_search_llm_unless_set(monkeypatch) -> None:
+    from app.services import llm_pick as lp
+
+    settings = lp.get_settings()
+    monkeypatch.setattr(settings, "llm_pick_mode", None, raising=False)
+    monkeypatch.setattr(settings, "search_llm", "hcx", raising=False)
+    assert lp.pick_mode() == "filter"
+    monkeypatch.setattr(settings, "search_llm", "gemma", raising=False)
+    assert lp.pick_mode() == "pick_decided"
+    monkeypatch.setattr(settings, "llm_pick_mode", "resolve", raising=False)
+    assert lp.pick_mode() == "resolve"  # 직접 정하면 그 값
+
+
+def test_llm_pick_asks_gemma_with_its_own_prompt_at_temperature_zero(monkeypatch) -> None:
+    import asyncio
+
+    from app.services import llm_pick as lp
+    from app.services import search_llm
+    from app.services.hcx_client import ChatResult, HcxClient
+
+    seen = []
+
+    async def chat(self, model, messages, **options):
+        seen.append((messages[0]["content"], options.get("temperature")))
+        return ChatResult(content='{"pick": "A1", "match": "exact"}', finish_reason="stop")
+
+    monkeypatch.setattr(HcxClient, "chat", chat)
+    monkeypatch.setattr(search_llm.GemmaClient, "chat", chat)
+    cands = se.prepare([_t("A1", "인구 - 시도", 2015, 2025, "FA")])
+    for name in ("hcx", "gemma"):
+        monkeypatch.setattr(lp.get_settings(), "search_llm", name, raising=False)
+        asyncio.run(lp._ask("인구", cands))
+    assert seen == [(lp.SYSTEM, None), (lp.SYSTEM_GEMMA, 0)]
 
 
 def test_scope_by_llm_skips_threshold_rejection() -> None:
@@ -1116,3 +1221,95 @@ def test_ground_conditions_keeps_age_and_education_axes():
     assert s["conditions"]["items"] == ["35세", "미혼"]
     s = se.ground_conditions(_gslots("대학 나온 사람이 결혼을 더 많이 하는지", ["학력"], ["결혼"]))
     assert s["conditions"]["classes"] == ["학력"]
+
+
+def test_fertility_with_an_age_expands_to_age_specific_rate() -> None:
+    """나이를 말한 질문의 '출산율'은 합계출산율이 아니라 연령별 출산율로 넓힌다"""
+    table = {"출산율": "합계출산율", "여성": "여성인구"}
+    aged = se.synonyms.keyword_text("서른 살 여성의 출산율", table)
+    assert "30세" in aged and "연령별 출산율" in aged and "합계출산율" not in aged
+    assert "합계출산율" in se.synonyms.keyword_text("요즘 출산율", table)
+
+
+def test_fertility_tables_cover_the_female_condition() -> None:
+    t = se.prepare([_t("A", "시도/모의 연령별 출산율", 2000, 2024, "FA", sex_coverage="none")])[0]
+    assert se.check(t, _slots("여성 출산율", "출산율", sex="여"))["sex"] is True
+    assert se.check(t, _slots("남성 출산율", "출산율", sex="남"))["sex"] is False
+
+
+def test_parent_nationality_is_the_nationality_axis() -> None:
+    t = se.prepare(
+        [_t("A", "국제결혼가정 자녀", 2015, 2015, "FA",
+            classifications=[{"name": "국적별", "sample_values": ["베트남"]}])]
+    )[0]  # fmt: skip
+    checks = se.check(t, _slots("부모 국적별 자녀", "자녀", classes=["부모 국적"]))
+    assert checks["class:부모 국적"] is True
+
+
+def test_husband_and_wife_items_count_as_sex_values() -> None:
+    """혼인 표는 성별을 남편 · 아내로 쓴다. 기존 판정(남자인구수 · 여자인구수)은 그대로 통과한다"""
+    wed = se.prepare(
+        [_t("A", "시도별 평균초혼연령", 2000, 2024, "FA", sex_coverage="none",
+            items=[{"name": "남편"}, {"name": "아내"}])]
+    )[0]  # fmt: skip
+    both = _slots("남녀 평균 초혼 연령", "초혼 연령", classes=["성별"])
+    assert se.check(wed, both)["class:성별"] is True
+    assert se.check(wed, _slots("남자 평균 초혼 연령", "초혼 연령", sex="남"))["sex"] is True
+    pop = se.prepare(
+        [_t("B", "행정구역(시군구)별, 성별 인구수", 1992, 2025, "FB", sex_coverage="none",
+            items=[{"name": "총인구수"}, {"name": "남자인구수"}, {"name": "여자인구수"}])]
+    )[0]  # fmt: skip
+    assert se.check(pop, _slots("남녀 인구", "인구", classes=["성별"]))["class:성별"] is True
+    older = se.prepare(
+        [_t("C", "초혼부부의 연령차별 혼인", 1990, 2025, "FC", sex_coverage="none",
+            classifications=[{"name": "연령차별", "values": ["남자연상", "여자연상", "동갑"]}])]
+    )[0]  # fmt: skip
+    # '남자연상'은 성별 값이 아니다
+    assert (older["male_value"], older["female_value"]) == (False, False)
+
+
+def test_llm_pick_uses_hcx_rules_when_gemma_is_down(monkeypatch) -> None:
+    """Gemma 가 응답하지 않아 HCX 가 검토했으면 HCX 방식(거르기만)으로: 고른 표로 바꾸지 않는다"""
+    import asyncio
+
+    from app.services import llm_pick as lp
+    from app.services import search_llm
+    from app.services.hcx_client import ChatResult, HcxClient, HcxError
+
+    tables = se.prepare(
+        [
+            _t("A1", "인구 - 시도", 2015, 2025, "FA", survey_name="조사"),
+            _t("B1", "혼인 - 시도", 2015, 2025, "FB", survey_name="조사"),
+        ]
+    )
+    base = se.find(tables, _slots("통계 자료", "통계 자료"), dense=[0.9, 0.3])
+    settings = lp.get_settings()
+    monkeypatch.setattr(settings, "llm_pick", True, raising=False)
+    monkeypatch.setattr(settings, "llm_pick_mode", None, raising=False)
+    monkeypatch.setattr(settings, "search_llm", "auto", raising=False)
+    monkeypatch.setattr(settings, "gemma_base_url", "http://gemma.test/v1", raising=False)
+    monkeypatch.setattr(search_llm, "_down_until", 0.0)
+    seen = []
+
+    async def gemma(self, model, messages, **options):
+        return ChatResult(content='{"pick": "B1", "match": "exact"}', finish_reason="stop")
+
+    async def gemma_down(self, model, messages, **options):
+        raise HcxError("gemma_unreachable", "ConnectError: refused")
+
+    async def hcx(self, model, messages, **options):
+        seen.append((messages[0]["content"], options.get("temperature")))
+        return ChatResult(content='{"pick": "B1", "match": "exact"}', finish_reason="stop")
+
+    monkeypatch.setattr(HcxClient, "chat", hcx)
+    monkeypatch.setattr(search_llm.GemmaClient, "chat", gemma)
+    trace: dict = {}
+    out = asyncio.run(lp.review("혼인", dict(base), tables, trace))
+    assert out["table"]["tbl_id"] == "B1" and trace["llm_pick"]["llm"] == "gemma"  # Gemma: 교체
+
+    monkeypatch.setattr(search_llm.GemmaClient, "chat", gemma_down)
+    trace = {}
+    out = asyncio.run(lp.review("혼인", dict(base), tables, trace))
+    assert out["table"]["tbl_id"] == "A1" and trace["llm_pick"]["llm"] == "hcx"  # HCX: 거르기만
+    assert seen == [(lp.SYSTEM, None)]  # HCX 에는 HCX 프롬프트 · 기본 temperature
+
