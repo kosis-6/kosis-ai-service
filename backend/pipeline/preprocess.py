@@ -395,7 +395,12 @@ def build_regions(con):
         )
 
     alias_rows = [(a, code) for code, names in SIDO_ALIASES.items() for a in names]
-    alias_rows += con.sql("select region_name, region_code from regions").fetchall()
+    # 시도와 이름이 같은 시군구(세종특별자치시 36110)는 별칭에서 뺀다
+    # 같은 별칭이 시도 36과 시군구 36110을 함께 가리켜 "어느 지역이냐"고 되묻게 되므로
+    alias_rows += con.sql(
+        "select region_name, region_code from regions "
+        "where sido_name is null or region_name != sido_name"
+    ).fetchall()
     con.register("alias_df", pd.DataFrame(alias_rows, columns=["alias", "region_code"]))
     con.sql("create table region_aliases as select distinct alias, region_code from alias_df")
     con.unregister("alias_df")
