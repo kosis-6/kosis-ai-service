@@ -4,14 +4,17 @@
     python -m scripts.create_user admin@example.com --admin
 """
 
+import logging
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
 from app.api.deps import AdminUser, Session
 from app.schemas.auth import UserAdminRead, UserList, UserUpdate
 from app.schemas.logs import (
+    AuditList,
+    AuditRead,
     LogSummary,
     SearchLogDetail,
     SearchLogList,
@@ -19,7 +22,9 @@ from app.schemas.logs import (
     SessionList,
     TurnList,
 )
-from app.services import auth_sessions, load_queue, user_logs, users
+from app.services import admin_audit, auth_sessions, load_queue, user_logs, users
+
+logger = logging.getLogger(__name__)
 
 
 def no_store(response: Response) -> None:
@@ -27,7 +32,24 @@ def no_store(response: Response) -> None:
     response.headers["Cache-Control"] = "no-store"
 
 
-router = APIRouter(prefix="/admin", tags=["관리자"], dependencies=[Depends(no_store)])
+async def audit(request: Request, admin: AdminUser, session: Session) -> None:
+    """관리자 API 호출을 남긴다 (누가, 무엇을, 어떤 조건으로). 관리자가 아니면 여기 오기 전에 403.
+    기록에 실패해도 요청은 막지 않고 서버 로그에 남긴다"""
+    try:
+        await admin_audit.write(
+            session, admin, request.method, request.url.path, dict(request.query_params)
+        )
+    except Exception:
+        logger.exception("관리자 호출 기록 실패")
+        try:
+            await session.rollback()
+        except Exception:  # 세션까지 못 쓰는 상태면 요청이 그 오류를 알린다
+            pass
+
+
+router = APIRouter(
+    prefix="/admin", tags=["관리자"], dependencies=[Depends(no_store), Depends(audit)]
+)
 
 
 @router.get("/load-jobs", summary="통계표 적재 대기열")
@@ -214,3 +236,13 @@ async def log_search(log_id: int, user: AdminUser, session: Session) -> SearchLo
     if row is None:
         raise HTTPException(status_code=404, detail="없는 기록입니다.")
     return SearchLogDetail(**row)
+
+
+@router.get("/audit", summary="관리자 호출 기록")
+async def audit_records(
+    user: AdminUser, session: Session, limit: Limit = 50, offset: Offset = 0
+) -> AuditList:
+    """관리자 API 를 누가 언제 어떤 조건으로 불렀는지, 최근 것부터 (app.admin_audit).
+    사용자 기록 열람과 계정 정지·권한 변경이 모두 남는다"""
+    rows, total = await admin_audit.recent(session, limit, offset)
+    return AuditList(total=total, records=[AuditRead.model_validate(r) for r in rows])

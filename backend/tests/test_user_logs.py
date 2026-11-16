@@ -11,7 +11,8 @@ from fastapi.testclient import TestClient
 from app.api.deps import get_current_user
 from app.core.db import get_session
 from app.main import app
-from app.services import user_logs
+from app.models.app import AdminAudit
+from app.services import admin_audit, user_logs
 
 AT = datetime(2026, 11, 16, 3, 0, tzinfo=UTC)
 TURN = {
@@ -280,3 +281,51 @@ def test_admin_answers_are_not_cached(admin: TestClient, calls: dict) -> None:
 def test_long_filter_values_are_refused(admin: TestClient, calls: dict) -> None:
     assert admin.get("/admin/logs/turns", params={"session_id": "A" * 65}).status_code == 422
     assert admin.get("/admin/logs/searches", params={"status": "s" * 41}).status_code == 422
+
+
+def test_admin_calls_are_recorded(admin: TestClient, calls: dict, admin_calls: list) -> None:
+    admin.get("/admin/logs/turns", params={"user_id": 3, "q": "서울"})
+    admin.get("/admin/logs/sessions/A_1")
+    assert admin_calls == [
+        {"admin_id": 1, "method": "GET", "path": "/admin/logs/turns",
+         "query": {"user_id": "3", "q": "서울"}},
+        {"admin_id": 1, "method": "GET", "path": "/admin/logs/sessions/A_1", "query": {}},
+    ]  # fmt: skip
+
+
+def test_refused_calls_are_not_recorded(client: TestClient, calls: dict, admin_calls: list) -> None:
+    assert client.get("/admin/logs/turns").status_code == 401
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=2, is_admin=False)
+    assert client.get("/admin/logs/turns").status_code == 403
+    assert admin_calls == []
+
+
+def test_recording_failure_does_not_block(
+    admin: TestClient, calls: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def broken(*args, **kwargs):
+        raise RuntimeError("DB 없음")
+
+    monkeypatch.setattr(admin_audit, "write", broken)
+    assert admin.get("/admin/logs/turns").status_code == 200
+
+
+def test_audit_list(admin: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def recent(session, limit, offset):
+        row = AdminAudit(id=5, created_at=AT, admin_id=1, admin_email="admin@b.co")
+        row.method, row.path, row.query = "GET", "/admin/logs/turns", {"user_id": "3"}
+        return [row], 1
+
+    monkeypatch.setattr(admin_audit, "recent", recent)
+    r = admin.get("/admin/audit")
+    assert r.status_code == 200 and r.json()["total"] == 1
+    assert r.json()["records"][0] == {
+        "id": 5, "created_at": "2026-11-16T03:00:00Z", "admin_id": 1, "admin_email": "admin@b.co",
+        "method": "GET", "path": "/admin/logs/turns", "query": {"user_id": "3"},
+    }  # fmt: skip
+
+
+def test_audit_keeps_filter_values_short() -> None:
+    kept = admin_audit.trimmed({"q": "가" * 500, "user_id": "3"})
+    assert len(kept["q"]) == admin_audit.MAX_VALUE and kept["user_id"] == "3"
+    assert admin_audit.trimmed({}) is None

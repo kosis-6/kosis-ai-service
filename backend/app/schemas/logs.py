@@ -3,7 +3,7 @@
 from datetime import date, datetime
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class LogUser(BaseModel):
@@ -117,3 +117,22 @@ class LogSummary(BaseModel):
     by_day: list[DayCount]
     by_status: list[NameCount]
     by_request_type: list[NameCount]
+
+
+class AuditRead(BaseModel):
+    """관리자 API 호출 한 번"""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    created_at: datetime
+    admin_id: int | None = Field(default=None, description="지워진 관리자 계정이면 null")
+    admin_email: str
+    method: str
+    path: str
+    query: dict[str, str] | None = Field(default=None, description="주소의 거르는 값")
+
+
+class AuditList(BaseModel):
+    total: int
+    records: list[AuditRead]

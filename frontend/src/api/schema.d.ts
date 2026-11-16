@@ -416,6 +416,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/admin/audit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 관리자 호출 기록
+         * @description 관리자 API 를 누가 언제 어떤 조건으로 불렀는지, 최근 것부터 (app.admin_audit).
+         *     사용자 기록 열람과 계정 정지·권한 변경이 모두 남는다
+         */
+        get: operations["audit_records_admin_audit_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/ask": {
         parameters: {
             query?: never;
@@ -579,6 +600,44 @@ export interface components {
              * @description 실제로 답한 질문 (되묻기 답을 앞 질문과 합친 경우 합친 질문)
              */
             question?: string | null;
+        };
+        /** AuditList */
+        AuditList: {
+            /** Total */
+            total: number;
+            /** Records */
+            records: components["schemas"]["AuditRead"][];
+        };
+        /**
+         * AuditRead
+         * @description 관리자 API 호출 한 번
+         */
+        AuditRead: {
+            /** Id */
+            id: number;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Admin Id
+             * @description 지워진 관리자 계정이면 null
+             */
+            admin_id?: number | null;
+            /** Admin Email */
+            admin_email: string;
+            /** Method */
+            method: string;
+            /** Path */
+            path: string;
+            /**
+             * Query
+             * @description 주소의 거르는 값
+             */
+            query?: {
+                [key: string]: string;
+            } | null;
         };
         /** Body_login_auth_token_post */
         Body_login_auth_token_post: {
@@ -1908,6 +1967,7 @@ export interface operations {
                 user_id?: number | null;
                 /** @description true: 손님(로그인 안 함)만, false: 로그인한 사용자만 */
                 guest?: boolean | null;
+                /** @description 이 대화의 기록만 */
                 session_id?: string | null;
                 /** @description /ask 응답의 status (예: ok, tables) */
                 status?: string | null;
@@ -1955,6 +2015,7 @@ export interface operations {
                 user_id?: number | null;
                 /** @description true: 손님(로그인 안 함)만, false: 로그인한 사용자만 */
                 guest?: boolean | null;
+                /** @description 이 대화의 기록만 */
                 session_id?: string | null;
                 /** @description 예: ok, partial_match, ambiguous */
                 status?: string | null;
@@ -2011,6 +2072,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SearchLogDetail"];
+                };
+            };
+            /** @description 입력값이 규칙에 맞지 않음 */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    audit_records_admin_audit_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 성공 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditList"];
                 };
             };
             /** @description 입력값이 규칙에 맞지 않음 */

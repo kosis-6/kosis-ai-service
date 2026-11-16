@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     gemma_model: str = "gemma-4-31b"  # 서버가 띄운 모델 이름
     gemma_timeout: float = 120.0  # 초. 응답 시간 중앙값이 HCX의 약 2배(9초)다
 
+    # /docs · /redoc · /openapi.json 을 열어 둘지. 배포 서버에서는 API_DOCS=false 로 닫는다
+    # (관리자 API 목록까지 누구나 볼 수 있다). 개발에서는 화면 타입 생성(npm run gen:api)에 쓴다
+    api_docs: bool = True
+
     database_url: str = "postgresql+psycopg://kosis@localhost:5432/kosis"
 
     # 로그인 토큰(JWT) 서명 키. 32자 이상, 비어 있으면 로그인 API가 503을 돌려준다

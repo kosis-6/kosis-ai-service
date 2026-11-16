@@ -69,6 +69,10 @@ app = FastAPI(
     openapi_tags=TAGS,
     debug=settings.debug,
     lifespan=lifespan,
+    # API_DOCS=false 면 API 문서를 닫는다 (배포 서버)
+    docs_url="/docs" if settings.api_docs else None,
+    redoc_url="/redoc" if settings.api_docs else None,
+    openapi_url="/openapi.json" if settings.api_docs else None,
 )
 
 

@@ -113,6 +113,16 @@ def new_id() -> str:
     return f"A_{uuid4().hex[:12]}"
 
 
+def same_owner(state: dict, user_id: int | None) -> bool:
+    """이 사용자가 이어 가도 되는 대화인가.
+    로그인한 사용자가 시작한 대화는 그 사용자만 이어 간다
+    (대화 id 를 알아도 남의 조건·답을 볼 수 없다).
+    손님이 시작한 대화는 손님도, 도중에 로그인한 사용자도 이어 간다
+    (그 뒤로는 그 사용자의 대화다)"""
+    owner = state.get("user_id")
+    return owner is None or owner == user_id
+
+
 def _lock(session_id: str) -> asyncio.Lock:
     """같은 대화의 요청이 동시에 오면(버튼 두 번, 탭 두 개) 차례로 처리한다.
     서버 프로세스가 하나라 메모리 잠금으로 충분하다 (login_limit.py와 같은 전제)"""
@@ -1361,6 +1371,9 @@ async def handle(
     sid = session_id or new_id()
     async with _lock(sid):
         state, expired = await _load(sid)
+        moved = state is not None and not same_owner(state, user_id)
+        if moved:  # 다른 계정이 시작한 대화: 그 조건·답을 이어받지 않고 새 대화로 답한다
+            sid, state, expired = new_id(), None, False
         res, sources, notice = await _turn(state, question, selections, user_id)
         await _attach_tables(res, state, question, user_id)
         if "summary" not in res:  # 직전 답을 다시 쓴 응답(_reuse)은 그 요약을 이미 들고 있다
@@ -1373,7 +1386,12 @@ async def handle(
             notice = " ".join(filter(None, [notice, reason]))
         if expired:
             notice = " ".join(filter(None, ["시간이 지나 이전 조건이 초기화됐습니다.", notice]))
+        if moved:
+            notice = " ".join(
+                filter(None, ["로그인 상태가 바뀌어 새 대화로 시작했습니다.", notice])
+            )
         after = next_state(state, question, res, sources)
+        after["user_id"] = user_id  # 이 대화의 주인 (same_owner). 손님이면 None
         res.setdefault("question", question)
         res["session_id"] = sid
         res["applied"] = applied(after.get("conditions") or {}, after.get("sources") or {})
