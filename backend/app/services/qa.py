@@ -420,6 +420,9 @@ def correct(question, parsed, today=None):
                 kind = "trend"
         elif kind not in ("trend", "other", "parse_error") and parsed.get("year") != ref.year:
             fix("year", ref.year, ref.describe(today))
+    elif not has_abs_year and kind in LATEST_KINDS and parsed.get("year"):
+        # 질문에 연도·상대시점이 없는데 HCX가 연도를 넣은 경우 (예: 2022) → 자료 마지막 해로
+        fix("year", None, "연도를 말하지 않음 → 자료 마지막 해")
 
     # 지역이 여럿인 값 질문: 합계를 물었으면 더하고, 아니면 지역별 비교로 답한다.
     # value + 여러 지역 + 합계 표시 없음은 계산이 첫 지역만 써서 나머지 지역이 말없이 빠졌다
@@ -482,6 +485,10 @@ def _ground_regions(question, parsed, fix):
         codes = {reg.get("region_code"), indicators._norm(reg.get("display", ""))}
         if reg["status"] != "ok" or codes & found:
             continue  # 지역을 못 찾으면 계산 단계에서 그대로 안내한다
+        # "강남" → 서울특별시 강남구처럼 끝의 시·군·구를 뗀 짧은 이름으로 물은 경우
+        short = re.sub(r"(특별자치시|특별자치도|특별시|광역시|시|군|구|도)$", "", reg.get("region_name") or "")
+        if len(short) >= 2 and short in text:
+            continue
         parsed["ungrounded_region"] = r
         return
 
