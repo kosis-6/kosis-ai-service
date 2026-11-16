@@ -329,3 +329,23 @@ def test_audit_keeps_filter_values_short() -> None:
     kept = admin_audit.trimmed({"q": "가" * 500, "user_id": "3"})
     assert len(kept["q"]) == admin_audit.MAX_VALUE and kept["user_id"] == "3"
     assert admin_audit.trimmed({}) is None
+
+
+def test_values_the_database_cannot_take_are_refused(admin: TestClient, calls: dict) -> None:
+    """NUL 글자나 bigint 를 넘는 수가 DB 까지 가면 500 이 난다. 그 전에 422 로 돌려보낸다"""
+    for path, params in (
+        ("/admin/logs/turns", {"q": "a\x00b"}),
+        ("/admin/logs/turns", {"session_id": "\x00"}),
+        ("/admin/logs/turns", {"status": "\x00"}),
+        ("/admin/logs/turns", {"request_type": "\x00"}),
+        ("/admin/logs/sessions", {"q": "\x00"}),
+        ("/admin/logs/searches", {"status": "\x00"}),
+        ("/admin/logs/turns", {"offset": 10**30}),
+        ("/admin/logs/turns", {"user_id": 10**30}),
+        ("/admin/logs/turns", {"user_id": 0}),
+        ("/admin/logs/searches/99999999999999999999", {}),
+        ("/admin/logs/searches/0", {}),
+        ("/admin/logs/sessions/a%00b", {}),
+    ):
+        assert admin.get(path, params=params).status_code == 422, (path, params)
+    assert calls == {}

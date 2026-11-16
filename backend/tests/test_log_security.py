@@ -13,6 +13,7 @@ from app import main
 from app.core import db
 from app.services import log_redaction as redaction
 from app.services import log_retention, search_log, user_logs
+from app.services.log_redaction import mask, redact
 
 
 @pytest.mark.parametrize(
@@ -140,3 +141,27 @@ def test_retention_job_starts_and_stops_with_the_server(monkeypatch):
 
     asyncio.run(run())
     assert events == ["started", "stopped"]
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "HCX_API_KEY=ZZVALUE failed",
+        "JWT_SECRET_KEY=ZZVALUE",
+        "POSTGRES_PASSWORD=ZZVALUE",
+        "GEMMA_API_KEY: ZZVALUE",
+        "hcx_api_key='ZZVALUE'",
+        "serviceKey%3DZZVALUE&format=json",
+        "token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIiwidiI6MX0.ZZVALUEZZVALUEZZVALUE rejected",
+        "clova key nv-ZZVALUEZZVALUEZZVALUE0123 is invalid",
+    ],
+)
+def test_env_style_names_and_bare_tokens_are_masked(value):
+    assert "ZZVALUE" not in mask(value)
+
+
+def test_usage_numbers_are_not_masked():
+    text = "usage: promptTokens: 120, completionTokens=33, max_tokens=512, 비밀번호는 abc"
+    assert mask(text) == text
+    kept = redact({"totalTokens": 5, "HCX_API_KEY": "x", "jwt_secret_key": "y", "token": "z"})
+    assert kept == {"totalTokens": 5, "HCX_API_KEY": "***", "jwt_secret_key": "***", "token": "***"}

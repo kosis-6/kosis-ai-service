@@ -8,7 +8,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response
 
 from app.api.deps import AdminUser, Session
 from app.schemas.auth import UserAdminRead, UserList, UserUpdate
@@ -65,7 +65,7 @@ async def list_users(
     user: AdminUser,
     session: Session,
     limit: int = Query(default=50, ge=1, le=200),
-    offset: int = Query(default=0, ge=0),
+    offset: int = Query(default=0, ge=0, le=10_000_000),
 ) -> UserList:
     """가입 순서대로 사용자 목록 (정지 여부 포함)"""
     rows, total = await users.list_users(session, limit, offset)
@@ -94,14 +94,24 @@ async def update_user(
 
 # ---- 사용자 기록 조회 (app/services/user_logs.py) -------------------------------------------
 
+# PostgreSQL 이 받지 못하는 값(NUL 글자, bigint 를 넘는 수)은 500 이 아니라 422 로 돌려보낸다
+NO_NUL = r"^[^\x00]*$"
+MAX_OFFSET = 10_000_000
+MAX_ID = 2**63 - 1
+
 Limit = Annotated[int, Query(ge=1, le=200)]
-Offset = Annotated[int, Query(ge=0)]
-UserId = Annotated[int | None, Query(description="이 사용자의 기록만")]
+Offset = Annotated[int, Query(ge=0, le=MAX_OFFSET)]
+UserId = Annotated[int | None, Query(ge=1, le=MAX_ID, description="이 사용자의 기록만")]
 Guest = Annotated[
     bool | None, Query(description="true: 손님(로그인 안 함)만, false: 로그인한 사용자만")
 ]
-Word = Annotated[str | None, Query(max_length=100, description="질문에 들어 있는 말")]
-SessionId = Annotated[str | None, Query(max_length=64, description="이 대화의 기록만")]
+Word = Annotated[
+    str | None, Query(max_length=100, pattern=NO_NUL, description="질문에 들어 있는 말")
+]
+SessionId = Annotated[
+    str | None, Query(max_length=64, pattern=NO_NUL, description="이 대화의 기록만")
+]
+Code = Annotated[str | None, Query(max_length=40, pattern=NO_NUL)]
 Since = Annotated[datetime | None, Query(description="이 시각부터 (ISO 8601)")]
 Until = Annotated[datetime | None, Query(description="이 시각 전까지 (ISO 8601)")]
 
@@ -143,7 +153,11 @@ async def log_sessions(
 
 
 @router.get("/logs/sessions/{session_id}", summary="대화 하나의 턴")
-async def log_session(session_id: str, user: AdminUser, session: Session) -> SessionDetail:
+async def log_session(
+    session_id: Annotated[str, Path(max_length=64, pattern=NO_NUL)],
+    user: AdminUser,
+    session: Session,
+) -> SessionDetail:
     """대화 하나를 말한 순서대로: 사용자가 한 말, 답의 첫 문단, 조건이 어떻게 바뀌었는지"""
     rows = await user_logs.session_turns(session, session_id)
     if not rows:
@@ -167,12 +181,8 @@ async def log_turns(
     user_id: UserId = None,
     guest: Guest = None,
     session_id: SessionId = None,
-    status: str | None = Query(
-        default=None, max_length=40, description="/ask 응답의 status (예: ok, tables)"
-    ),
-    request_type: str | None = Query(
-        default=None, max_length=40, description="예: new, change, summary"
-    ),
+    status: Annotated[Code, Query(description="/ask 응답의 status (예: ok, tables)")] = None,
+    request_type: Annotated[Code, Query(description="예: new, change, summary")] = None,
     q: Word = None,
     since: Since = None,
     until: Until = None,
@@ -203,9 +213,7 @@ async def log_searches(
     user_id: UserId = None,
     guest: Guest = None,
     session_id: SessionId = None,
-    status: str | None = Query(
-        default=None, max_length=40, description="예: ok, partial_match, ambiguous"
-    ),
+    status: Annotated[Code, Query(description="예: ok, partial_match, ambiguous")] = None,
     has_error: bool | None = Query(default=None, description="true: 오류가 난 기록만"),
     q: Word = None,
     since: Since = None,
@@ -230,7 +238,9 @@ async def log_searches(
 
 
 @router.get("/logs/searches/{log_id}", summary="통계표 찾기 기록 하나")
-async def log_search(log_id: int, user: AdminUser, session: Session) -> SearchLogDetail:
+async def log_search(
+    log_id: Annotated[int, Path(ge=1, le=MAX_ID)], user: AdminUser, session: Session
+) -> SearchLogDetail:
     """슬롯, 후보와 점수, 응답, HCX 원문, 단계별 시간까지"""
     row = await user_logs.search_detail(session, log_id)
     if row is None:
