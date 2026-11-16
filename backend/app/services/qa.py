@@ -330,6 +330,8 @@ def correct(question, parsed, today=None):
     # "노인"·"청년" 같은 이름은 정의 구간으로 (답변에 기준 고지)
     elif group := agegroup.resolve(question):
         parsed["age_group"] = {"expr": group.expr, "range": group.label(), "basis": group.basis}
+        ages = [[group.lo, group.hi]]  # 이름 연령도 계산에 쓴다 (예: 청년 → 19~34세)
+        parsed["ages"] = ages
     if parsed.get("sex") not in (None, "", "계", "남", "여"):  # 예: ["남", "여"]
         fix("sex", "계", "성별 값 정리")
     if parsed.get("level") in ("구", "시군구별", "구별", "군", "시군"):
