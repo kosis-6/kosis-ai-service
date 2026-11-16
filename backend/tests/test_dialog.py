@@ -87,7 +87,7 @@ def test_handle_retries_rejected_answer_with_previous_question(monkeypatch) -> N
     앞 질문에 붙여 다시 찾는다"""
     import asyncio
 
-    prev = sl.empty_slots("신혼부부 나이 차이")
+    prev = {**sl.empty_slots("신혼부부 나이 차이"), dl.OWNER_KEY: None}
     state = {"status": "ambiguous", "slots": prev, "asked": OPTIONS, "family_id": None,
              "clarify_turns": 0}  # fmt: skip
     asked: list[str] = []

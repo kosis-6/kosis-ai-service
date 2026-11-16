@@ -262,10 +262,16 @@ async def handle(
     session_id: str,
     selections: dict[str, Any] | None = None,
     trace: dict[str, Any] | None = None,
+    user_id: int | None = None,
 ) -> dict[str, Any]:
     """dialog.handle과 같은 인자. 새 질문이면 반환값에 multi가 덧붙는다"""
     out = await GRAPH.ainvoke(
-        {"question": question, "session_id": session_id, "selections": selections},
+        {
+            "question": question,
+            "session_id": session_id,
+            "selections": selections,
+            "user_id": user_id,
+        },
         config={"configurable": {"trace": {} if trace is None else trace}},
     )
     return out["result"]

@@ -500,11 +500,29 @@ def test_unclear_keeps_conditions(talk: Talk) -> None:
 
 
 def test_expired_session_starts_over_and_tells(talk: Talk) -> None:
-    talk.say("부산 출생아 최근 5년 보여 줘")
+    first = talk.say("부산 출생아 최근 5년 보여 줘")
     talk.at += s.SESSION_FOR + timedelta(minutes=1)
     res = talk.say("2022년만", request_type="change", changes={"year": 2022})
     assert res["request_type"] == "new" and "초기화됐습니다" in res["notice"]
     assert talk.extracted == []  # 이어 갈 조건이 없어 새 질문으로 해석한다
+    assert res["session_id"] != first["session_id"]
+
+
+@pytest.mark.parametrize("other", [8, None])
+@pytest.mark.parametrize("deleted", [False, True])
+def test_expired_or_deleted_session_does_not_mix_accounts(talk: Talk, other, deleted):
+    first = talk.say("부산 출생아 최근 5년 보여 줘")
+    original = talk.store[first["session_id"]]
+    if deleted:
+        talk.store.pop(first["session_id"])
+    else:
+        talk.at += s.SESSION_FOR + timedelta(seconds=1)
+    talk.user_id = other
+    res = talk.say("새 질문")
+    assert res["session_id"] != first["session_id"]
+    assert talk.store[res["session_id"]][0]["user_id"] == other
+    if not deleted:
+        assert talk.store[first["session_id"]] == original
 
 
 # ---- 대화의 주인: 대화 id 를 알아도 남의 대화를 이어 갈 수 없다 ------------------------------

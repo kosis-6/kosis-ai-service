@@ -8,6 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.app import AdminAudit, User
+from app.services.log_redaction import redact
 
 # 거르는 값이 길어도 기록은 이만큼만 남긴다
 MAX_VALUE = 200
@@ -15,7 +16,7 @@ MAX_VALUE = 200
 
 def trimmed(query: dict[str, str]) -> dict[str, str] | None:
     """주소의 거르는 값 (user_id, q, since 등). 없으면 None"""
-    return {k[:50]: v[:MAX_VALUE] for k, v in query.items()} or None
+    return {k[:50]: v[:MAX_VALUE] for k, v in redact(query).items()} or None
 
 
 async def write(

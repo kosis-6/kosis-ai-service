@@ -1,6 +1,7 @@
+import asyncio
 import logging
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -12,7 +13,7 @@ from app.core.config import get_settings
 from app.core.security import AuthNotConfigured
 from app.core.security_headers import SecurityHeadersMiddleware
 from app.core.spa import SpaFiles
-from app.services import indicators, load_queue, search
+from app.services import indicators, load_queue, log_retention, search
 from app.services.mailer import MailNotConfigured
 
 logger = logging.getLogger(__name__)
@@ -25,7 +26,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # 통계표 검색 데이터(표 2천여 개 + 벡터)를 서버가 뜰 때 미리 읽어 첫 질문이 느려지지 않게 한다
     await search.warm_up()
     await _queue_indicator_tables()
-    yield
+    cleanup = asyncio.create_task(log_retention.run_forever())
+    try:
+        yield
+    finally:
+        cleanup.cancel()
+        with suppress(asyncio.CancelledError):
+            await cleanup
 
 
 async def _queue_indicator_tables() -> None:

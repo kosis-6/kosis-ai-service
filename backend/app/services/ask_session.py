@@ -60,6 +60,7 @@ from app.services import (
     timeref,
 )
 from app.services.hcx_client import HcxClient
+from app.services.log_redaction import mask, redact
 
 logger = logging.getLogger(__name__)
 
@@ -1294,7 +1295,9 @@ def next_state(state: dict | None, question: str, res: dict, sources: dict) -> d
             "pending": {"missing": "table", "options": table_choice_options(found)}
             if table_guide.waiting_choice(found)
             else None,
-            "search_session": res.get("search_session") or prev.get("search_session"),
+            "search_session": (found or {}).get("session_id")
+            or res.get("search_session")
+            or prev.get("search_session"),
             "recent": recent,
             "turn_no": turn_no,
         }
@@ -1372,6 +1375,10 @@ async def handle(
     async with _lock(sid):
         state, expired = await _load(sid)
         moved = state is not None and not same_owner(state, user_id)
+        if state is None and session_id:
+            # 만료·삭제된 대화 ID는 재사용하지 않는다. 남아 있는 턴 기록과 새 계정 기록이
+            # 같은 대화로 묶이는 것을 막는다.
+            sid = new_id()
         if moved:  # 다른 계정이 시작한 대화: 그 조건·답을 이어받지 않고 새 대화로 답한다
             sid, state, expired = new_id(), None, False
         res, sources, notice = await _turn(state, question, selections, user_id)
@@ -1499,17 +1506,19 @@ async def log_turn(
                 "session_id": session_id,
                 "user_id": user_id,
                 "turn_no": turn_no,
-                "message": question,
+                "message": mask(question),
                 "request_type": res.get("request_type"),
                 "status": res.get("status"),
                 "before": json.dumps(
-                    (before or {}).get("conditions"), ensure_ascii=False, default=str
+                    redact((before or {}).get("conditions")), ensure_ascii=False, default=str
                 ),
-                "after": json.dumps(after.get("conditions"), ensure_ascii=False, default=str),
-                "sources": json.dumps(after.get("sources"), ensure_ascii=False),
+                "after": json.dumps(
+                    redact(after.get("conditions")), ensure_ascii=False, default=str
+                ),
+                "sources": json.dumps(redact(after.get("sources")), ensure_ascii=False),
                 "tbl_id": result.get("tbl_id"),
                 "recomputed": not result.get("reused") and res.get("request_type") != UNCLEAR,
-                "answer": lead(res.get("answer") or ""),
+                "answer": mask(lead(res.get("answer") or "")),
             },
         )
         await conn.execute(

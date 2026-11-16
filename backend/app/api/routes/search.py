@@ -21,7 +21,10 @@ async def search_tables(body: SearchRequest, user: OptionalUser) -> SearchRespon
     trace: dict = {}
     result, response, error = None, None, None
     try:
-        result = await dialog.handle(body.question, session_id, body.selections, trace)
+        result = await dialog.handle(
+            body.question, session_id, body.selections, trace, user_id=user.id if user else None
+        )
+        session_id = trace.get("search_session_id", session_id)
         tables = await search.load_tables()
         response = search_answer.respond(
             result, tables, session_id, body.top_k, trace, debug=body.debug
@@ -30,6 +33,7 @@ async def search_tables(body: SearchRequest, user: OptionalUser) -> SearchRespon
         error = f"{type(e).__name__}: {e}"
         raise
     finally:
+        session_id = trace.get("search_session_id", session_id)
         elapsed_ms = round((time.perf_counter() - start) * 1000)
         try:
             await search_log.write(

@@ -12,6 +12,9 @@ from typing import Any
 
 from sqlalchemy import text
 
+from app.services.log_redaction import mask, redact
+from app.services.log_retention import KEEP_DAYS
+
 DDL = """
 CREATE TABLE IF NOT EXISTS app.search_logs (
     id           bigserial PRIMARY KEY,
@@ -40,14 +43,13 @@ VALUES (:session_id, :user_id, :question, :status, :tbl_id, CAST(:slots AS jsonb
         CAST(:timings AS jsonb), :elapsed_ms, :error)
 """
 
-KEEP_DAYS = 30
 PURGE = "DELETE FROM app.search_logs WHERE created_at < now() - make_interval(days => :days)"
 
 _ready = False
 
 
 def _json(value: Any) -> str | None:
-    return None if value is None else json.dumps(value, ensure_ascii=False, default=str)
+    return None if value is None else json.dumps(redact(value), ensure_ascii=False, default=str)
 
 
 async def write(
@@ -76,7 +78,7 @@ async def write(
             {
                 "session_id": session_id,
                 "user_id": user_id,
-                "question": question,
+                "question": mask(question),
                 "status": (response or {}).get("status"),
                 "tbl_id": recs[0]["tbl_id"] if recs else None,
                 "slots": _json((result or {}).get("slots")),
@@ -85,7 +87,7 @@ async def write(
                 "hcx_raw": _json(trace.get("hcx_raw")),
                 "timings": _json(trace.get("timings")),
                 "elapsed_ms": elapsed_ms,
-                "error": error,
+                "error": mask(error),
             },
         )
         await conn.execute(text(PURGE), {"days": KEEP_DAYS})

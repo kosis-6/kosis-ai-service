@@ -14,10 +14,12 @@ import copy
 import json
 import re
 from typing import Any
+from uuid import uuid4
 
 from sqlalchemy import text
 
 from app.services import search
+from app.services.log_retention import KEEP_DAYS
 from app.services.search import norm
 
 MAX_CLARIFY_TURNS = 2
@@ -179,8 +181,11 @@ async def load_state(session_id: str) -> dict[str, Any] | None:
         row = (
             (
                 await conn.execute(
-                    text("SELECT * FROM app.chat_sessions WHERE session_id = :id"),
-                    {"id": session_id},
+                    text(
+                        "SELECT * FROM app.chat_sessions WHERE session_id = :id"
+                        " AND updated_at >= now() - make_interval(days => :days)"
+                    ),
+                    {"id": session_id, "days": KEEP_DAYS},
                 )
             )
             .mappings()
@@ -216,14 +221,36 @@ async def _ensure(conn: Any) -> None:
         _ready = True
 
 
+OWNER_KEY = "_session_user_id"
+
+
+async def owned_session(session_id: str, user_id: int | None) -> tuple[str, dict | None]:
+    """검색 상태는 시작한 계정만 이어 간다. 소유자 없는 옛 상태도 새 대화로 분리한다.
+    손님끼리는 대화 ID로 이어 가지만 로그인·로그아웃하면 새 ID로 시작한다."""
+    state = await load_state(session_id)
+    if state is not None:
+        slots = state.get("slots") or {}
+        if OWNER_KEY not in slots or slots[OWNER_KEY] != user_id:
+            return f"S_{uuid4().hex[:12]}", None
+    return session_id, state
+
+
+def owned_result(result: dict, user_id: int | None) -> dict:
+    """소유자는 모델 출력 대신 인증된 계정에서 넣는다. 검색 응답에는 포함하지 않는다."""
+    return {**result, "slots": {**result["slots"], OWNER_KEY: user_id}}
+
+
 async def handle(
     question: str,
     session_id: str,
     selections: dict[str, Any] | None = None,
     trace: dict[str, Any] | None = None,
+    user_id: int | None = None,
 ) -> dict[str, Any]:
     """한 턴 처리: 되묻기 답이면 이어서, 아니면 새 검색. 결과의 turn에 몇 번째 되묻기인지 남긴다"""
-    state = await load_state(session_id)
+    session_id, state = await owned_session(session_id, user_id)
+    if trace is not None:
+        trace["search_session_id"] = session_id
     result = None
     turns = 0
     if state and state["status"] in ("clarify", "ambiguous"):
@@ -249,6 +276,6 @@ async def handle(
                 if trace is not None:
                     trace["follow_up_merged"] = True
     waiting = result["status"] in ("clarify", "ambiguous")
-    await save_state(session_id, result, turns if waiting else 0)
+    await save_state(session_id, owned_result(result, user_id), turns if waiting else 0)
     result["turn"] = turns
     return result

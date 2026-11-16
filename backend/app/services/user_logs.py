@@ -12,12 +12,14 @@
 라우터는 DB 를 직접 다루지 않고 이 함수들만 부른다 (테스트에서 이 함수들만 바꿔 끼운다).
 """
 
-import re
 from datetime import datetime
 from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.services.log_redaction import mask as mask
+from app.services.log_redaction import redact
 
 # 요약의 날짜 경계 (하루를 한국 시간으로 나눈다)
 TZ = "Asia/Seoul"
@@ -25,21 +27,8 @@ TZ = "Asia/Seoul"
 
 # 오류 글에는 호출 주소가 통째로 들어갈 수 있다 (KOSIS 주소의 apiKey 등).
 # 화면으로 내보내기 전에 가린다
-SECRET_PARAM = re.compile(
-    r"(?i)\b(api[_-]?key|service[_-]?key|access[_-]?token|token|secret|password)=[^&\s\"'<>]+"
-)
-SECRET_BEARER = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+")
-
-
-def mask(value: str | None) -> str | None:
-    """글 속의 키·토큰 값을 *** 로 바꾼다"""
-    if not value:
-        return value
-    return SECRET_BEARER.sub("Bearer ***", SECRET_PARAM.sub(r"\1=***", value))
-
-
 def _masked(row: dict[str, Any]) -> dict[str, Any]:
-    return {**row, "error": mask(row.get("error"))}
+    return redact(row)
 
 
 def like(word: str) -> str:
@@ -140,7 +129,7 @@ async def turns(
         " limit :limit offset :offset",
         {**params, "limit": limit, "offset": offset},
     )
-    return rows, total
+    return redact(rows), total
 
 
 # 대화 하나를 한 줄로: 누가, 언제부터 언제까지, 몇 턴, 첫 질문
@@ -193,16 +182,18 @@ async def sessions(
         " order by c.last_at desc, c.session_id limit :limit offset :offset",
         {**params, "limit": limit, "offset": offset},
     )
-    return rows, total
+    return redact(rows), total
 
 
 async def session_turns(session: AsyncSession, session_id: str) -> list[dict[str, Any]]:
     """대화 하나의 턴을 말한 순서대로. 조건이 어떻게 바뀌었는지와 출처까지. 없으면 빈 목록"""
-    return await _rows(
-        session,
-        f"{TURN_SELECT}, t.conditions_before, t.conditions_after, t.sources{TURN_FROM}"
-        " where t.session_id = :session_id order by t.created_at, t.id",
-        {"session_id": session_id},
+    return redact(
+        await _rows(
+            session,
+            f"{TURN_SELECT}, t.conditions_before, t.conditions_after, t.sources{TURN_FROM}"
+            " where t.session_id = :session_id order by t.created_at, t.id",
+            {"session_id": session_id},
+        )
     )
 
 

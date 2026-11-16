@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 
 from app.core.security_headers import CHAT_CSP, DOCS_CSP, headers_for
 from app.main import app
+from app.services import users
 
 client = TestClient(app)
 
@@ -35,8 +36,14 @@ def test_docs_csp_allows_swagger_cdn() -> None:
     assert "https://cdn.jsdelivr.net" in DOCS_CSP
 
 
-def test_auth_responses_are_not_cached() -> None:
+def test_auth_responses_are_not_cached(monkeypatch) -> None:
+    # 헤더 검사에 사용자 DB는 필요하지 않다. 로그인 거절 응답을 고정한다.
+    async def rejected(*args):
+        return None
+
+    monkeypatch.setattr(users, "authenticate", rejected)
     r = client.post("/auth/token", data={"username": "x@y.co", "password": "nope"})
+    assert r.status_code == 401
     assert r.headers["cache-control"] == "no-store"
     assert client.post("/auth/logout").headers["cache-control"] == "no-store"
 
