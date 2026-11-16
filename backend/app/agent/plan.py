@@ -13,10 +13,9 @@ import re
 from datetime import date
 from typing import Any
 
-from app.prompts.plan import SCHEMA, SYSTEM
-from app.services import search, timeref
+from app.prompts.plan import SCHEMA, SYSTEM, SYSTEM_GEMMA
+from app.services import search, search_llm, timeref
 from app.services import slots as slot_parser
-from app.services.hcx_client import HcxClient
 
 MODEL = "HCX-007"
 # 실제 출력은 최대 306토큰이었다. 호출 한도는 요청한 최대치만큼 깎이므로 넉넉하게만 둔다
@@ -27,13 +26,17 @@ Plan = dict[str, Any]
 
 async def call(question: str) -> Plan:
     """계획 LLM 호출 (보정 전). 실패하면 HcxError가 그대로 올라간다"""
-    result = await HcxClient().chat(
-        MODEL,
-        [{"role": "system", "content": SYSTEM}, {"role": "user", "content": question}],
-        thinking={"effort": "none"},
-        maxCompletionTokens=MAX_TOKENS,
-        responseFormat={"type": "json", "schema": SCHEMA},
-    )
+
+    def request(llm: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        system = SYSTEM_GEMMA if llm == "gemma" else SYSTEM
+        messages = [{"role": "system", "content": system}, {"role": "user", "content": question}]
+        return messages, {
+            "thinking": {"effort": "none"},
+            "maxCompletionTokens": MAX_TOKENS,
+            "responseFormat": {"type": "json", "schema": SCHEMA},
+        }
+
+    result, _ = await search_llm.ask(MODEL, request)
     return parse(result.content)
 
 

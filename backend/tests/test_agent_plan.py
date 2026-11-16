@@ -146,3 +146,23 @@ def test_correct_records_what_it_changed() -> None:
     assert ("sex", "여") in p["_dropped"] and ("year_from", 2019) in p["_dropped"]
     assert ("빠진 지표 추가", "이혼 건수") in p["_fixed"]
     assert p["shared"] == {"region_level": "시도"}
+
+
+def test_plan_prompt_follows_the_search_llm(monkeypatch) -> None:
+    import asyncio
+
+    from app.services import search_llm
+    from app.services.hcx_client import ChatResult, HcxClient
+
+    seen = []
+
+    async def chat(self, model, messages, **options):
+        seen.append(messages[0]["content"])
+        return ChatResult(content="{}", finish_reason="stop")
+
+    monkeypatch.setattr(HcxClient, "chat", chat)
+    monkeypatch.setattr(search_llm.GemmaClient, "chat", chat)
+    for name in ("hcx", "gemma"):
+        monkeypatch.setattr(search_llm.get_settings(), "search_llm", name, raising=False)
+        asyncio.run(pl.call("시도별 출생성비"))
+    assert seen == [pl.SYSTEM, pl.SYSTEM_GEMMA]

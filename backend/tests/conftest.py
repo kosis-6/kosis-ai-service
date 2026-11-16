@@ -2,7 +2,14 @@ from pathlib import Path
 
 import pytest
 
-from app.services import ask_session, population_latest, qa
+from app.services import ask_session, population_latest, qa, search_llm
+
+
+@pytest.fixture(autouse=True)
+def search_llm_is_hcx(monkeypatch: pytest.MonkeyPatch) -> None:
+    """로컬 .env 에 Gemma 서버 주소가 있어도 테스트는 HCX 경로로 돈다
+    (Gemma 경로를 보는 테스트는 search_llm 을 직접 바꾼다)"""
+    monkeypatch.setattr(search_llm.get_settings(), "search_llm", "hcx", raising=False)
 
 
 @pytest.fixture(autouse=True)
