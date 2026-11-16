@@ -73,7 +73,8 @@ async def find_tables(
     result, response, error = None, None, None
     handle = multi.handle if get_settings().search_plan else graph.handle
     try:
-        result = await handle(question, session_id, selections, trace)
+        result = await handle(question, session_id, selections, trace, user_id=user_id)
+        session_id = trace.get("search_session_id", session_id)
         tables = await search.load_tables()
         response = search_answer.respond(result, tables, session_id, TOP_K, trace)
         by_indicator = indicator_tables(result.get("multi"), tables)
@@ -84,6 +85,7 @@ async def find_tables(
         error = f"{type(e).__name__}: {e}"
         raise
     finally:
+        session_id = trace.get("search_session_id", session_id)
         try:
             await search_log.write(
                 question, session_id, result, response, trace, None, error, user_id=user_id

@@ -122,6 +122,27 @@ class ChatTurn(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class AdminAudit(Base):
+    """관리자 API 호출 기록: 누가 언제 무엇을 봤는지·바꿨는지 (app/services/admin_audit.py)
+
+    사용자 기록(질문·이메일)을 관리자가 볼 수 있으므로, 그 열람을 따로 남긴다.
+    관리자 계정을 지워도 줄은 남고 admin_id 만 비운다. 누구였는지 알 수 있게 이메일을 함께 적어 둔다
+    """
+
+    __tablename__ = "admin_audit"
+    __table_args__ = (Index("admin_audit_created", "created_at"), {"schema": "app"})
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    admin_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("app.users.id", ondelete="SET NULL")
+    )
+    admin_email: Mapped[str]
+    method: Mapped[str]
+    path: Mapped[str]
+    query: Mapped[dict | None] = mapped_column(JSONB)
+
+
 class LoadJob(Base):
     """통계표 적재 대기열. 질문·지표 사전·갱신에서 적재가 필요한 표를 넣고, 적재 프로세스가 꺼낸다
 

@@ -347,9 +347,11 @@ class Talk:
     async def _log(self, session_id, user_id, turn_no, question, res, before, after):
         self.turns.append((turn_no, res.get("request_type"), question))
 
+    user_id: int | None = 7  # 말하는 사람. None 이면 손님
+
     def say(self, question: str, selections: dict | None = None, **delta) -> dict:
         self.delta = delta
-        res = asyncio.run(s.handle(self.sid, question, user_id=7, selections=selections))
+        res = asyncio.run(s.handle(self.sid, question, user_id=self.user_id, selections=selections))
         self.sid = res["session_id"]
         return res
 
@@ -498,11 +500,78 @@ def test_unclear_keeps_conditions(talk: Talk) -> None:
 
 
 def test_expired_session_starts_over_and_tells(talk: Talk) -> None:
-    talk.say("부산 출생아 최근 5년 보여 줘")
+    first = talk.say("부산 출생아 최근 5년 보여 줘")
     talk.at += s.SESSION_FOR + timedelta(minutes=1)
     res = talk.say("2022년만", request_type="change", changes={"year": 2022})
     assert res["request_type"] == "new" and "초기화됐습니다" in res["notice"]
     assert talk.extracted == []  # 이어 갈 조건이 없어 새 질문으로 해석한다
+    assert res["session_id"] != first["session_id"]
+
+
+@pytest.mark.parametrize("other", [8, None])
+@pytest.mark.parametrize("deleted", [False, True])
+def test_expired_or_deleted_session_does_not_mix_accounts(talk: Talk, other, deleted):
+    first = talk.say("부산 출생아 최근 5년 보여 줘")
+    original = talk.store[first["session_id"]]
+    if deleted:
+        talk.store.pop(first["session_id"])
+    else:
+        talk.at += s.SESSION_FOR + timedelta(seconds=1)
+    talk.user_id = other
+    res = talk.say("새 질문")
+    assert res["session_id"] != first["session_id"]
+    assert talk.store[res["session_id"]][0]["user_id"] == other
+    if not deleted:
+        assert talk.store[first["session_id"]] == original
+
+
+# ---- 대화의 주인: 대화 id 를 알아도 남의 대화를 이어 갈 수 없다 ------------------------------
+
+
+@pytest.mark.parametrize("other", [7, 8, None])
+def test_session_without_owner_metadata_starts_a_new_conversation(talk: Talk, other):
+    first = talk.say("부산 출생아 최근 5년 보여 줘")
+    sid = first["session_id"]
+    old_state, at = talk.store[sid]
+    old_state.pop("user_id")  # 배포 전에 저장된 대화 상태
+    talk.user_id = other
+    res = talk.say("요약해줘")
+    assert res["session_id"] != sid and res["summary"] is None
+    assert res["answer"] != first["answer"]
+    assert talk.store[sid] == (old_state, at) and "user_id" not in old_state
+    assert talk.store[res["session_id"]][0]["user_id"] == other
+    assert "새 대화로 시작했습니다" in res["notice"]
+
+
+@pytest.mark.parametrize("other", [8, None])
+def test_someone_else_cannot_continue_a_users_session(talk: Talk, other: int | None) -> None:
+    first = talk.say("부산 출생아 최근 5년 보여 줘")
+    talk.user_id = other  # 다른 계정, 또는 로그아웃한 손님이 같은 대화 id 로 묻는다
+    res = talk.say("2022년만", request_type="change", changes={"year": 2022})
+    assert res["session_id"] != first["session_id"]  # 새 대화로 답한다
+    assert res["request_type"] == "new" and talk.extracted == []  # 앞 조건을 이어받지 않는다
+    assert "새 대화로 시작했습니다" in res["notice"]
+    # 원래 대화는 그대로 남아 주인이 이어 갈 수 있다
+    assert talk.store[first["session_id"]][0]["user_id"] == 7
+    talk.user_id, talk.sid = 7, first["session_id"]
+    again = talk.say("2022년만", request_type="change", changes={"year": 2022})
+    assert again["session_id"] == first["session_id"] and again["request_type"] == "change"
+
+
+def test_guest_session_continues_after_login(talk: Talk) -> None:
+    talk.user_id = None
+    first = talk.say("부산 출생아 최근 5년 보여 줘")
+    assert talk.store[first["session_id"]][0]["user_id"] is None
+    talk.user_id = 7  # 도중에 로그인: 하던 대화를 그대로 이어 가고, 그 뒤로는 이 사용자의 대화다
+    res = talk.say("2022년만", request_type="change", changes={"year": 2022})
+    assert res["session_id"] == first["session_id"] and res["request_type"] == "change"
+    assert res["notice"] is None or "새 대화" not in res["notice"]
+    assert talk.store[first["session_id"]][0]["user_id"] == 7
+    talk.user_id = None
+    assert (
+        talk.say("남자만", request_type="change", changes={"sex": "남"})["session_id"]
+        != first["session_id"]
+    )
 
 
 def test_non_statistics_answer_is_not_continued(talk: Talk) -> None:

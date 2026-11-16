@@ -5,13 +5,17 @@ HCX·임베딩·DB 없이 돈다. 조건 추출은 원문 규칙만, 최종 검�
 
 import asyncio
 import json
+from types import SimpleNamespace
 
 import pytest
+from fastapi.testclient import TestClient
 
 from app.agent import graph, multi
 from app.agent import plan as planner
+from app.api.deps import get_optional_user
+from app.main import app
 from app.services import dialog as dl
-from app.services import llm_pick, table_guide
+from app.services import llm_pick, search_log, table_guide
 from app.services import search as se
 from app.services import slots as sl
 from app.services.hcx_client import HcxError
@@ -88,8 +92,89 @@ def world(monkeypatch):
         pass
 
     w = World()
-    w.tables, w.plans, w.planned = tables, plans, planned
+    w.tables, w.plans, w.planned, w.sessions = tables, plans, planned, sessions
     return w
+
+
+@pytest.mark.parametrize("handle", [dl.handle, graph.handle, multi.handle])
+@pytest.mark.parametrize("other_user", [2, None])
+def test_search_session_cannot_be_read_or_overwritten_by_another_user(world, handle, other_user):
+    trace = {}
+    asyncio.run(handle(TARGET_Q, "S_owner", trace=trace, user_id=1))
+    original = world.sessions["S_owner"]
+    # 다른 계정과 로그아웃한 손님 모두 앞 질문을 붙여 검색하거나 선택지를 읽으면 안 된다.
+    found = asyncio.run(handle("여자", "S_owner", trace=trace, user_id=other_user))
+    new_id = trace["search_session_id"]
+    assert new_id != "S_owner" and world.sessions["S_owner"] == original
+    assert found["slots"]["question"] == "여자" and found["turn"] == 0
+    assert not trace.get("follow_up") and not trace.get("follow_up_merged")
+    assert json.loads(world.sessions[new_id])["slots"][dl.OWNER_KEY] == other_user
+    # 원래 계정은 기존 선택지에 계속 답할 수 있다.
+    reply = asyncio.run(handle("혼인 귀화자", "S_owner", user_id=1))
+    assert reply["table"]["tbl_id"].startswith("혼인 귀화자")
+
+
+@pytest.mark.parametrize("handle", [dl.handle, graph.handle, multi.handle])
+def test_guest_search_session_is_restarted_on_login(world, handle):
+    asyncio.run(handle(TARGET_Q, "S_guest"))
+    original = world.sessions["S_guest"]
+    trace = {}
+    found = asyncio.run(handle("여자", "S_guest", trace=trace, user_id=1))
+    assert trace["search_session_id"] != "S_guest"
+    assert world.sessions["S_guest"] == original and found["slots"]["question"] == "여자"
+
+
+@pytest.mark.parametrize("handle", [dl.handle, graph.handle, multi.handle])
+def test_search_sessions_without_owner_metadata_are_not_reused(world, handle):
+    asyncio.run(handle(TARGET_Q, "S_old"))
+    legacy = json.loads(world.sessions["S_old"])
+    legacy["slots"].pop(dl.OWNER_KEY)
+    world.sessions["S_old"] = json.dumps(legacy)
+    original = world.sessions["S_old"]
+    trace = {}
+    found = asyncio.run(handle("여자", "S_old", trace=trace))
+    assert trace["search_session_id"] != "S_old"
+    assert world.sessions["S_old"] == original and found["slots"]["question"] == "여자"
+
+
+def test_search_api_returns_and_logs_the_new_session_id(world, monkeypatch):
+    logged = []
+
+    async def write(*args, **kwargs):
+        logged.append((args[1], kwargs["user_id"]))
+
+    monkeypatch.setattr(search_log, "write", write)
+    who = SimpleNamespace(id=1)
+    monkeypatch.setitem(app.dependency_overrides, get_optional_user, lambda: who)
+    client = TestClient(app)
+    first = client.post("/search", json={"question": TARGET_Q})
+    assert first.status_code == 200
+    original_id = first.json()["session_id"]
+    original = world.sessions[original_id]
+    who.id = 2
+    second = client.post("/search", json={"question": "여자", "session_id": original_id})
+    assert second.status_code == 200
+    new_id = second.json()["session_id"]
+    assert new_id != original_id and world.sessions[original_id] == original
+    assert logged == [(original_id, 1), (new_id, 2)]
+    assert dl.OWNER_KEY not in second.json()["parsed"]
+
+
+@pytest.mark.parametrize("search_plan", [False, True])
+def test_ask_table_search_returns_and_logs_the_new_session_id(world, monkeypatch, search_plan):
+    logged = []
+
+    async def write(*args, **kwargs):
+        logged.append((args[1], kwargs["user_id"]))
+
+    monkeypatch.setattr(search_log, "write", write)
+    monkeypatch.setattr(table_guide.get_settings(), "search_plan", search_plan)
+    first = asyncio.run(table_guide.find_tables(TARGET_Q, "S_ask", None, 1))
+    original = world.sessions[first["session_id"]]
+    second = asyncio.run(table_guide.find_tables("여자", first["session_id"], None, 2))
+    assert second["session_id"] != first["session_id"]
+    assert world.sessions[first["session_id"]] == original
+    assert logged == [(first["session_id"], 1), (second["session_id"], 2)]
 
 
 def _run(handle, turns: list, session: str) -> list[dict]:

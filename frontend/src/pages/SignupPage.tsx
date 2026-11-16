@@ -260,6 +260,9 @@ export function SignupPage() {
         <label className="agree">
           <input type="checkbox" name="privacy" required /> 개인정보 수집·이용 동의 (필수)
         </label>
+        <p className="field-msg">
+          로그인하고 남긴 질문과 답은 계정과 함께 저장되고, 서비스를 고치는 데 쓰기 위해 관리자가 볼 수 있어요.
+        </p>
       </div>
       {error && (
         <p className="form-msg" role="alert">

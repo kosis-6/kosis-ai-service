@@ -1,8 +1,25 @@
+import os
 from pathlib import Path
 
 import pytest
 
-from app.services import ask_session, population_latest, qa, search_llm
+# API 문서(/docs)는 기본이 닫힘이다. 문서 화면의 보안 헤더를 보는 테스트가 있어 테스트에서는 연다
+# (app 을 불러오기 전에 정해야 한다)
+os.environ.setdefault("API_DOCS", "true")
+
+from app.services import admin_audit, ask_session, population_latest, qa, search_llm
+
+
+@pytest.fixture(autouse=True)
+def admin_calls(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
+    """관리자 호출 기록(app.admin_audit)을 DB 대신 목록에 모은다"""
+    seen: list[dict] = []
+
+    async def write(session, admin, method, path, query):
+        seen.append({"admin_id": admin.id, "method": method, "path": path, "query": query})
+
+    monkeypatch.setattr(admin_audit, "write", write)
+    return seen
 
 
 @pytest.fixture(autouse=True)

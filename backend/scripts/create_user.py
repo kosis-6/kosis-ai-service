@@ -3,15 +3,21 @@
 
 실행: python -m scripts.create_user admin@example.com --admin --nickname 관리자
       (비밀번호는 화면에 보이지 않게 입력받는다)
+
+관리자 이메일은 본인이 실제로 쓰는 주소로 만든다. 남이 쓰는 주소(admin@gmail.com 등)로 만들면
+메일로 비밀번호를 찾는 기능이 생겼을 때 그 주소의 주인이 관리자 계정을 가져갈 수 있다
 """
 
 import argparse
 import asyncio
 import getpass
+import re
 
 from app.core.db import SessionLocal
 from app.schemas.auth import PASSWORD_RULE, nickname_problem, password_problem
 from app.services import users
+
+EMAIL = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
 
 
 async def main() -> None:
@@ -20,6 +26,10 @@ async def main() -> None:
     parser.add_argument("--admin", action="store_true", help="관리자 권한 부여")
     parser.add_argument("--nickname", help="화면에 보일 이름(2~20자). 빼면 비워 둔다")
     args = parser.parse_args()
+    # 회원가입과 같은 이메일 규칙. 오타('admin@gmailcom')로 로그인 못 할 계정이 생기지 않게 한다
+    email = args.email.strip().lower()
+    if not EMAIL.fullmatch(email):
+        raise SystemExit(f"이메일 형식이 아닙니다: {args.email} (예: admin@example.com)")
     nickname = args.nickname.strip() if args.nickname else None
     if nickname and (problem := nickname_problem(nickname)):
         raise SystemExit(problem)
@@ -33,10 +43,10 @@ async def main() -> None:
     async with SessionLocal() as session:
         try:
             user = await users.create(
-                session, args.email, password, nickname=nickname, is_admin=args.admin
+                session, email, password, nickname=nickname, is_admin=args.admin
             )
         except users.EmailTaken:
-            raise SystemExit(f"이미 있는 이메일입니다: {args.email}") from None
+            raise SystemExit(f"이미 있는 이메일입니다: {email}") from None
     print(f"만들었습니다: id={user.id} {user.email} 닉네임={user.nickname} 관리자={user.is_admin}")
 
 
