@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import text
 
@@ -31,10 +32,19 @@ async def purge() -> None:
                 )
 
 
+async def purge_files() -> None:
+    from app.services import file_logs, qa
+
+    cutoff = datetime.now(UTC) - timedelta(days=KEEP_DAYS)
+    for path in (qa.REQUEST_LOG, qa.MISSING_LOG):
+        await asyncio.to_thread(file_logs.purge, path, cutoff)
+
+
 async def run_forever() -> None:
     while True:
-        try:
-            await purge()
-        except Exception:
-            logger.exception("사용 기록 보관 기간 정리 실패")
+        for cleanup in (purge, purge_files):
+            try:
+                await cleanup()
+            except Exception:
+                logger.exception("사용 기록 보관 기간 정리 실패: %s", cleanup.__name__)
         await asyncio.sleep(INTERVAL_SECONDS)

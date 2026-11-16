@@ -120,7 +120,9 @@ def same_owner(state: dict, user_id: int | None) -> bool:
     (대화 id 를 알아도 남의 조건·답을 볼 수 없다).
     손님이 시작한 대화는 손님도, 도중에 로그인한 사용자도 이어 간다
     (그 뒤로는 그 사용자의 대화다)"""
-    owner = state.get("user_id")
+    if "user_id" not in state:
+        return False  # 소유자를 저장하기 전의 대화는 손님 대화로 간주하지 않는다.
+    owner = state["user_id"]
     return owner is None or owner == user_id
 
 

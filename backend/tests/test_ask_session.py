@@ -528,6 +528,21 @@ def test_expired_or_deleted_session_does_not_mix_accounts(talk: Talk, other, del
 # ---- 대화의 주인: 대화 id 를 알아도 남의 대화를 이어 갈 수 없다 ------------------------------
 
 
+@pytest.mark.parametrize("other", [7, 8, None])
+def test_session_without_owner_metadata_starts_a_new_conversation(talk: Talk, other):
+    first = talk.say("부산 출생아 최근 5년 보여 줘")
+    sid = first["session_id"]
+    old_state, at = talk.store[sid]
+    old_state.pop("user_id")  # 배포 전에 저장된 대화 상태
+    talk.user_id = other
+    res = talk.say("요약해줘")
+    assert res["session_id"] != sid and res["summary"] is None
+    assert res["answer"] != first["answer"]
+    assert talk.store[sid] == (old_state, at) and "user_id" not in old_state
+    assert talk.store[res["session_id"]][0]["user_id"] == other
+    assert "새 대화로 시작했습니다" in res["notice"]
+
+
 @pytest.mark.parametrize("other", [8, None])
 def test_someone_else_cannot_continue_a_users_session(talk: Talk, other: int | None) -> None:
     first = talk.say("부산 출생아 최근 5년 보여 줘")

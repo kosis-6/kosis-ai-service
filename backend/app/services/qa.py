@@ -19,7 +19,7 @@ API: POST /ask
 import json
 import re
 import time
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 from sqlalchemy.exc import SQLAlchemyError
@@ -1857,13 +1857,13 @@ REQUEST_LOG = REQUESTS_DIR / "requests.jsonl"
 
 
 def _append(path, record):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+    from app.services.file_logs import append
+
+    append(path, record)
 
 
 def _now():
-    return datetime.now().isoformat(timespec="seconds")
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 def log_missing(question, res, path=None):
