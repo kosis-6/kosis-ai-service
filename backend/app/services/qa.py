@@ -491,6 +491,9 @@ def _ground_regions(question, parsed, fix):
         named = found - {None}
         same_sido = not named or reg.get("sido_code") in named
         if len(short) >= 2 and short in text and same_sido:
+            # 질문에 시도가 없고 짧은 이름이 여러 곳이면 (예: "강서" → 서울·부산) AI가 고른 곳 대신 되묻는다
+            if not named and indicators.resolve_region(short)["status"] == "ambiguous_region":
+                fix("regions", [short if x == r else x for x in parsed["regions"]], "짧은 이름이 여러 지역 → 되묻기")
             continue
         parsed["ungrounded_region"] = r
         return
