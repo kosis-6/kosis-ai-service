@@ -92,6 +92,8 @@ body[data-page="admin"] {
   .mini.wide { width: 100%; min-width: 440px; }
   .mini.wide th, .mini.wide td { padding-block: 7px; border-top: 1px solid var(--line); vertical-align: top; }
   .mini.wide thead th { border-top: 0; }
+  /* 숫자 칸과 머리글은 줄을 바꾸지 않고, 긴 통계표 이름만 줄을 바꾼다 */
+  .mini.wide td, .mini.wide thead th { white-space: nowrap; }
   .mini.wide tbody th, .mini.wide thead th:nth-child(2) { text-align: left; padding-left: 12px; }
   .mini.wide .is-picked th { font-weight: 700; }
   .cell-id { display: block; color: var(--muted); }
