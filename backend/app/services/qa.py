@@ -487,7 +487,10 @@ def _ground_regions(question, parsed, fix):
             continue  # 지역을 못 찾으면 계산 단계에서 그대로 안내한다
         # "강남" → 서울특별시 강남구처럼 끝의 시·군·구를 뗀 짧은 이름으로 물은 경우
         short = re.sub(r"(특별자치시|특별자치도|특별시|광역시|시|군|구|도)$", "", reg.get("region_name") or "")
-        if len(short) >= 2 and short in text:
+        # 단, 질문에 시도가 있으면 그 시도 안의 지역일 때만 (예: "서울 강서"를 부산 강서구로 바꾸면 막는다)
+        named = found - {None}
+        same_sido = not named or reg.get("sido_code") in named
+        if len(short) >= 2 and short in text and same_sido:
             continue
         parsed["ungrounded_region"] = r
         return
@@ -627,6 +630,19 @@ def _read_question(question, parsed, fix):
             for key in ("start_year", "end_year", "year"):
                 if parsed.get(key):
                     fix(key, None, "최근 추이는 자료 마지막 해까지")
+    elif (
+        kind in LATEST_KINDS
+        and not by_year
+        and not YEAR.search(question)
+        and not timeref.resolve(question)
+        and not SPAN.search(question)
+        and not SINCE.search(question)
+        and (sp := indicators.spec(parsed.get("indicator"))) is not None
+        and sp.get("method") == "lookup"
+    ):
+        # 연도를 말하지 않은 조회 지표 질문 ("서울 외국인주민 수")은 "최근"과 같이 표마다 마지막 해로
+        # (공통 기준 연도로 계산하면 2024년까지인 표는 자료가 있는데도 범위 밖이 된다)
+        asked["latest"] = True
     if ask_followup.FROM_PAST.search(question) and not SPAN.search(question):
         # "과거부터 지금까지 합계출산율 추이" → 수록 기간 전체 추이
         asked["from_start"] = True
