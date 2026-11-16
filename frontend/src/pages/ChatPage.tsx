@@ -169,10 +169,18 @@ export function ChatPage() {
             {"＋  새 대화 시작하기"}
           </button>
           <p className="side-label">WORKSPACE</p>
-          <div className="menu-item" aria-current="page">
-            <img src={iconSearch} width="18" height="18" alt="" />
-            통계 찾기
-          </div>
+          <nav className="menu" aria-label="메뉴">
+            <div className="menu-item" aria-current="page">
+              <img src={iconSearch} width="18" height="18" alt="" />
+              통계 찾기
+            </div>
+            {user?.admin && (
+              <Link className="menu-item" to="/admin">
+                <img src={iconChart} width="18" height="18" alt="" />
+                사용 기록
+              </Link>
+            )}
+          </nav>
         </div>
         <div className="side-bottom">
           <div className="guide">

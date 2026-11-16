@@ -1,5 +1,6 @@
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { AccountLayout } from "./pages/AccountLayout";
+import { AdminPage } from "./pages/AdminPage";
 import { ChatPage } from "./pages/ChatPage";
 import { LoginPage } from "./pages/LoginPage";
 import { SignupDonePage } from "./pages/SignupDonePage";
@@ -16,6 +17,8 @@ export function App() {
           <Route path="/signup" element={<SignupPage />} />
           <Route path="/signup/done" element={<SignupDonePage />} />
         </Route>
+        <Route path="/admin" element={<AdminPage view="sessions" />} />
+        <Route path="/admin/searches" element={<AdminPage view="searches" />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </BrowserRouter>
