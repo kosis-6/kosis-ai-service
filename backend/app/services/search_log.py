@@ -2,13 +2,18 @@
 
 질문, 슬롯, 후보 상위 10개와 점수, 최종 응답, 단계별 시간, 오류를 남긴다.
 실패 사례 분석(F-12)에서 원인(슬롯 / 검색 / 재순위 / 패밀리·판 선택 / 판단)을 가를 때 쓴다.
-테이블은 처음 기록할 때 만든다.
+테이블은 처음 기록할 때 만든다 (사용자 연결과 인덱스는 마이그레이션 0017).
+KEEP_DAYS 가 지난 기록은 기록할 때 지운다: 질문에 사용자 id 가 붙어 있어 기한 없이 두지 않는다
+(대화 턴 기록 app.chat_turns 와 같은 30일).
 """
 
 import json
 from typing import Any
 
 from sqlalchemy import text
+
+from app.services.log_redaction import mask, redact
+from app.services.log_retention import KEEP_DAYS
 
 DDL = """
 CREATE TABLE IF NOT EXISTS app.search_logs (
@@ -38,11 +43,13 @@ VALUES (:session_id, :user_id, :question, :status, :tbl_id, CAST(:slots AS jsonb
         CAST(:timings AS jsonb), :elapsed_ms, :error)
 """
 
+PURGE = "DELETE FROM app.search_logs WHERE created_at < now() - make_interval(days => :days)"
+
 _ready = False
 
 
 def _json(value: Any) -> str | None:
-    return None if value is None else json.dumps(value, ensure_ascii=False, default=str)
+    return None if value is None else json.dumps(redact(value), ensure_ascii=False, default=str)
 
 
 async def write(
@@ -71,7 +78,7 @@ async def write(
             {
                 "session_id": session_id,
                 "user_id": user_id,
-                "question": question,
+                "question": mask(question),
                 "status": (response or {}).get("status"),
                 "tbl_id": recs[0]["tbl_id"] if recs else None,
                 "slots": _json((result or {}).get("slots")),
@@ -80,6 +87,7 @@ async def write(
                 "hcx_raw": _json(trace.get("hcx_raw")),
                 "timings": _json(trace.get("timings")),
                 "elapsed_ms": elapsed_ms,
-                "error": error,
+                "error": mask(error),
             },
         )
+        await conn.execute(text(PURGE), {"days": KEEP_DAYS})

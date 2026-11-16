@@ -293,6 +293,150 @@ export interface paths {
         patch: operations["update_user_admin_users__user_id__patch"];
         trace?: never;
     };
+    "/admin/logs/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 최근 사용량 요약
+         * @description 최근 days 일의 /ask 턴 수·대화 수·사용자 수, 날짜별(한국 시간)·상태별·요청 종류별 개수.
+         *     턴 기록은 30일만 보관한다
+         */
+        get: operations["log_summary_admin_logs_summary_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/logs/sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 대화 목록
+         * @description /ask 대화를 마지막 턴이 최근인 것부터. 대화마다 사용자, 시작·마지막 시각, 턴 수, 첫 질문.
+         *     q 는 그 대화의 어느 턴에든 들어 있으면 맞는다
+         */
+        get: operations["log_sessions_admin_logs_sessions_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/logs/sessions/{session_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 대화 하나의 턴
+         * @description 대화 하나를 말한 순서대로: 사용자가 한 말, 답의 첫 문단, 조건이 어떻게 바뀌었는지
+         */
+        get: operations["log_session_admin_logs_sessions__session_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/logs/turns": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 대화 턴 목록
+         * @description /ask 턴을 최근 것부터. 대화로 묶지 않고 질문 하나하나를 거를 때 쓴다
+         */
+        get: operations["log_turns_admin_logs_turns_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/logs/searches": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 통계표 찾기 기록 목록
+         * @description 통계표 찾기 기록을 최근 것부터. /ask 가 수치로 답하지 못해 통계표를 찾은 것도 들어 있다
+         *     (대화 id 는 /ask 의 것과 다르다)
+         */
+        get: operations["log_searches_admin_logs_searches_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/logs/searches/{log_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 통계표 찾기 기록 하나
+         * @description 슬롯, 후보와 점수, 응답, HCX 원문, 단계별 시간까지
+         */
+        get: operations["log_search_admin_logs_searches__log_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/audit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 관리자 호출 기록
+         * @description 관리자 API 를 누가 언제 어떤 조건으로 불렀는지, 최근 것부터 (app.admin_audit).
+         *     사용자 기록 열람과 계정 정지·권한 변경이 모두 남는다
+         */
+        get: operations["audit_records_admin_audit_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/ask": {
         parameters: {
             query?: never;
@@ -457,6 +601,44 @@ export interface components {
              */
             question?: string | null;
         };
+        /** AuditList */
+        AuditList: {
+            /** Total */
+            total: number;
+            /** Records */
+            records: components["schemas"]["AuditRead"][];
+        };
+        /**
+         * AuditRead
+         * @description 관리자 API 호출 한 번
+         */
+        AuditRead: {
+            /** Id */
+            id: number;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Admin Id
+             * @description 지워진 관리자 계정이면 null
+             */
+            admin_id?: number | null;
+            /** Admin Email */
+            admin_email: string;
+            /** Method */
+            method: string;
+            /** Path */
+            path: string;
+            /**
+             * Query
+             * @description 주소의 거르는 값
+             */
+            query?: {
+                [key: string]: string;
+            } | null;
+        };
         /** Body_login_auth_token_post */
         Body_login_auth_token_post: {
             /**
@@ -556,6 +738,19 @@ export interface components {
              */
             values?: (number | null)[] | null;
         };
+        /** DayCount */
+        DayCount: {
+            /**
+             * Day
+             * Format: date
+             * @description 한국 시간 기준 날짜
+             */
+            day: string;
+            /** Turns */
+            turns: number;
+            /** Sessions */
+            sessions: number;
+        };
         /** EmailCodeRequest */
         EmailCodeRequest: {
             /**
@@ -603,6 +798,62 @@ export interface components {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
         };
+        /**
+         * LogSummary
+         * @description 최근 며칠의 사용량
+         */
+        LogSummary: {
+            /** Days */
+            days: number;
+            /**
+             * Since
+             * Format: date-time
+             */
+            since: string;
+            /**
+             * Turns
+             * @description /ask 턴 수
+             */
+            turns: number;
+            /**
+             * Sessions
+             * @description 대화 수
+             */
+            sessions: number;
+            /**
+             * Users
+             * @description 로그인한 사용자 수 (손님 제외)
+             */
+            users: number;
+            /**
+             * Guest Turns
+             * @description 손님이 남긴 턴 수
+             */
+            guest_turns: number;
+            /**
+             * Searches
+             * @description 통계표 찾기 횟수
+             */
+            searches: number;
+            /**
+             * Search Errors
+             * @description 통계표 찾기 중 오류가 난 횟수
+             */
+            search_errors: number;
+            /** By Day */
+            by_day: components["schemas"]["DayCount"][];
+            /** By Status */
+            by_status: components["schemas"]["NameCount"][];
+            /** By Request Type */
+            by_request_type: components["schemas"]["NameCount"][];
+        };
+        /** NameCount */
+        NameCount: {
+            /** Name */
+            name: string;
+            /** Count */
+            count: number;
+        };
         /** PasswordChange */
         PasswordChange: {
             /** Current Password */
@@ -636,6 +887,97 @@ export interface components {
             prompt: string;
             /** Options */
             options?: string[];
+        };
+        /** SearchLogDetail */
+        SearchLogDetail: {
+            /**
+             * User Id
+             * @description 손님이거나 지워진 사용자면 null
+             */
+            user_id?: number | null;
+            /** User Email */
+            user_email?: string | null;
+            /** User Nickname */
+            user_nickname?: string | null;
+            /** Id */
+            id: number;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Session Id */
+            session_id?: string | null;
+            /** Question */
+            question: string;
+            /** Status */
+            status?: string | null;
+            /**
+             * Tbl Id
+             * @description 첫 번째로 안내한 통계표
+             */
+            tbl_id?: string | null;
+            /** Elapsed Ms */
+            elapsed_ms?: number | null;
+            /** Error */
+            error?: string | null;
+            /** Slots */
+            slots?: unknown | null;
+            /**
+             * Candidates
+             * @description 후보 상위 10개와 점수
+             */
+            candidates?: unknown | null;
+            /** Response */
+            response?: unknown | null;
+            /** Hcx Raw */
+            hcx_raw?: unknown | null;
+            /** Timings */
+            timings?: unknown | null;
+        };
+        /** SearchLogList */
+        SearchLogList: {
+            /** Total */
+            total: number;
+            /** Searches */
+            searches: components["schemas"]["SearchLogRead"][];
+        };
+        /**
+         * SearchLogRead
+         * @description 통계표 찾기 한 번
+         */
+        SearchLogRead: {
+            /**
+             * User Id
+             * @description 손님이거나 지워진 사용자면 null
+             */
+            user_id?: number | null;
+            /** User Email */
+            user_email?: string | null;
+            /** User Nickname */
+            user_nickname?: string | null;
+            /** Id */
+            id: number;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Session Id */
+            session_id?: string | null;
+            /** Question */
+            question: string;
+            /** Status */
+            status?: string | null;
+            /**
+             * Tbl Id
+             * @description 첫 번째로 안내한 통계표
+             */
+            tbl_id?: string | null;
+            /** Elapsed Ms */
+            elapsed_ms?: number | null;
+            /** Error */
+            error?: string | null;
         };
         /** SearchRequest */
         SearchRequest: {
@@ -718,6 +1060,62 @@ export interface components {
                 [key: string]: unknown;
             } | null;
         };
+        /** SessionDetail */
+        SessionDetail: {
+            /**
+             * User Id
+             * @description 손님이거나 지워진 사용자면 null
+             */
+            user_id?: number | null;
+            /** User Email */
+            user_email?: string | null;
+            /** User Nickname */
+            user_nickname?: string | null;
+            /** Session Id */
+            session_id: string;
+            /** Turns */
+            turns: components["schemas"]["TurnDetail"][];
+        };
+        /** SessionList */
+        SessionList: {
+            /** Total */
+            total: number;
+            /** Sessions */
+            sessions: components["schemas"]["SessionRead"][];
+        };
+        /**
+         * SessionRead
+         * @description 대화 하나
+         */
+        SessionRead: {
+            /**
+             * User Id
+             * @description 손님이거나 지워진 사용자면 null
+             */
+            user_id?: number | null;
+            /** User Email */
+            user_email?: string | null;
+            /** User Nickname */
+            user_nickname?: string | null;
+            /** Session Id */
+            session_id: string;
+            /**
+             * Started At
+             * Format: date-time
+             */
+            started_at: string;
+            /**
+             * Last At
+             * Format: date-time
+             */
+            last_at: string;
+            /** Turns */
+            turns: number;
+            /** First Message */
+            first_message?: string | null;
+            /** Last Status */
+            last_status?: string | null;
+        };
         /** Source */
         Source: {
             /**
@@ -776,6 +1174,134 @@ export interface components {
              * @description 토큰 유효 시간(초)
              */
             expires_in: number;
+        };
+        /**
+         * TurnDetail
+         * @description 대화를 펼쳐 볼 때: 조건이 어떻게 바뀌었는지까지
+         */
+        TurnDetail: {
+            /**
+             * User Id
+             * @description 손님이거나 지워진 사용자면 null
+             */
+            user_id?: number | null;
+            /** User Email */
+            user_email?: string | null;
+            /** User Nickname */
+            user_nickname?: string | null;
+            /** Id */
+            id: number;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Session Id */
+            session_id: string;
+            /** Turn No */
+            turn_no: number;
+            /**
+             * Message
+             * @description 사용자가 한 말
+             */
+            message: string;
+            /**
+             * Request Type
+             * @description new / change / chart / summary / detail / source / reply / chat / unclear
+             */
+            request_type?: string | null;
+            /**
+             * Status
+             * @description /ask 응답의 status
+             */
+            status?: string | null;
+            /**
+             * Tbl Id
+             * @description 답에 쓴 통계표
+             */
+            tbl_id?: string | null;
+            /**
+             * Recomputed
+             * @description 이 턴에 다시 조회·계산했는지
+             */
+            recomputed: boolean;
+            /**
+             * Answer
+             * @description 답의 첫 문단
+             */
+            answer?: string | null;
+            /** Conditions Before */
+            conditions_before?: unknown | null;
+            /** Conditions After */
+            conditions_after?: unknown | null;
+            /**
+             * Sources
+             * @description 조건마다 어디서 왔는지
+             */
+            sources?: unknown | null;
+        };
+        /** TurnList */
+        TurnList: {
+            /** Total */
+            total: number;
+            /** Turns */
+            turns: components["schemas"]["TurnRead"][];
+        };
+        /**
+         * TurnRead
+         * @description /ask 대화의 한 턴
+         */
+        TurnRead: {
+            /**
+             * User Id
+             * @description 손님이거나 지워진 사용자면 null
+             */
+            user_id?: number | null;
+            /** User Email */
+            user_email?: string | null;
+            /** User Nickname */
+            user_nickname?: string | null;
+            /** Id */
+            id: number;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Session Id */
+            session_id: string;
+            /** Turn No */
+            turn_no: number;
+            /**
+             * Message
+             * @description 사용자가 한 말
+             */
+            message: string;
+            /**
+             * Request Type
+             * @description new / change / chart / summary / detail / source / reply / chat / unclear
+             */
+            request_type?: string | null;
+            /**
+             * Status
+             * @description /ask 응답의 status
+             */
+            status?: string | null;
+            /**
+             * Tbl Id
+             * @description 답에 쓴 통계표
+             */
+            tbl_id?: string | null;
+            /**
+             * Recomputed
+             * @description 이 턴에 다시 조회·계산했는지
+             */
+            recomputed: boolean;
+            /**
+             * Answer
+             * @description 답의 첫 문단
+             */
+            answer?: string | null;
         };
         /**
          * UserAdminRead
@@ -1315,6 +1841,269 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["UserAdminRead"];
+                };
+            };
+            /** @description 입력값이 규칙에 맞지 않음 */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    log_summary_admin_logs_summary_get: {
+        parameters: {
+            query?: {
+                days?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 성공 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LogSummary"];
+                };
+            };
+            /** @description 입력값이 규칙에 맞지 않음 */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    log_sessions_admin_logs_sessions_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+                /** @description 이 사용자의 기록만 */
+                user_id?: number | null;
+                /** @description true: 손님(로그인 안 함)만, false: 로그인한 사용자만 */
+                guest?: boolean | null;
+                /** @description 질문에 들어 있는 말 */
+                q?: string | null;
+                /** @description 이 시각부터 (ISO 8601) */
+                since?: string | null;
+                /** @description 이 시각 전까지 (ISO 8601) */
+                until?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 성공 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionList"];
+                };
+            };
+            /** @description 입력값이 규칙에 맞지 않음 */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    log_session_admin_logs_sessions__session_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 성공 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionDetail"];
+                };
+            };
+            /** @description 입력값이 규칙에 맞지 않음 */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    log_turns_admin_logs_turns_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+                /** @description 이 사용자의 기록만 */
+                user_id?: number | null;
+                /** @description true: 손님(로그인 안 함)만, false: 로그인한 사용자만 */
+                guest?: boolean | null;
+                /** @description 이 대화의 기록만 */
+                session_id?: string | null;
+                /** @description /ask 응답의 status (예: ok, tables) */
+                status?: string | null;
+                /** @description 예: new, change, summary */
+                request_type?: string | null;
+                /** @description 질문에 들어 있는 말 */
+                q?: string | null;
+                /** @description 이 시각부터 (ISO 8601) */
+                since?: string | null;
+                /** @description 이 시각 전까지 (ISO 8601) */
+                until?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 성공 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TurnList"];
+                };
+            };
+            /** @description 입력값이 규칙에 맞지 않음 */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    log_searches_admin_logs_searches_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+                /** @description 이 사용자의 기록만 */
+                user_id?: number | null;
+                /** @description true: 손님(로그인 안 함)만, false: 로그인한 사용자만 */
+                guest?: boolean | null;
+                /** @description 이 대화의 기록만 */
+                session_id?: string | null;
+                /** @description 예: ok, partial_match, ambiguous */
+                status?: string | null;
+                /** @description true: 오류가 난 기록만 */
+                has_error?: boolean | null;
+                /** @description 질문에 들어 있는 말 */
+                q?: string | null;
+                /** @description 이 시각부터 (ISO 8601) */
+                since?: string | null;
+                /** @description 이 시각 전까지 (ISO 8601) */
+                until?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 성공 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SearchLogList"];
+                };
+            };
+            /** @description 입력값이 규칙에 맞지 않음 */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    log_search_admin_logs_searches__log_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                log_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 성공 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SearchLogDetail"];
+                };
+            };
+            /** @description 입력값이 규칙에 맞지 않음 */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    audit_records_admin_audit_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 성공 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditList"];
                 };
             };
             /** @description 입력값이 규칙에 맞지 않음 */

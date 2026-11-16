@@ -1,4 +1,5 @@
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
+import { AdminGate } from "./admin/AdminGate";
 import { AccountLayout } from "./pages/AccountLayout";
 import { ChatPage } from "./pages/ChatPage";
 import { LoginPage } from "./pages/LoginPage";
@@ -16,6 +17,8 @@ export function App() {
           <Route path="/signup" element={<SignupPage />} />
           <Route path="/signup/done" element={<SignupDonePage />} />
         </Route>
+        <Route path="/admin" element={<AdminGate view="sessions" />} />
+        <Route path="/admin/searches" element={<AdminGate view="searches" />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </BrowserRouter>

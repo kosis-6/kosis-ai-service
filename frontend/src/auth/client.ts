@@ -8,7 +8,8 @@
 // 머리글을 바로 그리려는 것이다. 진짜 로그인 확인은 요청마다 서버가 한다.
 import type { Token, UserRead } from "../api/types";
 
-export type User = { name: string };
+// admin 은 관리자 메뉴를 보여 줄지만 정한다. 관리자 API 는 요청마다 서버가 다시 확인한다
+export type User = { name: string; admin: boolean };
 
 export type Failure = {
   ok: false;
@@ -25,7 +26,7 @@ const OFFLINE = "서버에 연결하지 못했어요. 잠시 뒤에 다시 시�
 function readCache(): User | null {
   try {
     const value = JSON.parse(localStorage.getItem(KEY) ?? "null");
-    return value && typeof value.name === "string" ? { name: value.name } : null;
+    return value && typeof value.name === "string" ? { name: value.name, admin: value.admin === true } : null;
   } catch {
     return null;
   }
@@ -138,7 +139,7 @@ async function loadMe(): Promise<boolean> {
   const res = await call("/auth/me");
   if (!res.ok) return false;
   const me = (await res.json()) as UserRead;
-  remember({ name: me.nickname || me.email.split("@")[0] });
+  remember({ name: me.nickname || me.email.split("@")[0], admin: me.is_admin });
   return true;
 }
 
@@ -158,7 +159,7 @@ export async function login(email: string, password: string, keep: boolean): Pro
   const r = await post<Token>("/auth/token", { username: email, password, keep: String(keep) }, true);
   if (!r.ok) return r;
   token = r.data.access_token;
-  if (!(await loadMe())) remember({ name: email.split("@")[0] });
+  if (!(await loadMe())) remember({ name: email.split("@")[0], admin: false });
   return { ok: true, data: null };
 }
 

@@ -60,6 +60,7 @@ from app.services import (
     timeref,
 )
 from app.services.hcx_client import HcxClient
+from app.services.log_redaction import mask, redact
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +112,18 @@ def now() -> datetime:
 
 def new_id() -> str:
     return f"A_{uuid4().hex[:12]}"
+
+
+def same_owner(state: dict, user_id: int | None) -> bool:
+    """이 사용자가 이어 가도 되는 대화인가.
+    로그인한 사용자가 시작한 대화는 그 사용자만 이어 간다
+    (대화 id 를 알아도 남의 조건·답을 볼 수 없다).
+    손님이 시작한 대화는 손님도, 도중에 로그인한 사용자도 이어 간다
+    (그 뒤로는 그 사용자의 대화다)"""
+    if "user_id" not in state:
+        return False  # 소유자를 저장하기 전의 대화는 손님 대화로 간주하지 않는다.
+    owner = state["user_id"]
+    return owner is None or owner == user_id
 
 
 def _lock(session_id: str) -> asyncio.Lock:
@@ -1284,7 +1297,9 @@ def next_state(state: dict | None, question: str, res: dict, sources: dict) -> d
             "pending": {"missing": "table", "options": table_choice_options(found)}
             if table_guide.waiting_choice(found)
             else None,
-            "search_session": res.get("search_session") or prev.get("search_session"),
+            "search_session": (found or {}).get("session_id")
+            or res.get("search_session")
+            or prev.get("search_session"),
             "recent": recent,
             "turn_no": turn_no,
         }
@@ -1361,6 +1376,13 @@ async def handle(
     sid = session_id or new_id()
     async with _lock(sid):
         state, expired = await _load(sid)
+        moved = state is not None and not same_owner(state, user_id)
+        if state is None and session_id:
+            # 만료·삭제된 대화 ID는 재사용하지 않는다. 남아 있는 턴 기록과 새 계정 기록이
+            # 같은 대화로 묶이는 것을 막는다.
+            sid = new_id()
+        if moved:  # 다른 계정이 시작한 대화: 그 조건·답을 이어받지 않고 새 대화로 답한다
+            sid, state, expired = new_id(), None, False
         res, sources, notice = await _turn(state, question, selections, user_id)
         await _attach_tables(res, state, question, user_id)
         if "summary" not in res:  # 직전 답을 다시 쓴 응답(_reuse)은 그 요약을 이미 들고 있다
@@ -1373,7 +1395,12 @@ async def handle(
             notice = " ".join(filter(None, [notice, reason]))
         if expired:
             notice = " ".join(filter(None, ["시간이 지나 이전 조건이 초기화됐습니다.", notice]))
+        if moved:
+            notice = " ".join(
+                filter(None, ["로그인 상태가 바뀌어 새 대화로 시작했습니다.", notice])
+            )
         after = next_state(state, question, res, sources)
+        after["user_id"] = user_id  # 이 대화의 주인 (same_owner). 손님이면 None
         res.setdefault("question", question)
         res["session_id"] = sid
         res["applied"] = applied(after.get("conditions") or {}, after.get("sources") or {})
@@ -1481,17 +1508,19 @@ async def log_turn(
                 "session_id": session_id,
                 "user_id": user_id,
                 "turn_no": turn_no,
-                "message": question,
+                "message": mask(question),
                 "request_type": res.get("request_type"),
                 "status": res.get("status"),
                 "before": json.dumps(
-                    (before or {}).get("conditions"), ensure_ascii=False, default=str
+                    redact((before or {}).get("conditions")), ensure_ascii=False, default=str
                 ),
-                "after": json.dumps(after.get("conditions"), ensure_ascii=False, default=str),
-                "sources": json.dumps(after.get("sources"), ensure_ascii=False),
+                "after": json.dumps(
+                    redact(after.get("conditions")), ensure_ascii=False, default=str
+                ),
+                "sources": json.dumps(redact(after.get("sources")), ensure_ascii=False),
                 "tbl_id": result.get("tbl_id"),
                 "recomputed": not result.get("reused") and res.get("request_type") != UNCLEAR,
-                "answer": lead(res.get("answer") or ""),
+                "answer": mask(lead(res.get("answer") or "")),
             },
         )
         await conn.execute(

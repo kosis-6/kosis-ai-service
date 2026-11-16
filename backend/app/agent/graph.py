@@ -37,6 +37,7 @@ from app.services import slots as slot_parser
 class State(TypedDict, total=False):
     question: str  # 이번 턴에 사용자가 쓴 말
     session_id: str
+    user_id: int | None
     selections: dict[str, Any] | None
     prev: dict[str, Any] | None  # 저장돼 있던 대화 상태 (되묻기 대기 중이면 clarify/ambiguous)
     search_question: str  # 검색에 쓰는 문장 (재시도 때는 앞 질문 + 답)
@@ -60,7 +61,8 @@ def pending(prev: dict[str, Any] | None) -> bool:
 
 async def route(s: State, config: RunnableConfig) -> dict[str, Any]:
     """갈래: 되묻기 답으로 풀리면 result를 채워 바로 저장으로, 아니면 새 검색"""
-    prev = await dialog.load_state(s["session_id"])
+    session_id, prev = await dialog.owned_session(s["session_id"], s.get("user_id"))
+    trace_of(config)["search_session_id"] = session_id
     result, turns = None, 0
     if pending(prev):
         # ambiguous에 조건만 답하면 앞 질문으로 다시 검색하므로 앞 질문의 임베딩이 필요하다
@@ -74,6 +76,7 @@ async def route(s: State, config: RunnableConfig) -> dict[str, Any]:
             turns = prev["clarify_turns"] + 1
             trace_of(config)["follow_up"] = True
     return {
+        "session_id": session_id,
         "prev": prev,
         "result": result,
         "turns": turns,
@@ -160,7 +163,9 @@ async def settle(s: State, config: RunnableConfig) -> dict[str, Any]:
 async def save(s: State) -> dict[str, Any]:
     result, turns = s["result"], s.get("turns", 0)
     waiting = result["status"] in ("clarify", "ambiguous")
-    await dialog.save_state(s["session_id"], result, turns if waiting else 0)
+    await dialog.save_state(
+        s["session_id"], dialog.owned_result(result, s.get("user_id")), turns if waiting else 0
+    )
     result["turn"] = turns
     return {"result": result}
 
@@ -208,10 +213,16 @@ async def handle(
     session_id: str,
     selections: dict[str, Any] | None = None,
     trace: dict[str, Any] | None = None,
+    user_id: int | None = None,
 ) -> dict[str, Any]:
     """dialog.handle과 같은 인자·같은 반환값"""
     out = await GRAPH.ainvoke(
-        {"question": question, "session_id": session_id, "selections": selections},
+        {
+            "question": question,
+            "session_id": session_id,
+            "selections": selections,
+            "user_id": user_id,
+        },
         config={"configurable": {"trace": {} if trace is None else trace}},
     )
     return out["result"]
