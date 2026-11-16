@@ -7,7 +7,7 @@
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
 from app.api.deps import AdminUser, Session
 from app.schemas.auth import UserAdminRead, UserList, UserUpdate
@@ -21,7 +21,13 @@ from app.schemas.logs import (
 )
 from app.services import auth_sessions, load_queue, user_logs, users
 
-router = APIRouter(prefix="/admin", tags=["관리자"])
+
+def no_store(response: Response) -> None:
+    """관리자 응답(사용자 이메일·질문)을 브라우저나 중간 서버가 저장해 두지 않게 한다"""
+    response.headers["Cache-Control"] = "no-store"
+
+
+router = APIRouter(prefix="/admin", tags=["관리자"], dependencies=[Depends(no_store)])
 
 
 @router.get("/load-jobs", summary="통계표 적재 대기열")
@@ -73,6 +79,7 @@ Guest = Annotated[
     bool | None, Query(description="true: 손님(로그인 안 함)만, false: 로그인한 사용자만")
 ]
 Word = Annotated[str | None, Query(max_length=100, description="질문에 들어 있는 말")]
+SessionId = Annotated[str | None, Query(max_length=64, description="이 대화의 기록만")]
 Since = Annotated[datetime | None, Query(description="이 시각부터 (ISO 8601)")]
 Until = Annotated[datetime | None, Query(description="이 시각 전까지 (ISO 8601)")]
 
@@ -137,9 +144,13 @@ async def log_turns(
     offset: Offset = 0,
     user_id: UserId = None,
     guest: Guest = None,
-    session_id: str | None = None,
-    status: str | None = Query(default=None, description="/ask 응답의 status (예: ok, tables)"),
-    request_type: str | None = Query(default=None, description="예: new, change, summary"),
+    session_id: SessionId = None,
+    status: str | None = Query(
+        default=None, max_length=40, description="/ask 응답의 status (예: ok, tables)"
+    ),
+    request_type: str | None = Query(
+        default=None, max_length=40, description="예: new, change, summary"
+    ),
     q: Word = None,
     since: Since = None,
     until: Until = None,
@@ -169,8 +180,10 @@ async def log_searches(
     offset: Offset = 0,
     user_id: UserId = None,
     guest: Guest = None,
-    session_id: str | None = None,
-    status: str | None = Query(default=None, description="예: ok, partial_match, ambiguous"),
+    session_id: SessionId = None,
+    status: str | None = Query(
+        default=None, max_length=40, description="예: ok, partial_match, ambiguous"
+    ),
     has_error: bool | None = Query(default=None, description="true: 오류가 난 기록만"),
     q: Word = None,
     since: Since = None,

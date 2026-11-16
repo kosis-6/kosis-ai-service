@@ -1,5 +1,5 @@
 // 통계표 찾기 기록: 목록 → 고른 기록의 슬롯·후보 점수·단계별 시간
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { SearchLogRead } from "../api/types";
 import * as api from "./api";
 import { count, filled, person, seconds, statusLabel, when } from "./format";
@@ -17,9 +17,10 @@ export function SearchesView() {
   const [picked, setPicked] = useState<number | null>(null);
 
   const key = `${days}|${who}|${status}|${errors}|${q}`;
+  const since = useMemo(() => api.sinceDays(days), [key]);
   const list = usePaged(
     async (offset) => {
-      const found = await api.searches({ days, who, q, status, errors }, offset);
+      const found = await api.searches({ since, who, q, status, errors }, offset);
       return { rows: found.searches, total: found.total };
     },
     key,

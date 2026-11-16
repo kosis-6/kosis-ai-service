@@ -255,3 +255,28 @@ def test_summary(admin: TestClient, calls: dict) -> None:
 def test_limit_is_capped(admin: TestClient, calls: dict) -> None:
     assert admin.get("/admin/logs/turns", params={"limit": 201}).status_code == 422
     assert admin.get("/admin/logs/turns", params={"q": "가" * 101}).status_code == 422
+
+
+# ---- 보안 --------------------------------------------------------------------------------
+
+
+def test_error_text_hides_keys() -> None:
+    raw = (
+        "ConnectError: https://kosis.kr/openapi/x.do?method=getList&apiKey=AbC123=&format=json"
+        " / Authorization: Bearer eyJhbGciOi.payload.sig / token=zzz"
+    )
+    shown = user_logs.mask(raw)
+    assert "AbC123" not in shown and "eyJhbGciOi" not in shown and "zzz" not in shown
+    assert "apiKey=***&format=json" in shown and "Bearer ***" in shown
+    assert user_logs.mask(None) is None
+    assert user_logs.mask("HcxError: 429 too many requests") == "HcxError: 429 too many requests"
+
+
+def test_admin_answers_are_not_cached(admin: TestClient, calls: dict) -> None:
+    for path in PATHS:
+        assert admin.get(path).headers["cache-control"] == "no-store"
+
+
+def test_long_filter_values_are_refused(admin: TestClient, calls: dict) -> None:
+    assert admin.get("/admin/logs/turns", params={"session_id": "A" * 65}).status_code == 422
+    assert admin.get("/admin/logs/searches", params={"status": "s" * 41}).status_code == 422

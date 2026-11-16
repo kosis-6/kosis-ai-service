@@ -38,7 +38,8 @@ async function get<T>(path: string, query: Query = {}): Promise<T> {
   return (await res.json()) as T;
 }
 
-/** 기간(일) → 그 시작 시각. 목록과 요약이 같은 기간을 보게 한다 */
+/** 기간(일) → 그 시작 시각. 거르는 조건이 같은 동안은 한 번 구한 값을 계속 쓴다
+ * ("더 보기"로 이어 붙일 때 기준이 움직이면 줄이 겹치거나 빠진다) */
 export function sinceDays(days: number, now = new Date()): string {
   return new Date(now.getTime() - days * 86_400_000).toISOString();
 }
@@ -52,9 +53,9 @@ export function summary(days: number): Promise<LogSummary> {
   return get("/admin/logs/summary", { days });
 }
 
-export function sessions(filter: { days: number; who: Who; q: string }, offset: number): Promise<SessionList> {
+export function sessions(filter: { since: string; who: Who; q: string }, offset: number): Promise<SessionList> {
   return get("/admin/logs/sessions", {
-    since: sinceDays(filter.days),
+    since: filter.since,
     guest: guestOf(filter.who),
     q: filter.q,
     limit: PAGE,
@@ -67,11 +68,11 @@ export function session(id: string): Promise<SessionDetail> {
 }
 
 export function searches(
-  filter: { days: number; who: Who; q: string; status: string; errors: boolean },
+  filter: { since: string; who: Who; q: string; status: string; errors: boolean },
   offset: number,
 ): Promise<SearchLogList> {
   return get("/admin/logs/searches", {
-    since: sinceDays(filter.days),
+    since: filter.since,
     guest: guestOf(filter.who),
     q: filter.q,
     status: filter.status,

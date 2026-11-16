@@ -1,5 +1,5 @@
 // 대화 기록: 기간의 사용량 → 대화 목록 → 고른 대화의 턴 (말한 순서대로)
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { SessionRead, TurnDetail } from "../api/types";
 import * as api from "./api";
 import { changes, conditionLine, count, day, person, requestLabel, when } from "./format";
@@ -13,9 +13,10 @@ export function SessionsView() {
   const [picked, setPicked] = useState<string | null>(null);
 
   const key = `${days}|${who}|${q}`;
+  const since = useMemo(() => api.sinceDays(days), [key]);
   const list = usePaged(
     async (offset) => {
-      const found = await api.sessions({ days, who, q }, offset);
+      const found = await api.sessions({ since, who, q }, offset);
       return { rows: found.sessions, total: found.total };
     },
     key,
