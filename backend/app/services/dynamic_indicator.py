@@ -639,32 +639,48 @@ def _composition(spec: dict, src: dict, plan: Plan, dims: list[Dim], question: s
 LAST_YEAR_KINDS = ("value", "compare", "rank", "composition")
 
 
-async def answer(question: str, parsed: dict, found: dict, trace: dict) -> dict | None:
-    """통계표 찾기가 고른 1순위 표로 바로 계산한 답 (qa.answer와 같은 모양). 못 하면 None → 표 안내
+MAX_TABLES = 3  # 통계표 찾기 후보 중 이만큼까지 (순위대로) 시도한다
 
-    통계표 찾기가 조건을 모두 충족한 표 하나를 골랐을 때만(status ok, 함께 볼 표 없음) 계산한다.
-      - 2·3순위 표는 쓰지 않는다: 통계표 찾기가 질문에 덜 맞는다고 본 표다
-      - 일부 조건만 맞는 표(partial_match)나, 한 통계가 여러 표로 나뉜 경우(together)는 표 안내
+
+async def answer(question: str, parsed: dict, found: dict, trace: dict) -> dict | None:
+    """통계표 찾기가 고른 표로 바로 계산한 답 (qa.answer와 같은 모양). 못 하면 None → 표 안내
+
+    통계표 찾기가 조건을 충족한 표를 찾았을 때만(status ok, 함께 볼 표 없음) 계산한다.
+      - 후보는 순위대로 MAX_TABLES개까지 보되, 질문 조건(연도·지역 수준·성별·분류 등)을 하나라도
+        충족하지 못한(✘) 표는 건너뛴다. 정답 표가 1순위가 아닐 수 있어 2·3순위도 보지만,
+        통계표 찾기가 덜 맞다고 본 표로 숫자를 내지는 않는다
+      - 일부 조건만 맞는 경우(partial_match)나 한 통계가 여러 표로 나뉜 경우(together)는 표 안내
       - 통계표 찾기의 주의(판 메모·기준)는 답의 주의에 붙인다
-    칸 하나만 정하지 못했으면(예: 분류에 합계가 없음) 그 칸을 되묻는다 (status clarify_question).
+    어느 표로도 계산하지 못했는데 앞 표에서 칸 하나만 정하지 못했으면(예: 분류에 합계가 없음)
+    그 칸을 되묻는다 (status clarify_question).
     적재 안 된 작은 표는 바로 받아 넣는다 (table_cache.fetch_now).
     시도한 표와 결과는 trace["dynamic"]에 남긴다 (요청 기록)."""
     if found.get("status") != "ok" or found.get("together"):
         return None  # 되묻기·범위 밖·일부 일치·여러 표는 통계표 찾기 답을 그대로 쓴다
-    trace.setdefault("dynamic", [])
-    card = next(iter(found.get("recommendations") or []), None)
-    if not card or not card.get("tbl_id"):
+    steps = trace.setdefault("dynamic", [])
+    slots, first_ask = found.get("parsed") or {}, None
+    for card in (found.get("recommendations") or [])[:MAX_TABLES]:
+        tbl_id = card.get("tbl_id")
+        if not tbl_id:
+            continue
+        failed = [k for k, ok in (card.get("checks") or {}).items() if not ok]
+        if failed:
+            steps.append(
+                {"tbl_id": tbl_id, "skip": f"통계표 찾기 조건 불충족 ({', '.join(failed)})"}
+            )
+            continue
+        res, ask = await _try(
+            tbl_id, card.get("org_id"), question, parsed, trace, {}, slots, found.get("notice")
+        )
+        if res is not None:
+            await _remember(parsed, tbl_id, {}, res)
+            return res
+        if ask is not None and first_ask is None:
+            first_ask = (card, ask)
+    if first_ask is None:
         return None
-    tbl_id, slots = card["tbl_id"], found.get("parsed") or {}
-    res, ask = await _try(
-        tbl_id, card.get("org_id"), question, parsed, trace, {}, slots, found.get("notice")
-    )
-    if res is not None:
-        await _remember(parsed, tbl_id, {}, res)
-        return res
-    if ask is None:
-        return None
-    return ask_answer(question, parsed, tbl_id, card.get("tbl_nm") or tbl_id, ask)
+    card, ask = first_ask
+    return ask_answer(question, parsed, card["tbl_id"], card.get("tbl_nm") or card["tbl_id"], ask)
 
 
 async def answer_choice(question: str, context: dict, code: str, trace: dict) -> dict | None:

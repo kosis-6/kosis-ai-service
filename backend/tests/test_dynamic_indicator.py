@@ -183,7 +183,7 @@ def test_with_spec_uses_table_last_year_when_year_not_asked(monkeypatch) -> None
     assert d._with_spec({**BASE, "sex": "여", "type": "composition"}, ratio)["type"] == "value"
 
 
-def test_answer_uses_only_top_table_when_search_is_sure(monkeypatch) -> None:
+def test_answer_tries_ranked_tables_that_meet_all_conditions(monkeypatch) -> None:
     tried = []
 
     async def fake_build(tbl_id, org_id, question, parsed, step, forced=None, slots=None):
@@ -195,21 +195,28 @@ def test_answer_uses_only_top_table_when_search_is_sure(monkeypatch) -> None:
 
     monkeypatch.setattr(d, "_build", fake_build)
     monkeypatch.setattr(qa, "answer", fake_answer)
-    two = [{"tbl_id": "A"}, {"tbl_id": "DT_1PL1502"}]
-    # 2·3순위 표는 통계표 찾기가 덜 맞다고 본 표라 쓰지 않는다
-    assert asyncio.run(d.answer("질문", BASE, {"status": "ok", "recommendations": two}, {})) is None
-    assert tried == ["A"]
+    # 정답 표가 3순위여도 쓴다. 조건을 충족하지 못한(✘) 2순위 표는 건너뛴다
+    recs = [
+        {"tbl_id": "A", "checks": {"year": True}},
+        {"tbl_id": "B", "checks": {"year": True, "sex": False}},
+        {"tbl_id": "DT_1PL1502", "checks": {"year": True, "sex": True}},
+    ]
+    trace: dict = {}
+    found = {"status": "ok", "recommendations": recs, "notice": "2020년 판 기준입니다"}
+    res = asyncio.run(d.answer("2020년 서울 1인 가구 수", BASE, found, trace))
+    assert tried == ["A", "DT_1PL1502"]
+    skips = [step.get("skip", "") for step in trace["dynamic"]]
+    assert skips[0] == "질문의 말과 맞는 칸이 없음" and skips[2] == ""
+    assert skips[1] == "통계표 찾기 조건 불충족 (sex)"
+    spec = res["parsed"]["dynamic_spec"]
+    assert spec["name"] == "1인 가구 수" and spec["note"].endswith("2020년 판 기준입니다")
     # 되묻기·일부 일치·여러 표(함께 볼 표)는 계산하지 않는다
     for found in (
         {"status": "clarify"},
-        {"status": "partial_match", "recommendations": two[1:]},
-        {"status": "ok", "recommendations": two[1:], "together": [{"tbl_id": "B"}]},
+        {"status": "partial_match", "recommendations": recs[2:]},
+        {"status": "ok", "recommendations": recs[2:], "together": [{"tbl_id": "B"}]},
     ):
         assert asyncio.run(d.answer("2020년 서울 1인 가구 수", BASE, found, {})) is None
-    found = {"status": "ok", "recommendations": two[1:], "notice": "2020년 판 기준입니다"}
-    res = asyncio.run(d.answer("2020년 서울 1인 가구 수", BASE, found, {}))
-    spec = res["parsed"]["dynamic_spec"]
-    assert spec["name"] == "1인 가구 수" and spec["note"].endswith("2020년 판 기준입니다")
 
 
 # ---- 추계 표·결측 검증 -------------------------------------------------------------
