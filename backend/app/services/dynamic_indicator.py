@@ -59,6 +59,7 @@ PROJECTION_NOTE = "장래추계 표의 추계값입니다(실적 아님). 다음
 TOTAL_NAMES = {"계", "합계", "전체", "총계", "소계", "총", "전국"}
 SEX_NAMES = {"남": {"남자", "남", "남성"}, "여": {"여자", "여", "여성"}}
 COUNT_UNITS = {"명", "가구", "건", "개", "세대", "호", "곳", "개소", "천명", "천가구"}
+TOTAL_SUFFIX = re.compile(r"(계|합계|소계|전체)$")  # 공백·기호를 뺀 이름 끝의 합계 표시
 PCT_ASK = re.compile(r"%|퍼센트|비율|비중|몇\s*프로")
 NORM = re.compile(r"[\s·,.()\[\]{}<>\"'‘’“”_/-]")
 
@@ -200,7 +201,10 @@ def _text_hits(question: str, dims: list[Dim], skip: set[int]) -> dict[int, list
             n = _norm(name)
             if len(n) < 2 or n in TOTAL_NAMES:
                 continue
-            spans += [(m.start(), m.end(), d.no, code) for m in re.finditer(re.escape(n), q)]
+            # "통학-계"·"통근·통학-계"처럼 뒤에 합계 표시가 붙은 이름은 떼고도 맞춘다 ("통학 인구")
+            bare = TOTAL_SUFFIX.sub("", n)
+            for word in {n, bare} if len(bare) >= 2 else {n}:
+                spans += [(m.start(), m.end(), d.no, code) for m in re.finditer(re.escape(word), q)]
     kept = [
         a
         for a in spans
@@ -401,11 +405,23 @@ def _sex_override(plan: Plan, sex: str) -> dict:
     return {"item_id": code} if d.no == 0 else {"filters": {d.col: code}}
 
 
-def _name(parsed: dict, dims: list[Dim], plan: Plan, counted: bool) -> str:
+def _without_age_words(term: str) -> str:
+    """'30대 미혼 인구' → '미혼 인구' (연령은 lookup이 이름 앞에 붙인다: '30대 미혼 인구')"""
+    for start, end, _ in sorted(qa.age_spans(term), reverse=True):
+        # "62살에서 67살 사이"의 '사이', "33살부터 38살까지"의 '까지'도 연령 표현이다
+        rest = re.sub(r"^\s*(사이|까지|의)", "", term[end:])
+        term = term[:start] + rest
+    return " ".join(term.split())
+
+
+def _name(parsed: dict, dims: list[Dim], plan: Plan, counted: bool, strip_age: bool = False) -> str:
     """지표 이름: 질문 해석의 지표 표현이 고른 칸 이름을 모두 담고 있으면 그 표현, 아니면 칸 이름
-    (HCX가 지표 칸에 "2020년 서울"처럼 지표가 아닌 말을 넣는 경우가 있다)"""
+    (HCX가 지표 칸에 "2020년 서울"처럼 지표가 아닌 말을 넣는 경우가 있다)
+    strip_age: 연령을 lookup이 연령 칸으로 고르면 이름에서 연령 표현을 뺀다 (두 번 붙지 않게)"""
     words = [d.codes[plan.matched[d.no]] for d in dims if d.no in plan.matched]
     words = words or [dims[0].codes[plan.pick[0]]]
+    # "통학-계"처럼 이름 끝의 합계 표시는 떼고 쓴다 ("통학 인구"와 맞추고, 답에도 "통학")
+    words = [re.sub(r"[\s\-·]*(계|합계|소계)$", "", w) or w for w in words]
     for term in (parsed.get("term"), parsed.get("indicator")):
         # 사전 지표 이름도 고른 칸 이름을 모두 담으면 쓴다 (옛 연도: 이혼 ⊂ 이혼 건수).
         # 근거 없이 고른 사전 지표(총인구 ⊅ 1인가구)는 아래 담김 검사에서 걸러진다
@@ -414,7 +430,7 @@ def _name(parsed: dict, dims: list[Dim], plan: Plan, counted: bool) -> str:
         if indicators.find_regions(str(term)):  # "전국 평균 가구원 수"처럼 지역까지 담은 표현
             continue
         if all(_norm(w) in _norm(term) for w in words):
-            return str(term)
+            return _without_age_words(str(term)) if strip_age else str(term)
     name = " ".join(words)
     return f"{name} 수" if counted and not name.endswith("수") else name
 
@@ -493,7 +509,13 @@ def build(
     unit, whole = _unit(tbl_id, plan.pick[0])
     unit = unit or ""
     counted = unit in COUNT_UNITS and whole
-    name = _name(parsed, dims, plan, counted)
+    strip_age = bool(
+        plan.age_dim
+        and parsed.get("ages")
+        and parsed.get("type") != "composition"
+        and not PCT_ASK.search(question)
+    )
+    name = _name(parsed, dims, plan, counted, strip_age)
     spec = {
         "name": name,
         "unit": unit,

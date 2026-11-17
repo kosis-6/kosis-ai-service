@@ -443,6 +443,10 @@ def correct(question, parsed, today=None):
         chosen = indicators.canonical_name(parsed.get("indicator") or "")
         # 지표가 없으면(원인 질문 등) 판단하지 않는다 (None)
         parsed["grounded"] = (chosen in names) if chosen else None
+        if chosen == "총인구" and population_modifier(question):
+            # "통학 인구"·"외국인 인구"처럼 '인구' 앞에 다른 통계를 가리키는 말이 있으면
+            # 별칭 '인구'만으로 총인구라고 볼 수 없다 → 바로 계산을 시도한다
+            parsed["grounded"] = False
 
     sp = indicators.spec(parsed.get("indicator"))
     is_comp = sp is not None and lookup.kind_of(sp) == "composition"
@@ -534,6 +538,30 @@ def correct(question, parsed, today=None):
 
 # 지표 이름 사이에 이 말만 있으면 여러 지표를 함께 물은 것 ("출생아 수와 사망자 수")
 AND_WORDS = re.compile(r"^(와|과|하고|랑|이랑|및|,|그리고|,그리고|와함께|과함께)$")
+
+
+# '인구' 앞에 와도 총인구인 말: 지역·성별·연령·전체를 뜻하는 말 (그 밖이면 다른 통계일 수 있다)
+PLAIN_POPULATION = {
+    "총", "전체", "주민등록", "우리나라", "한국", "국내", "전국", "남자", "여자", "남성", "여성",
+    "남녀", "이상", "이하", "미만", "대", "세", "살", "노인", "고령", "노년", "청년", "청소년",
+    "유소년", "어린이", "아동", "생산연령", "중장년", "현재", "작년", "올해", "지난해", "의",
+    "수도권", "비수도권", "광역시", "특별시", "시군구", "시도", "지역", "구", "군", "시", "도",
+    "나이", "연령", "연령대", "만",
+}  # fmt: skip
+POPULATION_NOUN = re.compile(r"([가-힣]+)\s*인구")
+
+
+def population_modifier(question):
+    """'인구' 바로 앞의 말이 지역·성별·연령이 아닌 다른 통계를 가리키면 그 말 (예: 통학, 외국인)"""
+    for m in POPULATION_NOUN.finditer(question):
+        # 조사를 뗀 말과 그대로의 말을 모두 본다 ("나이"의 '이'는 조사가 아니다)
+        words = {m[1], re.sub(r"(의|은|는|이|가|에서|에|별)$", "", m[1]) or m[1]}
+        if any(w in PLAIN_POPULATION or re.search(r"\d", w) for w in words):
+            continue
+        if any(indicators.find_regions(w) or agegroup.resolve(w) for w in words):
+            continue
+        return min(words, key=len)
+    return None
 
 
 def asked_indicators(question):

@@ -758,3 +758,32 @@ def test_unsupported_condition_is_not_dropped(monkeypatch: pytest.MonkeyPatch) -
     r = qa.compute(q)
     assert r["status"] == "band_mismatch" and "'3.2kg' 조건" in r["reason"]
     assert "조건 없는 전국 출생아 수는 확인할 수 있습니다" in r["alternative"]
+
+
+@pytest.mark.parametrize(
+    ("question", "word"),
+    [
+        ("2010년 통학 인구는 몇 명이야?", "통학"),
+        ("외국인 인구", "외국인"),
+        ("2025년 서울의 인구는?", None),
+        ("65세 이상 인구는?", None),
+        ("남자 인구", None),
+        ("수도권 인구 합계", None),
+        ("만 6~11세 초등학생 나이 인구는?", None),  # '나이'의 '이'는 조사가 아니다
+        ("작년에 인구가 줄었나", None),
+        ("주민등록인구", None),
+    ],
+)
+def test_population_modifier(monkeypatch, question: str, word) -> None:
+    regions = {"서울", "서울의"}
+    monkeypatch.setattr(indicators, "find_regions", lambda t: [t] if t in regions else [])
+    assert qa.population_modifier(question) == word
+
+
+def test_total_population_with_other_statistic_word_is_not_grounded(monkeypatch) -> None:
+    # "통학 인구"를 별칭 '인구'만 보고 총인구로 답하지 않는다 → 바로 계산을 시도한다
+    monkeypatch.setattr(indicators, "find_regions", lambda t: [])
+    p = qa.correct("2010년 전국 통학 인구는 몇 명이야?", parsed(indicator="총인구"), TODAY)
+    assert p["grounded"] is False
+    p = qa.correct("2010년 전국 인구는 몇 명이야?", parsed(indicator="총인구"), TODAY)
+    assert p["grounded"] is True

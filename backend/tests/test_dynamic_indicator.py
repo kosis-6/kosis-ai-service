@@ -583,3 +583,26 @@ def test_lenient_uses_ambiguous_candidates(monkeypatch) -> None:
     assert asyncio.run(d.answer("1980년 서울 1인 가구 수", BASE, found, {})) is None
     res = asyncio.run(d.answer("1980년 서울 1인 가구 수", BASE, found, {}, lenient=True))
     assert res["status"] == "ok" and tried == ["DT_OLD"]
+
+
+def test_total_suffix_names_match_plain_words(fake_table: dict) -> None:
+    # "통학-계"처럼 이름 끝에 합계 표시가 붙은 항목도 "통학 인구"와 맞춘다
+    items = d.Dim(0, "항목", {"A": "통근·통학-계", "B": "통학-계", "C": "통학-남자"})
+    fake_table["tables"]["DT_1PL1502"] = ([items, ONE_PERSON[1]], 1, "시도")
+    fake_table["units"]["DT_1PL1502"] = ("명", True)
+    spec = build("2010년 전국 통학 인구는 몇 명이야?", indicator="통학 인구", term="통학 인구")
+    assert spec["sources"][0]["item_id"] == "B" and spec["name"] == "통학 인구"
+
+
+@pytest.mark.parametrize(
+    ("term", "name"),
+    [
+        ("30대 미혼 인구", "미혼 인구"),
+        ("62살에서 67살 사이 사망자 수", "사망자 수"),
+        ("70세 이상 1인 가구 수", "1인 가구 수"),
+        ("미혼 인구", "미혼 인구"),
+    ],
+)
+def test_age_words_removed_from_name(term: str, name: str) -> None:
+    # lookup이 연령 표현을 이름 앞에 붙이므로 ("30대 미혼 인구") 두 번 나오지 않게 뺀다
+    assert d._without_age_words(term) == name
