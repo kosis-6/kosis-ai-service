@@ -1032,6 +1032,8 @@ async def _after_asking(original: str, kind: str, user_id: int | None):
     if kind == "move_scope":
         told = f"범위를 알아듣지 못해 '{question_clarify.MOVE_OPTIONS[1]}'으로 답했습니다."
         return await _movement(original, "exclude", user_id, told)
+    if kind == "table_cell":  # 표의 칸을 끝내 고르지 못함: 원래 질문의 통계표를 안내한다
+        return await _find_tables(original, None, user_id)
     return (
         {
             "status": "unknown_region",
@@ -1121,6 +1123,17 @@ async def _turn(
             if region:
                 merged = question_clarify.merge_region(original, region)
                 return await _clarified(merged, state)
+        elif kind == "table_cell":
+            # 표의 칸 되묻기 (dynamic_indicator.py): 고른 칸으로 같은 표를 다시 계산한다
+            if code := dynamic_indicator.pick_option(choice, pending["clarification"]):
+                trace: dict = {}
+                context = pending["clarification"].get("context") or {}
+                res = await dynamic_indicator.answer_choice(original, context, code, trace)
+                if res is not None:
+                    if not res.get("clarification"):
+                        res["chart"] = charts.build(res.get("result"))
+                    res.update(request_type=REPLY, question=original)
+                    return res, {}, None
         elif scope := question_clarify.scope_reply(choice):
             return await _movement(original, scope, user_id)
         # 미지원 지표라도 새 질문을 선택지 대기에 가두지 않는다.
@@ -1362,19 +1375,20 @@ async def _attach_tables(res: dict, state: dict | None, question: str, user_id: 
             res.update(computed)
             res["chart"] = charts.build(res.get("result"))
             res["request_type"], res["question"], res["search_session"] = kind, asked, sid
-            try:
-                cards = await table_guide.cards_for(asked, res.get("sources") or [])
-            except Exception:
-                logger.exception("통계표 카드 만들기 실패")
-                cards = []
-            if cards:
-                res["tables"] = {"status": "ok", "recommendations": cards}
+            await _attach_cards(res, asked)
             return
         res.update(table_guide.tables_answer(found, {"parsed": parsed or {}}))
         # 수치 답을 하려다 표 찾기로 넘어온 경위(질문 해석)는 요청 기록에 남긴다
         res["request_type"], res["question"], res["trace"] = kind, asked, trace or {}
         res["search_session"] = sid
         return
+    if ungrounded(res) and await _dynamic_instead(res, state, asked, user_id):
+        return
+    await _attach_cards(res, asked)
+
+
+async def _attach_cards(res: dict, asked: str) -> None:
+    """답에 쓴 표를 표 카드로 붙인다. 카드를 못 만들어도 답은 그대로 준다"""
     try:
         cards = await table_guide.cards_for(asked, res.get("sources") or [])
     except Exception:
@@ -1382,6 +1396,40 @@ async def _attach_tables(res: dict, state: dict | None, question: str, user_id: 
         cards = []
     if cards:
         res["tables"] = {"status": "ok", "recommendations": cards}
+
+
+def ungrounded(res: dict) -> bool:
+    """사전 지표로 답했지만 질문에 그 지표의 이름·별칭이 없는 새 질문 (qa.correct의 grounded)"""
+    parsed = res.get("parsed") or {}
+    return (
+        res.get("status") == "ok"
+        and res.get("request_type") == NEW
+        and parsed.get("grounded") is False
+        and not parsed.get("dynamic_spec")
+    )
+
+
+async def _dynamic_instead(res: dict, state: dict | None, asked: str, user_id: int | None) -> bool:
+    """근거 없이 고른 사전 지표 대신 통계표에서 바로 계산해 본다. 되면 res를 바꾸고 True.
+    안 되면(표가 없거나 칸을 못 고름·되물어야 함) 사전 지표 답을 그대로 둔다"""
+    sid = (state or {}).get("search_session") or table_guide.new_search_session()
+    trace = res.get("trace") or {}
+    try:
+        found = await table_guide.find_tables(asked, sid, None, user_id)
+        computed = await dynamic_indicator.answer(asked, res.get("parsed") or {}, found, trace)
+    except Exception:
+        logger.exception("근거 없는 지표의 바로 계산 실패")
+        return False
+    if computed is None or computed.get("status") != "ok":
+        trace["dynamic_kept"] = (res.get("parsed") or {}).get("indicator")
+        return False
+    kind = res.get("request_type")
+    res.clear()
+    res.update(computed)
+    res["chart"] = charts.build(res.get("result"))
+    res["request_type"], res["question"], res["search_session"] = kind, asked, sid
+    await _attach_cards(res, asked)
+    return True
 
 
 def _summary(result: dict | None) -> dict | None:

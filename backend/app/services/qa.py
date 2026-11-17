@@ -381,6 +381,10 @@ def correct(question, parsed, today=None):
                 parsed.pop("unsupported", None)
         _guard_indicator(question, parsed, names, fix)
         kind = parsed.get("type")
+        # 질문에 고른 지표의 이름·별칭이 있는가. 없으면 HCX가 비슷한 지표를 고른 것일 수 있어
+        # ask_session이 통계표에서 바로 계산해 보고, 되면 그 답을 쓴다 (예: 통근 인구 → 전출자 수)
+        chosen = indicators.canonical_name(parsed.get("indicator") or "")
+        parsed["grounded"] = bool(chosen) and chosen in names
 
     sp = indicators.spec(parsed.get("indicator"))
     is_comp = sp is not None and lookup.kind_of(sp) == "composition"
@@ -834,8 +838,8 @@ def compute(q):
     # 사전에 없는 지표를 통계표에서 바로 만든 정의 (dynamic_indicator.py). 조회 지표와 같이 계산한다
     dyn = q.get("dynamic_spec") if _dynamic_fits(q) else None
     sp = dyn or (None if q.get("unsupported") else indicators.spec(ind))
-    if dyn and dyn.get("ages_in_filters"):
-        ages = None  # 비율의 분자에 연령 구간이 이미 들어 있다
+    if dyn and (dyn.get("ages_in_filters") or dyn.get("ignore_ages")):
+        ages = None  # 비율의 분자에 연령이 이미 들어 있거나, 말에서 짐작한 연령을 쓰지 않는 정의
     population = sp is None or sp["name"] == "총인구"
     if kind == "composition" and population and not q.get("unsupported"):
         # 구성비는 지표가 아니라 총인구를 나눠 보므로 지표 확인을 건너뜀

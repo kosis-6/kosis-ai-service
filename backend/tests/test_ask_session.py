@@ -659,6 +659,69 @@ def test_unsupported_indicator_computed_from_found_table(talk: Talk) -> None:
     assert saved["indicator"] == "1인 가구 수" and saved["dynamic_spec"] == spec
 
 
+def test_ungrounded_dictionary_answer_replaced_by_dynamic(talk: Talk) -> None:
+    # HCX가 질문에 근거 없는 사전 지표를 고름 (예: "1인 가구 중 여성 비율" → 총인구 성별 구성)
+    talk.parsed = {**BASE, "type": "value", "indicator": "출생아 수", "grounded": False}
+    talk.dynamic = {
+        "status": "ok",
+        "answer": "1인 가구 중 여성 비율은 53.64%입니다.",
+        "parsed": {**BASE, "type": "value", "indicator": "1인 가구 중 여성 비율"},
+        "result": {"status": "ok", "value": 53.64, "method": "dynamic"},
+        "sources": [{"name": "1인가구", "basis": "기준", "tbl_id": "DT_1PL1502", "url": None}],
+        "trace": {},
+    }
+    res = talk.say("서울 1인 가구 중 여성 비율")
+    assert res["result"]["method"] == "dynamic" and res["request_type"] == "new"
+    assert len(talk.searched) == 1
+
+
+def test_ungrounded_dictionary_answer_kept_when_dynamic_fails(talk: Talk) -> None:
+    talk.parsed = {**BASE, "type": "value", "indicator": "출생아 수", "grounded": False}
+    res = talk.say("부산 아기 몇 명 태어났어")
+    assert res["status"] == "ok" and "method" not in res["result"]
+    assert res["tables"]["recommendations"] == [{"tbl_id": "T", "basis": "기준"}]
+    # 근거가 있는 사전 지표는 통계표 찾기를 부르지 않는다
+    talk.parsed = {**BASE, "type": "value", "indicator": "출생아 수", "grounded": True}
+    searched = len(talk.searched)
+    talk.say("부산 출생아 수")
+    assert len(talk.searched) == searched
+
+
+def test_table_cell_clarification_then_pick(talk: Talk, monkeypatch: pytest.MonkeyPatch) -> None:
+    # 찾은 표의 분류에 합계가 없어 칸을 되묻고, 고른 칸으로 같은 표를 다시 계산한다
+    talk.parsed = {**BASE, "type": "value", "indicator": "반려동물 수"}
+    talk.dynamic = dynamic_indicator.ask_answer(
+        "서울 1인 가구 수",
+        dict(BASE),
+        "DT_X",
+        "1인가구",
+        dynamic_indicator.Ask(3, "거주기간별", [("1", "1년 미만"), ("2", "1~5년")]),
+    )
+    first = talk.say("서울 1인 가구 수")
+    assert first["status"] == "clarify_question"
+    assert first["clarification"]["options"] == ["1년 미만", "1~5년"]
+    picked = []
+
+    async def fake_choice(question, context, code, trace):
+        picked.append((question, context["tbl_id"], code))
+        return {
+            "status": "ok",
+            "answer": "답",
+            "parsed": {**BASE, "type": "value", "indicator": "1인 가구 수"},
+            "result": {"status": "ok", "value": 1, "method": "dynamic"},
+            "sources": [],
+            "trace": {},
+        }
+
+    monkeypatch.setattr(dynamic_indicator, "answer_choice", fake_choice)
+    asked = len(talk.asked)
+    selections = {"clarification_kind": "table_cell", "clarification_value": "1~5년"}
+    res = talk.say("1~5년", selections=selections)
+    assert res["status"] == "ok" and res["request_type"] == "reply"
+    assert picked == [("서울 1인 가구 수", "DT_X", "2")]
+    assert len(talk.asked) == asked  # 고를 때는 질문 해석(HCX)을 다시 부르지 않는다
+
+
 def test_table_choice_reply_goes_to_table_search(talk: Talk) -> None:
     talk.parsed = {**BASE, "type": "value", "indicator": "반려동물 수"}
     talk.found = {"status": "clarify", "answer": "대상을 골라 주세요."}
