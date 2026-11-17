@@ -53,6 +53,7 @@ from app.services import (
     answer_summary,
     ask_followup,
     charts,
+    dynamic_indicator,
     indicators,
     qa,
     question_clarify,
@@ -852,11 +853,21 @@ async def extract(state: dict, question: str, trace: dict) -> dict:
     system = (
         FOLLOW_SYSTEM.replace("{STATE}", state_text(state["conditions"], state["sources"]))
         .replace("{LAST}", last_text(state.get("last")))
-        .replace("{INDICATORS}", ", ".join(indicators.specs()))
+        .replace("{INDICATORS}", ", ".join(indicator_names(state["conditions"])))
     )
     raw = await _chat(question, system)
     trace["follow_raw"] = raw
     return parse_delta(raw)
+
+
+def indicator_names(conditions: dict) -> list[str]:
+    """변경 추출에 보여 줄 지표 목록. 지금 지표가 표에서 바로 계산한 지표면 그것도 넣는다
+    (목록에 없으면 HCX가 "부산은?"을 이어 묻는 말이 아니라 새 질문으로 읽는다)"""
+    names = list(indicators.specs())
+    current = conditions.get("indicator")
+    if conditions.get("dynamic_spec") and current and current not in names:
+        names.append(current)
+    return names
 
 
 async def _chat(prompt: str, system: str) -> str:
@@ -1340,8 +1351,25 @@ async def _attach_tables(res: dict, state: dict | None, question: str, user_id: 
         except Exception:
             logger.exception("통계표 찾기 실패")
             return
-        kind, trace, parsed = res.get("request_type"), res.get("trace"), res.get("parsed")
+        kind, trace, parsed = res.get("request_type"), res.get("trace") or {}, res.get("parsed")
+        try:  # 사전에 없는 지표: 찾은 표에서 바로 계산해 본다 (dynamic_indicator.py)
+            computed = await dynamic_indicator.answer(asked, parsed or {}, found, trace)
+        except Exception:
+            logger.exception("동적 지표 계산 실패")
+            computed = None
         res.clear()
+        if computed is not None:
+            res.update(computed)
+            res["chart"] = charts.build(res.get("result"))
+            res["request_type"], res["question"], res["search_session"] = kind, asked, sid
+            try:
+                cards = await table_guide.cards_for(asked, res.get("sources") or [])
+            except Exception:
+                logger.exception("통계표 카드 만들기 실패")
+                cards = []
+            if cards:
+                res["tables"] = {"status": "ok", "recommendations": cards}
+            return
         res.update(table_guide.tables_answer(found, {"parsed": parsed or {}}))
         # 수치 답을 하려다 표 찾기로 넘어온 경위(질문 해석)는 요청 기록에 남긴다
         res["request_type"], res["question"], res["trace"] = kind, asked, trace or {}

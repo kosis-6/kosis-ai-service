@@ -3,6 +3,7 @@
 """
 
 import asyncio
+import copy
 from datetime import timedelta
 
 import pytest
@@ -11,7 +12,7 @@ from fastapi.testclient import TestClient
 from app import main
 from app.core import stats_db
 from app.services import ask_session as s
-from app.services import indicators, qa, table_guide
+from app.services import dynamic_indicator, indicators, qa, table_guide
 
 BASE = {
     "type": "trend",
@@ -278,6 +279,8 @@ class Talk:
         monkeypatch.setattr(s, "now", lambda: self.at)
         monkeypatch.setattr(table_guide, "find_tables", self._find)
         monkeypatch.setattr(table_guide, "cards_for", self._cards)
+        self.dynamic: dict | None = None  # 찾은 표로 바로 계산한 답 (None이면 표 안내)
+        monkeypatch.setattr(dynamic_indicator, "answer", self._dynamic)
 
     def _result(self, parsed: dict, question: str = "") -> dict:
         regions = parsed.get("regions") or []
@@ -316,6 +319,9 @@ class Talk:
     async def _find(self, question, session_id, selections, user_id):
         self.searched.append((question, session_id, selections))
         return {**self.found, "recommendations": [{"tbl_id": "DT_X"}], "clarify": None}
+
+    async def _dynamic(self, question, parsed, found, trace):
+        return copy.deepcopy(self.dynamic)
 
     async def _cards(self, question, sources):
         return [{"tbl_id": src["tbl_id"], "basis": src["basis"]} for src in sources]
@@ -627,6 +633,30 @@ def test_unsupported_indicator_falls_back_to_table_search(talk: Talk) -> None:
     # 표만 안내한 뒤의 말은 수치 조건 변경이 아니라 새 질문이다
     talk.parsed = dict(BASE)
     assert talk.say("부산 출생아 최근 5년")["request_type"] == "new" and talk.extracted == []
+
+
+def test_unsupported_indicator_computed_from_found_table(talk: Talk) -> None:
+    # 사전에 없는 지표: 통계표 찾기가 고른 표로 바로 계산했으면 표 안내 대신 수치로 답한다
+    talk.parsed = {**BASE, "type": "value", "indicator": "반려동물 수"}
+    spec = {"name": "1인 가구 수", "dynamic": True}
+    talk.dynamic = {
+        "status": "ok",
+        "answer": "2020년 서울특별시의 1인 가구 수는 1,390,701가구입니다.",
+        "parsed": {**BASE, "type": "value", "indicator": "1인 가구 수", "dynamic_spec": spec},
+        "result": {"status": "ok", "value": 1390701, "method": "dynamic"},
+        "sources": [{"name": "1인가구", "basis": "기준", "tbl_id": "DT_1PL1502", "url": None}],
+        "trace": {},
+    }
+    res = talk.say("2020년 서울 1인 가구 수")
+    assert res["status"] == "ok" and res["result"]["method"] == "dynamic"
+    assert res["request_type"] == "new" and res["search_session"].startswith("S_")
+    assert res["tables"] == {
+        "status": "ok",
+        "recommendations": [{"tbl_id": "DT_1PL1502", "basis": "기준"}],
+    }
+    # 다음 턴은 바로 만든 정의를 조건으로 이어 간다 (부산도 같이 → 변경)
+    saved = talk.store[res["session_id"]][0]["conditions"]
+    assert saved["indicator"] == "1인 가구 수" and saved["dynamic_spec"] == spec
 
 
 def test_table_choice_reply_goes_to_table_search(talk: Talk) -> None:

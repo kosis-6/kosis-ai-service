@@ -831,7 +831,11 @@ def compute(q):
             "region": bad,
             "reason": "질문의 지역을 시도·시군구로 확인하지 못했습니다.",
         }
-    sp = None if q.get("unsupported") else indicators.spec(ind)
+    # 사전에 없는 지표를 통계표에서 바로 만든 정의 (dynamic_indicator.py). 조회 지표와 같이 계산한다
+    dyn = q.get("dynamic_spec") if _dynamic_fits(q) else None
+    sp = dyn or (None if q.get("unsupported") else indicators.spec(ind))
+    if dyn and dyn.get("ages_in_filters"):
+        ages = None  # 비율의 분자에 연령 구간이 이미 들어 있다
     population = sp is None or sp["name"] == "총인구"
     if kind == "composition" and population and not q.get("unsupported"):
         # 구성비는 지표가 아니라 총인구를 나눠 보므로 지표 확인을 건너뜀
@@ -883,6 +887,8 @@ def compute(q):
     except Exception as e:  # 계산 중 오류도 답변 단계에서 안내
         return {"status": "error", "reason": f"계산 중 오류가 났습니다: {e}"}
 
+    if dyn:  # 사전 지표가 아니라 통계표에서 바로 만든 정의로 계산했다 (다음 턴에서도 표시)
+        result["method"] = "dynamic"
     if result.get("status") == "unknown_indicator" and "gap" not in result:
         # 지표는 있지만 질문한 구분(예: 연령)이 표에 없음 → 그 구분의 자료는 수집하지 않음
         result["gap"] = "not_collected"
@@ -909,6 +915,20 @@ def compute(q):
             "원인이나 정책 효과는 통계 수치만으로 판단할 수 없어 수치 변화만 보여드립니다."
         )
     return result
+
+
+def _dynamic_fits(q):
+    """바로 만든 지표 정의를 이 조건에 그대로 써도 되는가.
+    지표가 바뀌었거나 정의를 만들 때 고정한 조건(성별·연령·구성비)이 바뀌면 쓰지 않는다
+    → 사전에 없는 지표로 처리되어 통계표 찾기·바로 계산을 다시 한다"""
+    spec = q.get("dynamic_spec")
+    if not spec or spec.get("name") != q.get("indicator"):
+        return False
+    norm = {"sex": lambda v: v or "계", "ages": lambda v: [list(a) for a in v] if v else None}
+    return all(
+        norm.get(k, lambda v: v)(q.get(k)) == norm.get(k, lambda v: v)(v)
+        for k, v in (spec.get("fixed") or {}).items()
+    )
 
 
 def _value_instead(result, name):
