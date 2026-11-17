@@ -49,7 +49,7 @@ JSON 형식
  "sex": null, "region": null, "region_level": "시도", "year": null, "year_end": null},
  "query_type": "find_table"}"""
 
-# Gemma 4 31B 용 (SEARCH_LLM=gemma). region 규칙에 한 줄만 더한다.
+# Gemma 4 31B 용 (통계표 찾기에 Gemma 를 쓸 때). region 규칙에 한 줄을 더하고 target 규칙을 좁힌다.
 # Gemma 는 '우리 구로 이사 오는'의 '구로'를 서울 구로구로 읽었고, 이 한 줄로 region 을 비웠다 (11/15 실험실)
 REGION_RULE = '- region: 지역 이름을 말하면 그 표현 그대로 (예: "부산", "해운대구").'
 REGION_RULE_GEMMA = (
@@ -57,4 +57,19 @@ REGION_RULE_GEMMA = (
     + "\n  '우리 구', '우리 군', '우리 시', '우리 동네'는 지역 이름이 아니다. region 은 null 로 둔다"
     " (예: '우리 구로 이사 오는' → region null. '구로'는 '우리 구' + 조사 '로')."
 )
-SLOT_SYSTEM_GEMMA = swap(SLOT_SYSTEM, REGION_RULE, REGION_RULE_GEMMA)
+# Gemma 는 target 을 456문항 중 207문항에서 채웠다 (HCX 는 17). 주제 자체("외국인", "1인 가구"),
+# 나이 집단("노인", "청년"), 질문에 없는 바꿔 쓴 말("재혼자")이 대부분이라 표에 그 말이 없으면
+# '대상 ✘'(일부 일치)만 만들었다. 표 묶음이 실제로 그 대상으로 나뉘는 이름일 때만 쓰게 좁힌다
+# (11/16 Gemma 측정, 표 하나 408문항: 최종 정답 371 → 373, '일부 일치' 128 → 59, target 207 → 56)
+TARGET_RULE = """- target: 특정 대상 집단을 말하면 그 표현 그대로 (예: "혼인 귀화자", "유학생", "외국인 근로자",
+  "고령자", "다문화 가구"). 일반 인구 전체면 null."""
+TARGET_RULE_GEMMA = """- target: 통계표가 그 집단만 따로 다루는 대상 집단 이름을 질문이 말했을 때만, 질문에 쓰인 낱말 그대로 쓴다
+  (예: "혼인 귀화자", "결혼이민자", "유학생", "외국인 근로자", "외국국적동포").
+  다음은 target 이 아니므로 null 로 둔다.
+  · 나이로 정해지는 집단: 노인, 고령자, 청년, 어린이, 청소년, 미성년자 등
+  · 찾는 통계의 주제 자체: 외국인, 1인 가구, 다문화가구, 쌍둥이, 맞벌이 가구, 신혼부부 등 (topic 에 쓴다)
+  · 질문에 없는 말로 바꿔 쓴 이름: "재혼하는 사람들"을 "재혼자"로, "일을 그만둔 여성"을 "경력단절여성"으로 쓰지 않는다
+  확실하지 않으면 null."""
+SLOT_SYSTEM_GEMMA = swap(
+    swap(SLOT_SYSTEM, REGION_RULE, REGION_RULE_GEMMA), TARGET_RULE, TARGET_RULE_GEMMA
+)

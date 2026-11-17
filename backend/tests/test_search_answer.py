@@ -52,3 +52,31 @@ def test_status_messages_without_table() -> None:
     s["parse_error"] = True
     response = sa.respond({"status": "out_of_scope", "slots": s, "reason": None}, [], "S_test")
     assert response["status"] == "parse_error"
+
+
+def test_together_tables_are_listed_in_the_answer() -> None:
+    """한 통계가 여러 표로 나뉘면 함께 볼 표를 답과 응답 칸에 넣는다"""
+    wife = {
+        "tbl_id": "W", "org_id": "101", "table_name": "외국인 아내의 국적별 이혼",
+        "survey_name": "인구동향조사", "organization": "국가데이터처", "edition": "2000~2024",
+        "url": "https://kosis.kr/W",
+    }  # fmt: skip
+    husband = {**wife, "tbl_id": "H", "url": "https://kosis.kr/H"}
+    husband["table_name"] = "외국인 남편의 국적별 이혼"
+    by_id = {"W": wife, "H": husband}
+    cards = sa.together_cards({"together": ["H", "없는표"]}, by_id)
+    assert [c["tbl_id"] for c in cards] == ["H"]
+    assert cards[0]["tbl_nm"] == "외국인 남편의 국적별 이혼"
+    assert sa.together_cards({}, by_id) == []
+    rec = {
+        "survey_nm": "인구동향조사", "tbl_nm": wife["table_name"], "org_nm": "국가데이터처",
+        "period": "2000~2024", "checks": {}, "notes": [], "url": wife["url"],
+        "family": {"current": {"target": None, "sex": None}, "members": [], "editions": []},
+    }  # fmt: skip
+    result = {"status": "ok", "slots": {}}
+    text = sa.answer_text(result, rec, cards)
+    assert "이 통계는 표가 나뉘어 있어 아래 표도 함께 보셔야 합니다." in text
+    line = "함께 볼 통계표: 외국인 남편의 국적별 이혼 (국가데이터처, 2000~2024년) https://kosis.kr/H"
+    assert line in text
+    assert "함께 볼 통계표" not in sa.answer_text(result, rec)
+

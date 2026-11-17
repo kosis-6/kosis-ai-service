@@ -37,6 +37,37 @@ def test_region_levels_split_current_and_previous() -> None:
     assert lc.region_levels(classes) == (["시도", "시군구"], ["시도"])
 
 
+SIDO = ["전국", "서울특별시", "부산광역시", "대구광역시", "인천광역시", "경기도", "강원특별자치도"]
+SIGUNGU = [f"{a}{b}" for a in "가나다라마바사아자차카타" for b in ("시", "군")]  # 24개
+
+
+def test_region_levels_read_from_values_when_level_names_are_missing() -> None:
+    """전출지별 · 전입지별 · 도별처럼 level_names 가 빈 거주 · 이동 지역 축은 값에서 읽는다"""
+    assert lc.region_levels([_cls("전출지별", SIDO), _cls("전입지별", SIDO)]) == (["시도"], [])
+    assert lc.region_levels([_cls("전출지별", SIDO + ["중 구", *SIGUNGU])]) == (
+        ["시도", "시군구"],
+        [],
+    )
+    old = ["전국", "경기도", "강원도", "충청북도", "황해도", "평안북도", "함경남도"]
+    assert lc.region_levels([_cls("도별", old)]) == (["시도"], [])
+    # 대도시별은 대도시의 구만 담는다 → 시도까지만
+    assert lc.region_levels([_cls("대도시별", SIDO + SIGUNGU)]) == (["시도"], [])
+    # 이전 거주지 축은 이전 거주지 쪽에 채운다
+    assert lc.region_levels(
+        [_cls("현거주지별", levels=["시도"]), _cls("5년전거주지별", ["계", "시부-경기도", *SIDO])]
+    ) == (["시도"], ["시도"])
+
+
+def test_region_levels_ignore_axes_that_are_not_where_people_live() -> None:
+    """값에 시도 이름이 있어도 거주 지역이 아닌 축은 채우지 않는다"""
+    for name in ("항구별", "성씨본관별", "본적지별", "출생지별", "출입국항별", "연도별", "용도별"):
+        assert lc.region_levels([_cls(name, SIDO)]) == ([], []), name
+    # 시도 이름이 몇 개 없으면 지역 축으로 보지 않는다
+    assert lc.region_levels([_cls("전입지별", ["계", "서울특별시", "경기도", "기타"])]) == ([], [])
+    # level_names 가 있으면 그대로 쓴다
+    assert lc.region_levels([_cls("전입지별", SIDO + SIGUNGU, levels=["시도"])]) == (["시도"], [])
+
+
 def test_sex_from_class() -> None:
     assert lc.sex_info("표", [_cls("성별", ["계", "남자", "여자"])], []) == ("class", "both", True)
     # 생명표처럼 남/여만 있고 합계가 없는 표

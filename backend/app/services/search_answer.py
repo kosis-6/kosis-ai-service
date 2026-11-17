@@ -142,7 +142,28 @@ def notice(result: dict[str, Any]) -> str | None:
     return "; ".join(notes) or None
 
 
-def answer_text(result: dict[str, Any], rec: dict[str, Any] | None) -> str:
+def together_cards(result: dict[str, Any], by_id: dict[str, dict[str, Any]]) -> list[dict]:
+    """함께 볼 표 (llm_pick.with_together). 한 통계가 여러 표로 나뉜 경우에만 있다"""
+    cards = []
+    for tbl_id in result.get("together") or []:
+        if t := by_id.get(tbl_id):
+            cards.append(
+                {
+                    "tbl_id": t["tbl_id"],
+                    "org_id": t["org_id"],
+                    "tbl_nm": t["table_name"],
+                    "survey_nm": t["survey_name"],
+                    "org_nm": t["organization"],
+                    "period": t["edition"],
+                    "url": t["url"],
+                }
+            )
+    return cards
+
+
+def answer_text(
+    result: dict[str, Any], rec: dict[str, Any] | None, together: list[dict] | None = None
+) -> str:
     status = result["status"]
     if status in STATUS_MESSAGES:
         return STATUS_MESSAGES[status]
@@ -175,6 +196,12 @@ def answer_text(result: dict[str, Any], rec: dict[str, Any] | None) -> str:
         lines.append("조건 확인: " + " · ".join(marks))
     if result.get("notice"):
         lines.append(f"확인 필요: {result['notice']}")
+    if together:
+        lines.append("이 통계는 표가 나뉘어 있어 아래 표도 함께 보셔야 합니다.")
+        lines += [
+            f"함께 볼 통계표: {t['tbl_nm']} ({t['org_nm']}, {t['period']}년) {t['url']}"
+            for t in together
+        ]
     if slots.get("analysis"):
         lines.append(f"직접 계산: {', '.join(slots['analysis'])} — 표의 값으로 계산해야 합니다.")
     if "target" in result.get("missing_axes", []) or slots.get("target_default"):
@@ -239,13 +266,15 @@ def respond(
             ],
         }
 
+    together = together_cards(result, by_id) if status in ("ok", "partial_match") else []
     response = {
         "session_id": session_id,
         "status": status,
-        "answer": answer_text(result, recs[0] if recs else None),
+        "answer": answer_text(result, recs[0] if recs else None, together),
         "parsed": {k: slots[k] for k in ("topic", "target", "conditions", "query_type")},
         "clarify": clarify,
         "recommendations": recs,
+        "together": together,
         "notice": result["notice"],
     }
     if debug:
