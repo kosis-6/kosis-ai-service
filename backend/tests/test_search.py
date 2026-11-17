@@ -1413,6 +1413,29 @@ def test_check_uses_the_dictionary_when_the_word_is_not_in_the_table() -> None:
     assert se.check(other, _slots("q", "인구", items=["강아지"]))["item:강아지"] is False
 
 
+def test_guessed_words_found_in_the_chosen_table_are_shown_as_passed() -> None:
+    """LLM 이 짐작해 붙였다가 지워진 낱말: 순위에는 쓰지 않고, 고른 표에 있으면 ✔ 로만 보여 준다"""
+    tables = se.prepare(
+        [
+            _t(
+                "A", "시도/전입사유별 이동자수", 2015, 2025, "FA",
+                classifications=[{"name": "전입사유별", "sample_values": ["직업", "가족", "주택"]}],
+            )
+        ]
+    )  # fmt: skip
+    slots = _slots("이사 오는 이유", "이동자수")
+    slots["dropped_conditions"] = ["전입사유", "통근시간"]
+    before = se.check(tables[0], slots)
+    assert se.confirmed_guesses(tables[0], slots, before) == {"item:전입사유": True}
+    # 표를 확정할 때 ✔ 로 더해지고, 표에 없는 말('통근시간')은 ✘ 로도 나오지 않아 상태는 그대로다
+    result = {"status": None, "reason": None, "slots": slots, "table": None, "candidates": []}
+    out = se.finish(result, tables, "FA", 0.5, allow_clarify=False)
+    assert out["status"] == "ok" and out["failed"] == []
+    assert out["table"]["checks"] == {**before, "item:전입사유": True}
+    # 지워진 낱말이 없으면 아무것도 더하지 않는다
+    assert se.confirmed_guesses(tables[0], _slots("q", "이동자수"), {}) == {}
+
+
 def test_dict_terms_skip_short_common_words() -> None:
     assert se.dict_terms("강아지") == ("반려동물",)  # '보유' · '유형'은 흔한 말이라 뺀다
     assert se.dict_terms("햄스터") == ()

@@ -1166,6 +1166,30 @@ def find(
     return finish(result, tables, top["table"]["family_id"], top["score"], allow_clarify)
 
 
+def confirmed_guesses(
+    t: dict[str, Any], slots: dict[str, Any], checks: dict[str, bool]
+) -> dict[str, bool]:
+    """LLM 이 짐작해 붙였다가 지워진 낱말(ground_conditions 의 dropped_conditions) 가운데
+    고른 표에 실제로 있는 것 → {'item:전입사유': True}.
+
+    지워진 낱말은 순위에 쓰지 않는다 (짐작이 엉뚱한 표를 끌어올린다: '연령차' → 재혼부부의
+    연령차별 표). 표를 고른 뒤에 그 표에서 확인되는 말만 조건 확인에 ✔ 로 보여 준다.
+    표에 없는 말은 보여 주지 않는다 (대부분 LLM 이 표와 다른 낱말을 쓴 것이라 ✘ 는 헛경고가 된다.
+    11/17 실험실 668문항: ✔ 가 붙는 22문항 모두 정답 표, ✘ 로 맞게 경고하는 문항 0)"""
+    out: dict[str, bool] = {}
+    for word in slots.get("dropped_conditions") or []:
+        for field, kind in (("items", "item"), ("classes", "class")):
+            key = f"{kind}:{word}"
+            if key in checks or key in out:
+                break
+            probe = {**slots, "conditions": {**slots["conditions"], "items": [], "classes": []}}
+            probe["conditions"][field] = [word]
+            if check(t, probe).get(key):
+                out[key] = True
+                break
+    return out
+
+
 def resolve(
     tables: list[dict[str, Any]],
     slots: dict[str, Any],
@@ -1225,6 +1249,7 @@ def finish(
         }
     checks = check(table, slots)
     failed = [k for k, ok in checks.items() if not ok]
+    checks.update(confirmed_guesses(table, slots, checks))  # ✔ 만 더하므로 failed 는 그대로다
     result.update(
         {
             "status": "partial_match" if failed or notes else "ok",
