@@ -1359,12 +1359,22 @@ async def _attach_tables(res: dict, state: dict | None, question: str, user_id: 
     asked = res.get("question") or question
     if res.get("status") in table_guide.SEARCH_INSTEAD:
         sid = (state or {}).get("search_session") or table_guide.new_search_session()
+        kind, trace, parsed = res.get("request_type"), res.get("trace") or {}, res.get("parsed")
+        # 전에 바로 계산한 지표면 통계표 찾기 없이 그 표로 계산한다 (계산 방법 캐시)
+        computed = await dynamic_indicator.cached_answer(asked, parsed or {}, trace)
+        if computed is not None:
+            res.clear()
+            res.update(computed)
+            if not res.get("clarification"):
+                res["chart"] = charts.build(res.get("result"))
+            res["request_type"], res["question"], res["search_session"] = kind, asked, sid
+            await _attach_cards(res, asked)
+            return
         try:
             found = await table_guide.find_tables(asked, sid, None, user_id)
         except Exception:
             logger.exception("통계표 찾기 실패")
             return
-        kind, trace, parsed = res.get("request_type"), res.get("trace") or {}, res.get("parsed")
         try:  # 사전에 없는 지표: 찾은 표에서 바로 계산해 본다 (dynamic_indicator.py)
             computed = await dynamic_indicator.answer(asked, parsed or {}, found, trace)
         except Exception:
@@ -1414,9 +1424,12 @@ async def _dynamic_instead(res: dict, state: dict | None, asked: str, user_id: i
     안 되면(표가 없거나 칸을 못 고름·되물어야 함) 사전 지표 답을 그대로 둔다"""
     sid = (state or {}).get("search_session") or table_guide.new_search_session()
     trace = res.get("trace") or {}
+    parsed = res.get("parsed") or {}
     try:
-        found = await table_guide.find_tables(asked, sid, None, user_id)
-        computed = await dynamic_indicator.answer(asked, res.get("parsed") or {}, found, trace)
+        computed = await dynamic_indicator.cached_answer(asked, parsed, trace)
+        if computed is None:
+            found = await table_guide.find_tables(asked, sid, None, user_id)
+            computed = await dynamic_indicator.answer(asked, parsed, found, trace)
     except Exception:
         logger.exception("근거 없는 지표의 바로 계산 실패")
         return False

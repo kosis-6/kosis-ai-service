@@ -281,6 +281,8 @@ class Talk:
         monkeypatch.setattr(table_guide, "cards_for", self._cards)
         self.dynamic: dict | None = None  # 찾은 표로 바로 계산한 답 (None이면 표 안내)
         monkeypatch.setattr(dynamic_indicator, "answer", self._dynamic)
+        self.cached: dict | None = None  # 계산 방법 캐시로 바로 계산한 답
+        monkeypatch.setattr(dynamic_indicator, "cached_answer", self._cached)
 
     def _result(self, parsed: dict, question: str = "") -> dict:
         regions = parsed.get("regions") or []
@@ -319,6 +321,9 @@ class Talk:
     async def _find(self, question, session_id, selections, user_id):
         self.searched.append((question, session_id, selections))
         return {**self.found, "recommendations": [{"tbl_id": "DT_X"}], "clarify": None}
+
+    async def _cached(self, question, parsed, trace):
+        return copy.deepcopy(self.cached)
 
     async def _dynamic(self, question, parsed, found, trace):
         return copy.deepcopy(self.dynamic)
@@ -657,6 +662,23 @@ def test_unsupported_indicator_computed_from_found_table(talk: Talk) -> None:
     # 다음 턴은 바로 만든 정의를 조건으로 이어 간다 (부산도 같이 → 변경)
     saved = talk.store[res["session_id"]][0]["conditions"]
     assert saved["indicator"] == "1인 가구 수" and saved["dynamic_spec"] == spec
+
+
+def test_cached_plan_answers_without_table_search(talk: Talk) -> None:
+    # 전에 바로 계산한 지표: 통계표 찾기(HCX 3회) 없이 저장한 표로 계산한다
+    talk.parsed = {**BASE, "type": "value", "indicator": "반려동물 수"}
+    talk.cached = {
+        "status": "ok",
+        "answer": "답",
+        "parsed": {**BASE, "type": "value", "indicator": "1인 가구 수"},
+        "result": {"status": "ok", "value": 1, "method": "dynamic"},
+        "sources": [{"name": "1인가구", "basis": "기준", "tbl_id": "DT_1PL1502", "url": None}],
+        "trace": {},
+    }
+    res = talk.say("2020년 서울 1인 가구 수")
+    assert res["status"] == "ok" and res["result"]["method"] == "dynamic"
+    assert talk.searched == []
+    assert res["tables"]["recommendations"] == [{"tbl_id": "DT_1PL1502", "basis": "기준"}]
 
 
 def test_ungrounded_dictionary_answer_replaced_by_dynamic(talk: Talk) -> None:

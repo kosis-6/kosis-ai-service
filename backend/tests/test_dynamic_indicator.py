@@ -42,6 +42,11 @@ def fake_table(monkeypatch: pytest.MonkeyPatch) -> dict:
     projection: set[str] = set()
     monkeypatch.setattr(d, "is_projection", lambda tbl_id: tbl_id in projection)
     monkeypatch.setattr(indicators, "_data_years", lambda: (2008, 2025))
+
+    async def no_remember(*args):  # 계산 방법 캐시(DB)는 test_plan_cache.py에서 본다
+        return None
+
+    monkeypatch.setattr(d, "_remember", no_remember)
     return {"tables": tables, "units": units, "projection": projection}
 
 

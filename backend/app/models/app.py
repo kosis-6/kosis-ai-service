@@ -1,4 +1,4 @@
-"""app 스키마: 서비스 사용자, 통계표 적재 대기열, 수치 대화의 턴 기록
+"""app 스키마: 서비스 사용자, 통계표 적재 대기열, 수치 대화의 턴 기록, 동적 지표 계산 방법
 
 대화 상태(chat_sessions)·검색 기록 테이블은 아직 모델로 옮기지 않았다.
 """
@@ -12,7 +12,9 @@ from sqlalchemy import (
     ForeignKey,
     Identity,
     Index,
+    Integer,
     SmallInteger,
+    UniqueConstraint,
     false,
     func,
     text,
@@ -190,3 +192,31 @@ class LoadJob(Base):
     run_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     attempts: Mapped[int] = mapped_column(server_default=text("0"))
     error: Mapped[str | None]
+
+
+class DynamicPlan(Base):
+    """사전에 없는 지표의 계산 방법 캐시 (app/services/plan_cache.py, 마이그레이션 0018)
+
+    같은 지표를 다시 물으면 통계표 찾기를 건너뛰고 이 표로 바로 계산한다 (칸 고르기·검증은 매번).
+    지역·연도와 숫자는 저장하지 않는다. forced는 되묻기에서 고른 칸 {분류 번호: 코드}"""
+
+    __tablename__ = "dynamic_plans"
+    __table_args__ = (
+        UniqueConstraint("key", "tbl_id", "forced", name="dynamic_plans_unique"),
+        Index("dynamic_plans_key", "key"),
+        {"schema": "app"},
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    key: Mapped[str]
+    term: Mapped[str]
+    tbl_id: Mapped[str]
+    forced: Mapped[dict] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
+    name: Mapped[str]
+    formula: Mapped[str | None]
+    cells: Mapped[str | None]
+    uses: Mapped[int] = mapped_column(Integer, server_default="1")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_used_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )

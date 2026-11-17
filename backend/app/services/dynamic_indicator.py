@@ -33,7 +33,7 @@ from starlette.concurrency import run_in_threadpool
 
 from app.core.stats_db import StatsTableMissing
 from app.core.stats_db import rows as _rows
-from app.services import indicators, load_queue, lookup, qa, search, table_cache
+from app.services import indicators, load_queue, lookup, plan_cache, qa, search, table_cache
 
 logger = logging.getLogger(__name__)
 
@@ -501,6 +501,7 @@ async def answer(question: str, parsed: dict, found: dict, trace: dict) -> dict 
             continue
         res, ask = await _try(tbl_id, card.get("org_id"), question, parsed, trace, {})
         if res is not None:
+            await _remember(parsed, tbl_id, {}, res)
             return res
         if ask is not None and first_ask is None:
             first_ask = (card, ask)
@@ -521,7 +522,49 @@ async def answer_choice(question: str, context: dict, code: str, trace: dict) ->
     res, ask = await _try(tbl_id, None, question, parsed, trace, forced)
     if res is None and ask is not None:
         return ask_answer(question, parsed, tbl_id, context.get("tbl_nm") or tbl_id, ask, forced)
+    if res is not None:
+        await _remember(parsed, tbl_id, forced, res)
     return res
+
+
+async def cached_answer(question: str, parsed: dict, trace: dict) -> dict | None:
+    """계산 방법 캐시에 이 지표가 있으면 통계표 찾기 없이 그 표로 바로 계산한다 (plan_cache.py).
+    칸 고르기·검증은 다시 하므로 그 표로 더 이상 계산되지 않으면 None → 지금처럼 통계표 찾기"""
+    try:
+        found = await run_in_threadpool(plan_cache.key_of, parsed)
+        plans = await plan_cache.find(found[0]) if found else []
+    except Exception:
+        logger.exception("계산 방법 캐시 읽기 실패")
+        return None
+    trace["plan_cache"] = "miss" if found else "skip"
+    trace.setdefault("dynamic", [])
+    for plan in plans:
+        forced = {int(k): v for k, v in (plan.get("forced") or {}).items()}
+        res, ask = await _try(plan["tbl_id"], None, question, parsed, trace, forced)
+        if res is None and ask is not None:
+            res = ask_answer(question, parsed, plan["tbl_id"], plan["tbl_id"], ask, forced)
+        if res is not None:
+            trace["plan_cache"] = {"hit": plan["id"], "tbl_id": plan["tbl_id"]}
+            if res.get("status") == "ok":
+                try:
+                    await plan_cache.used(plan["id"])
+                except Exception:
+                    logger.exception("계산 방법 캐시 기록 실패")
+            return res
+    return None
+
+
+async def _remember(parsed: dict, tbl_id: str, forced: dict, res: dict) -> None:
+    """바로 계산에 성공한 계획을 캐시에 남긴다. 실패해도 답은 그대로 준다"""
+    spec = (res.get("parsed") or {}).get("dynamic_spec")
+    if res.get("status") != "ok" or not spec:
+        return
+    try:
+        found = await run_in_threadpool(plan_cache.key_of, parsed)
+        if found:
+            await plan_cache.save(found[0], found[1], tbl_id, forced, spec)
+    except Exception:
+        logger.exception("계산 방법 캐시 저장 실패")
 
 
 async def _try(tbl_id, org_id, question, parsed, trace, forced):
