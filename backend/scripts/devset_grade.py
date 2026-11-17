@@ -317,7 +317,21 @@ def check_conditions(cond: str, res: dict) -> list[str]:
     sex = (res.get("parsed") or {}).get("sex")
     if re.search(r",\s*계\s*$", cond) and sex not in (None, "", "계", "전체"):
         wrong.append(f"성별 {sex} (정답 계)")
+    elif (want_sex := golden_sex(cond)) and sex != want_sex:
+        # 숫자 검사는 답변 어디에 있든 맞다고 보므로, 남녀 내역을 같이 보여 준 답이
+        # 반대 성별로 답해도 정답이 되지 않게 성별을 따로 본다
+        wrong.append(f"성별 {sex or '없음'} (정답 {want_sex})")
     return wrong
+
+
+SEX_WORDS = {"남": re.compile(r"남자|남성|남편"), "여": re.compile(r"여자|여성|아내")}
+
+
+def golden_sex(cond: str) -> str | None:
+    """정답 조건이 한 성별만 물으면 "남"/"여". 두 성별이 다 나오면(비교, "남편·아내 총계",
+    "한국인 남편+외국인 아내") 성별로 가르지 않는 것이라 None"""
+    found = [s for s, pattern in SEX_WORDS.items() if pattern.search(cond)]
+    return found[0] if len(found) == 1 else None
 
 
 # ---- 출처 ---------------------------------------------------------------------------------

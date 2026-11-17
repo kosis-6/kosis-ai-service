@@ -253,6 +253,23 @@ def test_coverage_notice_in_lead_does_not_widen_period():
     assert dg.check_conditions("가상시, 2021~2025, 인구, 계", res(wrong)) != []
 
 
+def test_single_sex_condition_checks_sex():
+    female = "가상시, 2025, 주민등록인구 여자"
+    text = "2025년 가상시 남자 인구는 100명입니다. (여자 123,456명)"
+    wrong = res(text)
+    wrong["parsed"]["sex"] = "남"
+    assert dg.check_conditions(female, wrong) == ["성별 남 (정답 여)"]
+    right = res("2025년 가상시 여자 인구는 123,456명입니다.")
+    right["parsed"]["sex"] = "여"
+    assert dg.check_conditions(female, right) == []
+    # 아내·남편도 성별로 본다 ("평균 초혼연령(아내)")
+    assert dg.golden_sex("전국, 2025, 평균 초혼연령(아내)") == "여"
+    # 두 성별이 다 나오면 성별로 가르지 않는다
+    assert dg.golden_sex("전국, 2025, 평균 초혼연령 남편 vs 아내") is None
+    assert dg.golden_sex("전국, 2021~2025, 외국인과의 혼인(한국인 남편+외국인 아내)") is None
+    assert dg.golden_sex("가상시, 2025, 인구, 계") is None
+
+
 def test_table_guide_numbers_and_differences_are_not_hallucination():
     guide = {
         "status": "tables",
