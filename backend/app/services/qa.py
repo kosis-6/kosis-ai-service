@@ -307,7 +307,8 @@ def correct(question, parsed, today=None):
     """같은 질문도 실행마다 HCX 해석이 달라서, 질문 원문에서 확실히 알 수 있는 것은 코드가 맞춘다.
 
     - 지표: 질문에 지표 이름·별칭이 있으면 그 지표 (예: "고령화율"을 노령화지수로 해석한 경우)
-    - 지표 바꿔치기 막기: 질문에 근거가 없는 계산 지표, "몇 명"을 물었는데 비율 지표면 거절
+    - 지표 바꿔치기 막기: 질문에 근거가 없는 계산 지표, "몇 명"을 물었는데 비율 지표면 거절,
+      지표의 제외 표현이 질문에 있으면 거절 (예: "등록외국인"은 외국인주민 수가 아님)
     - 연령 구간·지역 묶음(수도권 등)·합계·극값 연도·연속·반등·몇 배·전국 대비 비중은 원문에서 읽는다
     - 성별: "여성/여자", "남성/남자" 중 하나만 있으면 그 성별
     - 구성비: 구성·비중을 묻지 않았으면 구성비가 아니다 ("구별 20대 인구" → 구별 목록)
@@ -380,6 +381,12 @@ def correct(question, parsed, today=None):
                 fix("indicator", name, "질문의 지표 표현")
                 parsed.pop("unsupported", None)
         _guard_indicator(question, parsed, names, fix)
+        # 질문이 다른 통계를 가리키면 비슷한 이름의 지표로 답하지 않는다
+        # 예) "등록외국인 수"를 외국인주민 수(귀화자·자녀 포함)로 답하지 않고 표 안내로
+        current = indicators.canonical_name(parsed.get("indicator") or "")
+        if current and (phrase := indicators.excluded_phrase(current, question)):
+            fix("indicator", parsed.get("term") or phrase, f"'{current}'과(와) 다른 통계")
+            parsed["unsupported"] = True
         kind = parsed.get("type")
 
     sp = indicators.spec(parsed.get("indicator"))

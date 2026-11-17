@@ -1281,15 +1281,16 @@ def next_state(state: dict | None, question: str, res: dict, sources: dict) -> d
         return {**prev, "last": last, "recent": recent, "turn_no": turn_no}
     if res.get("request_type") in (UNCLEAR, CHAT):
         return {**prev, "recent": recent, "turn_no": turn_no}
-    if res.get("status") == TABLES:
-        # 수치 없이 표만 안내했다: 수치 조건은 이어 가지 않는다 (다음 "서울도 같이"는 새 질문).
+    if res.get("status") in (TABLES, *table_guide.REFUSED):
+        # 수치 없이 표만 안내했다 (또는 범위 밖이라 표도 없다): 수치 조건은 이어 가지 않는다
+        # (다음 "서울도 같이"는 새 질문).
         # 표 선택지를 물었으면 다음 말을 그 답으로 읽는다
         found = res.get("tables")
         return {
             "conditions": {},
             "sources": {},
             "last": {
-                "status": TABLES,
+                "status": res.get("status"),
                 "answer": res.get("answer") or "",
                 "sources": [],
                 "chart": None,

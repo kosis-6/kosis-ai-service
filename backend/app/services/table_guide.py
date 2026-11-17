@@ -27,6 +27,9 @@ logger = logging.getLogger(__name__)
 
 # 수치로 답할 수 없어 통계표 찾기로 넘기는 상태
 SEARCH_INSTEAD = {"unknown_indicator", "not_supported_question", "parse_error"}
+# 통계표 찾기도 답하지 못한 상태: 제공 범위(인구 분야) 밖, 통계 질문이 아님.
+# /ask 응답의 status도 이 값으로 둔다 (표 안내 "tables"와 구분해 거절로 센다)
+REFUSED = ("out_of_scope", "not_statistics")
 TOP_K = 3
 MAX_CARDS = 3  # 답에 쓴 표가 여럿이면 (과거 연도용 표 등) 이만큼만 카드로
 
@@ -135,12 +138,13 @@ def indicator_tables(multi_result: dict | None, tables: list[dict]) -> dict | No
 
 
 def tables_answer(found: dict, refused: dict | None = None) -> dict:
-    """통계표 찾기 결과 → /ask 응답 (수치 없이 표 안내만)"""
+    """통계표 찾기 결과 → /ask 응답 (수치 없이 표 안내만).
+    표 찾기도 범위 밖·통계 질문 아님으로 끝났으면 status는 그 값 (REFUSED)"""
     lines = [found["answer"]]
     if refused and found["status"] in ("ok", "partial_match"):
         lines.append("이 통계는 아직 수치를 바로 계산하지 못해 통계표를 안내합니다.")
     return {
-        "status": "tables",
+        "status": found["status"] if found["status"] in REFUSED else "tables",
         "answer": "\n".join(lines),
         "parsed": (refused or {}).get("parsed") or {},
         "result": {"status": "tables", "search_status": found["status"]},
