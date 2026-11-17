@@ -369,6 +369,16 @@ method = "computed"
 desc = "주민등록인구 ÷ 행정구역 면적(㎢). 1㎢에 사는 사람 수. '빽빽한', '밀집한' 지역 질문도 이 지표"
 sources = [{ table = "DT_1B04006", level = "시군구" }]
 
+[[indicators]]
+name = "세대수"
+aliases = ["세대 수", "주민등록세대수", "주민등록 세대수"]
+unit = "세대"
+kind = "count"
+method = "lookup"
+desc = "주민등록 세대수 (주민등록표상 세대. 인구총조사의 '가구'와 다름)"
+note = "주민등록 신고 기준 세대 수입니다. 인구총조사의 가구 수와는 기준이 다릅니다"
+sources = [{ table = "DT_1B040B3", item_id = "T1", level = "시군구" }]
+
 # ---- 출생·사망 ----------------------------------------------------------------
 
 [[indicators]]
@@ -747,6 +757,15 @@ unit = "명"
 method = "lookup"
 note = "귀화자·외국인주민 자녀 포함 (행정안전부, 11월 1일 기준)"
 sources = [{ table = "TX_11025_A000_A", item_id = "16110AAA0", level = "시도", filters = { c2_id = "15110AA000" }, by_sex = { "계" = { filters = { c3_id = "A001A" } }, "남" = { filters = { c3_id = "A001B" } }, "여" = { filters = { c3_id = "A001C" } } } }]
+
+[[indicators]]
+name = "등록외국인 수"
+aliases = ["등록외국인", "등록 외국인 수", "등록외국인수", "등록된 외국인", "외국인 등록자 수"]
+unit = "명"
+method = "lookup"
+desc = "법무부 등록외국인 (90일 넘게 머물러 외국인등록을 한 외국인). 귀화자·외국인주민 자녀는 빠짐"
+note = "법무부 출입국·외국인정책 통계의 등록외국인입니다. 행정안전부 외국인주민 수(귀화자·자녀 포함)와 기준이 다릅니다"
+sources = [{ table = "DT_1B040A9C", item_id = "H001", level = "시군구", filters = { c3_id = "B001" }, by_sex = { "계" = { filters = { c2_id = "0" } }, "남" = { filters = { c2_id = "1" } }, "여" = { filters = { c2_id = "2" } } } }]
 
 [[indicators]]
 name = "외국인근로자 수"
