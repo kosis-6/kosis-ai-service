@@ -93,10 +93,13 @@ def plans(monkeypatch: pytest.MonkeyPatch) -> dict:
     async def save(key, term, tbl_id, forced, spec):
         state["saved"].append((key, tbl_id, forced, spec["name"]))
 
-    async def fake_try(tbl_id, org_id, question, parsed, trace, forced):
+    async def fake_try(tbl_id, org_id, question, parsed, trace, forced, slots=None, notice=None):
         state["tried"].append((tbl_id, forced))
+        trace.setdefault("dynamic", []).append({"tbl_id": tbl_id})  # 진짜 _try처럼 단계를 남긴다
         if state.get("fail"):
             return None, None
+        if state.get("status"):  # 저장한 표에 그 연도 자료가 없는 경우 등
+            return {"status": state["status"], "parsed": parsed, "result": {}}, None
         spec = {"name": "1인 가구 수"}
         res = {"status": "ok", "parsed": {**parsed, "dynamic_spec": spec}, "result": {"value": 1}}
         return res, None
@@ -130,10 +133,21 @@ def test_success_from_search_is_remembered(plans: dict) -> None:
     assert plans["saved"] == [("1인가구수", "DT_1PL1502", {}, "1인 가구 수")]
 
 
-def test_choice_is_remembered_with_forced_cell(plans: dict) -> None:
+def test_choice_is_remembered_without_picked_cell(plans: dict) -> None:
+    # 한 사람이 되묻기에서 고른 칸이 모두의 기본값이 되지 않게 표만 남긴다
+    # (다음 사람은 다시 묻는다)
     context = {"tbl_id": "DT_1PL1502", "dim_no": 3, "parsed": PARSED, "forced": {}}
     asyncio.run(d.answer_choice("서울 1인 가구 수", context, "2", {}))
-    assert plans["saved"] == [("1인가구수", "DT_1PL1502", {3: "2"}, "1인 가구 수")]
+    assert plans["tried"] == [("DT_1PL1502", {3: "2"})]
+    assert plans["saved"] == [("1인가구수", "DT_1PL1502", {}, "1인 가구 수")]
+
+
+def test_cached_plan_without_data_falls_back_to_search(plans: dict) -> None:
+    # 저장한 표에 그 연도가 없어도 "수록 기간 밖"으로 끝내지 않고 통계표 찾기로 넘긴다
+    plans["status"] = "out_of_range"
+    trace: dict = {}
+    assert asyncio.run(d.cached_answer("2010년 서울 1인 가구 수", PARSED, trace)) is None
+    assert "out_of_range" in trace["dynamic"][0]["skip"] and plans["used"] == []
 
 
 def test_cache_errors_do_not_break_answer(monkeypatch: pytest.MonkeyPatch) -> None:

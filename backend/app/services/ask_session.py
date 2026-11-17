@@ -5,7 +5,9 @@ HCX는 호출할 때마다 앞 대화를 기억하지 못한다. 그래서 대�
 대화 전체를 HCX에 넘기지 않는다: 길어지면 예전 조건과 지금 조건이 섞이고, 앞에서 나온 숫자를
 HCX가 다시 지어낼 수 있다. 숫자는 매 턴 DB에서 다시 계산한다.
 
-세션 상태 (app.chat_sessions, "ask:{id}", 마지막 대화 뒤 SESSION_FOR 동안)
+세션 상태 (app.chat_sessions, "ask:{id}". 마지막 대화 뒤 손님은 SESSION_FOR,
+로그인 유저는 TURNS_FOR 동안 이어 간다.
+서버 메모리(memory_cache)에 사본을 두어 턴마다 DB를 읽지 않는다)
   conditions  지금 조건. 질문 해석 결과(qa.understand의 parsed) 그대로: 지표, 지역, 기간, 성별,
               보는 방식(type), 순위 개수·방향
   sources     조건의 출처: user(사용자가 말함) / inherited(앞 질문에서 이어받음) / default(기본값)
@@ -25,7 +27,9 @@ HCX가 다시 지어낼 수 있다. 숫자는 매 턴 DB에서 다시 계산한�
        unclear  추측하지 않고 되묻는다
   5. 답에 통계표를 붙인다 (table_guide.py): 수치로 답했으면 그 표의 카드,
      수치로 답할 수 없는 질문이면 통계표 찾기 결과 (표 카드·선택지)
-  6. 상태를 저장하고 턴을 기록한다 (app.chat_turns, TURNS_FOR 동안)
+  6. 상태를 저장하고 턴을 기록한다 (app.chat_turns, TURNS_FOR 동안. 화면에 보여 준 답 전체도 남긴다)
+     로그인 유저면 대화 목록(app.conversations)에도 남긴다 → 나중에 다시 열어 이어 간다
+     (conversations.py, /conversations API)
 
 이어받기: 지역은 이어받는다. 기간은 보는 방식(type)이 같을 때만 이어받는다
 (추이를 보다 값 하나를 물으면 최신 연도). 성별은 이어받지 않는다. 이어받은 조건은 답 위에 알린다.
@@ -53,6 +57,7 @@ from app.services import (
     answer_summary,
     ask_followup,
     charts,
+    conversations,
     dynamic_indicator,
     indicators,
     qa,
@@ -62,11 +67,14 @@ from app.services import (
 )
 from app.services.hcx_client import HcxClient
 from app.services.log_redaction import mask, redact
+from app.services.memory_cache import MISSING, MemoryCache
 
 logger = logging.getLogger(__name__)
 
-SESSION_FOR = timedelta(hours=1)  # 마지막 대화 뒤 이 시간이 지나면 조건을 이어 가지 않는다
-TURNS_FOR = timedelta(days=30)  # 턴 기록 보관 기간
+SESSION_FOR = timedelta(hours=1)  # 손님: 마지막 대화 뒤 이 시간이 지나면 조건을 이어 가지 않는다
+TURNS_FOR = timedelta(days=30)  # 턴 기록 보관 기간. 로그인 유저의 대화는 이 동안 이어 간다
+# 대화 상태의 서버 메모리 사본 {session_id: (상태, 마지막 저장 시각)}. DB가 원본이다
+STATE_CACHE = MemoryCache("chat_state", maxsize=2048, ttl=3600)
 RECENT = 10  # 세션에 남기는 최근 사용자 말 수
 REPLY_MAX_CHARS = 25  # 되묻기 답은 이보다 짧다 (길면 새 질문)
 FOLLOW_MAX_TOKENS = 512  # 변경 추출 응답의 최대 길이
@@ -1409,11 +1417,16 @@ async def _attach_cards(res: dict, asked: str) -> None:
         res["tables"] = {"status": "ok", "recommendations": cards}
 
 
+# 사전 지표로 답했거나 그 지표의 자료 사정을 안내한 상태. 근거 없는 지표면 둘 다 질문과 맞지 않는다
+# (예: "2020년 서울 1인 가구 수"를 미혼 인구로 읽고 "미혼 인구 자료는 2022~2025년만 있습니다")
+DICTIONARY_ANSWERED = ("ok", "out_of_range", "missing_data", "region_not_in_year")
+
+
 def ungrounded(res: dict) -> bool:
     """사전 지표로 답했지만 질문에 그 지표의 이름·별칭이 없는 새 질문 (qa.correct의 grounded)"""
     parsed = res.get("parsed") or {}
     return (
-        res.get("status") == "ok"
+        res.get("status") in DICTIONARY_ANSWERED
         and res.get("request_type") == NEW
         and parsed.get("grounded") is False
         and not parsed.get("dynamic_spec")
@@ -1421,11 +1434,18 @@ def ungrounded(res: dict) -> bool:
 
 
 async def _dynamic_instead(res: dict, state: dict | None, asked: str, user_id: int | None) -> bool:
-    """근거 없이 고른 사전 지표 대신 통계표에서 바로 계산해 본다. 되면 res를 바꾸고 True.
-    안 되면(표가 없거나 칸을 못 고름·되물어야 함) 사전 지표 답을 그대로 둔다"""
+    """근거 없이 고른 사전 지표 대신 통계표에서 바로 계산한다. res를 바꿨으면 True
+
+    질문에 그 지표의 이름·별칭이 없으면 HCX가 비슷한 다른 지표를 고른 것일 수 있다
+    (예: "1인 가구 중 여성 비율" → 서울 인구 성별 구성). 그래서 원래 답은 돌려주지 않는다.
+      바로 계산됨       그 답
+      칸을 되물어야 함   되묻기
+      그 밖             통계표 안내 (찾은 표가 없으면 원래 답 그대로: 통계표 찾기 실패 등)
+    """
     sid = (state or {}).get("search_session") or table_guide.new_search_session()
     trace = res.get("trace") or {}
     parsed = res.get("parsed") or {}
+    found = None
     try:
         computed = await dynamic_indicator.cached_answer(asked, parsed, trace)
         if computed is None:
@@ -1434,15 +1454,26 @@ async def _dynamic_instead(res: dict, state: dict | None, asked: str, user_id: i
     except Exception:
         logger.exception("근거 없는 지표의 바로 계산 실패")
         return False
-    if computed is None or computed.get("status") != "ok":
-        trace["dynamic_kept"] = (res.get("parsed") or {}).get("indicator")
+    if computed is None and found is None:
+        trace["dynamic_kept"] = parsed.get("indicator")
         return False
+    # 바꾼 원래 답 (요청 기록·회귀 평가에서 사전 지표 답과 비교한다)
+    trace["replaced"] = {
+        "indicator": parsed.get("indicator"),
+        "answer": lead(res.get("answer") or ""),
+        "by": (computed or {}).get("status") or "tables",
+    }
     kind = res.get("request_type")
     res.clear()
-    res.update(computed)
-    res["chart"] = charts.build(res.get("result"))
+    if computed is not None:
+        res.update(computed)
+        if not res.get("clarification"):
+            res["chart"] = charts.build(res.get("result"))
+            await _attach_cards(res, asked)
+    else:
+        res.update(table_guide.tables_answer(found, {"parsed": parsed}))
+        res["trace"] = trace
     res["request_type"], res["question"], res["search_session"] = kind, asked, sid
-    await _attach_cards(res, asked)
     return True
 
 
@@ -1521,31 +1552,46 @@ async def _save(
     try:
         await save(sid, after)
         await log_turn(sid, user_id, after.get("turn_no") or 1, question, res, before, after)
+        if user_id is not None:  # 로그인 유저의 대화는 목록에 남겨 나중에 다시 연다
+            await conversations.touch(sid, user_id, question)
     except (SQLAlchemyError, OSError):
         logger.exception("대화 상태 저장 실패")
 
 
-async def load(session_id: str, at: datetime) -> tuple[dict | None, bool]:
-    from app.core.db import engine
-    from app.services import dialog
+def keeps_for(state: dict) -> timedelta:
+    """이 대화를 이어 가는 기간: 로그인 유저의 대화는 기록 보관 기간 내내, 손님은 1시간"""
+    return TURNS_FOR if state.get("user_id") is not None else SESSION_FOR
 
-    async with engine.begin() as conn:
-        await dialog._ensure(conn)
-        row = (
-            await conn.execute(
-                text("select slots, updated_at from app.chat_sessions where session_id = :k"),
-                {"k": _key(session_id)},
-            )
-        ).first()
-    if row is None or not isinstance(row.slots, dict) or "conditions" not in row.slots:
-        return None, False
-    if at - row.updated_at > SESSION_FOR:
+
+async def load(session_id: str, at: datetime) -> tuple[dict | None, bool]:
+    """(세션 상태, 만료됐는가). 서버 메모리에 있으면 DB를 읽지 않는다"""
+    cached = STATE_CACHE.get(session_id)
+    if cached is not MISSING:
+        slots, updated_at = cached
+    else:
+        from app.core.db import engine
+        from app.services import dialog
+
+        async with engine.begin() as conn:
+            await dialog._ensure(conn)
+            row = (
+                await conn.execute(
+                    text("select slots, updated_at from app.chat_sessions where session_id = :k"),
+                    {"k": _key(session_id)},
+                )
+            ).first()
+        if row is None or not isinstance(row.slots, dict) or "conditions" not in row.slots:
+            return None, False
+        slots, updated_at = row.slots, row.updated_at
+        STATE_CACHE.set(session_id, (slots, updated_at))
+    if at - updated_at > keeps_for(slots):
         return None, True
-    return row.slots, False
+    return copy.deepcopy(slots), False
 
 
 async def save(session_id: str, state: dict) -> None:
-    """세션 상태를 남긴다. 만료된 지 하루가 지난 수치 대화는 이때 지운다"""
+    """세션 상태를 남긴다. 만료된 지 하루가 지난 손님 대화, 보관 기간이 지난 로그인 유저 대화는
+    이때 지운다 (로그인 유저의 대화는 나중에 다시 열어 이어 간다)"""
     from app.core.db import engine
     from app.services import dialog
 
@@ -1564,10 +1610,13 @@ async def save(session_id: str, state: dict) -> None:
         )
         await conn.execute(
             text(
-                "delete from app.chat_sessions"
-                " where session_id like 'ask:%' and updated_at < now() - interval '1 day'"
-            )
+                "delete from app.chat_sessions where session_id like 'ask:%' and ("
+                " (slots->>'user_id' is null and updated_at < now() - interval '1 day')"
+                " or updated_at < now() - make_interval(days => :days))"
+            ),
+            {"days": TURNS_FOR.days},
         )
+    STATE_CACHE.set(session_id, (copy.deepcopy(state), now()))
 
 
 async def log_turn(
@@ -1589,10 +1638,11 @@ async def log_turn(
         await conn.execute(
             text(
                 "insert into app.chat_turns (session_id, user_id, turn_no, message, request_type,"
-                " status, conditions_before, conditions_after, sources, tbl_id, recomputed, answer)"
+                " status, conditions_before, conditions_after, sources, tbl_id, recomputed, answer,"
+                " response)"
                 " values (:session_id, :user_id, :turn_no, :message, :request_type, :status,"
                 " cast(:before as jsonb), cast(:after as jsonb), cast(:sources as jsonb),"
-                " :tbl_id, :recomputed, :answer)"
+                " :tbl_id, :recomputed, :answer, cast(:response as jsonb))"
             ),
             {
                 "session_id": session_id,
@@ -1611,6 +1661,9 @@ async def log_turn(
                 "tbl_id": result.get("tbl_id"),
                 "recomputed": not result.get("reused") and res.get("request_type") != UNCLEAR,
                 "answer": mask(lead(res.get("answer") or "")),
+                "response": json.dumps(
+                    redact(conversations.replay(res)), ensure_ascii=False, default=str
+                ),
             },
         )
         await conn.execute(
