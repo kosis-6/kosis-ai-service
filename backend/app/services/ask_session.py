@@ -53,6 +53,7 @@ from app.services import (
     answer_summary,
     ask_followup,
     charts,
+    dynamic_indicator,
     indicators,
     qa,
     question_clarify,
@@ -852,11 +853,21 @@ async def extract(state: dict, question: str, trace: dict) -> dict:
     system = (
         FOLLOW_SYSTEM.replace("{STATE}", state_text(state["conditions"], state["sources"]))
         .replace("{LAST}", last_text(state.get("last")))
-        .replace("{INDICATORS}", ", ".join(indicators.specs()))
+        .replace("{INDICATORS}", ", ".join(indicator_names(state["conditions"])))
     )
     raw = await _chat(question, system)
     trace["follow_raw"] = raw
     return parse_delta(raw)
+
+
+def indicator_names(conditions: dict) -> list[str]:
+    """변경 추출에 보여 줄 지표 목록. 지금 지표가 표에서 바로 계산한 지표면 그것도 넣는다
+    (목록에 없으면 HCX가 "부산은?"을 이어 묻는 말이 아니라 새 질문으로 읽는다)"""
+    names = list(indicators.specs())
+    current = conditions.get("indicator")
+    if conditions.get("dynamic_spec") and current and current not in names:
+        names.append(current)
+    return names
 
 
 async def _chat(prompt: str, system: str) -> str:
@@ -1021,6 +1032,8 @@ async def _after_asking(original: str, kind: str, user_id: int | None):
     if kind == "move_scope":
         told = f"범위를 알아듣지 못해 '{question_clarify.MOVE_OPTIONS[1]}'으로 답했습니다."
         return await _movement(original, "exclude", user_id, told)
+    if kind == "table_cell":  # 표의 칸을 끝내 고르지 못함: 원래 질문의 통계표를 안내한다
+        return await _find_tables(original, None, user_id)
     return (
         {
             "status": "unknown_region",
@@ -1110,6 +1123,17 @@ async def _turn(
             if region:
                 merged = question_clarify.merge_region(original, region)
                 return await _clarified(merged, state)
+        elif kind == "table_cell":
+            # 표의 칸 되묻기 (dynamic_indicator.py): 고른 칸으로 같은 표를 다시 계산한다
+            if code := dynamic_indicator.pick_option(choice, pending["clarification"]):
+                trace: dict = {}
+                context = pending["clarification"].get("context") or {}
+                res = await dynamic_indicator.answer_choice(original, context, code, trace)
+                if res is not None:
+                    if not res.get("clarification"):
+                        res["chart"] = charts.build(res.get("result"))
+                    res.update(request_type=REPLY, question=original)
+                    return res, {}, None
         elif scope := question_clarify.scope_reply(choice):
             return await _movement(original, scope, user_id)
         # 미지원 지표라도 새 질문을 선택지 대기에 가두지 않는다.
@@ -1281,15 +1305,16 @@ def next_state(state: dict | None, question: str, res: dict, sources: dict) -> d
         return {**prev, "last": last, "recent": recent, "turn_no": turn_no}
     if res.get("request_type") in (UNCLEAR, CHAT):
         return {**prev, "recent": recent, "turn_no": turn_no}
-    if res.get("status") == TABLES:
-        # 수치 없이 표만 안내했다: 수치 조건은 이어 가지 않는다 (다음 "서울도 같이"는 새 질문).
+    if res.get("status") in (TABLES, *table_guide.REFUSED):
+        # 수치 없이 표만 안내했다 (또는 범위 밖이라 표도 없다): 수치 조건은 이어 가지 않는다
+        # (다음 "서울도 같이"는 새 질문).
         # 표 선택지를 물었으면 다음 말을 그 답으로 읽는다
         found = res.get("tables")
         return {
             "conditions": {},
             "sources": {},
             "last": {
-                "status": TABLES,
+                "status": res.get("status"),
                 "answer": res.get("answer") or "",
                 "sources": [],
                 "chart": None,
@@ -1335,18 +1360,46 @@ async def _attach_tables(res: dict, state: dict | None, question: str, user_id: 
     asked = res.get("question") or question
     if res.get("status") in table_guide.SEARCH_INSTEAD:
         sid = (state or {}).get("search_session") or table_guide.new_search_session()
+        kind, trace, parsed = res.get("request_type"), res.get("trace") or {}, res.get("parsed")
+        # 전에 바로 계산한 지표면 통계표 찾기 없이 그 표로 계산한다 (계산 방법 캐시)
+        computed = await dynamic_indicator.cached_answer(asked, parsed or {}, trace)
+        if computed is not None:
+            res.clear()
+            res.update(computed)
+            if not res.get("clarification"):
+                res["chart"] = charts.build(res.get("result"))
+            res["request_type"], res["question"], res["search_session"] = kind, asked, sid
+            await _attach_cards(res, asked)
+            return
         try:
             found = await table_guide.find_tables(asked, sid, None, user_id)
         except Exception:
             logger.exception("통계표 찾기 실패")
             return
-        kind, trace, parsed = res.get("request_type"), res.get("trace"), res.get("parsed")
+        try:  # 사전에 없는 지표: 찾은 표에서 바로 계산해 본다 (dynamic_indicator.py)
+            computed = await dynamic_indicator.answer(asked, parsed or {}, found, trace)
+        except Exception:
+            logger.exception("동적 지표 계산 실패")
+            computed = None
         res.clear()
+        if computed is not None:
+            res.update(computed)
+            res["chart"] = charts.build(res.get("result"))
+            res["request_type"], res["question"], res["search_session"] = kind, asked, sid
+            await _attach_cards(res, asked)
+            return
         res.update(table_guide.tables_answer(found, {"parsed": parsed or {}}))
         # 수치 답을 하려다 표 찾기로 넘어온 경위(질문 해석)는 요청 기록에 남긴다
         res["request_type"], res["question"], res["trace"] = kind, asked, trace or {}
         res["search_session"] = sid
         return
+    if ungrounded(res) and await _dynamic_instead(res, state, asked, user_id):
+        return
+    await _attach_cards(res, asked)
+
+
+async def _attach_cards(res: dict, asked: str) -> None:
+    """답에 쓴 표를 표 카드로 붙인다. 카드를 못 만들어도 답은 그대로 준다"""
     try:
         cards = await table_guide.cards_for(asked, res.get("sources") or [])
     except Exception:
@@ -1354,6 +1407,43 @@ async def _attach_tables(res: dict, state: dict | None, question: str, user_id: 
         cards = []
     if cards:
         res["tables"] = {"status": "ok", "recommendations": cards}
+
+
+def ungrounded(res: dict) -> bool:
+    """사전 지표로 답했지만 질문에 그 지표의 이름·별칭이 없는 새 질문 (qa.correct의 grounded)"""
+    parsed = res.get("parsed") or {}
+    return (
+        res.get("status") == "ok"
+        and res.get("request_type") == NEW
+        and parsed.get("grounded") is False
+        and not parsed.get("dynamic_spec")
+    )
+
+
+async def _dynamic_instead(res: dict, state: dict | None, asked: str, user_id: int | None) -> bool:
+    """근거 없이 고른 사전 지표 대신 통계표에서 바로 계산해 본다. 되면 res를 바꾸고 True.
+    안 되면(표가 없거나 칸을 못 고름·되물어야 함) 사전 지표 답을 그대로 둔다"""
+    sid = (state or {}).get("search_session") or table_guide.new_search_session()
+    trace = res.get("trace") or {}
+    parsed = res.get("parsed") or {}
+    try:
+        computed = await dynamic_indicator.cached_answer(asked, parsed, trace)
+        if computed is None:
+            found = await table_guide.find_tables(asked, sid, None, user_id)
+            computed = await dynamic_indicator.answer(asked, parsed, found, trace)
+    except Exception:
+        logger.exception("근거 없는 지표의 바로 계산 실패")
+        return False
+    if computed is None or computed.get("status") != "ok":
+        trace["dynamic_kept"] = (res.get("parsed") or {}).get("indicator")
+        return False
+    kind = res.get("request_type")
+    res.clear()
+    res.update(computed)
+    res["chart"] = charts.build(res.get("result"))
+    res["request_type"], res["question"], res["search_session"] = kind, asked, sid
+    await _attach_cards(res, asked)
+    return True
 
 
 def _summary(result: dict | None) -> dict | None:

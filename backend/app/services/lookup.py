@@ -42,7 +42,8 @@ YEARLY = "prd_se in ('A', 'F')"
 SEX_WORDS = {"남": "남자", "여": "여자"}
 # 분류 이름 → 연령 구간 (끝이 None이면 그 나이 이상)
 AGE_NAMES = [
-    (re.compile(r"(\d+)\s*[-~]\s*(\d+)\s*세"), lambda m: (int(m[1]), int(m[2]))),
+    # 끝의 "세"가 빠진 이름도 있다 (예: 1인가구 표 DT_1PL1502의 "80~84")
+    (re.compile(r"(\d+)\s*[-~]\s*(\d+)\s*(?:세|$)"), lambda m: (int(m[1]), int(m[2]))),
     (re.compile(r"(\d+)\s*세\s*미만"), lambda m: (0, int(m[1]) - 1)),
     (re.compile(r"(\d+)\s*세\s*이상"), lambda m: (int(m[1]), None)),
     (re.compile(r"(\d+)\s*대"), lambda m: (int(m[1]), int(m[1]) + 9)),

@@ -157,6 +157,11 @@ def test_gemma_prompts_add_to_the_hcx_prompts_without_changing_them() -> None:
     assert "1번 후보가 질문에 맞으면" not in pick_prompt.SYSTEM
     assert "'우리 동네'는 지역 이름이 아니다" in slot_prompt.SLOT_SYSTEM_GEMMA
     assert "지역 이름이 아니다" not in slot_prompt.SLOT_SYSTEM
+    # 대상(target) 규칙은 Gemma 용만 좁힌다. HCX 용은 원래 문장 그대로
+    assert "다음은 target 이 아니므로 null 로 둔다" in slot_prompt.SLOT_SYSTEM_GEMMA
+    assert slot_prompt.TARGET_RULE in slot_prompt.SLOT_SYSTEM
+    assert slot_prompt.TARGET_RULE not in slot_prompt.SLOT_SYSTEM_GEMMA
+    assert "target 이 아니므로" not in slot_prompt.SLOT_SYSTEM
     for added in ("1-1. 단, KOSIS가", "대상 이름을 지우고", "age 칸에는 나이만", "예시 2-2)"):
         assert added in plan_prompt.SYSTEM_GEMMA and added not in plan_prompt.SYSTEM
     # 더하기만 했으므로 Gemma 용에서 더한 문장을 빼면 원문과 길이가 같다

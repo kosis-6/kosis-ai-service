@@ -192,6 +192,23 @@ LATEST_KINDS = ("value", "compare", "rank")  # "최근"이면 마지막 해로 �
 CHANGE_ASK = re.compile(r"추이|변화|변동|흐름|증감|추세|늘|줄|증가|감소|동안|사이|년간|그래프")
 SPAN = re.compile(r"((?:19|20)\d{2})\s*년?\s*(대비|부터|에서)\s*((?:19|20)\d{2})\s*년")
 YEAR = re.compile(r"((?:19|20)\d{2})\s*년")
+# 한글 숫자·사건으로 말한 해 ("이천이십이년", "십 년 전", "코로나 첫 해", "월드컵 때", "그 당시")
+# 청년·유소년·노년·중년·장년의 "년"은 연도가 아니다
+YEAR_WORDS = re.compile(r"(?<![청소노중장])년|때|당시|해(?![가-힣])")
+# 지역 이름이면서 흔한 낱말인 짧은 이름 ("고령 인구", "장수 노인", "영양 상태", "이천 명")
+COMMON_WORD_REGIONS = frozenset({"고령", "장수", "영양", "이천", "예산", "수영"})
+
+
+def _says_year(question):
+    """질문에 연도를 말한 표현이 있는지. 있으면 HCX가 읽은 연도를 지우지 않는다.
+    애매하면 있다고 본다 (지우면 사용자가 말한 연도를 무시하게 되므로).
+    "인구 2000명 이하"의 2000도 있다고 보지만, 그때는 HCX 연도를 그대로 두니 develop과 같다"""
+    return bool(
+        YEAR.search(question)
+        or ask_followup.has_explicit_year(question)
+        or YEAR_WORDS.search(question)
+        or timeref.resolve(question)
+    )
 SINCE = re.compile(r"((?:19|20)\d{2})\s*년\s*(이후|이래|부터)(?!.*까지)")
 UNTIL = re.compile(r"((?:19|20)\d{2})\s*년\s*까지")
 NATIONWIDE = re.compile(r"전국|우리나라|대한민국|한국\s*(전체|의|은|는)|국내\s*(전체)?")
@@ -290,7 +307,8 @@ def correct(question, parsed, today=None):
     """같은 질문도 실행마다 HCX 해석이 달라서, 질문 원문에서 확실히 알 수 있는 것은 코드가 맞춘다.
 
     - 지표: 질문에 지표 이름·별칭이 있으면 그 지표 (예: "고령화율"을 노령화지수로 해석한 경우)
-    - 지표 바꿔치기 막기: 질문에 근거가 없는 계산 지표, "몇 명"을 물었는데 비율 지표면 거절
+    - 지표 바꿔치기 막기: 질문에 근거가 없는 계산 지표, "몇 명"을 물었는데 비율 지표면 거절,
+      지표의 제외 표현이 질문에 있으면 거절 (예: "등록외국인"은 외국인주민 수가 아님)
     - 연령 구간·지역 묶음(수도권 등)·합계·극값 연도·연속·반등·몇 배·전국 대비 비중은 원문에서 읽는다
     - 성별: "여성/여자", "남성/남자" 중 하나만 있으면 그 성별
     - 구성비: 구성·비중을 묻지 않았으면 구성비가 아니다 ("구별 20대 인구" → 구별 목록)
@@ -363,7 +381,17 @@ def correct(question, parsed, today=None):
                 fix("indicator", name, "질문의 지표 표현")
                 parsed.pop("unsupported", None)
         _guard_indicator(question, parsed, names, fix)
+        # 질문이 다른 통계를 가리키면 비슷한 이름의 지표로 답하지 않는다
+        # 예) "등록외국인 수"를 외국인주민 수(귀화자·자녀 포함)로 답하지 않고 표 안내로
+        current = indicators.canonical_name(parsed.get("indicator") or "")
+        if current and (phrase := indicators.excluded_phrase(current, question)):
+            fix("indicator", parsed.get("term") or phrase, f"'{current}'과(와) 다른 통계")
+            parsed["unsupported"] = True
         kind = parsed.get("type")
+        # 질문에 고른 지표의 이름·별칭이 있는가. 없으면 HCX가 비슷한 지표를 고른 것일 수 있어
+        # ask_session이 통계표에서 바로 계산해 보고, 되면 그 답을 쓴다 (예: 통근 인구 → 전출자 수)
+        chosen = indicators.canonical_name(parsed.get("indicator") or "")
+        parsed["grounded"] = bool(chosen) and chosen in names
 
     sp = indicators.spec(parsed.get("indicator"))
     is_comp = sp is not None and lookup.kind_of(sp) == "composition"
@@ -420,6 +448,10 @@ def correct(question, parsed, today=None):
                 kind = "trend"
         elif kind not in ("trend", "other", "parse_error") and parsed.get("year") != ref.year:
             fix("year", ref.year, ref.describe(today))
+    elif not has_abs_year and not _says_year(question) and kind in LATEST_KINDS and parsed.get("year"):
+        # 질문에 연도 표현이 전혀 없을 때만 HCX가 짐작해 넣은 연도를 지운다 (예: 연도 없이 물었는데 2022)
+        # "22년", "2022.12", "이천이십이년", "코로나 첫 해"처럼 연도를 말했으면 HCX 연도를 그대로 둔다
+        fix("year", None, "연도를 말하지 않음 → 자료 마지막 해")
 
     # 지역이 여럿인 값 질문: 합계를 물었으면 더하고, 아니면 지역별 비교로 답한다.
     # value + 여러 지역 + 합계 표시 없음은 계산이 첫 지역만 써서 나머지 지역이 말없이 빠졌다
@@ -482,6 +514,20 @@ def _ground_regions(question, parsed, fix):
         codes = {reg.get("region_code"), indicators._norm(reg.get("display", ""))}
         if reg["status"] != "ok" or codes & found:
             continue  # 지역을 못 찾으면 계산 단계에서 그대로 안내한다
+        # "강남" → 서울특별시 강남구처럼 끝의 시·군·구를 뗀 짧은 이름으로 물은 경우
+        short = re.sub(r"(특별자치시|특별자치도|특별시|광역시|시|군|구|도)$", "", reg.get("region_name") or "")
+        # 단, 질문에 시도가 있으면 그 시도 안의 지역일 때만 (예: "서울 강서"를 부산 강서구로 바꾸면 막는다)
+        named = found - {None}
+        same_sido = not named or reg.get("sido_code") in named
+        # 짧은 이름이 지표 이름 안에만 있거나("고령" ⊂ "고령인구 비율") 흔한 낱말이면 지역으로 보지 않는다
+        spans = indicators.find_in_text(question)
+        hits = [m.start() for m in re.finditer(re.escape(short), text)] if len(short) >= 2 else []
+        in_indicator = bool(hits) and all(any(a <= i < b for a, b, _ in spans) for i in hits)
+        if hits and same_sido and not in_indicator and short not in COMMON_WORD_REGIONS:
+            # 질문에 시도가 없고 짧은 이름이 여러 곳이면 (예: "강서" → 서울·부산) AI가 고른 곳 대신 되묻는다
+            if not named and indicators.resolve_region(short)["status"] == "ambiguous_region":
+                fix("regions", [short if x == r else x for x in parsed["regions"]], "짧은 이름이 여러 지역 → 되묻기")
+            continue
         parsed["ungrounded_region"] = r
         return
 
@@ -620,6 +666,20 @@ def _read_question(question, parsed, fix):
             for key in ("start_year", "end_year", "year"):
                 if parsed.get(key):
                     fix(key, None, "최근 추이는 자료 마지막 해까지")
+    elif (
+        kind in LATEST_KINDS
+        and not by_year
+        and not YEAR.search(question)
+        and not _says_year(question)
+        and not timeref.resolve(question)
+        and not SPAN.search(question)
+        and not SINCE.search(question)
+        and (sp := indicators.spec(parsed.get("indicator"))) is not None
+        and sp.get("method") == "lookup"
+    ):
+        # 연도를 말하지 않은 조회 지표 질문 ("서울 외국인주민 수")은 "최근"과 같이 표마다 마지막 해로
+        # (공통 기준 연도로 계산하면 2024년까지인 표는 자료가 있는데도 범위 밖이 된다)
+        asked["latest"] = True
     if ask_followup.FROM_PAST.search(question) and not SPAN.search(question):
         # "과거부터 지금까지 합계출산율 추이" → 수록 기간 전체 추이
         asked["from_start"] = True
@@ -782,7 +842,11 @@ def compute(q):
             "region": bad,
             "reason": "질문의 지역을 시도·시군구로 확인하지 못했습니다.",
         }
-    sp = None if q.get("unsupported") else indicators.spec(ind)
+    # 사전에 없는 지표를 통계표에서 바로 만든 정의 (dynamic_indicator.py). 조회 지표와 같이 계산한다
+    dyn = q.get("dynamic_spec") if _dynamic_fits(q) else None
+    sp = dyn or (None if q.get("unsupported") else indicators.spec(ind))
+    if dyn and (dyn.get("ages_in_filters") or dyn.get("ignore_ages")):
+        ages = None  # 비율의 분자에 연령이 이미 들어 있거나, 말에서 짐작한 연령을 쓰지 않는 정의
     population = sp is None or sp["name"] == "총인구"
     if kind == "composition" and population and not q.get("unsupported"):
         # 구성비는 지표가 아니라 총인구를 나눠 보므로 지표 확인을 건너뜀
@@ -834,6 +898,8 @@ def compute(q):
     except Exception as e:  # 계산 중 오류도 답변 단계에서 안내
         return {"status": "error", "reason": f"계산 중 오류가 났습니다: {e}"}
 
+    if dyn:  # 사전 지표가 아니라 통계표에서 바로 만든 정의로 계산했다 (다음 턴에서도 표시)
+        result["method"] = "dynamic"
     if result.get("status") == "unknown_indicator" and "gap" not in result:
         # 지표는 있지만 질문한 구분(예: 연령)이 표에 없음 → 그 구분의 자료는 수집하지 않음
         result["gap"] = "not_collected"
@@ -860,6 +926,24 @@ def compute(q):
             "원인이나 정책 효과는 통계 수치만으로 판단할 수 없어 수치 변화만 보여드립니다."
         )
     return result
+
+
+def _dynamic_fits(q):
+    """바로 만든 지표 정의를 이 조건에 그대로 써도 되는가.
+    지표가 바뀌었거나 정의를 만들 때 고정한 조건(성별·연령·구성비)이 바뀌면 쓰지 않는다
+    → 사전에 없는 지표로 처리되어 통계표 찾기·바로 계산을 다시 한다"""
+    spec = q.get("dynamic_spec")
+    if not spec or spec.get("name") != q.get("indicator"):
+        return False
+    if (after := spec.get("future_after")) is not None:  # 장래추계 표: 미래 연도만
+        years = [y for y in (q.get("year"), q.get("start_year"), q.get("end_year")) if y]
+        if not years or min(years) <= after:
+            return False
+    norm = {"sex": lambda v: v or "계", "ages": lambda v: [list(a) for a in v] if v else None}
+    return all(
+        norm.get(k, lambda v: v)(q.get(k)) == norm.get(k, lambda v: v)(v)
+        for k, v in (spec.get("fixed") or {}).items()
+    )
 
 
 def _value_instead(result, name):
