@@ -39,7 +39,10 @@ def fake_table(monkeypatch: pytest.MonkeyPatch) -> dict:
     monkeypatch.setattr(d, "_unit", lambda tbl_id, item: units[tbl_id])
     monkeypatch.setattr(lookup, "_dim_labels", lambda tbl_id, dim: tuple(sorted(AGES.items())))
     monkeypatch.setattr(indicators, "find_regions", lambda text: [])
-    return {"tables": tables, "units": units}
+    projection: set[str] = set()
+    monkeypatch.setattr(d, "is_projection", lambda tbl_id: tbl_id in projection)
+    monkeypatch.setattr(indicators, "_data_years", lambda: (2008, 2025))
+    return {"tables": tables, "units": units, "projection": projection}
 
 
 def build(question: str, **over) -> dict:
@@ -162,7 +165,7 @@ def test_answer_skips_clarify_and_tries_candidates(monkeypatch) -> None:
         return (None, "질문의 말과 맞는 칸이 없음") if tbl_id == "A" else (build(question), None)
 
     async def fake_answer(q, trace, question):
-        return {"status": "ok", "result": {"status": "ok"}, "parsed": q}
+        return {"status": "ok", "result": {"status": "ok", "value": 1390701}, "parsed": q}
 
     monkeypatch.setattr(d, "_build", fake_build)
     monkeypatch.setattr(qa, "answer", fake_answer)
@@ -180,3 +183,65 @@ def test_nothing_fits_returns_none(monkeypatch) -> None:
     monkeypatch.setattr(d, "_build", fake_build)
     found = {"status": "ok", "recommendations": [{"tbl_id": "A"}, {"tbl_id": "B"}]}
     assert asyncio.run(d.answer("서울 통근 인구", BASE, found, {})) is None
+
+
+# ---- 추계 표·결측 검증 -------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "over",
+    [
+        {"year": 2020},  # 실적 자료가 있는 해
+        {"year": None},  # 연도를 말하지 않음 → 추계 표의 마지막 해로 답하게 된다
+        {"type": "trend", "year": None, "start_year": 2020, "end_year": 2040},  # 실적과 섞임
+    ],
+)
+def test_projection_table_only_for_future_years(fake_table: dict, over: dict) -> None:
+    fake_table["projection"].add("DT_1PL1502")
+    spec, why = d.build("DT_1PL1502", "서울 1인 가구 수", {**BASE, **over})
+    assert spec is None and why == "장래추계 표는 미래 연도를 물을 때만 씀"
+
+
+def test_projection_table_for_future_year_and_not_reused_for_past(fake_table: dict) -> None:
+    fake_table["projection"].add("DT_1PL1502")
+    spec = build("2040년 서울 1인 가구 수", year=2040)
+    assert spec["future_after"] == 2025 and d.PROJECTION_NOTE in spec["note"]
+    q = {"indicator": spec["name"], "sex": "계", "year": 2040, "dynamic_spec": spec}
+    assert qa._dynamic_fits(q)
+    assert not qa._dynamic_fits({**q, "year": 2020})  # "2020년은?" → 실적 표로 다시 찾는다
+
+
+@pytest.mark.parametrize(
+    ("result", "expected"),
+    [
+        ({"status": "ok", "value": None}, False),  # 비공개(*)·결측
+        ({"status": "ok", "series": [{"year": 2020, "value": None}]}, False),
+        ({"status": "ok", "values": [{"region": "서울", "value": None}]}, False),
+        ({"status": "ok", "value": 0}, True),  # 0은 값이다
+        (
+            {"status": "ok", "series": [{"year": 2020, "value": None}, {"year": 2021, "value": 3}]},
+            True,
+        ),
+        ({"status": "ok", "parts": [{"label": "20대", "count": 1}]}, True),
+        ({"status": "ok", "split": [{"value": None}, {"value": 5}]}, True),
+    ],
+)
+def test_has_values(result: dict, expected: bool) -> None:
+    assert d.has_values(result) is expected
+
+
+def test_answer_skips_table_without_values(monkeypatch) -> None:
+    async def fake_build(tbl_id, org_id, question, parsed, step):
+        return build(question), None
+
+    async def fake_answer(q, trace, question):
+        value = None if len(trace["dynamic"]) == 1 else 7  # 첫 표는 값이 비공개
+        return {"status": "ok", "result": {"status": "ok", "value": value}, "parsed": q}
+
+    monkeypatch.setattr(d, "_build", fake_build)
+    monkeypatch.setattr(qa, "answer", fake_answer)
+    found = {"status": "ok", "recommendations": [{"tbl_id": "A"}, {"tbl_id": "B"}]}
+    trace: dict = {}
+    res = asyncio.run(d.answer("2020년 서울 1인 가구 수", BASE, found, trace))
+    assert res["result"]["value"] == 7
+    assert trace["dynamic"][0]["skip"] == "값이 없음 (비공개·결측)"

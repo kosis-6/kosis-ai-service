@@ -16,10 +16,11 @@ lookup.py(값·비교·추이·순위·구성비)가 한다. 그래서 숫자는
     비율               "~ 중 ~ 비율": 질문에서 고른 칸 하나 ÷ 같은 분류의 합계 칸 × 100
     구성비             질문에 이름이 나온 분류(예: 연령별)의 칸마다 ÷ 합계
   검증 (하나라도 걸리면 None → 지금처럼 통계표 안내)
+    - 장래추계 표인데 실적 자료가 있는 연도를 물음 (추계 표는 미래 연도에만)
     - 질문의 말과 맞은 칸이 하나도 없음 (표의 다른 값을 답하지 않도록)
     - 한 분류에서 칸이 둘 이상 맞음, 합계 칸이 없는데 고를 수 없음
     - 비율의 분자가 정해지지 않음 (나눌 부분이 없거나 여럿)
-    - 계산 결과에 값이 없음 (qa.compute가 확인)
+    - 계산은 됐지만 값이 하나도 없음 (비공개 *·결측) → 다음 후보 표
 
 답에는 계산식·쓴 표·칸과 "지표 사전에 없는 값을 표에서 바로 계산했다"는 주의를 붙인다.
 """
@@ -32,12 +33,13 @@ from starlette.concurrency import run_in_threadpool
 
 from app.core.stats_db import StatsTableMissing
 from app.core.stats_db import rows as _rows
-from app.services import indicators, load_queue, lookup, qa, table_cache
+from app.services import indicators, load_queue, lookup, qa, search, table_cache
 
 logger = logging.getLogger(__name__)
 
 MAX_TABLES = 3  # 통계표 찾기 후보 중 이만큼까지 시도한다
 NOTE = "지표 사전에 없는 값을 통계표에서 바로 계산했습니다. 공식 지표 정의와 다를 수 있습니다"
+PROJECTION_NOTE = "장래추계 표의 추계값입니다(실적 아님). 다음 추계 때 바뀔 수 있습니다"
 TOTAL_NAMES = {"계", "합계", "전체", "총계", "소계", "총", "전국"}
 SEX_NAMES = {"남": {"남자", "남", "남성"}, "여": {"여자", "여", "여성"}}
 COUNT_UNITS = {"명", "가구", "건", "개", "세대", "호", "곳", "개소", "천명", "천가구"}
@@ -123,6 +125,21 @@ def schema(tbl_id: str) -> tuple[list[Dim], int | None, str]:
     else:
         level = "전국"
     return dims, region_dim, level
+
+
+def is_projection(tbl_id: str) -> bool:
+    """장래추계 표인가 (서비스 기본 표는 catalog의 표시, 나머지는 조사·표 이름)"""
+    if lookup._projection(tbl_id):
+        return True
+    r = _rows("select survey_name, table_name from table_meta where tbl_id = ?", [tbl_id])
+    return bool(r and search.PROJECTION_TABLE.search(f"{r[0]['survey_name']} {r[0]['table_name']}"))
+
+
+def _asks_future(q: dict, after: int) -> bool:
+    """물은 연도가 모두 실적 자료의 마지막 해 뒤인가. 연도를 말하지 않았으면 아니다
+    (말하지 않으면 추계 표의 마지막 해(예: 2072년)로 답하게 된다)"""
+    years = [y for y in (q.get("year"), q.get("start_year"), q.get("end_year")) if y]
+    return bool(years) and min(years) > after
 
 
 def _labels(tbl_id: str, dim_no: int) -> list[tuple[str, str]]:
@@ -264,6 +281,11 @@ def build(tbl_id: str, question: str, parsed: dict) -> tuple[dict | None, str | 
     dims, region_dim, level = schema(tbl_id)
     if not dims or dims[0].no != 0:
         return None, "항목 정보가 없음"
+    future_after = None
+    if is_projection(tbl_id):
+        future_after = indicators._data_years()[1]  # 실적(주민등록인구) 자료의 마지막 해
+        if not _asks_future(parsed, future_after):
+            return None, "장래추계 표는 미래 연도를 물을 때만 씀"
     plan, why = choose(question, parsed, dims, region_dim)
     if plan is None:
         return None, why
@@ -312,6 +334,9 @@ def build(tbl_id: str, question: str, parsed: dict) -> tuple[dict | None, str | 
         spec["fixed"]["ages"] = parsed.get("ages") or None
     if spec["kind"] == "composition":
         spec["fixed"]["type"] = "composition"
+    if future_after is not None:  # 다음 턴에서 과거 연도로 바꾸면 이 정의를 쓰지 않는다
+        spec["future_after"] = future_after
+        spec["note"] = f"{NOTE}. {PROJECTION_NOTE}"
     spec["formula"] = spec.get("formula") or f"KOSIS 공표 값 ({_cells(plan, dims)})"
     spec["cells"] = _cells(plan, dims)
     return spec, None
@@ -417,9 +442,23 @@ async def answer(question: str, parsed: dict, found: dict, trace: dict) -> dict 
         step["cells"] = spec["cells"]
         res = await qa.answer(_with_spec(parsed, spec), trace, question)
         step["status"] = res["status"]
+        if res["status"] == "ok" and not has_values(res.get("result") or {}):
+            step["skip"] = "값이 없음 (비공개·결측)"
+            continue
         if res["status"] in ("ok", "out_of_range"):
             return res  # result["method"] = "dynamic"은 qa.compute가 단다
     return None
+
+
+def has_values(result: dict) -> bool:
+    """계산 결과에 실제 값이 하나라도 있는가 (비공개 *·결측이면 값 칸이 비어 있다)"""
+    for r in qa._leaves(result):
+        if r.get("value") is not None or r.get("parts"):
+            return True
+        rows = [*(r.get("series") or []), *(r.get("values") or []), *(r.get("ranking") or [])]
+        if any(x.get("value") is not None for x in rows):
+            return True
+    return False
 
 
 async def _build(tbl_id, org_id, question, parsed, step):

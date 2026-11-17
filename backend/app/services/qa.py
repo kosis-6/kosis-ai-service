@@ -924,6 +924,10 @@ def _dynamic_fits(q):
     spec = q.get("dynamic_spec")
     if not spec or spec.get("name") != q.get("indicator"):
         return False
+    if (after := spec.get("future_after")) is not None:  # 장래추계 표: 미래 연도만
+        years = [y for y in (q.get("year"), q.get("start_year"), q.get("end_year")) if y]
+        if not years or min(years) <= after:
+            return False
     norm = {"sex": lambda v: v or "계", "ages": lambda v: [list(a) for a in v] if v else None}
     return all(
         norm.get(k, lambda v: v)(q.get(k)) == norm.get(k, lambda v: v)(v)
