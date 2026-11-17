@@ -192,6 +192,23 @@ LATEST_KINDS = ("value", "compare", "rank")  # "최근"이면 마지막 해로 �
 CHANGE_ASK = re.compile(r"추이|변화|변동|흐름|증감|추세|늘|줄|증가|감소|동안|사이|년간|그래프")
 SPAN = re.compile(r"((?:19|20)\d{2})\s*년?\s*(대비|부터|에서)\s*((?:19|20)\d{2})\s*년")
 YEAR = re.compile(r"((?:19|20)\d{2})\s*년")
+# 한글 숫자·사건으로 말한 해 ("이천이십이년", "십 년 전", "코로나 첫 해", "월드컵 때", "그 당시")
+# 청년·유소년·노년·중년·장년의 "년"은 연도가 아니다
+YEAR_WORDS = re.compile(r"(?<![청소노중장])년|때|당시|해(?![가-힣])")
+# 지역 이름이면서 흔한 낱말인 짧은 이름 ("고령 인구", "장수 노인", "영양 상태", "이천 명")
+COMMON_WORD_REGIONS = frozenset({"고령", "장수", "영양", "이천", "예산", "수영"})
+
+
+def _says_year(question):
+    """질문에 연도를 말한 표현이 있는지. 있으면 HCX가 읽은 연도를 지우지 않는다.
+    애매하면 있다고 본다 (지우면 사용자가 말한 연도를 무시하게 되므로).
+    "인구 2000명 이하"의 2000도 있다고 보지만, 그때는 HCX 연도를 그대로 두니 develop과 같다"""
+    return bool(
+        YEAR.search(question)
+        or ask_followup.has_explicit_year(question)
+        or YEAR_WORDS.search(question)
+        or timeref.resolve(question)
+    )
 SINCE = re.compile(r"((?:19|20)\d{2})\s*년\s*(이후|이래|부터)(?!.*까지)")
 UNTIL = re.compile(r"((?:19|20)\d{2})\s*년\s*까지")
 NATIONWIDE = re.compile(r"전국|우리나라|대한민국|한국\s*(전체|의|은|는)|국내\s*(전체)?")
@@ -420,6 +437,10 @@ def correct(question, parsed, today=None):
                 kind = "trend"
         elif kind not in ("trend", "other", "parse_error") and parsed.get("year") != ref.year:
             fix("year", ref.year, ref.describe(today))
+    elif not has_abs_year and not _says_year(question) and kind in LATEST_KINDS and parsed.get("year"):
+        # 질문에 연도 표현이 전혀 없을 때만 HCX가 짐작해 넣은 연도를 지운다 (예: 연도 없이 물었는데 2022)
+        # "22년", "2022.12", "이천이십이년", "코로나 첫 해"처럼 연도를 말했으면 HCX 연도를 그대로 둔다
+        fix("year", None, "연도를 말하지 않음 → 자료 마지막 해")
 
     # 지역이 여럿인 값 질문: 합계를 물었으면 더하고, 아니면 지역별 비교로 답한다.
     # value + 여러 지역 + 합계 표시 없음은 계산이 첫 지역만 써서 나머지 지역이 말없이 빠졌다
@@ -482,6 +503,20 @@ def _ground_regions(question, parsed, fix):
         codes = {reg.get("region_code"), indicators._norm(reg.get("display", ""))}
         if reg["status"] != "ok" or codes & found:
             continue  # 지역을 못 찾으면 계산 단계에서 그대로 안내한다
+        # "강남" → 서울특별시 강남구처럼 끝의 시·군·구를 뗀 짧은 이름으로 물은 경우
+        short = re.sub(r"(특별자치시|특별자치도|특별시|광역시|시|군|구|도)$", "", reg.get("region_name") or "")
+        # 단, 질문에 시도가 있으면 그 시도 안의 지역일 때만 (예: "서울 강서"를 부산 강서구로 바꾸면 막는다)
+        named = found - {None}
+        same_sido = not named or reg.get("sido_code") in named
+        # 짧은 이름이 지표 이름 안에만 있거나("고령" ⊂ "고령인구 비율") 흔한 낱말이면 지역으로 보지 않는다
+        spans = indicators.find_in_text(question)
+        hits = [m.start() for m in re.finditer(re.escape(short), text)] if len(short) >= 2 else []
+        in_indicator = bool(hits) and all(any(a <= i < b for a, b, _ in spans) for i in hits)
+        if hits and same_sido and not in_indicator and short not in COMMON_WORD_REGIONS:
+            # 질문에 시도가 없고 짧은 이름이 여러 곳이면 (예: "강서" → 서울·부산) AI가 고른 곳 대신 되묻는다
+            if not named and indicators.resolve_region(short)["status"] == "ambiguous_region":
+                fix("regions", [short if x == r else x for x in parsed["regions"]], "짧은 이름이 여러 지역 → 되묻기")
+            continue
         parsed["ungrounded_region"] = r
         return
 
@@ -620,6 +655,20 @@ def _read_question(question, parsed, fix):
             for key in ("start_year", "end_year", "year"):
                 if parsed.get(key):
                     fix(key, None, "최근 추이는 자료 마지막 해까지")
+    elif (
+        kind in LATEST_KINDS
+        and not by_year
+        and not YEAR.search(question)
+        and not _says_year(question)
+        and not timeref.resolve(question)
+        and not SPAN.search(question)
+        and not SINCE.search(question)
+        and (sp := indicators.spec(parsed.get("indicator"))) is not None
+        and sp.get("method") == "lookup"
+    ):
+        # 연도를 말하지 않은 조회 지표 질문 ("서울 외국인주민 수")은 "최근"과 같이 표마다 마지막 해로
+        # (공통 기준 연도로 계산하면 2024년까지인 표는 자료가 있는데도 범위 밖이 된다)
+        asked["latest"] = True
     if ask_followup.FROM_PAST.search(question) and not SPAN.search(question):
         # "과거부터 지금까지 합계출산율 추이" → 수록 기간 전체 추이
         asked["from_start"] = True
