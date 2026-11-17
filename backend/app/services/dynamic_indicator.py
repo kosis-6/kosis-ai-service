@@ -40,7 +40,16 @@ from starlette.concurrency import run_in_threadpool
 
 from app.core.stats_db import StatsTableMissing
 from app.core.stats_db import rows as _rows
-from app.services import indicators, load_queue, lookup, plan_cache, qa, search, table_cache
+from app.services import (
+    cell_words,
+    indicators,
+    load_queue,
+    lookup,
+    plan_cache,
+    qa,
+    search,
+    table_cache,
+)
 from app.services.memory_cache import MISSING, MemoryCache
 
 logger = logging.getLogger(__name__)
@@ -431,6 +440,9 @@ def uncovered(
         return None
     cond = slots.get("conditions") or {}
     names = [_norm(d.codes[c]) for d in dims for no, c in plan.pick.items() if no == d.no]
+    if plan.multi:  # 합·비교·순위하는 칸들도 반영된 것
+        md = plan.multi_dim or next(d for d in dims if d.no == plan.multi[0])
+        names += [_norm(md.codes[c]) for c in plan.multi[1]]
     for item in cond.get("items") or []:
         word = _norm(item)
         if not word:
@@ -488,6 +500,9 @@ def _name(parsed: dict, dims: list[Dim], plan: Plan, counted: bool, strip_age: b
     words = words or [dims[0].codes[plan.pick[0]]]
     # "통학-계"처럼 이름 끝의 합계 표시는 떼고 쓴다 ("통학 인구"와 맞추고, 답에도 "통학")
     words = [re.sub(r"[\s\-·]*(계|합계|소계)$", "", w) or w for w in words]
+    words = [
+        w for w in words if w not in TOTAL_NAMES
+    ] or words  # 합계 칸("계")은 이름에 쓰지 않는다
     for term in (parsed.get("term"), parsed.get("indicator")):
         # 사전 지표 이름도 고른 칸 이름을 모두 담으면 쓴다 (옛 연도: 이혼 ⊂ 이혼 건수).
         # 근거 없이 고른 사전 지표(총인구 ⊅ 1인가구)는 아래 담김 검사에서 걸러진다
@@ -602,7 +617,7 @@ def build(
     if kind == "composition" or PCT_ASK.search(question):
         made = _composition(spec, src, plan, dims, question) if kind == "composition" else None
         if made is None:
-            made, why = _ratio(spec, src, plan, dims, parsed)
+            made, why = _ratio(spec, src, plan, dims, parsed, tbl_nm)
             if made is None:
                 return None, why
         spec = made
@@ -657,9 +672,12 @@ def _parts_spec(spec: dict, src: dict, plan: Plan, dims: list[Dim], tbl_nm: str)
         if x.no in plan.matched and x.no != dim_no and plan.matched[x.no] != x.total()
     ]
     subject = " ".join(words) or re.sub(r"\(.*$|-[^-]*$", "", tbl_nm.split("별")[-1]).strip()
+    if not words and any(_norm(subject) in _norm(d.codes[c]) for c in codes):
+        # 표 이름에서 뗀 말이 연산하는 칸의 일부면 주제가 아니다 ("상주(야간) · 주간 인구"의 "상주")
+        subject = ""
     spec.update(
         name=subject or spec["name"],
-        parts_op={"op": op, "col": d.col, "dim": d.name, "codes": codes,
+        parts_op={"op": op, "col": d.col, "dim": d.name, "codes": codes, "subject": subject,
                   "labels": [d.codes[c] for c in codes]},
         fixed={"type": "parts"},
         cells=f"{d.name} {', '.join(d.codes[c] for c in codes[:5])}",
@@ -667,7 +685,19 @@ def _parts_spec(spec: dict, src: dict, plan: Plan, dims: list[Dim], tbl_nm: str)
     return spec, None
 
 
-def _ratio(spec: dict, src: dict, plan: Plan, dims: list[Dim], parsed: dict):
+def _item_whole(d: Dim, tbl_nm: str) -> str | None:
+    """합계 칸이 없는 항목에서 전체를 뜻하는 칸: 이름이 표 이름에 그대로 든 첫 칸
+    ("통근·통학 인구(12세 이상)" ⊂ "… 이용 교통수단별 통근 통학 인구(12세 이상)").
+    분자 ≤ 분모 검증(part_within_whole)은 그대로 거친다"""
+    if d.no != 0 or not tbl_nm:
+        return None
+    # 첫 칸만 본다 (KOSIS는 전체를 맨 앞에 둔다). "상주(야간) · 주간 인구" 표의 "주간 인구"처럼
+    # 표 이름에 든 세부 칸을 전체로 보지 않게
+    code, name = next(iter(d.codes.items()), (None, ""))
+    return code if len(_norm(name)) >= 4 and _norm(name) in _norm(tbl_nm) else None
+
+
+def _ratio(spec: dict, src: dict, plan: Plan, dims: list[Dim], parsed: dict, tbl_nm: str = ""):
     """'~ 중 ~ 비율': 나눌 부분 하나 ÷ 같은 분류의 합계 × 100 → (정의, None) 또는 (None, 이유)"""
     sex = parsed.get("sex") or "계"
     parts = []  # (분류 열, 분자 코드들, 분모 코드, 이름)
@@ -684,10 +714,11 @@ def _ratio(spec: dict, src: dict, plan: Plan, dims: list[Dim], parsed: dict):
             return None, "질문한 연령 구간을 표의 연령 칸으로 만들 수 없음"
         parts.append((d.col, codes, d.total(), indicators.age_label(band)))
     for d in dims:
-        if d.no in plan.matched and d.total() and plan.matched[d.no] != d.total():
+        whole = d.total() or _item_whole(d, tbl_nm)
+        if d.no in plan.matched and whole and plan.matched[d.no] != whole:
             if d is not plan.sex_dim:
                 code = plan.matched[d.no]
-                parts.append((d.col, [code], d.total(), d.codes[code]))
+                parts.append((d.col, [code], whole, d.codes[code]))
     if len(parts) != 1:
         return None, "비율의 분자·분모를 정하지 못함"
     col, num, den, part = parts[0]
@@ -856,8 +887,9 @@ async def answer(
         # 일부 일치(partial_match)도 어긋난 조건이 연령뿐이면 계산해 본다 (_age_check).
         # 그 밖은 표 안내
         misses = [[k for k, ok in (c.get("checks") or {}).items() if not ok] for c in recs]
+        # 표에 글자가 없는 찾는 값(item:낮)도 칸 이름 잇기(cell_words)로 풀 수 있어 계산해 본다
         if found.get("status") != "partial_match" or not any(
-            m and all(_age_check(k, parsed) for k in m) for m in misses
+            m and all(_age_check(k, parsed) or k.startswith(WORD_CHECK) for k in m) for m in misses
         ):
             return None
     steps = trace.setdefault("dynamic", [])
@@ -868,13 +900,23 @@ async def answer(
             continue
         checks = (card.get("checks") or {}).items()
         failed = [k for k, ok in checks if not ok and not _age_check(k, parsed)]
+        need = [k[len(WORD_CHECK) :] for k in failed if k.startswith(WORD_CHECK)]
+        failed = [k for k in failed if not k.startswith(WORD_CHECK)]
         if failed:
             steps.append(
                 {"tbl_id": tbl_id, "skip": f"통계표 찾기 조건 불충족 ({', '.join(failed)})"}
             )
             continue
         res, ask = await _try(
-            tbl_id, card.get("org_id"), question, parsed, trace, {}, slots, found.get("notice")
+            tbl_id,
+            card.get("org_id"),
+            question,
+            parsed,
+            trace,
+            {},
+            slots,
+            found.get("notice"),
+            need,
         )
         if res is not None:
             await _remember(parsed, tbl_id, {}, res)
@@ -962,12 +1004,40 @@ async def _remember(parsed: dict, tbl_id: str, forced: dict, res: dict) -> None:
         logger.exception("계산 방법 캐시 저장 실패")
 
 
-async def _try(tbl_id, org_id, question, parsed, trace, forced, slots=None, notice=None):
+async def _try(tbl_id, org_id, question, parsed, trace, forced, slots=None, notice=None, need=()):
     """표 하나로 계산해 본다 → (답 또는 None, 되물을 것 또는 None)
-    slots: 통계표 찾기의 조건 (칸 반영 검사), notice: 통계표 찾기의 주의 (답에 붙인다)"""
+    slots: 통계표 찾기의 조건 (칸 반영 검사), notice: 통계표 찾기의 주의 (답에 붙인다)
+    need: 통계표 찾기가 표에 없다고 본 질문의 말 ("낮", "자가용"). 모두 칸 이름으로 이어져야 계산"""
     step = {"tbl_id": tbl_id, **({"forced": forced} if forced else {})}
     trace["dynamic"].append(step)
     spec, why = await _build(tbl_id, org_id, question, parsed, step, forced, slots)
+    word_miss = isinstance(why, str) and (why in WORD_MISS or why.endswith(PICK_MISS))
+    if need or (spec is None and word_miss):
+        # 질문의 말이 칸 이름과 글자가 달라 고르지 못함 ("자가용" ↔ 승용차): LLM에게 짝만 묻고,
+        # 질문을 칸 이름으로 바꿔 쓴 뒤 규칙으로 다시 고른다 (2단계 LLM 보조, cell_words.py)
+        got = await _words(tbl_id, question, parsed, trace)
+        if got is not None and not _covers(need, got[1]):
+            step["cell_words"] = got[1]
+            got = None
+        if got is not None:
+            rewritten, pairs = got
+            spec2, why2 = await _build(
+                tbl_id,
+                org_id,
+                rewritten,
+                _rewrite_terms(parsed, pairs),
+                step,
+                forced,
+                _rewrite_slots(slots, pairs),
+            )
+            step["cell_words"] = pairs
+            if need or spec2 is not None or isinstance(why2, (Ask, BandMiss)):
+                spec, why, question = spec2, why2, rewritten
+                if spec is not None:
+                    spec["note"] = f"{spec['note']}. {cell_words.note(pairs)}"
+        elif need:
+            step["skip"] = f"질문의 말({', '.join(need)})을 표의 칸으로 잇지 못함"
+            return None, None
     if isinstance(why, BandMiss):
         step["skip"] = str(why)
         return await run_in_threadpool(band_answer, parsed, tbl_id, why), None
@@ -993,6 +1063,54 @@ async def _try(tbl_id, org_id, question, parsed, trace, forced, slots=None, noti
         # 기간 밖·구간 불일치도 맞는 표를 찾은 뒤의 안내라 답으로 쓴다 (볼 수 있는 기간·구간을 알림)
         return res, None  # result["method"] = "dynamic"은 qa.compute가 단다
     return None, None
+
+
+# 칸 고르기가 이 이유로 실패하면 일상어 짝을 LLM에게 묻는다
+WORD_MISS = ("질문의 말과 맞는 칸이 없음", "비율의 분자·분모를 정하지 못함")
+WORD_CHECK = "item:"  # 통계표 찾기가 찾는 값이 표에 없다고 본 조건 ("item:낮")
+PICK_MISS = "에서 칸을 고르지 못함"  # 합계 없는 큰 분류에서 맞는 칸이 없음 ("항목에서 …")
+
+
+def _covers(need, pairs: list[tuple[str, str]]) -> bool:
+    """통계표 찾기가 표에 없다고 본 말이 모두 짝으로 이어졌는가"""
+    said = [_norm(w) for w, _ in pairs]
+    return all(any(_norm(n) in w or w in _norm(n) for w in said) for n in need)
+
+
+def _rewrite_slots(slots: dict | None, pairs: list[tuple[str, str]]) -> dict | None:
+    """통계표 찾기 조건의 찾는 값도 칸 이름으로 ("낮" → "주간 인구"). 칸 반영 검사(uncovered)용"""
+    cond = (slots or {}).get("conditions") or {}
+    if not cond.get("items"):
+        return slots
+    items = []
+    for item in cond["items"]:
+        hit = next(
+            (c for w, c in pairs if _norm(w) in _norm(item) or _norm(item) in _norm(w)), None
+        )
+        items.append(hit or item)
+    return {**slots, "conditions": {**cond, "items": items}}
+
+
+def _rewrite_terms(parsed: dict, pairs: list[tuple[str, str]]) -> dict:
+    """질문 해석의 지표 표현도 칸 이름으로 ("자가용 이용 비율" → "승용차 소형 승합차 이용 비율")"""
+    out = dict(parsed)
+    for key in ("term", "indicator"):
+        if isinstance(out.get(key), str):
+            for word, cell in pairs:
+                out[key] = out[key].replace(word, cell)
+    return out
+
+
+async def _words(tbl_id: str, question: str, parsed: dict, trace: dict):
+    """cell_words.match를 표의 분류로 부른다 (지역·연령 분류는 빼고)"""
+    try:
+        dims, region_dim, _ = await run_in_threadpool(schema, tbl_id)
+        tbl_nm = (await run_in_threadpool(lookup._table, tbl_id))["tbl_nm"]
+    except Exception:
+        logger.exception("칸 이름 잇기 준비 실패: %s", tbl_id)
+        return None
+    skip = {region_dim} | {d.no for d in dims if d.no != 0 and d.is_age()}
+    return await cell_words.match(tbl_id, tbl_nm, question, dims, skip, trace)
 
 
 TOP_N = re.compile(r"(?:top|상위)\s*(\d+)|(\d+)\s*(?:위|개|가지)까지", re.I)
@@ -1049,8 +1167,10 @@ def parts_answer(parsed: dict, spec: dict, question: str) -> dict:
         )
         diff = hi["value"] - lo["value"]
         times = f" ({round(hi['value'] / lo['value'], 2)}배)" if lo["value"] else ""
+        # 칸이 곧 지표인 비교(주간 인구 vs 상주인구)는 주제를 붙이지 않는다
+        about = f"{qa._josa(name, '은는')} " if op.get("subject", name) else ""
         text = (
-            f"{where}의 {qa._josa(name, '은는')} {qa._josa(hi['label'], '이가')} "
+            f"{where}의 {about}{qa._josa(hi['label'], '이가')} "
             f"{lo['label']}보다 {val(diff)} 많습니다{times}."
         )
         lines = [f"- {x['label']}: {val(x['value'])}" for x in rows]
@@ -1211,6 +1331,8 @@ def _with_spec(parsed: dict, spec: dict) -> dict:
     q = {**parsed, "indicator": spec["name"], "unsupported": False, "dynamic_spec": spec}
     if spec["kind"] == "ratio" and q.get("type") == "composition":
         q["type"] = "value"  # "~ 중 ~ 비율"은 구성비가 아니라 비율 값 하나
+    if q.get("type") in (None, "other"):
+        q["type"] = "value"  # 질문 종류를 정하지 못했어도 칸으로 정의를 만들었으면 그 값 하나
     if not q.get("year") and q.get("type") in LAST_YEAR_KINDS:
         try:
             q["year"] = lookup._years(spec["sources"][0])[1]
