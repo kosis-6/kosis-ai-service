@@ -58,6 +58,21 @@ SEX_MEMBER = re.compile(r"\((계|남|여)\)")
 # 이전 거주지 분류: '5년전 거주지별', '1년전거주지별'
 PREV_REGION = re.compile(r"\d+\s*년\s*전")
 REGION_LEVEL_ORDER = ["시도", "시군구", "읍면동"]
+# KOSIS 가 level_names 를 비워 둔 지역 축. 값은 시도 이름 목록인데 지역 수준이 없어,
+# '시도별' 조건에서 정답 표가 감점됐다
+# ('시도 간 인구 이동 통계' → '전출지/전입지(시도)별 이동자수'가 7위).
+# 축 이름이 사는 곳 · 옮긴 곳일 때만 값을 본다.
+# 값만 보면 항구별 · 성씨본관별 · 출생지별 · 본적지별까지 잡힌다.
+# '도별'은 이름 전체가 같을 때만 ('연도별' · '용도별'이 아니다)
+RESIDENCE_AXIS = re.compile(r"^(?:전출지|전입지|일시현재자|일시부재자|대도시|도)별$")
+# 대도시별 축은 대도시의 구만 담는다. 시군구 전체가 아니라 시도까지만 본다
+SIDO_ONLY_AXIS = re.compile(r"^대도시")
+SIDO_VALUE = re.compile(
+    r"[가-힣]+(?:특별시|광역시|직할시|특별자치시|특별자치도)|[가-힣]{2,3}도"
+)  # 옛 이름(부산직할시, 함경북도)도 시도다
+SIGUNGU_VALUE = re.compile(r"[가-힣]{1,5}(?:시|군|구)")
+MIN_SIDO_VALUES = 5
+MIN_SIGUNGU_VALUES = 20
 
 COLUMNS = [
     "tbl_id",
@@ -142,13 +157,31 @@ def years(periods: list[dict[str, str]]) -> tuple[int, int]:
     return min(int(p["start"][:4]) for p in periods), max(int(p["end"][:4]) for p in periods)
 
 
+def levels_from_values(c: dict[str, Any]) -> list[str]:
+    """level_names 가 없는 지역 축의 지역 수준을 값에서 읽는다 (시도 이름이 5개 이상일 때만)"""
+    name = re.sub(r"\s+", "", c["name"])
+    raw = c.get("values") or c.get("sample_values") or []
+    values = {re.sub(r"\s+", "", v or "") for v in raw}
+    sido = {v for v in values if SIDO_VALUE.fullmatch(v)}
+    if len(sido) < MIN_SIDO_VALUES:
+        return []
+    sigungu = {v for v in values - sido if SIGUNGU_VALUE.fullmatch(v)}
+    if len(sigungu) >= MIN_SIGUNGU_VALUES and not SIDO_ONLY_AXIS.search(name):
+        return ["시도", "시군구"]
+    return ["시도"]
+
+
 def region_levels(classifications: list[dict[str, Any]]) -> tuple[list[str], list[str]]:
-    """지역 분류의 level_names를 현거주지 / 이전 거주지로 나눠 모은다"""
+    """지역 분류의 level_names를 현거주지 / 이전 거주지로 나눠 모은다.
+    level_names 가 빈 거주 · 이동 지역 축은 값에서 지역 수준을 읽어 채운다"""
     current: set[str] = set()
     previous: set[str] = set()
     for c in classifications:
         levels = c.get("level_names") or []
-        (previous if PREV_REGION.search(c["name"]) else current).update(levels)
+        is_previous = bool(PREV_REGION.search(c["name"]))
+        if not levels and (is_previous or RESIDENCE_AXIS.match(re.sub(r"\s+", "", c["name"]))):
+            levels = levels_from_values(c)
+        (previous if is_previous else current).update(levels)
 
     def ordered(levels: set[str]) -> list[str]:
         return [lv for lv in REGION_LEVEL_ORDER if lv in levels]
