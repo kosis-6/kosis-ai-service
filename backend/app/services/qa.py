@@ -119,7 +119,18 @@ AGE_RANGE = re.compile(r"(?:만\s*)?(\d+)\s*(?:세|살)?\s*[~\-]\s*(\d+)\s*(?:�
 AGE_OVER = re.compile(r"(?:만\s*)?(\d+)\s*(?:세|살)\s*이상")
 AGE_UNDER = re.compile(r"(?:만\s*)?(\d+)\s*(?:세|살)\s*(?:미만|도?\s*안\s*(?:된|되는))")
 AGE_UNDER_EQ = re.compile(r"(?:만\s*)?(\d+)\s*(?:세|살)\s*이하")
-# "60대 이상", "20~30대", "20대 후반"
+# 말로 이은 구간: "62살에서 67살 사이", "33세부터 38세까지", "62세와 67세 사이"
+# (끝 나이는 단위 필수: "2020년부터 2025년까지"는 연령이 아니다)
+AGE_SPAN = re.compile(
+    r"(?:만\s*)?(\d{1,3})\s*(?:세|살)?\s*"
+    r"(?:(?:에서|부터)\s*(?:만\s*)?(\d{1,3})\s*(?:세|살)|(?:와|과|하고)\s*(?:만\s*)?(\d{1,3})\s*(?:세|살)\s*사이)"
+)
+# "65세 이상 70세 미만", "65살 이상 69살 이하"
+AGE_OVER_UNDER = re.compile(
+    r"(?:만\s*)?(\d{1,3})\s*(?:세|살)\s*이상\s*(?:만\s*)?(\d{1,3})\s*(?:세|살)\s*(미만|이하)"
+)
+# "60대 이상", "20~30대", "20대 후반", "20대부터 30대까지"
+AGE_DECADE_SPAN = re.compile(r"(\d+)\s*대\s*(?:에서|부터)\s*(\d+)\s*대(?!\s*(광역시|도시))")
 AGE_DECADE_OVER = re.compile(r"(\d+)\s*대\s*이상")
 AGE_DECADE_RANGE = re.compile(r"(\d+)\s*[~\-]\s*(\d+)\s*대(?!\s*(광역시|도시))")
 AGE_DECADE_PART = re.compile(r"(\d+)\s*대\s*(초반|중반|후반)")
@@ -268,8 +279,17 @@ def extract_ages(question):
             covered.append(m.span())
             found.append((m.start(), band))
 
+    for m in AGE_OVER_UNDER.finditer(question):
+        add(m, [int(m[1]), int(m[2]) - (m[3] == "미만")])
     for m in AGE_RANGE.finditer(question):
         add(m, [int(m[1]), int(m[2])])
+    for m in AGE_SPAN.finditer(question):
+        lo, hi = int(m[1]), int(m[2] or m[3])
+        if lo < hi:
+            add(m, [lo, hi])
+    for m in AGE_DECADE_SPAN.finditer(question):
+        if int(m[1]) % 10 == 0 and int(m[2]) % 10 == 0 and int(m[1]) < int(m[2]):
+            add(m, [int(m[1]), int(m[2]) + 9])
     for m in AGE_OVER.finditer(question):
         add(m, [int(m[1]), None])
     for m in AGE_UNDER.finditer(question):
@@ -604,8 +624,8 @@ OTHER_UNITS = re.compile(r"가구|세대|몇\s*(곳|개|건|집)")
 # HCX가 지표 칸에 적은 말에서 지우면 "연령 구간 인구"만 남는지 볼 때 지우는 말
 POPULATION_WORDS = re.compile(r"인구|인원|사람|수|명|분|몇|들|[\s()·,~\-]")
 AGE_PATTERNS = (
-    AGE_RANGE, AGE_OVER, AGE_UNDER, AGE_UNDER_EQ,
-    AGE_DECADE_RANGE, AGE_DECADE_OVER, AGE_DECADE_PART, AGE_DECADE,
+    AGE_OVER_UNDER, AGE_RANGE, AGE_SPAN, AGE_OVER, AGE_UNDER, AGE_UNDER_EQ,
+    AGE_DECADE_SPAN, AGE_DECADE_RANGE, AGE_DECADE_OVER, AGE_DECADE_PART, AGE_DECADE,
 )  # fmt: skip
 
 

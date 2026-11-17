@@ -571,6 +571,28 @@ def test_extract_ages_with_sal() -> None:
     assert qa.extract_ages("15살 안 된 애들") == [[0, 14]]
 
 
+@pytest.mark.parametrize(
+    ("question", "ages"),
+    [
+        # 개발셋 D-139, D-140: 말로 이은 구간을 읽지 못해 연령 없이 답했다
+        ("해운대구에서 작년에 돌아가신 분 중 62살에서 67살 사이 몇 명이야?", [[62, 67]]),
+        ("등록 외국인 중에 33살부터 38살까지 몇 명이야?", [[33, 38]]),
+        ("33세부터 38세까지 인구", [[33, 38]]),
+        ("62세와 67세 사이 인구", [[62, 67]]),
+        ("62에서 67살", [[62, 67]]),
+        ("65세 이상 70세 미만 인구", [[65, 69]]),
+        ("65살 이상 69살 이하", [[65, 69]]),
+        ("20대부터 30대까지 여자", [[20, 39]]),
+        # 연도·다른 단위의 "부터·에서"는 연령이 아니다
+        ("2020년부터 2025년까지 인구", []),
+        ("2015년에서 2020년 사이 30대", [[30, 39]]),
+        ("3명에서 5명 사이", []),
+    ],
+)
+def test_extract_ages_spoken_range(question: str, ages: list) -> None:
+    assert qa.extract_ages(question) == ages
+
+
 def test_age_group_grounds_age_defined_indicator() -> None:
     # 지표 이름이 없어도 연령 집단 + 묻는 말이 있으면 HCX가 고른 계산 지표를 쓴다
     p = qa.correct(
