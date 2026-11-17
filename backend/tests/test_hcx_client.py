@@ -42,9 +42,7 @@ def test_chat_success() -> None:
         )
 
     result = asyncio.run(
-        make_client(handler).chat(
-            "HCX-007", [{"role": "user", "content": "안녕"}], temperature=0.1
-        )
+        make_client(handler).chat("HCX-007", [{"role": "user", "content": "안녕"}], temperature=0.1)
     )
     assert result.content == "안녕하세요"
     assert result.finish_reason == "stop"
@@ -98,3 +96,33 @@ def test_chat_no_retry_on_other_errors() -> None:
     with pytest.raises(HcxError):
         asyncio.run(make_client(handler).chat("HCX-007", [{"role": "user", "content": "x"}]))
     assert len(calls) == 1
+
+
+def test_chat_network_error_retries_once_then_hcx_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 연결 실패는 500 오류(그냥 예외)가 아니라 HcxError로, 한 번만 다시 시도
+    monkeypatch.setattr("app.services.hcx_client.TRANSIENT_WAITS", (0,))
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        raise httpx.ConnectError("refused", request=request)
+
+    with pytest.raises(HcxError) as exc:
+        asyncio.run(make_client(handler).chat("HCX-007", [{"role": "user", "content": "x"}]))
+    assert exc.value.is_transient and not exc.value.is_rate_limit
+    assert len(calls) == 2
+
+
+def test_chat_server_error_retry_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 게이트웨이 오류(JSON이 아닌 502)도 HcxError로 보고, 다시 시도해 성공하면 답한다
+    monkeypatch.setattr("app.services.hcx_client.TRANSIENT_WAITS", (0,))
+    responses = [
+        httpx.Response(502, text="<html>Bad Gateway</html>"),
+        httpx.Response(200, json=OK_BODY),
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return responses.pop(0)
+
+    result = asyncio.run(make_client(handler).chat("HCX-007", [{"role": "user", "content": "x"}]))
+    assert result.content == "안녕하세요"
