@@ -114,10 +114,11 @@ SEX_SPLIT = re.compile(r"남녀|성별|(남성|남자).*(여성|여자)|(여성|
 NO_REGION_TYPES = {"rank", "other", "parse_error"}
 
 # 연령 구간: "20대", "6~11세", "65세 이상", "15세 미만" (뒤에 '광역시'가 오는 "5대 광역시"는 제외)
-AGE_RANGE = re.compile(r"(?:만\s*)?(\d+)\s*세?\s*[~\-]\s*(\d+)\s*세")
-AGE_OVER = re.compile(r"(?:만\s*)?(\d+)\s*세\s*이상")
-AGE_UNDER = re.compile(r"(?:만\s*)?(\d+)\s*세\s*미만")
-AGE_UNDER_EQ = re.compile(r"(?:만\s*)?(\d+)\s*세\s*이하")
+# "세" 대신 "살"도 쓴다 ("19~34살", "100살 이상", "15살 안 된")
+AGE_RANGE = re.compile(r"(?:만\s*)?(\d+)\s*(?:세|살)?\s*[~\-]\s*(\d+)\s*(?:세|살)")
+AGE_OVER = re.compile(r"(?:만\s*)?(\d+)\s*(?:세|살)\s*이상")
+AGE_UNDER = re.compile(r"(?:만\s*)?(\d+)\s*(?:세|살)\s*(?:미만|도?\s*안\s*(?:된|되는))")
+AGE_UNDER_EQ = re.compile(r"(?:만\s*)?(\d+)\s*(?:세|살)\s*이하")
 # "60대 이상", "20~30대", "20대 후반"
 AGE_DECADE_OVER = re.compile(r"(\d+)\s*대\s*이상")
 AGE_DECADE_RANGE = re.compile(r"(\d+)\s*[~\-]\s*(\d+)\s*대(?!\s*(광역시|도시))")
@@ -209,6 +210,8 @@ def _says_year(question):
         or YEAR_WORDS.search(question)
         or timeref.resolve(question)
     )
+
+
 SINCE = re.compile(r"((?:19|20)\d{2})\s*년\s*(이후|이래|부터)(?!.*까지)")
 UNTIL = re.compile(r"((?:19|20)\d{2})\s*년\s*까지")
 NATIONWIDE = re.compile(r"전국|우리나라|대한민국|한국\s*(전체|의|은|는)|국내\s*(전체)?")
@@ -221,6 +224,14 @@ RANK_ASK = re.compile(
 INDICATOR_PATTERNS = [
     (re.compile(r"(아이|아기|신생아)\S*\s*(\S+\s*){0,3}태어"), "출생아 수"),
     (re.compile(r"결혼(을|한)?\s*(\S+\s*){0,2}(많이|적게)"), "혼인 건수"),
+    # "태어난 사람이 많아 돌아가신 사람이 많아?" → 출생아 − 사망자
+    (
+        re.compile(
+            r"(태어|출생)\S*\s*(\S+\s*){0,4}?(돌아가|사망|죽)"
+            r"|(돌아가|사망|죽)\S*\s*(\S+\s*){0,4}?(태어|출생)"
+        ),
+        "자연증가 건수",
+    ),
 ]
 # 구성비 질문에서 콕 집어 물은 항목 (질문 표현 → 구성 항목 이름)
 FOCUS_WORDS = {
@@ -242,7 +253,8 @@ FOCUS_WORDS = {
 # 통계를 묻는 질문인지 (범위 밖 질문과 '아직 지원하지 않는 지표'를 구분)
 STATS_WORDS = re.compile(
     r"인구|출생|출산|사망|혼인|결혼|이혼|이사|전입|전출|이동|외국인|다문화|가구|주민|아이|자녀|국적|귀화"
-    r"|몇\s*(명|건|가구)"
+    r"|태어|돌아가"
+    r"|몇\s*(명|건|가구|분)"
 )
 
 
@@ -381,6 +393,7 @@ def correct(question, parsed, today=None):
                 fix("indicator", name, "질문의 지표 표현")
                 parsed.pop("unsupported", None)
         _guard_indicator(question, parsed, names, fix)
+        _age_population(question, parsed, fix)
         # 질문이 다른 통계를 가리키면 비슷한 이름의 지표로 답하지 않는다
         # 예) "등록외국인 수"를 외국인주민 수(귀화자·자녀 포함)로 답하지 않고 표 안내로
         current = indicators.canonical_name(parsed.get("indicator") or "")
@@ -448,7 +461,12 @@ def correct(question, parsed, today=None):
                 kind = "trend"
         elif kind not in ("trend", "other", "parse_error") and parsed.get("year") != ref.year:
             fix("year", ref.year, ref.describe(today))
-    elif not has_abs_year and not _says_year(question) and kind in LATEST_KINDS and parsed.get("year"):
+    elif (
+        not has_abs_year
+        and not _says_year(question)
+        and kind in LATEST_KINDS
+        and parsed.get("year")
+    ):
         # 질문에 연도 표현이 전혀 없을 때만 HCX가 짐작해 넣은 연도를 지운다 (예: 연도 없이 물었는데 2022)
         # "22년", "2022.12", "이천이십이년", "코로나 첫 해"처럼 연도를 말했으면 HCX 연도를 그대로 둔다
         fix("year", None, "연도를 말하지 않음 → 자료 마지막 해")
@@ -515,7 +533,9 @@ def _ground_regions(question, parsed, fix):
         if reg["status"] != "ok" or codes & found:
             continue  # 지역을 못 찾으면 계산 단계에서 그대로 안내한다
         # "강남" → 서울특별시 강남구처럼 끝의 시·군·구를 뗀 짧은 이름으로 물은 경우
-        short = re.sub(r"(특별자치시|특별자치도|특별시|광역시|시|군|구|도)$", "", reg.get("region_name") or "")
+        short = re.sub(
+            r"(특별자치시|특별자치도|특별시|광역시|시|군|구|도)$", "", reg.get("region_name") or ""
+        )
         # 단, 질문에 시도가 있으면 그 시도 안의 지역일 때만 (예: "서울 강서"를 부산 강서구로 바꾸면 막는다)
         named = found - {None}
         same_sido = not named or reg.get("sido_code") in named
@@ -526,7 +546,11 @@ def _ground_regions(question, parsed, fix):
         if hits and same_sido and not in_indicator and short not in COMMON_WORD_REGIONS:
             # 질문에 시도가 없고 짧은 이름이 여러 곳이면 (예: "강서" → 서울·부산) AI가 고른 곳 대신 되묻는다
             if not named and indicators.resolve_region(short)["status"] == "ambiguous_region":
-                fix("regions", [short if x == r else x for x in parsed["regions"]], "짧은 이름이 여러 지역 → 되묻기")
+                fix(
+                    "regions",
+                    [short if x == r else x for x in parsed["regions"]],
+                    "짧은 이름이 여러 지역 → 되묻기",
+                )
             continue
         parsed["ungrounded_region"] = r
         return
@@ -565,6 +589,81 @@ def _merge_regions(regions):
     return out
 
 
+# 연령 집단으로 정의한 계산 지표 → (필요한 연령 구간들, 묻는 말). 질문에 그 집단(이름·숫자 구간)과
+# 묻는 말이 있으면 지표 이름이 없어도 근거가 있다
+# ("노인이 몇 퍼센트" → 고령인구 비율, "애들보다 노인이 몇 배" → 노령화지수)
+AGE_DEFINED = {
+    "고령인구 비율": ([(65, None)], PCT_ASK),
+    "유소년인구 비율": ([(0, 14)], PCT_ASK),
+    "노령화지수": ([(0, 14), (65, None)], re.compile(r"몇\s*배|대비")),
+}
+# 사람 수를 묻는 말. 연령 집단 이름("노인", "어르신")은 그 자체로 사람이라 이 말이 없어도 된다
+PEOPLE_ASK = re.compile(r"인구|몇\s*(명|분)|사람|인원")
+# 사람이 아닌 것을 세는 질문 ("청년 1인 가구 몇 가구")
+OTHER_UNITS = re.compile(r"가구|세대|몇\s*(곳|개|건|집)")
+# HCX가 지표 칸에 적은 말에서 지우면 "연령 구간 인구"만 남는지 볼 때 지우는 말
+POPULATION_WORDS = re.compile(r"인구|인원|사람|수|명|분|몇|들|[\s()·,~\-]")
+AGE_PATTERNS = (
+    AGE_RANGE, AGE_OVER, AGE_UNDER, AGE_UNDER_EQ,
+    AGE_DECADE_RANGE, AGE_DECADE_OVER, AGE_DECADE_PART, AGE_DECADE,
+)  # fmt: skip
+
+
+def _age_bands(question):
+    """질문에 나온 연령 구간 전부: 숫자 구간 + 연령 집단 이름"""
+    bands = {tuple(b) for b in extract_ages(question)}
+    return bands | {(r.lo, r.hi) for r in agegroup.resolve_all(question)}
+
+
+def _age_grounded(question, name):
+    """연령 집단으로 정의한 지표를 질문이 그 집단으로 물었는지"""
+    rule = AGE_DEFINED.get(name)
+    if rule is None:
+        return False
+    bands, ask = rule
+    return bool(ask.search(question)) and set(bands) <= _age_bands(question)
+
+
+def _asks_age_population(question, parsed):
+    """연령 구간의 사람 수를 물었는지: 연령이 있고, 비율·배수가 아니고, 사람을 센다"""
+    return bool(
+        parsed.get("ages")
+        and not PCT_ASK.search(question)
+        and not RATIO_ASK.search(question)
+        and not OTHER_UNITS.search(question)
+        and (PEOPLE_ASK.search(question) or parsed.get("age_group"))
+    )
+
+
+def _population_label(label, regions=()):
+    """HCX가 적은 지표 이름이 "연령 구간 인구"뿐인지
+    ("19~34세 인구 수", "유소년인구 수", "100살 이상 어르신")"""
+    s = label
+    for r in regions:
+        s = s.replace(r, "")
+    for pattern in AGE_PATTERNS:
+        s = pattern.sub("", s)
+    s = re.sub(r"\d+\s*(세|살)", "", s)
+    for word in sorted((w for words, *_ in agegroup.GROUPS for w in words), key=len, reverse=True):
+        s = s.replace(word, "")
+    return POPULATION_WORDS.sub("", s) == ""
+
+
+def _age_population(question, parsed, fix):
+    """HCX가 지표를 비웠거나 사전에 없는 이름("19~34세 인구 수", "유소년인구 수")을 줬어도
+    연령 구간 인구 수를 물었으면 총인구 (연령 구간 인구)로 답한다"""
+    if indicators.spec(parsed.get("indicator")) is not None and not parsed.get("unsupported"):
+        return
+    labels = [x for x in (parsed.get("indicator"), parsed.get("term")) if x]
+    regions = parsed.get("regions") or []
+    if not _asks_age_population(question, parsed):
+        return
+    if not all(_population_label(x, regions) for x in labels):
+        return
+    fix("indicator", "총인구", "연령 구간 인구 수를 물음")
+    parsed.pop("unsupported", None)
+
+
 def _guard_indicator(question, parsed, names, fix):
     """지원 지표로 바꿔서 답하지 않게 한다 (0회차: 다른 지표로 답한 8문항)
     - 계산 지표(고령인구 비율 등)는 질문에 그 지표 표현이 있어야 한다
@@ -573,12 +672,16 @@ def _guard_indicator(question, parsed, names, fix):
     sp = indicators.spec(parsed.get("indicator"))
     if sp is None:
         return
-    ages = parsed.get("ages")
     k = lookup.kind_of(sp)
     asks_count = COUNT_ASK.search(question) and not PCT_ASK.search(question)
-    ungrounded = sp["method"] == "computed" and sp["name"] != "총인구" and sp["name"] not in names
+    ungrounded = (
+        sp["method"] == "computed"
+        and sp["name"] != "총인구"
+        and sp["name"] not in names
+        and not _age_grounded(question, sp["name"])
+    )
     if (k in ("ratio", "index") and asks_count) or ungrounded:
-        if ages and "인구" in question and asks_count:
+        if _asks_age_population(question, parsed):
             fix("indicator", "총인구", "연령 구간 인구 수를 물음")
         else:
             term = parsed.get("term") or parsed.get("indicator")
