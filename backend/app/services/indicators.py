@@ -81,6 +81,33 @@ INDICATORS = {
         # 답변 문장에서 값의 뜻을 풀어 쓸 때 사용 (qa.summary)
         "meaning": "유소년인구(0~14세) 100명당 65세 이상 인구가 {value}명",
     },
+    "생산연령인구 비율": {
+        "unit": "%",
+        "kind": "ratio",
+        "formula": "15~64세 인구 ÷ 총인구 × 100",
+        "calc": lambda c: _div(c["working"], c["total"]),
+    },
+    "노년부양비": {
+        "unit": "생산연령인구 100명당 명",
+        "kind": "index",
+        "formula": "65세 이상 인구 ÷ 15~64세 인구 × 100",
+        "calc": lambda c: _div(c["old"], c["working"]),
+        "meaning": "생산연령인구(15~64세) 100명당 65세 이상 인구가 {value}명",
+    },
+    "유소년부양비": {
+        "unit": "생산연령인구 100명당 명",
+        "kind": "index",
+        "formula": "0~14세 인구 ÷ 15~64세 인구 × 100",
+        "calc": lambda c: _div(c["young"], c["working"]),
+        "meaning": "생산연령인구(15~64세) 100명당 0~14세 인구가 {value}명",
+    },
+    "총부양비": {
+        "unit": "생산연령인구 100명당 명",
+        "kind": "index",
+        "formula": "(0~14세 인구 + 65세 이상 인구) ÷ 15~64세 인구 × 100",
+        "calc": lambda c: _div((c["young"] or 0) + (c["old"] or 0), c["working"]),
+        "meaning": "생산연령인구(15~64세) 100명당 부양할 인구(0~14세 + 65세 이상)가 {value}명",
+    },
     "인구밀도": {
         "unit": "명/㎢",
         "kind": "value",

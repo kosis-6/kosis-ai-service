@@ -325,6 +325,38 @@ method = "computed"
 sources = [{ table = "DT_1B04006", level = "시군구" }]
 projection = { table = "DT_1BPB002", c3_id = "50" }
 
+[[indicators]]
+name = "생산연령인구 비율"
+aliases = ["생산가능인구 비율", "생산연령 비율", "15~64세 비율", "15-64세 비율", "생산연령인구 비중"]
+unit = "%"
+method = "computed"
+desc = "15~64세 인구 ÷ 총인구 × 100"
+sources = [{ table = "DT_1B04006", level = "시군구" }]
+
+[[indicators]]
+name = "노년부양비"
+aliases = ["노년 부양비", "노인 부양비", "고령 부양비"]
+unit = "생산연령인구 100명당 명"
+method = "computed"
+desc = "65세 이상 ÷ 15~64세 × 100. 일하는 나이 100명이 부양하는 노인 수"
+sources = [{ table = "DT_1B04006", level = "시군구" }]
+
+[[indicators]]
+name = "유소년부양비"
+aliases = ["유소년 부양비", "아동 부양비", "어린이 부양비"]
+unit = "생산연령인구 100명당 명"
+method = "computed"
+desc = "0~14세 ÷ 15~64세 × 100"
+sources = [{ table = "DT_1B04006", level = "시군구" }]
+
+[[indicators]]
+name = "총부양비"
+aliases = ["부양비", "총 부양비", "전체 부양비"]
+unit = "생산연령인구 100명당 명"
+method = "computed"
+desc = "(0~14세 + 65세 이상) ÷ 15~64세 × 100. 그냥 '부양비'라고 물으면 이것"
+sources = [{ table = "DT_1B04006", level = "시군구" }]
+
 # 면적은 pipeline/load_area.py가 지적통계(DT_MLTM_2300)를 mart.area에 넣는다 (KOSIS 공식 인구밀도
 # DT_1B08024는 인구총조사 기준·시도만이라, 주민등록인구로 시군구까지 같은 기준으로 계산한다)
 [[indicators]]
