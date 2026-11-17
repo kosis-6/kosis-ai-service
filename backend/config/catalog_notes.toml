@@ -357,6 +357,32 @@ method = "computed"
 desc = "(0~14세 + 65세 이상) ÷ 15~64세 × 100. 그냥 '부양비'라고 물으면 이것"
 sources = [{ table = "DT_1B04006", level = "시군구" }]
 
+[[indicators]]
+name = "성비"
+aliases = ["남녀 성비", "여자 100명당 남자", "남녀 비율", "남녀비"]
+not_in = ["구성비"]  # "연령대별 구성비" 안의 "성비"는 성비가 아니다
+unit = "여자 100명당 남자 수"
+method = "computed"
+desc = "남자 ÷ 여자 × 100. 100보다 크면 남자가 더 많음"
+sources = [{ table = "DT_1B04006", level = "시군구" }]
+
+[[indicators]]
+name = "중위연령"
+aliases = ["중위 연령", "중간 나이", "중위나이", "가운데 나이"]
+unit = "세"
+method = "computed"
+desc = "인구를 나이순으로 세웠을 때 가운데 사람의 나이 (주민등록 1세별 인구로 계산)"
+note = "주민등록 1세별 인구로 계산한 값입니다. 장래인구추계의 중위연령(7월 1일, 외국인 포함)과 다를 수 있습니다"
+sources = [{ table = "DT_1B04006", level = "시군구" }]
+
+[[indicators]]
+name = "세대당 인구"
+aliases = ["세대당 인구수", "세대 당 인구", "세대당 평균 인구", "한 세대 인구", "세대원 수"]
+unit = "명"
+method = "computed"
+desc = "주민등록 총인구 ÷ 주민등록 세대수 (한 세대에 평균 몇 명)"
+sources = [{ table = "DT_1B04006", level = "시군구" }, { table = "DT_1B040B3", level = "시군구" }]
+
 # 면적은 pipeline/load_area.py가 지적통계(DT_MLTM_2300)를 mart.area에 넣는다 (KOSIS 공식 인구밀도
 # DT_1B08024는 인구총조사 기준·시도만이라, 주민등록인구로 시군구까지 같은 기준으로 계산한다)
 [[indicators]]
