@@ -31,13 +31,15 @@ ANSWER, CLARIFY, REFUSE = "답변", "되묻기", "답변 불가"
 CLARIFY_STATUSES = {"unclear", "ambiguous_region", "missing_region", "missing_year"}
 
 # 답변 불가 status → 골든셋의 답변 불가 유형. 여기 없는 status는 유형을 정하지 못한 것(유형 오류)
-# "맞는 구간 없음", "원인·예측 질문"은 아직 챗봇에 대응하는 status가 없다
 REFUSAL_TYPES = {
     "out_of_range": "없는 연도",
     "region_not_in_year": "없는 연도",
     "unknown_indicator": "범위 밖 주제",
     "not_supported_question": "범위 밖 주제",
     "missing_data": "값이 비어 있음",
+    "band_mismatch": "맞는 구간 없음",  # 표의 구간과 맞지 않음 (연령 구간, 체중·기간 같은 조건)
+    "causal_question": "원인·예측 질문",
+    "prediction_question": "원인·예측 질문",
     # 통계표 찾기의 거절 (응답의 tables.status). 근거는 tables.reason
     "out_of_scope": "범위 밖 주제",
     "not_statistics": "범위 밖 주제",

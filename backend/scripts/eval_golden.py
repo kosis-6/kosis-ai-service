@@ -59,6 +59,9 @@ ACTIONS = {
     "missing_data": "대안안내",
     "unknown_region": "다시질문",
     "out_of_scope": "범위안내",  # 통계표 찾기도 인구 분야 표를 못 찾음 (#147)
+    "causal_question": "범위안내",  # 원인·예측은 답하지 않고 볼 수 있는 통계를 안내
+    "prediction_question": "대안안내",  # 미래 값 대신 장래추계·추이를 안내
+    "band_mismatch": "대안안내",  # 맞는 구간 대신 볼 수 있는 구간을 안내
     "not_statistics": "범위안내",
 }
 TABLE_ID = re.compile(r"[A-Z]{2,3}_[0-9A-Z_]+")

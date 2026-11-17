@@ -644,6 +644,17 @@ def _check(name, ind, reg, y0, y1):
             elif proj.get("available_years"):  # 추계 범위(~2052)도 넘으면 추계 마지막 연도를 안내
                 out["reason"] += " " + proj["reason"]
                 out["available_years"] = proj["available_years"]
+        elif y0 > hi and reg.get("sido_code") and "projection_c3" in ind:
+            # 시군구의 미래 값: 장래인구추계는 시도까지만 있다 → 예측 질문으로 답하지 않고
+            # 속한 시도의 추계값을 대신 보여 준다 (예: 2040년 해운대구 → 2040년 부산광역시)
+            proj = projection(name, reg["sido_code"], y1)
+            if proj["status"] == "ok":
+                out.update(
+                    status="prediction_question",
+                    reason=f"{_display(reg)}의 {y1}년 값은 아직 없는 미래 값이고, "
+                    "장래인구추계는 시도 단위까지만 있어 답할 수 없습니다.",
+                    suggestion=proj,
+                )
         return out
     vf, vt = reg.get("valid_from"), reg.get("valid_to")
     if (vf is not None and y0 < vf) or (vt is not None and y1 > vt):

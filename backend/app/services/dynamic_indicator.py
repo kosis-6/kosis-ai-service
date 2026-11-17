@@ -33,6 +33,7 @@ lookup.py(값·비교·추이·순위·구성비)가 한다. 그래서 숫자는
 
 import logging
 import re
+import unicodedata
 from dataclasses import dataclass, field
 
 from starlette.concurrency import run_in_threadpool
@@ -302,7 +303,51 @@ def choose(
 # ---- 계산 계획 (지표 사전의 sources와 같은 모양) --------------------------------------
 
 
-def uncovered(slots: dict | None, plan: Plan, dims: list[Dim], parsed: dict) -> str | None:
+@dataclass
+class BandMiss:
+    """질문의 조건(예: 체중 3.2kg)이 표의 구간 분류(예: 2.5~3.0kg, 3.0~3.5kg)와 맞지 않음
+    → 숫자를 내지 않고 '맞는 구간 없음 + 볼 수 있는 구간'으로 답한다 (band_answer)"""
+
+    item: str
+    dim_name: str
+    labels: list[str]
+    dim_no: int = -1
+
+    def __str__(self) -> str:
+        return f"'{self.item}'에 맞는 {self.dim_name} 구간 없음"
+
+
+# 숫자+단위 조건 (3.2kg, 1년 반, 18개월). 연도(2025년)는 빼려고 숫자를 세 자리까지만 본다
+MEASURE_UNIT = re.compile(r"(?<![\d.])\d{1,3}(?:\.\d+)?\s*(kg|cm|개월|년(?:\s*반)?|g)(?!도)", re.I)
+
+
+def _unit_norm(text: str) -> str:
+    """ "1.5㎏미만" → "1.5kg미만" (표의 단위가 한 글자 기호일 때가 있다)"""
+    # _norm은 소수점도 지우므로(3.2kg → 32kg) 여기서는 공백만 지운다
+    return unicodedata.normalize("NFKC", re.sub(r"\s+", "", str(text))).lower()
+
+
+def _band_miss(texts: list[str], dims: list[Dim], region_dim: int | None) -> BandMiss | None:
+    """질문의 숫자+단위 조건이 같은 단위의 구간 분류가 있는 표에 들어왔는가 (그 구간은 칸이 아님)"""
+    for text in texts:
+        for m in MEASURE_UNIT.finditer(_unit_norm(text)):
+            unit = re.sub(r"\s*반$", "", m[1].lower())
+            for d in dims:
+                if d.no == region_dim or d.is_age():
+                    continue
+                named = [n for c, n in d.codes.items() if c != d.total() and unit in _unit_norm(n)]
+                if len(named) >= 2:
+                    return BandMiss(m[0], d.name, named, d.no)
+    return None
+
+
+def uncovered(
+    slots: dict | None,
+    plan: Plan,
+    dims: list[Dim],
+    parsed: dict,
+    region_dim: int | None = None,
+) -> "str | BandMiss | None":
     """통계표 찾기가 질문에서 뽑은 조건 중 고른 칸에 반영되지 않은 것 (있으면 계산하지 않는다)
 
     칸 하나만 질문과 맞아도 나머지를 합계로 두면, 질문이 좁혀 물은 값 대신 넓은 값을 답하게 된다
@@ -321,10 +366,13 @@ def uncovered(slots: dict | None, plan: Plan, dims: list[Dim], parsed: dict) -> 
             continue
         if any(word in n or n in word for n in names if len(n) >= 2):
             continue
-        if lookup.parse_age(item) and parsed.get("ages") and plan.age_dim is not None:
-            continue  # 연령 구간은 lookup이 연령 칸으로 고른다
+        is_age = lookup.parse_age(item) or qa.extract_ages(item)  # "62살에서 67살 사이"도
+        if is_age and parsed.get("ages") and plan.age_dim is not None:
+            continue  # 연령 구간은 lookup이 연령 칸으로 고른다 (안 맞으면 band_mismatch)
         if any(word in w for w in ("남자", "여자", "남성", "여성")) and plan.sex_dim is not None:
             continue
+        if miss := _band_miss([item], dims, region_dim):
+            return miss
         return f"질문의 조건 '{item}'을 표의 칸에 반영할 수 없음"
     if slots.get("exclude"):
         return f"빼 달라는 대상({', '.join(slots['exclude'])})이 합계 칸에 들어 있음"
@@ -400,6 +448,11 @@ def build(
         parsed, ignore_ages = {**parsed, "ages": None}, True
     plan, why = choose(question, parsed, dims, region_dim, forced)
     if plan is None:
+        # 칸을 고르지 못했어도 질문의 숫자 조건(체중 3.2kg 등)이 이 표의 구간 분류에 해당하면
+        # 그 조건에 맞는 구간이 없다고 답한다 (표 안내보다 구체적)
+        items = list(((slots or {}).get("conditions") or {}).get("items") or [])
+        if not isinstance(why, Ask) and (miss := _band_miss([*items, question], dims, region_dim)):
+            return None, miss
         return None, why
     if ignore_ages:
         # 연령 말이 고른 칸 이름 안에 있을 때만 지표 이름의 일부로 본다 (노년 ⊂ 노년부양비).
@@ -408,8 +461,14 @@ def build(
         names = [_norm(d.codes[plan.matched[d.no]]) for d in dims if d.no in plan.matched]
         if not expr or not any(expr in n for n in names):
             return None, "질문의 연령 조건을 표의 칸에 반영할 수 없음"
-    if why := uncovered(slots, plan, dims, parsed):
+    if why := uncovered(slots, plan, dims, parsed, region_dim):
         return None, why
+    # 통계표 찾기가 조건으로 뽑지 않았어도, 질문의 숫자 조건(3.2kg 등)이 이 표의 구간 분류에
+    # 해당하는데 그 분류를 질문의 말로 고르지 못했으면(합계로 둠) 조건을 버리게 된다
+    # → 맞는 구간 없음
+    miss = _band_miss([question], dims, region_dim)
+    if miss and miss.dim_no not in plan.matched:
+        return None, miss
     src = {"table": tbl_id, "level": level, "item_id": plan.pick[0]}
     if level == "전국":
         src["national_only"] = True
@@ -753,6 +812,9 @@ async def _try(tbl_id, org_id, question, parsed, trace, forced, slots=None, noti
     step = {"tbl_id": tbl_id, **({"forced": forced} if forced else {})}
     trace["dynamic"].append(step)
     spec, why = await _build(tbl_id, org_id, question, parsed, step, forced, slots)
+    if isinstance(why, BandMiss):
+        step["skip"] = str(why)
+        return await run_in_threadpool(band_answer, parsed, tbl_id, why), None
     if spec is None:
         step["skip"] = str(why)
         return None, why if isinstance(why, Ask) else None
@@ -764,9 +826,37 @@ async def _try(tbl_id, org_id, question, parsed, trace, forced, slots=None, noti
     if res["status"] == "ok" and not has_values(res.get("result") or {}):
         step["skip"] = "값이 없음 (비공개·결측)"
         return None, None
-    if res["status"] in ("ok", "out_of_range"):
+    if res["status"] in ("ok", "out_of_range", "band_mismatch"):
+        # 기간 밖·구간 불일치도 맞는 표를 찾은 뒤의 안내라 답으로 쓴다 (볼 수 있는 기간·구간을 알림)
         return res, None  # result["method"] = "dynamic"은 qa.compute가 단다
     return None, None
+
+
+def band_answer(parsed: dict, tbl_id: str, miss: BandMiss) -> dict:
+    """맞는 구간 없음 응답 (qa.answer와 같은 모양): 숫자 없이 표에 있는 구간과 그 표를 안내한다"""
+    tbl = lookup._table(tbl_id)
+    labels = miss.labels[:10]
+    result = {
+        "status": "band_mismatch",
+        "indicator": tbl["tbl_nm"],
+        "reason": f"'{tbl['tbl_nm']}' 표의 {miss.dim_name} 구간 중에 질문한 '{miss.item}' 조건과 "
+        "맞는 구간이 없어 그 값을 낼 수 없습니다.",
+        "available_bands": labels,
+        "alternative": f"대신 볼 수 있는 구간: {', '.join(labels)}",
+        "source": f"{tbl['org_nm']}, {tbl['tbl_nm']} ({tbl_id})",
+        "basis": tbl["basis"] or "KOSIS 공표 값",
+        "tbl_id": tbl_id,
+        "url": indicators.kosis_url(tbl_id),
+        "method": "dynamic",
+    }
+    return {
+        "status": "band_mismatch",
+        "answer": f"{qa.summary(result)}\n\n{qa.render(result)}".strip(),
+        "parsed": parsed,
+        "result": result,
+        "sources": qa.sources(result),
+        "trace": {},
+    }
 
 
 def ask_answer(question, parsed, tbl_id, tbl_nm, ask: Ask, forced=None) -> dict:

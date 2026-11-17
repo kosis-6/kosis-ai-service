@@ -475,3 +475,53 @@ def test_implied_age_word_kept_out_when_not_in_cell(fake_table: dict) -> None:
     implied = {"ages": [[65, None]], "age_group": {"expr": "노인"}}
     spec, why = d.build("DT_1PL1502", "서울 노인 1인 가구 수", {**BASE, **implied})
     assert spec is None and why == "질문의 연령 조건을 표의 칸에 반영할 수 없음"
+
+
+# ---- 맞는 구간 없음 (숫자 조건이 표의 구간 분류와 맞지 않음) --------------------------------
+
+
+def weight_table(fake_table: dict) -> None:
+    weight = d.Dim(
+        3, "출생시 체중별", {"0": "계", "1": "2.5㎏미만", "2": "2.5 - 2.9㎏", "3": "3.0 - 3.4㎏"}
+    )
+    items = d.Dim(0, "항목", {"B": "출생"})
+    fake_table["tables"]["DT_1PL1502"] = ([items, ONE_PERSON[1], weight], 1, "시도")
+
+
+@pytest.mark.parametrize(
+    ("question", "item"),
+    [
+        (
+            "2025년 체중 3.2kg으로 태어난 아기는 몇 명이야?",
+            "3.2kg",
+        ),  # 칸 글자가 안 맞아도 (출생 ≠ 아기)
+        ("2025년 3.2 kg 출생", "3.2kg"),
+    ],
+)
+def test_measure_condition_without_matching_band(
+    fake_table: dict, question: str, item: str
+) -> None:
+    weight_table(fake_table)
+    spec, miss = d.build("DT_1PL1502", question, {**BASE, "indicator": "출생아 수"})
+    assert spec is None and isinstance(miss, d.BandMiss)
+    # 표의 단위 기호(㎏)도 kg으로 맞춰 비교하고, 소수점은 지우지 않는다
+    assert miss.item == item and miss.dim_name == "출생시 체중별"
+    assert miss.labels == ["2.5㎏미만", "2.5 - 2.9㎏", "3.0 - 3.4㎏"]
+
+
+def test_year_is_not_a_measure_condition(fake_table: dict) -> None:
+    weight_table(fake_table)
+    assert d._band_miss(["2025년 출생"], fake_table["tables"]["DT_1PL1502"][0], 1) is None
+
+
+def test_spoken_age_range_counts_as_age_condition() -> None:
+    # "62살에서 67살 사이"도 연령 조건으로 보고 lookup에 넘긴다 (구간이 안 맞으면 band_mismatch)
+    found = {"conditions": {"items": ["62살에서 67살 사이"], "classes": []}, "exclude": []}
+    spec, why = d.build(
+        "DT_1PL1502",
+        "서울 62살에서 67살 사이 1인 가구 수",
+        {**BASE, "ages": [[62, 67]]},
+        None,
+        found,
+    )
+    assert spec is not None, why

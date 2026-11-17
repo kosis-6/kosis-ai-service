@@ -227,6 +227,18 @@ SINCE = re.compile(r"((?:19|20)\d{2})\s*년\s*(이후|이래|부터)(?!.*까지)
 UNTIL = re.compile(r"((?:19|20)\d{2})\s*년\s*까지")
 NATIONWIDE = re.compile(r"전국|우리나라|대한민국|한국\s*(전체|의|은|는)|국내\s*(전체)?")
 CAUSAL = re.compile(r"효과가?\s*(있|없|컸)|효과적|원인|왜\s|영향을?\s*(줬|주|미쳤|끼쳤)")
+# 지표 사전이 나누지 않는 조건 (체중·기간 등). 버리고 전체 값으로 답하면 틀린 답이 된다
+# ("체중 3.2kg 출생아 수" → 전국 출생아 수, "결혼 1년 반 만에 이혼한 건수" → 전체 이혼 건수)
+UNSUPPORTED_MEASURE = re.compile(
+    r"\d+(?:\.\d+)?\s*(?:kg|킬로그램|킬로|키로|그램)|\d+(?:\.\d+)?\s*(?:cm|센티)|"
+    r"\d+\s*년\s*반|\d+\s*개월|(?:결혼|혼인|동거|거주|근속|재직)\s*기간|체중|몸무게|키가"
+)
+# 앞으로를 묻는 질문 ("앞으로 출산율 다시 오를까?").
+# 미래 연도를 말했으면 장래추계로 답하므로 따로 본다
+PREDICT = re.compile(
+    r"앞으로|향후|미래에?|전망|예측|예상(?!보다)|"
+    r"(오를|내릴|늘|줄|늘어날|줄어들|증가할|감소할|떨어질|올라갈|내려갈|회복할|반등할)\s*(까|지)"
+)
 # "가장 많이 빠져나간 시군구", "합계출산율이 가장 높은 시도" → 순위
 RANK_ASK = re.compile(
     r"(가장|제일|꼴찌|최하위)\S*\s*(\S+\s*){0,3}?(시군구|시도|지역|곳|구|시)(는|가|은|이|를|\s|$|\?)"
@@ -812,6 +824,14 @@ def _read_question(question, parsed, fix):
     if CAUSAL.search(question) and kind not in ("causal", "composition", "other"):
         fix("type", "causal", "원인·효과를 묻는 질문")
         kind = "causal"
+    if (m := UNSUPPORTED_MEASURE.search(question)) and kind not in ("other", "parse_error"):
+        parsed["unsupported_condition"] = m[0].strip()
+    if PREDICT.search(question) and kind not in ("other", "parse_error"):
+        # 미래 연도를 말했으면 장래추계로 답한다 (예: "2040년 서울 인구는 몇 명이 될까?")
+        lo, hi = indicators._data_years()
+        years = [y for y in (parsed.get("year"), parsed.get("end_year")) if y]
+        if not any(y > hi for y in years):
+            parsed["prediction"] = True
     if (m := SPAN.search(question)) and kind in ("value", "trend", "causal"):
         start, end = int(m[1]), int(m[3])
         if kind == "value":
@@ -1011,12 +1031,21 @@ def compute(q):
             )
         return result
 
-    causal = kind == "causal"
-    if causal:  # 답변 불가 사례 4: 인과 판단 없이 수치 변화만 제시
+    # 원인·정책 효과·앞으로의 변화는 통계로 답할 수 없다 (답변 불가). 대신 그 지표의 추이를 볼 수
+    # 있는 통계표를 안내한다. 추이는 안내할 표를 고르려고만 계산하고 숫자는 답에 쓰지 않는다
+    refusal = (
+        "causal_question"
+        if kind == "causal"
+        else "prediction_question"
+        if q.get("prediction")
+        else None
+    )
+    if refusal:
+        if not (q.get("dynamic_spec") or indicators.spec(ind)) or q.get("unsupported"):
+            return _limit_result(refusal, None)
         kind = "trend" if regions else "rank"
-        if not indicators.spec(ind) or q.get("unsupported"):  # 지표가 없으면 전국 인구 추이
-            ind, regions, kind = "총인구", ["전국"], "trend"
-            q = {**q, "unsupported": False, "start_year": None, "end_year": None}
+        q = {**q, "prediction": False, "start_year": None, "end_year": None}
+        q["year"] = None if kind == "trend" else q.get("year")
 
     if area := q.get("sub_area"):
         return {
@@ -1060,6 +1089,17 @@ def compute(q):
             "indicator": term,
             "supported": list(indicators.specs()),
             **lookup.data_gap(term),
+        }
+
+    if (cond := q.get("unsupported_condition")) and not q.get("dynamic_spec"):
+        # 지표 사전의 표는 이 조건으로 나뉘어 있지 않다: 버리고 전체 값으로 답하지 않는다
+        where = " ".join(regions) if regions else "전국"
+        return {
+            "status": "band_mismatch",
+            "indicator": sp["name"],
+            "reason": f"{sp['name']} 자료는 '{cond}' 조건으로 나뉘어 있지 않아 "
+            "그 값을 낼 수 없습니다.",
+            "alternative": f"대신 조건 없는 {where} {sp['name']}는 확인할 수 있습니다",
         }
 
     def calc(rs):
@@ -1110,11 +1150,37 @@ def compute(q):
         names = ", ".join(v["region"] for v in result["values"])
         scope = f"{_josa(group, '은는')} {names} 기준입니다."
         result["answer_note"] = " ".join(filter(None, [scope, result.get("answer_note")]))
-    if causal:
-        result["causal_question"] = (
-            "원인이나 정책 효과는 통계 수치만으로 판단할 수 없어 수치 변화만 보여드립니다."
-        )
+    if refusal:
+        return _limit_result(refusal, result)
     return result
+
+
+LIMIT_REASONS = {
+    "causal_question": "원인이나 정책 효과는 통계 수치만으로 판단할 수 없어 답할 수 없습니다.",
+    "prediction_question": "앞으로의 변화는 지금까지의 통계로 예측해 답할 수 없습니다.",
+}
+
+
+def _limit_result(status, alternative):
+    """원인·예측 질문의 답변 불가. alternative: 대신 볼 수 있는 통계(그 지표의 추이) 계산 결과.
+    숫자는 쓰지 않고 그 통계와 통계표만 안내한다 (출처·표 카드는 alternative의 표)"""
+    out = {"status": status, "reason": LIMIT_REASONS[status]}
+    alt = _source_result(alternative) if alternative else {}
+    if not alternative or alternative.get("status") != "ok" or not alt.get("source"):
+        out["guide"] = (
+            "궁금한 지표와 지역·기간을 넣어 다시 질문해 주세요 (예: 최근 10년 서울 출생아 수)."
+        )
+        return out
+    name = alt.get("indicator") or "그 지표"
+    where = alt.get("region") or ("시도별" if "ranking" in alt else "")
+    what = (
+        f"{where} {name}의 변화" if "series" in alt or "split" in alternative else f"{where} {name}"
+    )
+    out["guide"] = f"대신 {_josa(what.strip(), '은는')} 아래 통계표에서 확인할 수 있습니다."
+    if status == "prediction_question":
+        out["guide"] += " 미래 연도를 넣어 물으면 장래인구추계가 있는 지표는 추계값으로 답합니다."
+    out.update({k: alt.get(k) for k in ("indicator", "region", "source", "basis", "tbl_id", "url")})
+    return out
 
 
 def _dynamic_fits(q):
@@ -1745,7 +1811,10 @@ def _refusal_text(r):
         return f"{what} 아직 지원하지 않는 지표입니다. {gap}아래 지원 지표로 다시 질문해 주세요."
     if status == "missing_year":
         return f"{r['reason']} {ask_followup.guide(r)}"
-    guide = REFUSAL_GUIDE.get(status, "")
+    guide = r.get("guide") or REFUSAL_GUIDE.get(status, "")
+    if status == "band_mismatch" and r.get("alternative"):
+        again = " (구간을 바꿔 다시 질문해 주세요)" if r.get("available_bands") else "."
+        guide = r["alternative"] + again
     if status == "unknown_region" and r.get("alternative"):
         guide = f"속한 시군구({r['alternative']})로 다시 질문해 주세요."
     if status == "out_of_range" and r.get("available_years"):
@@ -1811,8 +1880,6 @@ def summary(r):
     status = r.get("status")
     if status == "ok" and r.get("split"):
         text = _split_text(r)
-        if r.get("causal_question"):
-            text = f"{r['causal_question']} {text}"
         return text
     if status == "ok":
         if "scenario" in r:
@@ -1827,12 +1894,12 @@ def summary(r):
             text = _composition_text(r)
         else:
             text = _value_text(r)
-        if r.get("causal_question"):
-            text = f"{r['causal_question']} {text}"
         if r.get("answer_note"):
             text += " " + r["answer_note"]
         return text
-    if status == "out_of_range" and r.get("suggestion", {}).get("status") == "ok":
+    if status in ("out_of_range", "prediction_question") and (
+        r.get("suggestion", {}).get("status") == "ok"
+    ):
         return f"{r['reason']} 대신 장래인구추계 값을 보여드립니다. " + _projection_text(
             r["suggestion"]
         )
@@ -1928,7 +1995,9 @@ def _source_result(result):
                         extra.append({k: one.get(k) for k in ("source", "basis", "tbl_id", "url")})
         return {**first, "notes": notes, "extra_sources": extra}
     suggestion = result.get("suggestion", {})
-    if result.get("status") == "out_of_range" and suggestion.get("status") == "ok":
+    if result.get("status") in ("out_of_range", "prediction_question") and (
+        suggestion.get("status") == "ok"
+    ):
         return suggestion
     return result
 

@@ -410,6 +410,56 @@ def _ages(src, ages):
     return codes, ind_mod.age_label(band) + " ", notes
 
 
+def _band_mismatch(spec, src, ages):
+    """질문한 연령 구간이 표의 연령 칸과 맞지 않음 (band_mismatch).
+    표에 연령 분류가 있으면 질문 구간 근처에서 볼 수 있는 구간을 안내한다
+    (예: 5세 단위 표에 62~67세를 물음)
+    연령 분류가 아예 없으면 그 지표는 연령으로 나눈 자료가 없다 (unknown_indicator)"""
+    name = spec["name"]
+    if not src.get("age_dim"):
+        return {
+            "status": "unknown_indicator",
+            "indicator": name,
+            "reason": f"{name}은(는) 연령으로 나눈 자료가 없습니다.",
+        }
+    lo, hi = ages[0]
+    bands = sorted(
+        {
+            b
+            for _, n in _dim_labels(src["table"], src["age_dim"])
+            if (b := parse_age(n)) and b[0] >= src.get("age_min", 0)
+        },
+        key=lambda b: b[0],
+    )
+    top = hi if hi is not None else lo + 10
+    near = [b for b in bands if b[0] <= top + 5 and (b[1] is None or b[1] >= lo - 5)]
+    labels = [ind_mod.age_label(b) for b in (near or bands)]
+    asked = ind_mod.age_label(tuple(ages[0]))
+    return {
+        "status": "band_mismatch",
+        "indicator": name,
+        "reason": f"{name}은(는) 표의 연령 구간이 질문한 {asked} 구간과 맞지 않아 "
+        "그 값을 낼 수 없습니다.",
+        "available_bands": labels,
+        "alternative": f"대신 볼 수 있는 구간: {', '.join(labels)}",
+    }
+
+
+def _band_mismatch_any(spec, sex, ages):
+    """지역 수준이나 기간이 맞지 않아 출처를 고르지 못했을 때,
+    연령 분류가 있는 출처에서 구간을 본다"""
+    for s in spec["sources"]:
+        eff = _effective(s, sex)
+        if eff is None or not eff.get("age_dim"):
+            continue
+        try:
+            _ages(eff, ages)
+        except AgeMismatch:
+            return _band_mismatch(spec, eff, ages)
+        return None
+    return None
+
+
 def _base(spec, src, status="ok", label="", **extra):
     tbl = _table(src["table"])
     name = label + spec["name"] + (f"({src['label']})" if src.get("label") else "")
@@ -444,15 +494,15 @@ def _prepare(spec, names, y0, y1, sex, ages):
         return regs
     src, err = _pick(spec, _level(regs), y0, y1, sex)
     if err:
+        # 지역 수준·기간도 안 맞고 연령 구간도 안 맞으면 구간부터 알린다
+        # (구간을 바꿔야 답할 수 있다)
+        if ages and (band := _band_mismatch_any(spec, sex, ages)):
+            return band
         return {**err, "region": ", ".join(r["display"] for r in regs)}
     try:
         age_codes, label, notes = _ages(src, ages)
     except AgeMismatch:
-        return {
-            "status": "unknown_indicator",
-            "indicator": spec["name"],
-            "reason": f"{spec['name']}은(는) 질문한 연령 구간으로 나눈 자료가 없습니다.",
-        }
+        return _band_mismatch(spec, src, ages)
     notes += [r["note"] for r in regs if r.get("note")]
     return regs, src, age_codes, label, notes
 
