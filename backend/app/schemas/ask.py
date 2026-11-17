@@ -80,17 +80,19 @@ class Summary(BaseModel):
 
 
 class QuestionClarification(BaseModel):
-    kind: Literal["local_region", "move_scope"]
+    kind: Literal["local_region", "move_scope", "table_cell"]
     prompt: str
     options: list[str] = Field(default_factory=list)
 
 
 class AskResponse(BaseModel):
     clarification: QuestionClarification | None = Field(
-        default=None, description="지역·이사 집계 범위를 확인하는 질문과 선택지"
+        default=None,
+        description="지역·이사 집계 범위, 표의 칸(table_cell)을 확인하는 질문과 선택지",
     )
     status: str | None = Field(
         description="ok / tables(수치 없이 통계표만 안내) / chat(인사에 대한 답)"
+        " / out_of_scope(제공 범위 밖) / not_statistics(통계 질문이 아님)"
         " / 답변 불가 사유 (out_of_range 등)"
     )
     answer: str = Field(description="답변 문장 + 수치·출처 (화면에 그대로 보여줄 답변)")

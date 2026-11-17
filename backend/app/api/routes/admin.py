@@ -1,4 +1,4 @@
-"""관리자 전용 API: 통계표 적재 대기열, 사용자 관리, 사용자 기록 조회
+"""관리자 전용 API: 통계표 적재 대기열, 사용자 관리, 사용자 기록 조회, 동적 지표 계산 방법
 
 첫 관리자는 API로 만들 수 없고 스크립트로 만든다:
     python -m scripts.create_user admin@example.com --admin
@@ -22,7 +22,7 @@ from app.schemas.logs import (
     SessionList,
     TurnList,
 )
-from app.services import admin_audit, auth_sessions, load_queue, user_logs, users
+from app.services import admin_audit, auth_sessions, load_queue, plan_cache, user_logs, users
 
 logger = logging.getLogger(__name__)
 
@@ -256,3 +256,20 @@ async def audit_records(
     사용자 기록 열람과 계정 정지·권한 변경이 모두 남는다"""
     rows, total = await admin_audit.recent(session, limit, offset)
     return AuditList(total=total, records=[AuditRead.model_validate(r) for r in rows])
+
+
+@router.get("/dynamic-plans", summary="동적 지표 계산 방법 (캐시)")
+async def dynamic_plans(user: AdminUser, limit: Limit = 50, offset: Offset = 0) -> dict[str, Any]:
+    """사전에 없는 지표를 통계표에서 바로 계산한 방법들 (많이 쓴 것부터) + 서버 메모리 캐시 상태.
+    자주 쓰인 것은 정의를 확인해 지표 사전(config/catalog_notes.toml)에 올린다"""
+    return await plan_cache.listing(limit, offset)
+
+
+@router.delete("/dynamic-plans/{plan_id}", summary="동적 지표 계산 방법 지우기", status_code=204)
+async def drop_dynamic_plan(
+    plan_id: Annotated[int, Path(ge=1, le=MAX_ID)], user: AdminUser
+) -> Response:
+    """틀린 표·칸으로 계산하던 방법을 지운다. 다음 질문부터 통계표를 다시 찾는다"""
+    if not await plan_cache.drop(plan_id):
+        raise HTTPException(status_code=404, detail="계산 방법이 없습니다.")
+    return Response(status_code=204)
