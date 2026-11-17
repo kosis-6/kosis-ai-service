@@ -744,6 +744,19 @@ def test_table_cell_clarification_then_pick(talk: Talk, monkeypatch: pytest.Monk
     assert len(talk.asked) == asked  # 고를 때는 질문 해석(HCX)을 다시 부르지 않는다
 
 
+@pytest.mark.parametrize("refused", ["out_of_scope", "not_statistics"])
+def test_out_of_scope_is_refused_not_table_guide(talk: Talk, refused: str) -> None:
+    # 통계표 찾기도 범위 밖으로 끝나면 표 안내(tables)가 아니라 거절로 답한다
+    talk.parsed = {**BASE, "type": "value", "indicator": "반려동물 수"}  # 가짜 qa가 모르는 지표
+    talk.found = {"status": refused, "answer": "제공 범위에서 찾지 못했습니다."}
+    res = talk.say("서울 아파트 값 알려줘")
+    assert res["status"] == refused and res["chart"] is None
+    assert "수치를 바로 계산하지 못해" not in res["answer"]
+    # 거절 뒤의 말도 수치 조건 변경이 아니라 새 질문이다
+    talk.parsed = dict(BASE)
+    assert talk.say("부산 출생아 최근 5년")["request_type"] == "new" and talk.extracted == []
+
+
 def test_table_choice_reply_goes_to_table_search(talk: Talk) -> None:
     talk.parsed = {**BASE, "type": "value", "indicator": "반려동물 수"}
     talk.found = {"status": "clarify", "answer": "대상을 골라 주세요."}

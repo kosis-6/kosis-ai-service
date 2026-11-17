@@ -516,3 +516,49 @@ def test_recent_n_years_computed_indicator(monkeypatch) -> None:
 def test_grounded_marks_indicator_named_in_question(question, llm, grounded) -> None:
     p = qa.correct(question, parsed(indicator=llm, regions=["서울"]), TODAY)
     assert p["grounded"] is grounded
+
+
+FOREIGN = {
+    **ALIASES,
+    "외국인주민 수": ["외국인 주민 수", "외국인주민", "외국인 수", "외국인 주민"],
+    "외국인주민 비율": ["외국인 비율"],
+}
+NOT_IN = {
+    "외국인주민 수": ["등록외국인", "체류외국인"],
+    "외국인주민 비율": ["등록외국인", "체류외국인"],
+}
+
+
+@pytest.fixture
+def foreign_aliases(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(indicators, "_alias_map", lambda: FOREIGN)
+    monkeypatch.setattr(indicators, "_exclusions", lambda: NOT_IN)
+
+
+@pytest.mark.usefixtures("foreign_aliases")
+def test_excluded_phrase_is_not_an_alias_hit() -> None:
+    # 공백을 빼면 "등록외국인수" 안에 별칭 "외국인수"가 있지만 외국인주민 수가 아니다
+    assert indicators.find_in_text("2023년 경기 등록외국인 수") == []
+    assert [n for *_, n in indicators.find_in_text("2023년 경기 외국인 수")] == ["외국인주민 수"]
+
+
+@pytest.mark.usefixtures("foreign_aliases")
+@pytest.mark.parametrize(
+    "question",
+    ["2023년 경기 등록외국인 수", "서울 체류외국인 수는?", "2023년 경기 등록외국인 비율"],
+)
+def test_other_foreigner_statistics_are_unsupported(question: str) -> None:
+    # HCX가 비슷한 이름의 외국인주민 지표를 골라도 답하지 않고 표 안내로 넘긴다
+    for llm_pick in ("외국인주민 수", "외국인주민 비율"):
+        p = qa.correct(question, parsed(indicator=llm_pick, regions=["경기"]), TODAY)
+        assert p["unsupported"] is True
+        assert indicators.canonical_name(p["indicator"]) is None
+
+
+@pytest.mark.usefixtures("foreign_aliases")
+def test_plain_foreigner_question_still_answers() -> None:
+    p = qa.correct(
+        "2023년 경기 외국인 수", parsed(indicator="외국인주민 수", regions=["경기"]), TODAY
+    )
+    assert p["indicator"] == "외국인주민 수"
+    assert not p.get("unsupported")

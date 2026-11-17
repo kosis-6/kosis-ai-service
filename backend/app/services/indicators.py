@@ -175,6 +175,18 @@ def _alias_map():
     return {name: ind.get("aliases", []) for name, ind in specs().items()}
 
 
+def _exclusions():
+    """지표 이름 → 제외 표현 목록 (지표 사전의 not_in). 이 표현 안에 든 별칭은 그 지표가 아니다
+    예) "등록외국인" 안의 "외국인 수"는 외국인주민 수가 아니다 (귀화자·자녀를 포함하는 다른 통계)"""
+    return {name: ind["not_in"] for name, ind in specs().items() if ind.get("not_in")}
+
+
+def excluded_phrase(name, text):
+    """문장에 지표의 제외 표현이 있으면 그 표현 (공백을 뺀 형태), 없으면 None"""
+    s = _norm(text)
+    return next((n for n in map(_norm, _exclusions().get(name, [])) if n in s), None)
+
+
 def canonical_name(indicator):
     """지표 이름·별칭 → 지표 사전의 이름 (조회 지표 포함). 모르면 None"""
     key = _norm(indicator)
@@ -216,7 +228,7 @@ def _get_indicator(indicator, ages=None):
 def find_in_text(text):
     """문장에 들어 있는 지표 이름·별칭 → [(시작, 끝, 지표 이름)] (공백을 뺀 문장 기준 위치)
 
-    짧은 별칭이 더 긴 별칭 안에 있으면 긴 쪽만 남긴다.
+    짧은 별칭이 더 긴 별칭 안에 있으면 긴 쪽만 남긴다. 제외 표현(not_in)과 겹치면 세지 않는다.
     예) "고령인구비율" 안의 "인구"(총인구), "인구순유입"(순이동) 안의 "인구"는 세지 않는다.
     """
     s = _norm(text)
@@ -224,6 +236,16 @@ def find_in_text(text):
     for name, names in _alias_map().items():
         for n in {_norm(x) for x in [name, *names]}:
             spans += [(m.start(), m.end(), name) for m in re.finditer(re.escape(n), s)]
+    # 제외 표현 안에 든 별칭은 세지 않는다 (예: "등록외국인수" 안의 "외국인수")
+    blocked = [
+        (m.start(), m.end(), name)
+        for name, phrases in _exclusions().items()
+        for n in map(_norm, phrases)
+        for m in re.finditer(re.escape(n), s)
+    ]
+    spans = [
+        a for a in spans if not any(b[2] == a[2] and b[0] < a[1] and a[0] < b[1] for b in blocked)
+    ]
     return [
         a
         for a in spans

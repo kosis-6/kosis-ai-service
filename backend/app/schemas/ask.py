@@ -92,6 +92,7 @@ class AskResponse(BaseModel):
     )
     status: str | None = Field(
         description="ok / tables(수치 없이 통계표만 안내) / chat(인사에 대한 답)"
+        " / out_of_scope(제공 범위 밖) / not_statistics(통계 질문이 아님)"
         " / 답변 불가 사유 (out_of_range 등)"
     )
     answer: str = Field(description="답변 문장 + 수치·출처 (화면에 그대로 보여줄 답변)")
