@@ -1464,9 +1464,15 @@ def test_trust_exact_drops_word_marks_only_when_the_review_says_exact() -> None:
     assert out["llm_confirmed"] == ["item:술집"]
     # 검토가 '조금 다른 표(partial)'라 했으면 그대로
     assert lp.trust_exact(result("partial", ["item:술집"]))["status"] == "partial_match"
-    # 낱말 차이가 아닌 조건(연도 · 지역 단위 · 성별 · 대상)이 섞여 있으면 그대로
+    # 대상도 낱말 조건이다 (질문 '외국인 노동자', 표 '외국인 근로자')
+    out = lp.trust_exact(result("exact", ["target", "item:술집"]))
+    assert (out["status"], out["failed"]) == ("ok", [])
+    assert out["llm_confirmed"] == ["target", "item:술집"]
+    assert lp.trust_exact(result("partial", ["target"]))["status"] == "partial_match"
+    # 낱말 차이가 아닌 조건(연도 · 지역 단위 · 성별)이 섞여 있으면 그대로
     assert lp.trust_exact(result("exact", ["item:술집", "year"]))["status"] == "partial_match"
-    assert lp.trust_exact(result("exact", ["target"]))["status"] == "partial_match"
+    assert lp.trust_exact(result("exact", ["target", "sex"]))["status"] == "partial_match"
+    assert lp.trust_exact(result("exact", ["region_level"]))["status"] == "partial_match"
     # 판 메모('가장 가까운 판을 골랐습니다')가 있으면 그대로
     noted = result("exact", ["item:술집"], notes=["2021년을 담은 판이 없어 …"])
     assert lp.trust_exact(noted)["status"] == "partial_match"
