@@ -24,7 +24,7 @@ GROUPS = [
     (("학령인구", "학령 인구", "학령기"), 6, 21, "학령인구 6~21세 (교육기본통계 기준)"),
     (("영유아",), 0, 5, "영유아 0~5세 (영유아보육법)"),
     (("유소년", "유소년인구"), 0, 14, "유소년인구 0~14세 (인구총조사 기준)"),
-    (("어린이", "아동"), 0, 14, "유소년 0~14세로 봄 (아동복지법은 18세 미만)"),
+    (("어린이", "아동", "애들"), 0, 14, "유소년 0~14세로 봄 (아동복지법은 18세 미만)"),
     (("청소년",), 9, 24, "청소년기본법 9~24세"),
     # 학교급 = 학령 구간 (국제결혼 가정 자녀 통계의 만 7~12세 · 13~15세 · 16~18세 구분)
     (("초등학생", "초등학교 다니는", "초딩"), 7, 12, "초등학생 7~12세 (학령 기준)"),
@@ -57,6 +57,10 @@ GROUPS = [
     ),
     (("미성년", "미성년자"), 0, 18, "민법 19세 미만"),
 ]
+# 이 말은 질문에 시설 이름이 있으면 연령 집단으로 보지 않는다
+# ("어린이집 다니는 애들"은 0~14세 전체가 아님)
+FACILITY = re.compile(r"어린이집|유치원|학교|학원")
+FACILITY_SENSITIVE = {"애들"}
 # 숫자 구간이 있으면 이름보다 숫자가 우선
 NUMERIC_AGE = re.compile(r"\d+\s*세|\d+\s*대(?!\s*(광역시|도시))|\d+\s*살")
 
@@ -72,6 +76,17 @@ class AgeRef:
         return f"{self.lo}세 이상" if self.hi is None else f"{self.lo}~{self.hi}세"
 
 
+def _find(question: str, word: str) -> int:
+    """질문에서 집단 이름의 위치. 시설 이름("어린이집"·"청소년관")이거나
+    시설과 함께 나온 말이면 -1"""
+    pos = question.find(word)
+    if pos < 0 or question[pos + len(word) : pos + len(word) + 1] in ("집", "관"):
+        return -1
+    if word in FACILITY_SENSITIVE and FACILITY.search(question):
+        return -1
+    return pos
+
+
 def resolve(question: str) -> AgeRef | None:
     """질문에 연령 집단 이름이 있고 숫자 구간이 없으면 그 집단의 구간. 없으면 None"""
     if NUMERIC_AGE.search(question):
@@ -79,18 +94,47 @@ def resolve(question: str) -> AgeRef | None:
     best = None
     for words, lo, hi, basis in GROUPS:
         for w in words:
-            pos = question.find(w)
-            if pos >= 0 and question[pos + len(w) : pos + len(w) + 1] in (
-                "집",
-                "관",
-            ):  # 어린이집·청소년관은 시설 이름
-                continue
+            pos = _find(question, w)
             if pos >= 0 and (
                 best is None or pos < best[0] or (pos == best[0] and len(w) > len(best[1].expr))
             ):
                 best = (pos, AgeRef(w, lo, hi, basis))
     return best[1] if best else None
 
+
+def spans(question: str) -> list[tuple[int, int, AgeRef]]:
+    """질문에 나온 연령 집단 이름마다 (시작 위치, 끝 위치, 구간). 같은 자리에서는 긴 이름"""
+    found: list[tuple[int, int, AgeRef]] = []
+    for words, lo, hi, basis in GROUPS:
+        for w in words:
+            pos = _find(question, w)
+            if pos >= 0:
+                found.append((pos, pos + len(w), AgeRef(w, lo, hi, basis)))
+    found.sort(key=lambda f: (f[0], -(f[1] - f[0])))
+    out: list[tuple[int, int, AgeRef]] = []
+    for f in found:
+        if not any(a < f[1] and f[0] < b for a, b, _ in out):
+            out.append(f)
+    return out
+
+
+def resolve_all(question: str) -> list[AgeRef]:
+    """질문에 나온 연령 집단 이름 전부 (나온 순서, 같은 구간은 하나).
+    "애들보다 노인이 몇 배"처럼 두 집단을 함께 물은 경우를 알아보는 데 쓴다"""
+    found: list[tuple[int, AgeRef]] = []
+    for words, lo, hi, basis in GROUPS:
+        hits = []
+        for w in words:
+            pos = _find(question, w)
+            if pos >= 0:
+                hits.append((pos, AgeRef(w, lo, hi, basis)))
+        if hits:
+            found.append(min(hits, key=lambda h: (h[0], -len(h[1].expr))))
+    out: list[AgeRef] = []
+    for _, ref in sorted(found, key=lambda h: h[0]):
+        if all((r.lo, r.hi) != (ref.lo, ref.hi) for r in out):
+            out.append(ref)
+    return out
 
 
 AGE_SPANS = [
