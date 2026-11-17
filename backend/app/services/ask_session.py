@@ -1445,6 +1445,11 @@ async def _dynamic_instead(res: dict, state: dict | None, asked: str, user_id: i
     if computed is None or computed.get("status") != "ok":
         trace["dynamic_kept"] = (res.get("parsed") or {}).get("indicator")
         return False
+    # 바꾼 원래 답 (요청 기록·회귀 평가에서 사전 지표 답과 비교한다)
+    trace["replaced"] = {
+        "indicator": parsed.get("indicator"),
+        "answer": lead(res.get("answer") or ""),
+    }
     kind = res.get("request_type")
     res.clear()
     res.update(computed)

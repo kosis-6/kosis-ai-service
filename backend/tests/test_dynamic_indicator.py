@@ -47,7 +47,11 @@ def fake_table(monkeypatch: pytest.MonkeyPatch) -> dict:
         return None
 
     monkeypatch.setattr(d, "_remember", no_remember)
-    return {"tables": tables, "units": units, "projection": projection}
+    # 분자·분모 관계 검사: 지역·연도마다 (분자, 분모). 기본은 맞는 관계
+    rows = {"rows": [(1.0, 2.0), (3.0, 3.0)]}
+    monkeypatch.setattr(d, "_part_rows", lambda *args: rows["rows"])
+    d.CHECKS.clear()
+    return {"tables": tables, "units": units, "projection": projection, "rows": rows}
 
 
 def build(question: str, **over) -> dict:
@@ -334,7 +338,7 @@ def test_projection_scenario_defaults_to_middle(fake_table: dict) -> None:
     fake_table["projection"].add("DT_1PL1502")
     spec = build("2040년 서울 1인 가구 수", year=2040)
     assert spec["sources"][0]["filters"]["c3_id"] == "1"
-    assert "추계별: 중위 추계(기본)" in spec["note"]
+    assert "추계별: 중위 추계(기본)" in spec["note"]  # 합계가 없는 시나리오는 중위
     # 시나리오를 말하면 그 칸
     spec = build("2040년 서울 고위 추계 1인 가구 수", year=2040)
     assert spec["sources"][0]["filters"]["c3_id"] == "2"
@@ -350,3 +354,81 @@ def test_implied_age_word_is_ignored_when_table_has_no_age(fake_table: dict) -> 
     # 숫자로 말한 연령은 지킨다
     spec, why = d.build("DT_1PL1502", "서울 65세 이상 노년부양비", {**BASE, "ages": [[65, None]]})
     assert spec is None and why == "표에 연령 구분이 없음"
+
+
+# ---- 분자·분모 관계 검증 ----------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("rows", "ok"),
+    [
+        ([(5.0, 10.0), (10.0, 10.0)], True),  # 분자 ≤ 분모 (같아도 된다: 그 지역은 전부 여자)
+        ([(5.0, 10.0), (11.0, 10.0)], False),  # 한 곳이라도 분자가 크면 부분이 아니다
+        ([(None, 10.0), (None, None)], False),  # 함께 있는 값이 없다
+        ([(10.4, 10.0)], True),  # 반올림 차이 (0.5 이내)는 넘어간다
+    ],
+)
+def test_part_within_whole(fake_table: dict, rows, ok: bool) -> None:
+    fake_table["rows"]["rows"] = rows
+    src = {"table": "DT_1PL1502", "item_id": "T00"}
+    assert (d.part_within_whole(src, "item_id", ["T20"], "T00") is None) is ok
+
+
+def test_ratio_refused_when_part_is_not_within_whole(fake_table: dict) -> None:
+    fake_table["rows"]["rows"] = [(12.0, 10.0)]
+    spec, why = d.build("DT_1PL1502", "서울 1인 가구 중 여성 비율", {**BASE, "sex": "여"})
+    assert spec is None and "분자가 분모보다 큰" in why
+
+
+def test_age_band_sum_refused_when_cells_overlap(fake_table: dict) -> None:
+    # 묶음 칸과 세부 칸이 함께 있어 더하면 연령 합계를 넘는다 → 숫자를 내지 않는다
+    fake_table["rows"]["rows"] = [(12.0, 10.0)]
+    spec, why = d.build("DT_1PL1502", "서울 70세 이상 1인 가구 수", {**BASE, "ages": [[70, None]]})
+    assert spec is None and "분자가 분모보다 큰" in why
+
+
+def test_composition_refused_when_parts_exceed_total(fake_table: dict) -> None:
+    fake_table["rows"]["rows"] = [(15.0, 10.0)]  # 칸 안에 소계가 섞여 부분의 합이 합계를 넘는다
+    spec, why = d.build("DT_1PL1502", "서울 1인 가구 연령별 구성", {**BASE, "type": "composition"})
+    assert spec is None
+
+
+def test_check_fixes_other_dimensions_like_the_definition(monkeypatch) -> None:
+    seen = {}
+
+    def rows(tbl_id, col, num, den, fixed, item):
+        seen.update(col=col, fixed=fixed, item=item)
+        return [(1.0, 2.0)]
+
+    monkeypatch.setattr(d, "_part_rows", rows)
+    d.CHECKS.clear()
+    src = {
+        "table": "T",
+        "item_id": "T00",
+        "filters": {"c3_id": "1"},
+        "age_dim": "c2",
+        "age_total": "000",
+    }
+    assert d.part_within_whole(src, "item_id", ["T20"], "T00") is None
+    # 성별(항목)을 볼 때 나머지는 정의대로: 거주기간 1, 연령 합계
+    assert seen == {"col": "item_id", "fixed": {"c3_id": "1", "c2_id": "000"}, "item": None}
+
+
+# ---- 분류별 기본값 정책 ------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("dim_name", "noted"),
+    [
+        ("거처의 종류별", False),  # 합계가 '전부'라는 뜻: 알리지 않는다
+        ("국적별", False),
+        ("특성별", True),  # 여러 기준이 섞인 분류: 합계로 했다고 알린다
+        ("조사구분", True),  # 처음 보는 분류
+    ],
+)
+def test_unspecified_dimension_total_policy(fake_table: dict, dim_name: str, noted: bool) -> None:
+    extra = d.Dim(3, dim_name, {"0": "전체", "1": "가", "2": "나"})
+    fake_table["tables"]["DT_1PL1502"] = ([*ONE_PERSON, extra], 1, "시군구")
+    spec = build("2020년 서울 1인 가구 수")
+    assert spec["sources"][0]["filters"]["c3_id"] == "0"
+    assert (f"{dim_name}: 전체" in spec["note"]) is noted

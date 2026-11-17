@@ -21,6 +21,8 @@
       python -m scripts.eval_golden --only g01 g02   (일부 질문만)
       python -m scripts.eval_golden --round 2 --note "남녀 비중 보정 추가"
       python -m scripts.eval_golden --interval 10      (호출 제한에 자주 걸릴 때)
+      python -m scripts.eval_golden --session          (대화 처리 전체 ask_session.handle로:
+                                    사전에 없는 지표의 바로 계산·근거 없는 사전 지표 경로까지)
 """
 
 import argparse
@@ -34,7 +36,7 @@ from pathlib import Path
 from typing import Any
 
 from app.core.stats_db import rows as db_rows
-from app.services import qa
+from app.services import ask_session, qa
 from app.services.hcx_client import RATE_LIMIT_CODE
 
 GOLDEN = Path("eval/golden.csv")
@@ -56,6 +58,8 @@ ACTIONS = {
     "region_not_in_year": "대안안내",
     "missing_data": "대안안내",
     "unknown_region": "다시질문",
+    "out_of_scope": "범위안내",  # 통계표 찾기도 인구 분야 표를 못 찾음 (#147)
+    "not_statistics": "범위안내",
 }
 TABLE_ID = re.compile(r"[A-Z]{2,3}_[0-9A-Z_]+")
 
@@ -209,16 +213,24 @@ def grade(case: dict[str, str], res: dict[str, Any]) -> dict[str, Any]:
         # 원인 분석용: HCX 원문과 코드 보정까지 반영한 해석
         "hcx_raw": trace.get("hcx_raw", ""),
         "parsed": json.dumps(res.get("parsed") or {}, ensure_ascii=False),
+        # 동적 지표 회귀 분석용 (--session): 바로 계산했는가, 질문에 지표 이름이 있었는가,
+        # 근거 없는 사전 지표 답을 바로 계산으로 바꿨으면 원래 지표
+        "method": (res.get("result") or {}).get("method") or "",
+        "grounded": (res.get("parsed") or {}).get("grounded", ""),
+        "replaced": json.dumps(trace.get("replaced") or "", ensure_ascii=False),
     }
 
 
 # ---- 실행 ---------------------------------------------------------------------------
 
 
-async def _ask(question: str) -> dict[str, Any]:
-    """호출 제한이 HcxClient의 짧은 재시도로 안 풀리면 몇 분 쉬고 같은 질문을 다시 보낸다"""
+async def _ask(question: str, session: bool = False) -> dict[str, Any]:
+    """호출 제한이 HcxClient의 짧은 재시도로 안 풀리면 몇 분 쉬고 같은 질문을 다시 보낸다
+    session: /ask와 같은 대화 처리 전체로 (새 대화, 손님)"""
     for wait in (*RATE_LIMIT_WAITS, None):
         try:
+            if session:
+                return await ask_session.handle(None, question, None, None)
             return await qa.ask(question)
         except Exception as e:  # 한 질문이 실패해도 나머지는 계속
             if wait is None or RATE_LIMIT_CODE not in str(e):
@@ -228,12 +240,14 @@ async def _ask(question: str) -> dict[str, Any]:
     raise AssertionError("unreachable")
 
 
-async def run(cases: list[dict[str, str]], interval: float = CALL_INTERVAL) -> list[dict[str, Any]]:
+async def run(
+    cases: list[dict[str, str]], interval: float = CALL_INTERVAL, session: bool = False
+) -> list[dict[str, Any]]:
     rows = []
     for i, case in enumerate(cases, 1):
         if i > 1:
             await asyncio.sleep(interval)
-        res = await _ask(case["question"])
+        res = await _ask(case["question"], session)
         row = grade(case, res)
         marks = " ".join(f"{a}:{_mark(row[a])}" for a in AREAS)
         error = f" | {row['error']}" if row["error"] else ""
@@ -316,12 +330,15 @@ def main() -> None:
     parser.add_argument("--round", help="회차 번호 (결과 파일 이름과 보고서에 표시)")
     parser.add_argument("--note", default="", help="이번 회차에 바꾼 내용")
     parser.add_argument("--interval", type=float, default=CALL_INTERVAL, help="질문 사이 대기 (초)")
+    parser.add_argument(
+        "--session", action="store_true", help="대화 처리 전체(ask_session.handle)로 묻기"
+    )
     args = parser.parse_args()
 
     cases = load_golden(args.golden)
     if args.only:
         cases = [c for c in cases if c["id"] in args.only]
-    rows = asyncio.run(run(cases, args.interval))
+    rows = asyncio.run(run(cases, args.interval, args.session))
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     prefix = f"golden_r{args.round}" if args.round else "golden"
@@ -336,6 +353,7 @@ def main() -> None:
         head.append(f"- 회차: {args.round}")
     if args.note:
         head.append(f"- 변경 내용: {args.note}")
+    head.append(f"- 경로: {'ask_session.handle (대화 처리 전체)' if args.session else 'qa.ask'}")
     head += [f"- DB: {db_info()}", f"- 질문: {len(rows)}개", "", ""]
     report = "\n".join(head)
     stem.with_suffix(".md").write_text(report + summarize(rows) + "\n", encoding="utf-8")

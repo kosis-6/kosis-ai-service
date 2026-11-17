@@ -518,6 +518,12 @@ def test_grounded_marks_indicator_named_in_question(question, llm, grounded) -> 
     assert p["grounded"] is grounded
 
 
+def test_grounded_is_none_without_indicator() -> None:
+    # 원인 질문처럼 지표가 없으면 근거를 따지지 않는다 (바로 계산을 시도하지 않음)
+    p = qa.correct("2025년 복지 정책이 효과적이었나요?", parsed(type="causal", indicator=""), TODAY)
+    assert p["grounded"] is None
+
+
 FOREIGN = {
     **ALIASES,
     "외국인주민 수": ["외국인 주민 수", "외국인주민", "외국인 수", "외국인 주민"],

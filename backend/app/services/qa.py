@@ -391,7 +391,8 @@ def correct(question, parsed, today=None):
         # 질문에 고른 지표의 이름·별칭이 있는가. 없으면 HCX가 비슷한 지표를 고른 것일 수 있어
         # ask_session이 통계표에서 바로 계산해 보고, 되면 그 답을 쓴다 (예: 통근 인구 → 전출자 수)
         chosen = indicators.canonical_name(parsed.get("indicator") or "")
-        parsed["grounded"] = bool(chosen) and chosen in names
+        # 지표가 없으면(원인 질문 등) 판단하지 않는다 (None)
+        parsed["grounded"] = (chosen in names) if chosen else None
 
     sp = indicators.spec(parsed.get("indicator"))
     is_comp = sp is not None and lookup.kind_of(sp) == "composition"
