@@ -59,6 +59,8 @@ PROJECTION_NOTE = "장래추계 표의 추계값입니다(실적 아님). 다음
 TOTAL_NAMES = {"계", "합계", "전체", "총계", "소계", "총", "전국"}
 SEX_NAMES = {"남": {"남자", "남", "남성"}, "여": {"여자", "여", "여성"}}
 COUNT_UNITS = {"명", "가구", "건", "개", "세대", "호", "곳", "개소", "천명", "천가구"}
+# 표가 쓰는 말과 같은 뜻의 일상어 (글자 맞추기 전에 바꾼다). 뜻이 하나로 정해진 말만 둔다
+SAME_WORDS = {"출퇴근": "통근", "출근": "통근"}
 TOTAL_SUFFIX = re.compile(r"(계|합계|소계|전체)$")  # 공백·기호를 뺀 이름 끝의 합계 표시
 PCT_ASK = re.compile(r"%|퍼센트|비율|비중|몇\s*프로")
 NORM = re.compile(r"[\s·,.()\[\]{}<>\"'‘’“”_/-]")
@@ -114,6 +116,9 @@ class Plan:
     defaults: list[str] = field(default_factory=list)  # 말하지 않아 기본값으로 고른 칸 (답에 알림)
     sex_dim: Dim | None = None
     age_dim: Dim | None = None
+    # 한 분류 안의 여러 칸으로 하는 연산 (분류 번호, 코드들, "sum"·"compare"·"rank")
+    multi: tuple[int, list[str], str] | None = None
+    multi_dim: Dim | None = None  # 순위의 분류 (항목 안의 분류면 표 이름의 말로 부른다)
 
 
 # ---- 표의 칸 목록 ----------------------------------------------------------------
@@ -193,6 +198,8 @@ def _unit(tbl_id: str, item: str) -> tuple[str | None, bool]:
 def _text_hits(question: str, dims: list[Dim], skip: set[int]) -> dict[int, list[str]]:
     """질문에 이름이 그대로 나온 칸 {분류 번호: [코드...]}. 더 긴 이름 안에 든 짧은 이름은 뺀다"""
     q = _norm(question)
+    for word, same in SAME_WORDS.items():  # 표가 쓰는 말로 ("출퇴근" → "통근")
+        q = q.replace(word, same)
     spans = []
     for d in dims:
         if d.no in skip:
@@ -233,15 +240,60 @@ class Ask:
 MAX_ASK_OPTIONS = 8  # 이보다 칸이 많은 분류는 되묻지 않고 표 안내 (버튼이 너무 많아진다)
 
 
+# 한 분류 안의 여러 칸으로 하는 연산을 고르는 말
+SUM_WORDS = re.compile(r"합|합계|합친|더한|더하면|모두|전부|또는|이거나|(?<=[가-힣])(이)?나\s")
+COMPARE_WORDS = re.compile(r"비교|차이|몇\s*배|보다|대비|vs", re.I)
+RANK_PARTS = re.compile(r"top\s*\d|상위\s*\d|순위|(가장|제일)\s*(많|적|높|낮)|1위|몇\s*위", re.I)
+REGION_RANK = re.compile(r"시도|시군구|지역|곳|어디|구별|도시|광역시")
+SUBTOTAL = re.compile(r"(계|합계|소계)$")
+
+
+def _multi_op(question: str) -> str | None:
+    if COMPARE_WORDS.search(question):
+        return "compare"
+    if SUM_WORDS.search(question):
+        return "sum"
+    return None
+
+
+def _leaf_codes(d: Dim) -> list[str]:
+    """합계·소계("-계")를 뺀 세부 칸들"""
+    return [c for c, n in d.codes.items() if c != d.total() and not SUBTOTAL.search(_norm(n))]
+
+
+def _rank_dim(question: str, dims: list[Dim], region_dim: int | None, tbl_nm: str) -> Dim | None:
+    """분류 안의 순위를 묻는가: 그 분류. 지역 순위("가장 많은 시도")는 아니다"""
+    if not RANK_PARTS.search(question) or REGION_RANK.search(question):
+        return None
+    q = _norm(question)
+    for d in dims:
+        stem = _norm(re.sub(r"(별|구분)$", "", d.name))
+        if d.no not in (0, region_dim) and len(stem) >= 2 and stem in q:
+            return d
+    # 표 이름의 "이용 교통수단별"처럼 분류 이름에 없는 '~별'이면 그 분류는 항목에 들어 있다
+    names = [_norm(d.name) for d in dims]
+    # "교통 수단별"처럼 띄어 쓴 두 낱말도 이어 붙여 본다 (긴 말부터)
+    words = re.findall(r"([가-힣]+\s[가-힣]+)별", tbl_nm) + re.findall(r"([가-힣]{2,})별", tbl_nm)
+    for word in words:
+        w = _norm(word)
+        if w in q and not any(w in n for n in names):
+            item = next((d for d in dims if d.no == 0), None)
+            # 항목 안의 분류는 표 이름의 말로 부른다 ("항목" 대신 "교통수단")
+            return Dim(item.no, w, item.codes) if item else None
+    return None
+
+
 def choose(
     question: str,
     parsed: dict,
     dims: list[Dim],
     region_dim: int | None,
     forced: dict[int, str] | None = None,
+    tbl_nm: str = "",
 ):
     """(Plan, None) 또는 (None, 고르지 못한 이유: 문자열 또는 Ask)
-    forced: 사용자가 되묻기에서 고른 칸 {분류 번호: 코드}"""
+    forced: 사용자가 되묻기에서 고른 칸 {분류 번호: 코드}
+    tbl_nm: 표 이름 (분류 안의 순위에서 '교통수단별'처럼 표 이름에만 있는 분류를 알아본다)"""
     forced = forced or {}
     plan = Plan()
     sex = parsed.get("sex") or "계"
@@ -257,8 +309,13 @@ def choose(
     skip = {region_dim} | ({plan.age_dim.no} if plan.age_dim else set())
     hits = _text_hits(question, dims, skip)
     asks: list[Ask] = []
+    ranked = _rank_dim(question, dims, region_dim, tbl_nm)
+    if ranked is not None and len(leaves := _leaf_codes(ranked)) >= 2:
+        # "교통수단 top3": 이 분류의 세부 칸끼리 순위 (지역 순위가 아니다)
+        plan.multi, plan.multi_dim = (ranked.no, leaves, "rank"), ranked
+        plan.pick[ranked.no] = plan.matched[ranked.no] = leaves[0]
     for d in dims:
-        if d.no in skip:
+        if d.no in skip or (plan.multi and d.no == plan.multi[0]):
             continue
         if d.no in forced and forced[d.no] in d.codes:
             plan.pick[d.no] = plan.matched[d.no] = forced[d.no]
@@ -281,7 +338,16 @@ def choose(
                 if others:
                     plan.matched[d.no] = base
             continue
-        if len(codes) > 1:
+        if len(codes) > 1 and d.total() and set(codes) == set(_leaf_codes(d)):
+            # 세부 칸을 모두 말함 ("출퇴근·통학" = 통근 + 통학) → 그 분류의 합계
+            plan.pick[d.no] = plan.matched[d.no] = d.total()
+            continue
+        op = _multi_op(question) if len(codes) > 1 and not plan.multi else None
+        if op:
+            # "걸어서나 자전거로"(합), "A와 B 비교"(비교): 되묻지 않고 그 칸들로 계산한다
+            plan.multi = (d.no, codes, op)
+            plan.pick[d.no] = plan.matched[d.no] = codes[0]
+        elif len(codes) > 1:
             asks.append(Ask(d.no, d.name, [(c, d.codes[c]) for c in codes]))
         elif codes:
             plan.pick[d.no] = plan.matched[d.no] = codes[0]
@@ -467,7 +533,11 @@ def build(
         # "노년부양비"의 노년처럼 말에서 짐작한 연령(qa.correct의 age_group)은 지표 이름의 일부일 수
         # 있다. 표에 연령 분류가 없으면 연령 조건 없이 고른다 ("65세 이상"처럼 숫자로 말하면 지킨다)
         parsed, ignore_ages = {**parsed, "ages": None}, True
-    plan, why = choose(question, parsed, dims, region_dim, forced)
+    try:
+        tbl_nm = lookup._table(tbl_id)["tbl_nm"]
+    except Exception:  # 표 이름은 분류 안 순위에서만 쓴다
+        tbl_nm = ""
+    plan, why = choose(question, parsed, dims, region_dim, forced, tbl_nm)
     if plan is None:
         # 칸을 고르지 못했어도 질문의 숫자 조건(체중 3.2kg 등)이 이 표의 구간 분류에 해당하면
         # 그 조건에 맞는 구간이 없다고 답한다 (표 안내보다 구체적)
@@ -527,6 +597,8 @@ def build(
         "sources": [src],
     }
     kind = parsed.get("type")
+    if plan.multi:
+        return _parts_spec(spec, src, plan, dims, tbl_nm)
     if kind == "composition" or PCT_ASK.search(question):
         made = _composition(spec, src, plan, dims, question) if kind == "composition" else None
         if made is None:
@@ -566,6 +638,32 @@ def build(
     if not spec.get("formula") and (cells := _cells(plan, dims)):
         spec["formula"] = f"KOSIS 공표 값 ({cells})"  # 칸이 하나뿐이면 lookup이 표 이름을 쓴다
     spec["cells"] = _cells(plan, dims)
+    return spec, None
+
+
+def _parts_spec(spec: dict, src: dict, plan: Plan, dims: list[Dim], tbl_nm: str):
+    """한 분류 안의 칸들로 합·비교·순위 (parts_answer가 계산한다)
+    → (정의, None) 또는 (None, 이유)"""
+    dim_no, codes, op = plan.multi
+    d = plan.multi_dim or next(x for x in dims if x.no == dim_no)
+    if op == "sum" and d.total() and (why := part_within_whole(src, d.col, codes, d.total())):
+        return None, why  # 겹치는 칸(묶음과 세부)을 더하면 두 번 센다
+    if plan.sex_dim is not None and d is not plan.sex_dim:
+        src["by_sex"] = {s: _sex_override(plan, s) for s in ("계", "남", "여")}
+    # 지표 이름: 연산하는 분류 말고 질문에서 고른 칸, 없으면 표 이름의 주제 ("통근 통학 인구")
+    words = [
+        x.codes[plan.matched[x.no]]
+        for x in dims
+        if x.no in plan.matched and x.no != dim_no and plan.matched[x.no] != x.total()
+    ]
+    subject = " ".join(words) or re.sub(r"\(.*$|-[^-]*$", "", tbl_nm.split("별")[-1]).strip()
+    spec.update(
+        name=subject or spec["name"],
+        parts_op={"op": op, "col": d.col, "dim": d.name, "codes": codes,
+                  "labels": [d.codes[c] for c in codes]},
+        fixed={"type": "parts"},
+        cells=f"{d.name} {', '.join(d.codes[c] for c in codes[:5])}",
+    )  # fmt: skip
     return spec, None
 
 
@@ -879,6 +977,13 @@ async def _try(tbl_id, org_id, question, parsed, trace, forced, slots=None, noti
     step["cells"] = spec["cells"]
     if notice:
         spec["note"] = f"{spec['note']}. {notice}"
+    if spec.get("parts_op"):  # 한 분류 안의 칸들로 합·비교·순위
+        res = await run_in_threadpool(parts_answer, parsed, spec, question)
+        step["status"] = res["status"]
+        if res["status"] == "ok":
+            return res, None
+        step["skip"] = res.get("answer", "")[:60]
+        return None, None
     res = await qa.answer(_with_spec(parsed, spec), trace, question)
     step["status"] = res["status"]
     if res["status"] == "ok" and not has_values(res.get("result") or {}):
@@ -888,6 +993,106 @@ async def _try(tbl_id, org_id, question, parsed, trace, forced, slots=None, noti
         # 기간 밖·구간 불일치도 맞는 표를 찾은 뒤의 안내라 답으로 쓴다 (볼 수 있는 기간·구간을 알림)
         return res, None  # result["method"] = "dynamic"은 qa.compute가 단다
     return None, None
+
+
+TOP_N = re.compile(r"(?:top|상위)\s*(\d+)|(\d+)\s*(?:위|개|가지)까지", re.I)
+
+
+def _set_code(spec: dict, col: str, code: str) -> dict:
+    """정의의 한 분류를 그 칸으로 바꾼 사본"""
+    src = dict(spec["sources"][0])
+    if col == "item_id":
+        src["item_id"] = code
+        # 성별이 항목에 들어 있는 표(1인가구·남자·여자)만 성별 바꾸기를 뺀다. 성별이 따로 분류인
+        # 표에서 빼면 계·남·여를 모두 더해 두 배가 된다
+        if any("item_id" in over for over in (src.get("by_sex") or {}).values()):
+            src.pop("by_sex")
+    else:
+        src["filters"] = {**(src.get("filters") or {}), col: code}
+    return {**spec, "sources": [src]}
+
+
+def parts_answer(parsed: dict, spec: dict, question: str) -> dict:
+    """한 분류 안의 칸들로 합·비교·순위를 계산해 답한다 (qa.answer와 같은 모양).
+    칸마다 lookup.value로 DB 값을 꺼내 더하거나 비교·정렬한다 (숫자는 모두 DB 값)"""
+    op = spec["parts_op"]
+    region = (parsed.get("regions") or ["전국"])[0]
+    year = parsed.get("year") or lookup._years(spec["sources"][0])[1]
+    sex = parsed.get("sex") or "계"
+    rows, first = [], None
+    for code, label in zip(op["codes"], op["labels"], strict=True):
+        r = lookup.value(_set_code(spec, op["col"], code), region, year, sex)
+        if r.get("status") != "ok":
+            return {"status": r.get("status"), "answer": r.get("reason") or "", "result": r}
+        first = first or r
+        rows.append({"label": label, "value": r.get("value")})
+    unit, name = first.get("unit") or "", spec["name"]
+    where = f"{year}년 {first.get('region') or region}"
+    valid = [x for x in rows if x["value"] is not None]
+    if not valid:
+        return {"status": "missing_data", "answer": "", "result": {"status": "missing_data"}}
+
+    def val(v):
+        return qa._val(v, unit)
+
+    lines = []
+    if op["op"] == "sum":
+        total = sum(x["value"] for x in valid)
+        names = "·".join(x["label"] for x in rows)
+        text = f"{where}의 {names} {qa._josa(name, '은는')} 합해서 {val(total)}입니다."
+        lines = [f"- {x['label']}: {val(x['value'])}" for x in rows] + [f"- 합계: {val(total)}"]
+        value = total
+    elif op["op"] == "compare":
+        hi, lo = (
+            sorted(valid, key=lambda x: -x["value"])[0],
+            sorted(valid, key=lambda x: x["value"])[0],
+        )
+        diff = hi["value"] - lo["value"]
+        times = f" ({round(hi['value'] / lo['value'], 2)}배)" if lo["value"] else ""
+        text = (
+            f"{where}의 {qa._josa(name, '은는')} {qa._josa(hi['label'], '이가')} "
+            f"{lo['label']}보다 {val(diff)} 많습니다{times}."
+        )
+        lines = [f"- {x['label']}: {val(x['value'])}" for x in rows]
+        value = diff
+    else:
+        m = TOP_N.search(question)
+        n = int(m[1] or m[2]) if m else (parsed.get("top") or 3)
+        # 이름으로 합계를 알아보지 못한 첫 칸("통근·통학 인구(12세 이상)")은 값이 나머지의 합과
+        # 같으면 합계로 보고 뺀다
+        rest = sum(x["value"] for x in valid[1:])
+        if len(valid) > 2 and valid[0] is rows[0] and rest and valid[0]["value"] >= rest * 0.95:
+            valid = valid[1:]
+        top = sorted(valid, key=lambda x: -x["value"])[:n]
+        listed = ", ".join(f"{x['label']}({val(x['value'])})" for x in top)
+        text = (
+            f"{where}의 {op['dim']} 가운데 {qa._josa(name, '이가')} "
+            f"가장 많은 {len(top)}개는 {listed}입니다."
+        )
+        lines = [f"{i}. {x['label']}: {val(x['value'])}" for i, x in enumerate(top, 1)]
+        value = top[0]["value"]
+    result = {
+        "status": "ok",
+        "method": "dynamic",
+        "indicator": name,
+        "unit": unit,
+        "year": year,
+        "region": first.get("region"),
+        "value": value,
+        "categories": rows,
+        **{k: first.get(k) for k in ("source", "basis", "tbl_id", "url")},
+    }
+    notes = [spec.get("note")] if spec.get("note") else []
+    tail = [f"※ {n}" for n in notes]
+    tail += [f"출처: {result['source']} ({result['basis']})", f"통계표: {result['url']}"]
+    return {
+        "status": "ok",
+        "answer": "\n".join([text, "", *lines, *tail]),
+        "parsed": {**parsed, "dynamic_spec": spec, "indicator": name},
+        "result": result,
+        "sources": qa.sources(result),
+        "trace": {},
+    }
 
 
 def band_answer(parsed: dict, tbl_id: str, miss: BandMiss) -> dict:
