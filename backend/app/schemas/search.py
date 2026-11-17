@@ -36,5 +36,10 @@ class SearchResponse(BaseModel):
         "ambiguous면 패밀리 선택지 (level=family, families)"
     )
     recommendations: list[dict[str, Any]] = Field(description="추천 통계표 (1순위가 확정 표)")
+    together: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="1순위 표와 함께 봐야 하는 표. 한 통계가 여러 표로 나뉜 경우에만 있다 "
+        "(예: 외국인 아내 표 + 외국인 남편 표)",
+    )
     notice: str | None = Field(description="불충족 조건 등 고지")
     debug: dict[str, Any] | None = None

@@ -237,6 +237,22 @@ def value_keys(value: str) -> set[str]:
     return keys
 
 
+AGE_AXIS = re.compile(r"연령|나이|각세|\d+세")
+# 나이에서 계산한 지수. 연령 분류는 없지만 나이를 묻는 질문의 답이다
+# ('어린이보다 노인이 얼마나 더 많은지' → 노령화지수 표)
+AGE_INDEX = re.compile(r"노령화지수|부양비|중위연령|평균연령")
+
+
+def has_age_axis(t: dict[str, Any]) -> bool:
+    """나이로 나눠 볼 수 있는 표인가: 연령 분류가 있거나, 항목에 나이가 셋 이상이거나,
+    나이를 요약한 지수(노령화지수 · 부양비 · 중위연령)를 담은 표"""
+    return (
+        any(AGE_AXIS.search(n) for n in t["class_n"])
+        or len(set(re.findall(r"\d+세", t["meta_n"]))) >= 3
+        or bool(AGE_INDEX.search(t["meta_n"]))
+    )
+
+
 def has_value(t: dict[str, Any], key: str) -> bool:
     """항목·표본값(meta_n)에 있거나, 값이 많은 분류의 값 하나와 같은가"""
     return key in t["meta_n"] or key in t.get("values_n", ())
@@ -681,6 +697,11 @@ def check(t: dict[str, Any], slots: dict[str, Any]) -> dict[str, bool]:
             if key == "연령" and not ok:
                 # 각세(1세 단위) 축도 연령 축이다 ('서울 구별 나이별 전입 전출' → 서울특별시 시군구 각세별 이동자수)
                 ok = any("각세" in n for n in t["class_n"]) or "각세" in t["name_n"]
+            if key == "연령" and ok and not has_age_axis(t):
+                # 이름에만 '연령별'이 있고 한 나이대만 담은 표는 나이로 나눠 볼 수 없다
+                # ('연령별 국제결혼 가정 자녀(만 13세~만 15세이하)'가 연령 분류가 있는 표를
+                # 이기던 문제)
+                ok = False
         if (
             cls == "성별" and not ok
         ):  # 항목이 남자/여자로 갈라진 표도 성별을 담는다 (주민등록 시군구별 성별 인구수)
@@ -734,7 +755,45 @@ def check(t: dict[str, Any], slots: dict[str, Any]) -> dict[str, bool]:
             or key in norm(t["target"] or "")
             or key in t["path_n"]
         )
+    # 항목 · 분류 낱말이 표에 글자 그대로 없어도, 사전이 이어 준 말이 표에 있으면 통과
+    # ('강아지' → 반려동물, '식당' → 음식점업). 사전은 검색어를 늘릴 때만 쓰여, 사전에 있는 말인데도
+    # 맞는 표에 '강아지 ✘'(일부 일치)가 붙었다
+    for k, ok in out.items():
+        kind, _, word = k.partition(":")
+        if not ok and kind in ("item", "class") and by_dictionary(t, word):
+            out[k] = True
     return out
+
+
+# 사전이 이어 준 말 중 이 길이 이상만 본다 ('유형', '보유', '인구' 같은 흔한 말 제외)
+DICT_TERM_MIN = 3
+_dict_terms: dict[str, tuple[str, ...]] = {}
+_dict_index: dict[str, str] = {}
+
+
+def dict_terms(word: str) -> tuple[str, ...]:
+    """사전이 이 낱말에 이어 준 통계 용어 ('강아지' → 반려동물).
+
+    낱말 전체가 사전 항목과 같을 때만 쓴다. 낱말의 한 조각이 사전에 있다고 이으면
+    '전세보증금 규모' 안의 '보증금'이 '월세금'으로 이어져 월세 표가 통과했다 (11/17 HCX 측정)"""
+    if word not in _dict_terms:
+        if not _dict_index:
+            _dict_index.update({norm(k): v for k, v in synonyms.load().items()})
+        own = norm(word)
+        extra = (_dict_index.get(own) or _dict_index.get(own.removesuffix("별")) or "").split()
+        keys = {norm(x).removesuffix("별") for x in extra}
+        _dict_terms[word] = tuple(
+            sorted(k for k in keys if len(k) >= DICT_TERM_MIN and k not in own)
+        )
+    return _dict_terms[word]
+
+
+def by_dictionary(t: dict[str, Any], word: str) -> bool:
+    """사전이 이어 준 말이 표 이름 · 분류 이름 · 분류 값에 있는가"""
+    return any(
+        k in t["name_n"] or any(k in n for n in t["class_n"]) or has_value(t, k)
+        for k in dict_terms(word)
+    )
 
 
 def bigrams(value: str) -> set[str]:
@@ -786,6 +845,45 @@ def recency_bonus(t: dict[str, Any], slots: dict[str, Any]) -> float:
     )
 
 
+# ---- 주기 가산: 질문이 월 · 분기 · 반기 단위를 말하면 그 주기의 자료가 있는 표를 올려 준다 ----
+# 순위에 주기를 보는 규칙이 없어, 분기 값을 물은 질문에 분기 자료가 있는 표가 후보 밖에 있었다.
+# 맞는 표인지는 마지막 검토(LLM)가 판단하므로 여기서는 후보 안으로 올려 주기만 한다.
+# 감점 · ✘ 표시는 하지 않는다: 정규식이 놓치면 전과 같고, 잘못 걸려도 잃는 것이 없다
+CYCLE_BONUS = 0.08  # 조건 하나 통과(PASS_BONUS)와 같은 크기
+# 'N월'은 기준일('1월 1일', '11월 기준')이 아닐 때만.
+# '한 달 생활비'의 '한 달'은 주기가 아니라 넣지 않는다
+CYCLE_MONTH = re.compile(
+    r"월별|월간|매달|매월|달마다|다달이|지난\s*달|이번\s*달|저번\s*달|전월"
+    r"|(?<!\d)(?:1[0-2]|[1-9])\s*월(?!\s*\d{1,2}\s*일)(?!\s*(?:말|초)?\s*기준)"
+)
+CYCLE_QUARTER = re.compile(r"분기")
+CYCLE_HALF = re.compile(r"[상하]반기|반기별")
+# 수록 기간 글의 주기: '년 (1997 ~ 2025) , 월 (199701 ~ 202512)'
+TABLE_CYCLE = re.compile(r"(?:^|,\s*)(월|분기|반기)\s*\(")
+
+
+def asked_cycle(question: str) -> str | None:
+    """질문이 말한 주기: 월 / 분기 / 반기. 말하지 않았으면 None"""
+    if CYCLE_QUARTER.search(question):
+        return "분기"
+    if CYCLE_HALF.search(question):
+        return "반기"
+    if CYCLE_MONTH.search(question):
+        return "월"
+    return None
+
+
+def cycle_bonus(t: dict[str, Any], want: str) -> float:
+    """그 주기의 자료가 있는 표면 가산. 분기를 물었는데 월 자료만 있으면 절반(더해서 볼 수 있다),
+    반기는 월 · 분기 자료 어느 쪽으로도 볼 수 있다"""
+    have = set(TABLE_CYCLE.findall(t.get("period") or ""))
+    if want == "월":
+        return CYCLE_BONUS if "월" in have else 0.0
+    if want == "분기":
+        return CYCLE_BONUS if "분기" in have else (CYCLE_BONUS / 2 if "월" in have else 0.0)
+    return CYCLE_BONUS if have else 0.0
+
+
 def _population_unmentioned(t: dict[str, Any], said_n: str) -> bool:
     """특정 집단 조사의 표인데 질문에 그 집단 말이 없다"""
     words = SURVEY_POPULATION.get(t["survey_name"])
@@ -823,6 +921,7 @@ def rank(
     cut = sorted(dense, reverse=True)[min(DENSE_TOP_K, len(dense)) - 1] if dense else None
     # 키워드만 쓸 때는 패밀리 점수로 범위 밖을 판정하므로 가산하지 않는다
     timeless = dense is not None and wants_current(slots)
+    cycle = asked_cycle(slots.get("question") or "") if dense is not None else None
     said_n = norm(said)
     ranked = []
     for i, (t, kw) in enumerate(zip(tables, keywords, strict=True)):
@@ -841,6 +940,7 @@ def rank(
             - MODIFIER_PENALTY * len(unasked_modifiers(t, said))
             - (SURVEY_PENALTY if _population_unmentioned(t, said_n) else 0.0)
             + (recency_bonus(t, slots) if timeless else 0.0)
+            + (cycle_bonus(t, cycle) if cycle else 0.0)
         )
         ranked.append({"table": t, "keyword": kw, "dense": d, "checks": checks, "score": score})
     ranked.sort(key=lambda r: (-r["score"], r["table"]["edition_order"], r["table"]["tbl_id"]))

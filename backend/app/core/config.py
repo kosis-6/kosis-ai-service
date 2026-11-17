@@ -75,6 +75,10 @@ class Settings(BaseSettings):
     # 되묻기 적중이 떨어졌다.
     # 비워 두면 통계표 찾기에 쓰는 LLM에 맞춘다 (HCX → filter, Gemma → pick_decided)
     llm_pick_mode: Literal["filter", "pick", "pick_decided", "resolve"] | None = None
+    # 표를 고른 뒤 '함께 볼 표'를 묻는다 (Gemma 가 검토에 답했고, 고른 표와 이름이 거의 같은 표가
+    # 후보에 있을 때만 호출 1회 추가). '외국인 배우자'처럼 남편 표 · 아내 표로 나뉜 통계를 함께
+    # 안내한다. LLM_PICK_TOGETHER=false 로 끈다
+    llm_pick_together: bool = True
     # /ask의 통계표 찾기에서 계획(질문을 지표로 나누기, HCX-007 1회)을 함께 돌린다
     # (app/agent/multi.py). 지표가 여럿이면 지표마다 찾은 표를 응답에 덧붙인다.
     # HCX 한도가 빠듯하면 SEARCH_PLAN=false 로 끈다

@@ -924,7 +924,7 @@ def test_class_alias_age_words_hit_age_axis() -> None:
                 2013,
                 2013,
                 "FA",
-                classes=[{"name": "연령별"}, {"name": "성별"}],
+                classifications=[{"name": "연령별"}, {"name": "성별"}],
             )
         ]
     )[0]
@@ -1017,7 +1017,7 @@ def test_class_alias_age_hits_single_year_age_axis() -> None:
                 2001,
                 2025,
                 "FA",
-                classes=[{"name": "각세별"}, {"name": "시군구별"}],
+                classifications=[{"name": "각세별"}, {"name": "시군구별"}],
             )
         ]
     )[0]
@@ -1312,4 +1312,230 @@ def test_llm_pick_uses_hcx_rules_when_gemma_is_down(monkeypatch) -> None:
     out = asyncio.run(lp.review("혼인", dict(base), tables, trace))
     assert out["table"]["tbl_id"] == "A1" and trace["llm_pick"]["llm"] == "hcx"  # HCX: 거르기만
     assert seen == [(lp.SYSTEM, None)]  # HCX 에는 HCX 프롬프트 · 기본 temperature
+
+
+def test_age_class_needs_an_age_axis() -> None:
+    """'나이별'은 나이로 나눠 볼 수 있는 표만 통과한다. 이름에만 '연령별'이 있는 표는 ✘"""
+    asked = _slots("국제결혼 가정 자녀를 나이별로", "국제결혼 가정 자녀", classes=["나이"])
+    one_band = se.prepare(
+        [_t("A", "연령별 국제결혼 가정 자녀(만 13세~만 15세이하)", 2007, 2015, "FA",
+            classifications=[{"name": "국적별", "sample_values": ["계", "동북아"]}])]
+    )[0]  # fmt: skip
+    assert se.check(one_band, asked)["class:나이"] is False
+    by_age = se.prepare(
+        [_t("B", "국제결혼 가정 자녀(연령별)", 2015, 2015, "FB",
+            classifications=[{"name": "연령별", "sample_values": ["계", "만0세", "만1세"]}])]
+    )[0]  # fmt: skip
+    assert se.check(by_age, asked)["class:나이"] is True
+    age_items = se.prepare(
+        [_t("C", "모의 연령별 출산율", 2000, 2024, "FC",
+            items=[{"name": "15-19세"}, {"name": "20-24세"}, {"name": "25-29세"}])]
+    )[0]  # fmt: skip
+    assert se.check(age_items, asked)["class:나이"] is True  # 항목에 나이가 여럿
+
+
+def test_age_index_tables_keep_passing_the_age_class() -> None:
+    """노령화지수 · 부양비 · 중위연령 표는 연령 분류가 없어도 나이를 묻는 질문의 답이다"""
+    index = se.prepare(
+        [_t("A", "주요 인구지표(부양비, 노령화지수, 중위연령 등) - 시군구", 2015, 2025, "FA",
+            items=[{"name": "노년부양비"}, {"name": "노령화지수"}, {"name": "중위연령"}])]
+    )[0]  # fmt: skip
+    asked = _slots("어린이보다 노인이 얼마나 더 많은지", "노인", classes=["연령"])
+    assert se.check(index, asked)["class:연령"] is True
+
+
+
+def test_asked_cycle_reads_month_quarter_half() -> None:
+    assert se.asked_cycle("지난달 출생아 수") == "월"
+    assert se.asked_cycle("매달 사망자 수") == "월"
+    assert se.asked_cycle("2025년 3월 시도별 전입자 수") == "월"
+    assert se.asked_cycle("2024년 3분기 출생아 수") == "분기"
+    assert se.asked_cycle("작년 하반기 부산 이혼 건수") == "반기"
+    # 기준일, 금액 · 기간 단위, 다른 낱말 속의 '월'은 주기를 묻는 말이 아니다
+    for q in (
+        "2015년 1월 1일 기준 주민등록 인구",
+        "2021년 11월 기준 외국인 주민 수",
+        "한 달 생활비가 얼마나 드는지",
+        "12개월 미만 영아 수",
+        "월세 사는 1인 가구",
+        "월평균 소득별 가구",
+        "2024년 서울 혼인 건수",
+    ):
+        assert se.asked_cycle(q) is None, q
+
+
+def test_cycle_bonus_lifts_tables_that_have_that_cycle() -> None:
+    yearly = _t("Y", "혼인건수", 1970, 2025, "FY")
+    monthly = _t(
+        "M", "월별 혼인", 1997, 2025, "FM", period="년 (1997 ~ 2025) , 월 (199701 ~ 202512)"
+    )
+    quarterly = _t(
+        "Q", "인구동향", 1981, 2025, "FQ",
+        period="년 (1981 ~ 2025) , 분기 (198101 ~ 202602) , 월 (198101 ~ 202607)",
+    )  # fmt: skip
+    assert se.cycle_bonus(yearly, "월") == 0.0
+    assert se.cycle_bonus(monthly, "월") == se.CYCLE_BONUS
+    assert se.cycle_bonus(monthly, "분기") == se.CYCLE_BONUS / 2  # 월 자료를 더해 볼 수 있다
+    assert se.cycle_bonus(quarterly, "분기") == se.CYCLE_BONUS
+    assert se.cycle_bonus(monthly, "반기") == se.CYCLE_BONUS
+    assert se.cycle_bonus(yearly, "반기") == 0.0
+
+
+def test_cycle_bonus_changes_rank_only_when_the_question_names_a_cycle() -> None:
+    tables = se.prepare(
+        [
+            _t("Y", "혼인건수", 1970, 2025, "FY"),
+            _t("M", "혼인건수", 1997, 2025, "FM", period="년 (1997 ~ 2025) , 월 (199701 ~ 202512)"),
+        ]
+    )  # fmt: skip
+    plain = se.rank(tables, _slots("혼인 건수", "혼인 건수"), dense=[0.60, 0.58])
+    asked = se.rank(tables, _slots("매달 혼인 건수", "혼인 건수"), dense=[0.60, 0.58])
+    assert plain[0]["table"]["tbl_id"] == "Y"
+    assert asked[0]["table"]["tbl_id"] == "M"
+    assert not any(k.startswith("cycle") for k in asked[0]["checks"])  # 감점 · ✘ 표시는 없다
+
+
+def test_check_uses_the_dictionary_when_the_word_is_not_in_the_table() -> None:
+    """글자 그대로는 없어도 사전이 이어 준 말이 표에 있으면 통과한다"""
+    pets = se.prepare(
+        [
+            _t(
+                "A", "연령별/반려동물 보유유형별 고령자 거주 가구", 2020, 2020, "FA",
+                classifications=[{"name": "반려동물 보유유형별", "sample_values": ["개", "고양이"]}],
+            )
+        ]
+    )[0]  # fmt: skip
+    checks = se.check(pets, _slots("강아지 키우는 가구", "반려동물", items=["강아지", "고양이"]))
+    assert checks == {"item:강아지": True, "item:고양이": True}
+    # 사전에 없는 말, 사전이 이어 준 말이 표에 없는 경우는 그대로 ✘
+    assert se.check(pets, _slots("q", "반려동물", items=["햄스터"]))["item:햄스터"] is False
+    other = se.prepare([_t("B", "혼인상태별 인구", 2020, 2020, "FB")])[0]
+    assert se.check(other, _slots("q", "인구", items=["강아지"]))["item:강아지"] is False
+
+
+def test_dict_terms_skip_short_common_words() -> None:
+    assert se.dict_terms("강아지") == ("반려동물",)  # '보유' · '유형'은 흔한 말이라 뺀다
+    assert se.dict_terms("햄스터") == ()
+    # 낱말의 한 조각만 사전에 있는 경우는 잇지 않는다 ('보증금' → 월세금)
+    assert se.dict_terms("전세보증금 규모") == ()
+
+
+def test_trust_exact_drops_word_marks_only_when_the_review_says_exact() -> None:
+    from app.services import llm_pick as lp
+
+    def result(match: str, failed: list[str], **extra) -> dict:
+        checks = {"item:20대": True, **{k: False for k in failed}}
+        return {
+            "status": "partial_match",
+            "reason": "; ".join(f"조건 불충족: {k}" for k in failed),
+            "notes": [],
+            "failed": failed,
+            "table": {"tbl_id": "A", "checks": checks},
+            "llm_pick": {"pick": "A", "raw": {"match": match}},
+            **extra,
+        }
+
+    out = lp.trust_exact(result("exact", ["item:술집"]))
+    assert (out["status"], out["failed"], out["reason"]) == ("ok", [], None)
+    assert out["table"]["checks"] == {"item:20대": True}
+    assert out["llm_confirmed"] == ["item:술집"]
+    # 검토가 '조금 다른 표(partial)'라 했으면 그대로
+    assert lp.trust_exact(result("partial", ["item:술집"]))["status"] == "partial_match"
+    # 낱말 차이가 아닌 조건(연도 · 지역 단위 · 성별 · 대상)이 섞여 있으면 그대로
+    assert lp.trust_exact(result("exact", ["item:술집", "year"]))["status"] == "partial_match"
+    assert lp.trust_exact(result("exact", ["target"]))["status"] == "partial_match"
+    # 판 메모('가장 가까운 판을 골랐습니다')가 있으면 그대로
+    noted = result("exact", ["item:술집"], notes=["2021년을 담은 판이 없어 …"])
+    assert lp.trust_exact(noted)["status"] == "partial_match"
+    # 검토가 고른 표와 안내하는 표가 다르면 그대로
+    other = result("exact", ["item:술집"])
+    other["llm_pick"]["pick"] = "B"
+    assert lp.trust_exact(other)["status"] == "partial_match"
+
+
+def _divorce_tables() -> list[dict]:
+    survey = {"survey_name": "인구동향조사", "organization": "국가데이터처"}
+    return se.prepare(
+        [
+            _t("W", "미성년자녀수/외국인 아내의 국적별 이혼", 2000, 2024, "FW", **survey),
+            _t("H", "미성년자녀수/외국인 남편의 국적별 이혼", 2000, 2024, "FH", **survey),
+            _t("P", "미성년자녀수/외국인 아내의 국적별 이혼(쌍태아 이상)", 2000, 2024, "FP", **survey),
+            _t("A", "연령(5세)/외국인 아내의 국적별 이혼", 2000, 2024, "FA", **survey),
+            _t("O", "미성년자녀수/외국인 남편의 국적별 이혼", 2000, 2024, "FO"),  # 다른 조사
+        ]
+    )  # fmt: skip
+
+
+def test_siblings_are_same_survey_tables_whose_names_differ_by_a_word() -> None:
+    from app.services import llm_pick as lp
+
+    wife, husband, part, by_age, other_survey = _divorce_tables()
+    near = lp.siblings(wife, [wife, husband, part, by_age, other_survey])
+    # 남편 표만 남는다: 이름을 통째로 담은 표(일부만 따로 낸 표), 이름이 많이 다른 표, 다른 조사는 뺀다
+    assert [t["tbl_id"] for t in near] == ["H"]
+
+
+def _picked(tbl_id: str, llm: str | None = "gemma", status: str = "ok") -> dict:
+    return {
+        "status": status,
+        "table": {"tbl_id": tbl_id, "checks": {}},
+        "candidates": [{"tbl_id": i} for i in ("W", "H", "P", "A", "O")],
+        "llm_pick": {"pick": tbl_id, **({"llm": llm} if llm else {})},
+    }
+
+
+def test_with_together_adds_the_split_table_without_changing_the_pick(monkeypatch) -> None:
+    import asyncio
+
+    from app.services import llm_pick as lp
+
+    tables = _divorce_tables()
+    asked: list[list[str]] = []
+
+    async def fake(question, picked, others):
+        asked.append([t["tbl_id"] for t in others])
+        return ["H"]
+
+    monkeypatch.setattr(lp, "_ask_together", fake)
+    monkeypatch.setattr(lp.get_settings(), "llm_pick_together", True, raising=False)
+    out = asyncio.run(lp.with_together("외국인 배우자 국적별 이혼", _picked("W"), tables))
+    assert out["together"] == ["H"] and out["table"]["tbl_id"] == "W"
+    assert asked == [["H"]]  # 이름이 거의 같은 표만 보여 준다
+    assert out["llm_pick"]["together"]["picked"] == ["H"]
+
+
+def test_with_together_skips_when_it_should_not_ask(monkeypatch) -> None:
+    import asyncio
+
+    from app.services import llm_pick as lp
+
+    tables = _divorce_tables()
+
+    async def never(question, picked, others):
+        raise AssertionError("부르면 안 된다")
+
+    monkeypatch.setattr(lp, "_ask_together", never)
+    monkeypatch.setattr(lp.get_settings(), "llm_pick_together", True, raising=False)
+    run = lambda out: asyncio.run(lp.with_together("q", out, tables))  # noqa: E731
+    assert "together" not in run(_picked("W", llm="hcx"))  # 검토에 HCX 가 답했다
+    assert "together" not in run(_picked("W", llm=None))  # 검토가 없었다
+    assert "together" not in run(_picked("W", status="ambiguous"))  # 표가 정해지지 않았다
+    assert "together" not in run(_picked("O"))  # 이름이 거의 같은 표가 후보에 없다
+    monkeypatch.setattr(lp.get_settings(), "llm_pick_together", False, raising=False)
+    assert "together" not in run(_picked("W"))  # 설정으로 껐다
+
+
+def test_with_together_failure_keeps_the_answer(monkeypatch) -> None:
+    import asyncio
+
+    from app.services import llm_pick as lp
+
+    async def broken(question, picked, others):
+        raise RuntimeError("서버 없음")
+
+    monkeypatch.setattr(lp, "_ask_together", broken)
+    monkeypatch.setattr(lp.get_settings(), "llm_pick_together", True, raising=False)
+    out = asyncio.run(lp.with_together("q", _picked("W"), _divorce_tables()))
+    assert "together" not in out and out["table"]["tbl_id"] == "W"
+    assert "error" in out["llm_pick"]["together"]
 

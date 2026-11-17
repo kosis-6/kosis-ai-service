@@ -22,7 +22,7 @@ import time
 from typing import Any
 
 from app.core.config import get_settings
-from app.prompts.llm_pick import SYSTEM, SYSTEM_GEMMA
+from app.prompts.llm_pick import SYSTEM, SYSTEM_GEMMA, TOGETHER_SYSTEM
 from app.services import search_llm
 
 
@@ -148,29 +148,176 @@ async def _ask(question: str, cands: list[dict[str, Any]]) -> dict[str, Any] | N
     return parsed
 
 
-async def review(
-    question: str, result: dict[str, Any], tables: list[dict[str, Any]], trace: dict[str, Any]
-) -> dict[str, Any]:
-    """검색 결과에 LLM 검토를 얹는다. 후보가 없거나 되묻기면 그대로"""
-    if not get_settings().llm_pick:
-        return result
-    if result.get("status") not in ("ok", "partial_match", "ambiguous", "clarify"):
-        return result
-    by = {t["tbl_id"]: t for t in tables}
-    # 후보는 패밀리당 하나(점수 최고 표)만. 표 단위로 8개를 주면 같은 표의 연도판·지역판이
-    # 자리를 다 차지해('노인 생활비' 후보 10개 중 9개가 생활비원천 표의 판) LLM 이 다른 주제의
-    # 표를 보지 못했다 (§79)
-    cand_ids: list[str] = []
+WORD_CHECKS = ("item", "class")  # 낱말이 표에 있는지로 판정하는 조건
+
+
+def trust_exact(out: dict[str, Any]) -> dict[str, Any]:
+    """검토가 '모두 충족(exact)'으로 고른 표에는 코드의 낱말 ✘(항목 · 분류)를 붙이지 않는다.
+
+    코드는 낱말이 표에 글자로 있는지를 보고, 검토는 뜻으로 판단한다. '식당이나 술집에서 일하는'에
+    검토가 '음식점 및 주점업'이 든 표를 맞게 골라도 코드가 '술집 ✘'를 붙여 '일부 일치'로 나갔다.
+    연도 · 지역 단위 · 성별처럼 낱말 차이가 아닌 조건과 판 메모가 있으면 그대로 둔다
+    (11/16 Gemma 668문항: 정답 수 그대로, '일부 일치' 72 → 35, 그중 정답 표였던 것 64 → 29)"""
+    if out.get("status") != "partial_match" or out.get("notes"):
+        return out
+    pick = out.get("llm_pick") or {}
+    table = out.get("table") or {}
+    if (pick.get("raw") or {}).get("match") != "exact" or pick.get("pick") != table.get("tbl_id"):
+        return out
+    failed = out.get("failed") or []
+    if not failed or any(k.split(":")[0] not in WORD_CHECKS for k in failed):
+        return out
+    checks = {k: v for k, v in (table.get("checks") or {}).items() if k not in failed}
+    return {
+        **out,
+        "status": "ok",
+        "reason": None,
+        "failed": [],
+        "llm_confirmed": failed,
+        "table": {**table, "checks": checks},
+    }
+
+
+def review_candidates(
+    result: dict[str, Any], by: dict[str, dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """검토에 넘기는 후보: 패밀리당 하나(점수 최고 표)만, 최대 TOP_K 개.
+    표 단위로 주면 같은 표의 연도판·지역판이 자리를 다 차지해('노인 생활비' 후보 10개 중 9개가
+    생활비원천 표의 판) LLM 이 다른 주제의 표를 보지 못했다 (§79)"""
+    cands: list[dict[str, Any]] = []
     seen: set[str] = set()
     for c in result.get("candidates") or []:
         t = by.get(c["tbl_id"])
         if t is None or t["family_id"] in seen:
             continue
         seen.add(t["family_id"])
-        cand_ids.append(t["tbl_id"])
-        if len(cand_ids) >= TOP_K:
+        cands.append(t)
+        if len(cands) >= TOP_K:
             break
-    cands = [by[i] for i in cand_ids]
+    return cands
+
+
+# ---- 함께 볼 표: 한 통계가 여러 표로 나뉜 경우 (외국인 남편 표 / 외국인 아내 표) ----
+TOGETHER_MAX = 2
+# 표 이름 글자 겹침. 남편 / 아내만 다른 표가 0.80, 분류 축이 하나 더 붙은 표가 0.73
+SIBLING_NAME_SIM = 0.75
+
+
+def siblings(picked: dict[str, Any], cands: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """고른 표와 같은 조사이고 표 이름이 거의 같은 후보 (한두 낱말만 다른 표).
+    한 표 이름이 다른 표 이름을 통째로 담으면 나뉜 표가 아니라 그 일부만 따로 낸 표라 뺀다
+    ('시도/임신기간별 출생'과 '시도/임신기간별 출생(쌍태아 이상)')"""
+    from app.services import search as se  # 순환 참조를 피해 여기서 읽는다
+
+    return [
+        c
+        for c in cands
+        if c["family_id"] != picked["family_id"]
+        and c["survey_name"] == picked["survey_name"]
+        and se.name_similarity(picked["name_n"], c["name_n"]) >= SIBLING_NAME_SIM
+        and picked["name_n"] not in c["name_n"]
+        and c["name_n"] not in picked["name_n"]
+    ]
+
+
+async def _ask_together(
+    question: str, picked: dict[str, Any], others: list[dict[str, Any]]
+) -> list[str]:
+    """고른 표와 이름이 거의 같은 후보를 주고, 함께 봐야 하는 표의 tbl_id 를 받는다.
+    Gemma 에만 묻는다 (HCX-007 은 같은 요청 10개 모두에 표를 덧붙였다, 11/17). 실패하면 올린다"""
+    user = (
+        f"질문: {question}\n\n고른 표:\n"
+        + cand_text(picked, 0).replace("[0]", "[고른 표]", 1)
+        + "\n\n다른 후보:\n"
+        + "\n".join(cand_text(t, i + 1) for i, t in enumerate(others))
+    )
+    ids = [t["tbl_id"] for t in others]
+    schema = {
+        "type": "object",
+        "required": ["also"],
+        "properties": {
+            "also": {
+                "type": "array",
+                "maxItems": TOGETHER_MAX,
+                "items": {
+                    "type": "object",
+                    "required": ["tbl_id", "kind", "note"],
+                    "properties": {
+                        "tbl_id": {"type": "string", "enum": ids},
+                        "kind": {"type": "string", "enum": ["together"]},
+                        "note": {"type": "string"},
+                    },
+                },
+            }
+        },
+    }
+    messages = [{"role": "system", "content": TOGETHER_SYSTEM}, {"role": "user", "content": user}]
+    result = await search_llm.GemmaClient(retry_waits=()).chat(
+        MODEL,
+        messages,
+        thinking={"effort": "none"},
+        maxCompletionTokens=250,
+        temperature=0,
+        responseFormat={"type": "json", "schema": schema},
+    )
+    also = (parse(result.content) or {}).get("also") or []
+    picked_ids = [a.get("tbl_id") for a in also if isinstance(a, dict)]
+    return [i for i in dict.fromkeys(picked_ids) if i in ids][:TOGETHER_MAX]
+
+
+async def with_together(
+    question: str, out: dict[str, Any], tables: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """표를 고른 뒤, 한 통계가 여러 표로 나뉘어 있으면 함께 볼 표를 덧붙인다 (out["together"]).
+
+    고르는 표는 바꾸지 않는다. Gemma 가 검토에 답했고, 고른 표와 이름이 거의 같은 표가 후보에
+    있을 때만 묻는다 (11/17 668문항: 호출 32%, 고른 표가 달라진 문항 0, 덧붙은 문항 5).
+    덧붙이기가 실패해도 답은 그대로 나간다"""
+    pick = out.get("llm_pick") or {}
+    tbl_id = (out.get("table") or {}).get("tbl_id")
+    if (
+        not get_settings().llm_pick_together
+        or out.get("status") not in ("ok", "partial_match")
+        or pick.get("llm") != "gemma"
+        or not tbl_id
+    ):
+        return out
+    by = {t["tbl_id"]: t for t in tables}
+    if tbl_id not in by:
+        return out
+    near = siblings(by[tbl_id], review_candidates(out, by))
+    if not near:
+        return out
+    start = time.perf_counter()
+    try:
+        together = await _ask_together(question, by[tbl_id], near)
+    except Exception as e:
+        logger.warning("함께 볼 표 찾기 실패 → 고른 표만 안내: %s: %s", type(e).__name__, e)
+        pick["together"] = {"error": f"{type(e).__name__}: {e}"[:200]}
+        return out
+    pick["together"] = {"asked": [t["tbl_id"] for t in near], "picked": together}
+    pick["together"]["ms"] = round((time.perf_counter() - start) * 1000)
+    return {**out, "together": together} if together else out
+
+
+async def review(
+    question: str, result: dict[str, Any], tables: list[dict[str, Any]], trace: dict[str, Any]
+) -> dict[str, Any]:
+    """검색 결과에 LLM 검토를 얹는다. 후보가 없거나 되묻기면 그대로"""
+    out = trust_exact(await _review(question, result, tables, trace))
+    return await with_together(question, out, tables)
+
+
+async def _review(
+    question: str, result: dict[str, Any], tables: list[dict[str, Any]], trace: dict[str, Any]
+) -> dict[str, Any]:
+    if not get_settings().llm_pick:
+        return result
+    if result.get("status") not in ("ok", "partial_match", "ambiguous", "clarify"):
+        return result
+    by = {t["tbl_id"]: t for t in tables}
+    cands = review_candidates(result, by)
+    cand_ids = [t["tbl_id"] for t in cands]
     if not cands:
         return result
     if (m := OFF_DOMAIN.search(question)) and not any(
