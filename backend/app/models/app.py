@@ -121,6 +121,8 @@ class ChatTurn(Base):
     tbl_id: Mapped[str | None]
     recomputed: Mapped[bool]
     answer: Mapped[str | None]
+    # 화면에 보여 준 답 전체 (예전 대화를 다시 열 때 그대로 보여 준다, 마이그레이션 0019)
+    response: Mapped[dict | None] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -220,3 +222,20 @@ class DynamicPlan(Base):
     last_used_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+class Conversation(Base):
+    """로그인 유저의 대화 (app/services/conversations.py, 마이그레이션 0019)
+
+    session_id는 /ask의 session_id. 턴은 app.chat_turns,
+    이어 갈 조건은 app.chat_sessions("ask:" 키).
+    손님 대화는 남기지 않는다. 사용자를 지우면 대화도 지운다"""
+
+    __tablename__ = "conversations"
+    __table_args__ = (Index("conversations_user", "user_id", "updated_at"), {"schema": "app"})
+
+    session_id: Mapped[str] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("app.users.id", ondelete="CASCADE"))
+    title: Mapped[str]
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

@@ -518,6 +518,12 @@ def test_grounded_marks_indicator_named_in_question(question, llm, grounded) -> 
     assert p["grounded"] is grounded
 
 
+def test_grounded_is_none_without_indicator() -> None:
+    # 원인 질문처럼 지표가 없으면 근거를 따지지 않는다 (바로 계산을 시도하지 않음)
+    p = qa.correct("2025년 복지 정책이 효과적이었나요?", parsed(type="causal", indicator=""), TODAY)
+    assert p["grounded"] is None
+
+
 FOREIGN = {
     **ALIASES,
     "외국인주민 수": ["외국인 주민 수", "외국인주민", "외국인 수", "외국인 주민"],
@@ -561,4 +567,142 @@ def test_plain_foreigner_question_still_answers() -> None:
         "2023년 경기 외국인 수", parsed(indicator="외국인주민 수", regions=["경기"]), TODAY
     )
     assert p["indicator"] == "외국인주민 수"
+    assert not p.get("unsupported")
+
+
+def test_extract_ages_with_sal() -> None:
+    # "세" 대신 "살", "미만" 대신 "안 된"
+    assert qa.extract_ages("서울청년 19~34살 몇명임?") == [[19, 34]]
+    assert qa.extract_ages("울산에 100살 이상 어르신") == [[100, None]]
+    assert qa.extract_ages("15살 안 된 애들") == [[0, 14]]
+
+
+@pytest.mark.parametrize(
+    ("question", "ages"),
+    [
+        # 개발셋 D-139, D-140: 말로 이은 구간을 읽지 못해 연령 없이 답했다
+        ("해운대구에서 작년에 돌아가신 분 중 62살에서 67살 사이 몇 명이야?", [[62, 67]]),
+        ("등록 외국인 중에 33살부터 38살까지 몇 명이야?", [[33, 38]]),
+        ("33세부터 38세까지 인구", [[33, 38]]),
+        ("62세와 67세 사이 인구", [[62, 67]]),
+        ("62에서 67살", [[62, 67]]),
+        ("65세 이상 70세 미만 인구", [[65, 69]]),
+        ("65살 이상 69살 이하", [[65, 69]]),
+        ("20대부터 30대까지 여자", [[20, 39]]),
+        # 연도·다른 단위의 "부터·에서"는 연령이 아니다
+        ("2020년부터 2025년까지 인구", []),
+        ("2015년에서 2020년 사이 30대", [[30, 39]]),
+        ("3명에서 5명 사이", []),
+    ],
+)
+def test_extract_ages_spoken_range(question: str, ages: list) -> None:
+    assert qa.extract_ages(question) == ages
+
+
+def test_age_group_grounds_age_defined_indicator() -> None:
+    # 지표 이름이 없어도 연령 집단 + 묻는 말이 있으면 HCX가 고른 계산 지표를 쓴다
+    p = qa.correct(
+        "우리나라 사람 중에 노인이 몇 퍼센트예요?",
+        parsed(indicator="고령인구 비율 (%)", regions=["전국"], term="노인이 몇 퍼센트"),
+        TODAY,
+    )
+    assert p["indicator"] == "고령인구 비율" and not p.get("unsupported")
+    p = qa.correct(
+        "의성군은 애들보다 노인이 몇 배나 많아?",
+        parsed(indicator="노령화지수", regions=["의성군"], term="노령화지수"),
+        TODAY,
+    )
+    assert p["indicator"] == "노령화지수" and not p.get("unsupported")
+    # 한 집단만 있으면 노령화지수의 근거가 아니다
+    p = qa.correct(
+        "의성군 노인 몇 배야?", parsed(indicator="노령화지수", regions=["의성군"]), TODAY
+    )
+    assert p.get("unsupported") is True
+
+
+def test_age_group_count_without_population_word() -> None:
+    # "인구"라는 말이 없어도 연령 집단의 사람 수를 물으면 연령 구간 인구
+    p = qa.correct(
+        "광주랑 전남 노인 다 합치면 몇 명이야",
+        parsed(indicator="고령인구 비율", regions=["광주광역시", "전라남도"]),
+        TODAY,
+    )
+    assert p["indicator"] == "총인구" and p["ages"] == [[65, None]]
+    p = qa.correct(
+        "요 몇 년 새 부산 어르신들 얼마나 늘었어?",
+        parsed(type="trend", indicator="고령인구 비율", regions=["부산"]),
+        TODAY,
+    )
+    assert p["indicator"] == "총인구" and p["ages"] == [[65, None]]
+
+
+def test_unknown_label_that_is_age_population() -> None:
+    # HCX가 사전에 없는 "연령 구간 인구" 이름을 주거나 지표를 비워도 총인구
+    p = qa.correct(
+        "서울청년 19~34살 몇명임?", parsed(indicator="19~34세 인구 수", regions=["서울"]), TODAY
+    )
+    assert p["indicator"] == "총인구" and p["ages"] == [[19, 34]]
+    p = qa.correct("애들 몇 명이야?", parsed(indicator="유소년인구 수", term="애들"), TODAY)
+    assert p["indicator"] == "총인구" and p["ages"] == [[0, 14]]
+    p = qa.correct(
+        "울산에 100살 이상 어르신 몇 분 계셔?",
+        parsed(type="other", indicator="", term="100살 이상 어르신", regions=["울산"]),
+        TODAY,
+    )
+    assert (p["type"], p["indicator"], p["ages"]) == ("value", "총인구", [[100, None]])
+
+
+def test_age_population_needs_people_only() -> None:
+    # 연령이 있어도 다른 대상(취업자·가구)을 세면 인구로 바꾸지 않는다
+    p = qa.correct(
+        "서울 청년 취업자 몇 명이야?", parsed(indicator="청년 취업자 수", regions=["서울"]), TODAY
+    )
+    assert p["indicator"] != "총인구"
+    p = qa.correct(
+        "서울 노인 1인 가구 몇 가구야?", parsed(indicator="고령인구 비율", regions=["서울"]), TODAY
+    )
+    assert p["indicator"] != "총인구" and p.get("unsupported") is True
+
+
+@pytest.mark.parametrize("llm", ["고령인구 비율", ""])
+@pytest.mark.parametrize("question", ["청년 취업자 몇 명이야?", "취업자 중 청년 몇 명이야?"])
+def test_other_target_with_age_is_not_population(question: str, llm: str) -> None:
+    # HCX가 엉뚱한 지표를 주거나 비워도, 연령 집단이 아닌 대상(취업자)을 세면 총인구로 바꾸지 않는다
+    p = qa.correct(question, parsed(indicator=llm), TODAY)
+    assert p["indicator"] != "총인구"
+
+
+@pytest.mark.parametrize(
+    ("question", "regions"),
+    [
+        ("광주랑 전남 노인 다 합치면 몇 명이야", ["광주광역시", "전라남도"]),
+        ("30대 중에 서울 사는 사람 몇 명", ["서울"]),
+        ("서울 사는 사람 중 30대 몇 명", ["서울"]),
+        ("20대 여자 몇 명이야", []),
+    ],
+)
+def test_age_population_with_filler_words(question: str, regions: list) -> None:
+    p = qa.correct(question, parsed(indicator="", regions=regions), TODAY)
+    assert p["indicator"] == "총인구"
+
+
+@pytest.mark.parametrize(
+    ("question", "ok"),
+    [
+        ("애들보다 노인이 몇 배 많아?", True),
+        ("유소년 대비 노인 몇 배야", True),
+        ("노인이랑 애들 몇 배 차이야", True),  # 나누는 쪽을 말하지 않으면 노령화지수
+        ("노인보다 애들이 몇 배 많아?", False),  # 유소년 ÷ 노인은 노령화지수가 아니다
+        ("노인 대비 유소년 몇 배야", False),
+    ],
+)
+def test_aging_index_direction(question: str, ok: bool) -> None:
+    p = qa.correct(question, parsed(indicator="노령화지수"), TODAY)
+    assert (p["indicator"] == "노령화지수" and not p.get("unsupported")) is ok
+
+
+def test_births_versus_deaths_is_natural_increase() -> None:
+    # HCX가 지표를 비워도 "태어난 vs 돌아가신"은 자연증가 건수
+    p = qa.correct("작년에 태어난 사람이 많아 돌아가신 사람이 많아?", {"type": "other"}, TODAY)
+    assert (p["type"], p["indicator"]) == ("value", "자연증가 건수")
     assert not p.get("unsupported")

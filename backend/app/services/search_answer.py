@@ -4,6 +4,7 @@
 답변 문장은 status별 템플릿으로 만든다 (실전 1 qa.summary와 같은 방식).
 """
 
+import re
 from typing import Any
 
 from app.services import notices
@@ -27,8 +28,13 @@ STATUS_MESSAGES = {
     ),
     "parse_error": "질문을 이해하지 못했습니다. 찾는 통계의 주제를 넣어 다시 질문해 주세요.",
 }
+REJECTED = ("out_of_scope", "not_statistics", "parse_error")
 NUMBERS = "①②③④⑤"
 AXIS_LABELS = {"target": "대상", "sex": "성별", "edition": "연도"}
+# 되묻기 선택지의 차이 줄: 지역 분류는 '지역 단위'로 따로 보여 주므로 분류 이름에서 뺀다
+REGION_CLASS = re.compile(r"행정구역|시도|시군구|읍면동|지역|전출지|전입지|거주지")
+MAX_DIFF_CLASSES = 3
+MAX_DIFF_TEXT = 60  # 주석에서 가져온 줄(기준일 · 대상 범위)은 이 길이까지만
 
 
 def check_label(key: str, slots: dict[str, Any]) -> str:
@@ -161,8 +167,47 @@ def together_cards(result: dict[str, Any], by_id: dict[str, dict[str, Any]]) -> 
     return cards
 
 
+def _short(line: str) -> str:
+    return line if len(line) <= MAX_DIFF_TEXT else line[: MAX_DIFF_TEXT - 1].rstrip() + "…"
+
+
+def option_facts(t: dict[str, Any]) -> dict[str, str]:
+    """되묻기 선택지 표 하나의 특징. 모두 카탈로그 값이다 (작성 기관, 지역 단위, 분류 이름,
+    주석의 기준일, 주석의 대상 범위). 없는 것은 빈 문자열"""
+    classes = [
+        c["name"] for c in t.get("classifications") or [] if not REGION_CLASS.search(c["name"])
+    ]
+    shown = ", ".join(classes[:MAX_DIFF_CLASSES]) + (
+        " 등" if len(classes) > MAX_DIFF_CLASSES else ""
+    )
+    return {
+        "org": t.get("organization") or "",
+        "region": ", ".join(t.get("region_levels") or []),
+        "classes": f"분류: {shown}" if classes else "",
+        "basis": _short((notices.basis(notices.lines_of(t)) or [""])[0]),
+        "scope": _short((notices.scope(t) or [""])[0]),
+    }
+
+
+def option_diffs(options: list[dict[str, Any]], by_id: dict[str, dict[str, Any]]) -> dict[str, str]:
+    """되묻기 선택지마다 다른 선택지와 무엇이 다른지 한 줄 {tbl_id: '행정안전부 · 시도 · …'}.
+
+    표 이름만 보고는 고를 수 없어서 붙인다. 선택지끼리 값이 같은 특징(예: 모두 같은 기관)은
+    차이가 아니므로 빼고, 서로 다른 특징만 남긴다. 다른 것이 없으면 줄을 붙이지 않는다"""
+    facts = {o["tbl_id"]: option_facts(by_id[o["tbl_id"]]) for o in options if o["tbl_id"] in by_id}
+    if len(facts) < 2:
+        return {}
+    keys = [k for k in ("org", "region", "classes", "basis", "scope")
+            if len({f[k] for f in facts.values()}) > 1]  # fmt: skip
+    out = {tbl_id: " · ".join(f[k] for k in keys if f[k]) for tbl_id, f in facts.items()}
+    return {tbl_id: line for tbl_id, line in out.items() if line}
+
+
 def answer_text(
-    result: dict[str, Any], rec: dict[str, Any] | None, together: list[dict] | None = None
+    result: dict[str, Any],
+    rec: dict[str, Any] | None,
+    together: list[dict] | None = None,
+    diffs: dict[str, str] | None = None,
 ) -> str:
     status = result["status"]
     if status in STATUS_MESSAGES:
@@ -171,6 +216,8 @@ def answer_text(
         lines = ["비슷한 통계표가 여러 개 있습니다. 어떤 자료를 찾으시나요?"]
         for n, o in zip(NUMBERS, result["options"], strict=False):
             lines.append(f"{n} {o['table_name']} ({o['survey_name']}, {o['edition']}년)")
+            if diff := (diffs or {}).get(o["tbl_id"]):
+                lines.append(f"   {diff}")
         lines.append("번호나 이름으로 답해 주세요.")
         return "\n".join(lines)
     if status == "clarify":
@@ -231,6 +278,7 @@ def respond(
 
     recs: list[dict[str, Any]] = []
     clarify = None
+    diffs: dict[str, str] = {}
     if status in ("ok", "partial_match"):
         chosen = by_id[result["table"]["tbl_id"]]
         family = [t for t in tables if t["family_id"] == chosen["family_id"]]
@@ -250,6 +298,7 @@ def respond(
             "axes": result["clarify_axes"],
         }
     elif status == "ambiguous":
+        diffs = option_diffs(result["options"], by_id)
         clarify = {
             "level": "family",
             "families": [
@@ -261,6 +310,7 @@ def respond(
                     "survey_nm": o["survey_name"],
                     "period": o["edition"],
                     "url": o["url"],
+                    "diff": diffs.get(o["tbl_id"]),  # 다른 선택지와 다른 점 (없으면 None)
                 }
                 for o in result["options"]
             ],
@@ -270,12 +320,14 @@ def respond(
     response = {
         "session_id": session_id,
         "status": status,
-        "answer": answer_text(result, recs[0] if recs else None, together),
+        "answer": answer_text(result, recs[0] if recs else None, together, diffs),
         "parsed": {k: slots[k] for k in ("topic", "target", "conditions", "query_type")},
         "clarify": clarify,
         "recommendations": recs,
         "together": together,
         "notice": result["notice"],
+        # 거절했으면 어디서 거절했는지 (범위 밖 단어 / LLM 검토 / 점수 문턱). 평가 기록용
+        "reason": result.get("reason") if status in REJECTED else None,
     }
     if debug:
         response["debug"] = {

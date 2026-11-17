@@ -18,6 +18,7 @@ async def purge() -> None:
         # 처음 요청 전에는 기록 테이블이 아직 없을 수 있다.
         for table, column in (
             ("chat_sessions", "updated_at"),
+            ("conversations", "updated_at"),  # 로그인 유저의 대화: 마지막 대화 뒤 30일
             ("chat_turns", "created_at"),
             ("search_logs", "created_at"),
         ):

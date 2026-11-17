@@ -697,11 +697,20 @@ def test_ungrounded_dictionary_answer_replaced_by_dynamic(talk: Talk) -> None:
     assert len(talk.searched) == 1
 
 
-def test_ungrounded_dictionary_answer_kept_when_dynamic_fails(talk: Talk) -> None:
+def test_ungrounded_dictionary_out_of_range_not_returned(talk: Talk) -> None:
+    # 근거 없는 사전 지표의 '자료 기간 밖' 안내도 질문과 맞지 않는다 → 통계표 안내
     talk.parsed = {**BASE, "type": "value", "indicator": "출생아 수", "grounded": False}
-    res = talk.say("부산 아기 몇 명 태어났어")
-    assert res["status"] == "ok" and "method" not in res["result"]
-    assert res["tables"]["recommendations"] == [{"tbl_id": "T", "basis": "기준"}]
+    talk.fail_when = lambda parsed: True  # 가짜 qa: out_of_range
+    res = talk.say("2020년 서울 1인 가구 수")
+    assert res["status"] == "tables" and res["trace"]["replaced"]["by"] == "tables"
+
+
+def test_ungrounded_dictionary_answer_not_returned_when_dynamic_fails(talk: Talk) -> None:
+    # 질문에 근거 없는 사전 지표 답은 바로 계산이 안 돼도 돌려주지 않고 통계표를 안내한다
+    talk.parsed = {**BASE, "type": "value", "indicator": "출생아 수", "grounded": False}
+    res = talk.say("서울 1인 가구 중 여성 비율")
+    assert res["status"] == "tables" and res["tables"]["recommendations"] == [{"tbl_id": "DT_X"}]
+    assert res["trace"]["replaced"]["indicator"] == "출생아 수"
     # 근거가 있는 사전 지표는 통계표 찾기를 부르지 않는다
     talk.parsed = {**BASE, "type": "value", "indicator": "출생아 수", "grounded": True}
     searched = len(talk.searched)

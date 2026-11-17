@@ -76,7 +76,56 @@ def test_together_tables_are_listed_in_the_answer() -> None:
     result = {"status": "ok", "slots": {}}
     text = sa.answer_text(result, rec, cards)
     assert "이 통계는 표가 나뉘어 있어 아래 표도 함께 보셔야 합니다." in text
-    line = "함께 볼 통계표: 외국인 남편의 국적별 이혼 (국가데이터처, 2000~2024년) https://kosis.kr/H"
+    line = (
+        "함께 볼 통계표: 외국인 남편의 국적별 이혼 (국가데이터처, 2000~2024년) https://kosis.kr/H"
+    )
     assert line in text
     assert "함께 볼 통계표" not in sa.answer_text(result, rec)
 
+
+def _option(tbl_id: str, name: str, **more) -> dict:
+    return {
+        "tbl_id": tbl_id, "table_name": name, "survey_name": "조사", "edition": "2015~2024",
+        "family_id": f"F_{tbl_id}", "family_name": name, "url": f"https://kosis.kr/{tbl_id}",
+        "organization": "국가데이터처", "region_levels": ["시도"], "classifications": [],
+        "comments": [], **more,
+    }  # fmt: skip
+
+
+def test_ambiguous_options_show_how_they_differ() -> None:
+    """비슷한 표를 되물을 때 표 이름만이 아니라 서로 다른 점(기관·지역 단위·분류·주석)을 붙인다"""
+    a = _option(
+        "A", "시도별 주민 현황", organization="행정안전부",
+        classifications=[{"name": "행정구역별"}, {"name": "성별"}],
+        comments=[{"lines": ["매년 11월1일 기준"]}],
+    )  # fmt: skip
+    b = _option(
+        "B", "성별 주민 - 시군구", region_levels=["시도", "시군구"],
+        classifications=[{"name": "행정구역별(시군구)"}],
+        comments=[{"lines": ["주1) 국내거주 주민을 대상으로 집계", "단, 집단가구 제외"]}],
+    )  # fmt: skip
+    by_id = {"A": a, "B": b}
+    diffs = sa.option_diffs([a, b], by_id)
+    assert diffs["A"] == "행정안전부 · 시도 · 분류: 성별 · 매년 11월1일 기준"
+    assert diffs["B"].startswith("국가데이터처 · 시도, 시군구 · ")
+    assert "집단가구 제외" in diffs["B"] or "대상으로 집계" in diffs["B"]
+
+    result = {"status": "ambiguous", "slots": _slots(), "options": [a, b], "reason": None}
+    response = sa.respond(result, [a, b], "S_test")
+    lines = response["answer"].split("\n")
+    assert lines[1] == "① 시도별 주민 현황 (조사, 2015~2024년)"
+    assert lines[2] == "   행정안전부 · 시도 · 분류: 성별 · 매년 11월1일 기준"
+    assert [f["diff"] for f in response["clarify"]["families"]] == [diffs["A"], diffs["B"]]
+
+
+def test_ambiguous_options_without_difference_add_no_line() -> None:
+    """선택지끼리 같은 특징은 차이가 아니다: 다른 것이 없으면 지금처럼 표 이름만 보여 준다"""
+    a = _option("A", "서울특별시 시군구별 이동자수")
+    b = _option("B", "부산광역시 시군구별 이동자수")
+    assert sa.option_diffs([a, b], {"A": a, "B": b}) == {}
+    result = {"status": "ambiguous", "slots": _slots(), "options": [a, b], "reason": None}
+    response = sa.respond(result, [a, b], "S_test")
+    assert len(response["answer"].split("\n")) == 4  # 머리말 + 선택지 2줄 + 맺음말
+    assert [f["diff"] for f in response["clarify"]["families"]] == [None, None]
+    # 카탈로그에 없는 표가 선택지에 있어도 답은 나간다
+    assert sa.option_diffs([a, b], {"A": a}) == {}
