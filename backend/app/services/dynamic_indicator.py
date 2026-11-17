@@ -26,7 +26,7 @@ lookup.py(값·비교·추이·순위·구성비)가 한다. 그래서 숫자는
     - 분자가 분모의 부분이 아님: 표의 모든 지역·연도에서 분자 ≤ 분모인지 본다 (part_within_whole)
       비율, 연령 구간을 더한 값, 구성비(부분의 합 ≤ 합계)에 쓴다.
       겹치는 묶음 칸을 두 번 세는 것도 막는다
-    - 계산은 됐지만 값이 하나도 없음 (비공개 *·결측) → 다음 후보 표
+    - 계산은 됐지만 값이 하나도 없음 (비공개 *·결측) → 표 안내
 
 답에는 계산식·쓴 표·칸과 "지표 사전에 없는 값을 표에서 바로 계산했다"는 주의를 붙인다.
 """
@@ -44,7 +44,6 @@ from app.services.memory_cache import MISSING, MemoryCache
 
 logger = logging.getLogger(__name__)
 
-MAX_TABLES = 3  # 통계표 찾기 후보 중 이만큼까지 시도한다
 # 말하지 않으면 알리지 않고 합계로 두는 분류 (합계가 '전부'라는 뜻이라 정의가 바뀌지 않는다).
 # 여기 없는 분류(예: 특성별처럼 여러 기준이 섞인 분류)도 합계로 두지만 답에 그 사실을 알린다.
 # 적재된 표 750개의 분류 이름으로 정했다 (2026-11-17). 바꾸면 팀과 맞춘다
@@ -303,6 +302,38 @@ def choose(
 # ---- 계산 계획 (지표 사전의 sources와 같은 모양) --------------------------------------
 
 
+def uncovered(slots: dict | None, plan: Plan, dims: list[Dim], parsed: dict) -> str | None:
+    """통계표 찾기가 질문에서 뽑은 조건 중 고른 칸에 반영되지 않은 것 (있으면 계산하지 않는다)
+
+    칸 하나만 질문과 맞아도 나머지를 합계로 두면, 질문이 좁혀 물은 값 대신 넓은 값을 답하게 된다
+    (예: "미혼 1인 가구"에서 미혼이 표에 없으면 전체 1인 가구). 그래서
+      items    찾는 값(예: 미혼, 65세 이상)은 고른 칸 이름이나 연령·성별로 반영돼야 한다
+      exclude  빼 달라는 대상이 있으면 합계 칸에 그 대상이 들어 있어 계산하지 않는다
+      classes  나눠 보기(~별)를 물었는데 구성비가 아니면 합계 하나로 답하게 되어 계산하지 않는다
+    """
+    if not slots:
+        return None
+    cond = slots.get("conditions") or {}
+    names = [_norm(d.codes[c]) for d in dims for no, c in plan.pick.items() if no == d.no]
+    for item in cond.get("items") or []:
+        word = _norm(item)
+        if not word:
+            continue
+        if any(word in n or n in word for n in names if len(n) >= 2):
+            continue
+        if lookup.parse_age(item) and parsed.get("ages") and plan.age_dim is not None:
+            continue  # 연령 구간은 lookup이 연령 칸으로 고른다
+        if any(word in w for w in ("남자", "여자", "남성", "여성")) and plan.sex_dim is not None:
+            continue
+        return f"질문의 조건 '{item}'을 표의 칸에 반영할 수 없음"
+    if slots.get("exclude"):
+        return f"빼 달라는 대상({', '.join(slots['exclude'])})이 합계 칸에 들어 있음"
+    classes = [c for c in cond.get("classes") or [] if _norm(c) not in ("성별",)]
+    if classes and parsed.get("type") not in ("composition", "rank", "trend"):
+        return f"나눠 보기({', '.join(classes)}별)는 값 하나로 답할 수 없음"
+    return None
+
+
 def _has_age_dim(dims: list[Dim], region_dim: int | None) -> bool:
     return any(d.no not in (0, region_dim) and d.is_age() and d.total() for d in dims)
 
@@ -345,10 +376,15 @@ def _cells(plan: Plan, dims: list[Dim]) -> str:
 
 
 def build(
-    tbl_id: str, question: str, parsed: dict, forced: dict[int, str] | None = None
+    tbl_id: str,
+    question: str,
+    parsed: dict,
+    forced: dict[int, str] | None = None,
+    slots: dict | None = None,
 ) -> tuple[dict | None, "str | Ask | None"]:
     """(지표 정의, None) 또는 (None, 이유 또는 Ask). 적재 안 된 표면 StatsTableMissing
-    forced: 되묻기에서 고른 칸 {분류 번호: 코드}"""
+    forced: 되묻기에서 고른 칸 {분류 번호: 코드}
+    slots: 통계표 찾기가 질문에서 뽑은 조건 (found["parsed"]). 칸에 모두 반영됐는지 본다"""
     dims, region_dim, level = schema(tbl_id)
     if not dims or dims[0].no != 0:
         return None, "항목 정보가 없음"
@@ -364,6 +400,15 @@ def build(
         parsed, ignore_ages = {**parsed, "ages": None}, True
     plan, why = choose(question, parsed, dims, region_dim, forced)
     if plan is None:
+        return None, why
+    if ignore_ages:
+        # 연령 말이 고른 칸 이름 안에 있을 때만 지표 이름의 일부로 본다 (노년 ⊂ 노년부양비).
+        # 아니면 질문의 연령 조건을 버리게 된다 ("노인 1인 가구" → 전 연령 1인 가구) → 계산하지 않음
+        expr = _norm((parsed.get("age_group") or {}).get("expr") or "")
+        names = [_norm(d.codes[plan.matched[d.no]]) for d in dims if d.no in plan.matched]
+        if not expr or not any(expr in n for n in names):
+            return None, "질문의 연령 조건을 표의 칸에 반영할 수 없음"
+    if why := uncovered(slots, plan, dims, parsed):
         return None, why
     src = {"table": tbl_id, "level": level, "item_id": plan.pick[0]}
     if level == "전국":
@@ -595,30 +640,31 @@ LAST_YEAR_KINDS = ("value", "compare", "rank", "composition")
 
 
 async def answer(question: str, parsed: dict, found: dict, trace: dict) -> dict | None:
-    """통계표 찾기가 고른 표로 바로 계산한 답 (qa.answer와 같은 모양). 못 하면 None → 표 안내
+    """통계표 찾기가 고른 1순위 표로 바로 계산한 답 (qa.answer와 같은 모양). 못 하면 None → 표 안내
 
-    후보 표를 순서대로 시도해 처음 계산된 표를 쓴다. 어느 표로도 계산하지 못했는데 앞 표에서
+    통계표 찾기가 조건을 모두 충족한 표 하나를 골랐을 때만(status ok, 함께 볼 표 없음) 계산한다.
+      - 2·3순위 표는 쓰지 않는다: 통계표 찾기가 질문에 덜 맞는다고 본 표다
+      - 일부 조건만 맞는 표(partial_match)나, 한 통계가 여러 표로 나뉜 경우(together)는 표 안내
+      - 통계표 찾기의 주의(판 메모·기준)는 답의 주의에 붙인다
     칸 하나만 정하지 못했으면(예: 분류에 합계가 없음) 그 칸을 되묻는다 (status clarify_question).
     적재 안 된 작은 표는 바로 받아 넣는다 (table_cache.fetch_now).
     시도한 표와 결과는 trace["dynamic"]에 남긴다 (요청 기록)."""
-    if found.get("status") not in ("ok", "partial_match"):
-        return None  # 되묻기·범위 밖은 통계표 찾기 답을 그대로 쓴다
+    if found.get("status") != "ok" or found.get("together"):
+        return None  # 되묻기·범위 밖·일부 일치·여러 표는 통계표 찾기 답을 그대로 쓴다
     trace.setdefault("dynamic", [])
-    first_ask = None
-    for card in (found.get("recommendations") or [])[:MAX_TABLES]:
-        tbl_id = card.get("tbl_id")
-        if not tbl_id:
-            continue
-        res, ask = await _try(tbl_id, card.get("org_id"), question, parsed, trace, {})
-        if res is not None:
-            await _remember(parsed, tbl_id, {}, res)
-            return res
-        if ask is not None and first_ask is None:
-            first_ask = (card, ask)
-    if first_ask is None:
+    card = next(iter(found.get("recommendations") or []), None)
+    if not card or not card.get("tbl_id"):
         return None
-    card, ask = first_ask
-    return ask_answer(question, parsed, card["tbl_id"], card.get("tbl_nm") or card["tbl_id"], ask)
+    tbl_id, slots = card["tbl_id"], found.get("parsed") or {}
+    res, ask = await _try(
+        tbl_id, card.get("org_id"), question, parsed, trace, {}, slots, found.get("notice")
+    )
+    if res is not None:
+        await _remember(parsed, tbl_id, {}, res)
+        return res
+    if ask is None:
+        return None
+    return ask_answer(question, parsed, tbl_id, card.get("tbl_nm") or tbl_id, ask)
 
 
 async def answer_choice(question: str, context: dict, code: str, trace: dict) -> dict | None:
@@ -633,7 +679,9 @@ async def answer_choice(question: str, context: dict, code: str, trace: dict) ->
     if res is None and ask is not None:
         return ask_answer(question, parsed, tbl_id, context.get("tbl_nm") or tbl_id, ask, forced)
     if res is not None:
-        await _remember(parsed, tbl_id, forced, res)
+        # 고른 칸은 이 사람의 선택이다. 표만 남겨 다음 사람에게는 다시 묻는다
+        # (모두의 기본값이 되지 않게)
+        await _remember(parsed, tbl_id, {}, res)
     return res
 
 
@@ -651,6 +699,12 @@ async def cached_answer(question: str, parsed: dict, trace: dict) -> dict | None
     for plan in plans:
         forced = {int(k): v for k, v in (plan.get("forced") or {}).items()}
         res, ask = await _try(plan["tbl_id"], None, question, parsed, trace, forced)
+        if res is not None and res.get("status") != "ok":
+            # 저장한 표에 그 연도·지역 자료가 없다 (예: 수록 기간 밖). 다른 표가 있을 수 있어
+            # 여기서 답하지 않고 통계표 찾기로 넘긴다
+            steps = trace["dynamic"] or [{}]
+            steps[-1]["skip"] = f"캐시한 표로 답하지 못함 ({res.get('status')})"
+            continue
         if res is None and ask is not None:
             res = ask_answer(question, parsed, plan["tbl_id"], plan["tbl_id"], ask, forced)
         if res is not None:
@@ -677,15 +731,18 @@ async def _remember(parsed: dict, tbl_id: str, forced: dict, res: dict) -> None:
         logger.exception("계산 방법 캐시 저장 실패")
 
 
-async def _try(tbl_id, org_id, question, parsed, trace, forced):
-    """표 하나로 계산해 본다 → (답 또는 None, 되물을 것 또는 None)"""
+async def _try(tbl_id, org_id, question, parsed, trace, forced, slots=None, notice=None):
+    """표 하나로 계산해 본다 → (답 또는 None, 되물을 것 또는 None)
+    slots: 통계표 찾기의 조건 (칸 반영 검사), notice: 통계표 찾기의 주의 (답에 붙인다)"""
     step = {"tbl_id": tbl_id, **({"forced": forced} if forced else {})}
     trace["dynamic"].append(step)
-    spec, why = await _build(tbl_id, org_id, question, parsed, step, forced)
+    spec, why = await _build(tbl_id, org_id, question, parsed, step, forced, slots)
     if spec is None:
         step["skip"] = str(why)
         return None, why if isinstance(why, Ask) else None
     step["cells"] = spec["cells"]
+    if notice:
+        spec["note"] = f"{spec['note']}. {notice}"
     res = await qa.answer(_with_spec(parsed, spec), trace, question)
     step["status"] = res["status"]
     if res["status"] == "ok" and not has_values(res.get("result") or {}):
@@ -755,9 +812,9 @@ def has_values(result: dict) -> bool:
     return False
 
 
-async def _build(tbl_id, org_id, question, parsed, step, forced=None):
+async def _build(tbl_id, org_id, question, parsed, step, forced=None, slots=None):
     try:
-        return await run_in_threadpool(build, tbl_id, question, parsed, forced)
+        return await run_in_threadpool(build, tbl_id, question, parsed, forced, slots)
     except StatsTableMissing:
         pass
     except Exception:
@@ -774,7 +831,7 @@ async def _build(tbl_id, org_id, question, parsed, step, forced=None):
         logger.exception("동적 지표 표 받기 실패: %s", tbl_id)
         return None, "표를 받지 못함"
     try:
-        return await run_in_threadpool(build, tbl_id, question, parsed, forced)
+        return await run_in_threadpool(build, tbl_id, question, parsed, forced, slots)
     except Exception:
         logger.exception("동적 지표 계획 만들기 실패: %s", tbl_id)
         return None, "오류"

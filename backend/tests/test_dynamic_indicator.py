@@ -183,11 +183,10 @@ def test_with_spec_uses_table_last_year_when_year_not_asked(monkeypatch) -> None
     assert d._with_spec({**BASE, "sex": "여", "type": "composition"}, ratio)["type"] == "value"
 
 
-def test_answer_skips_clarify_and_tries_candidates(monkeypatch) -> None:
-    assert asyncio.run(d.answer("질문", BASE, {"status": "clarify"}, {})) is None
+def test_answer_uses_only_top_table_when_search_is_sure(monkeypatch) -> None:
     tried = []
 
-    async def fake_build(tbl_id, org_id, question, parsed, step, forced=None):
+    async def fake_build(tbl_id, org_id, question, parsed, step, forced=None, slots=None):
         tried.append(tbl_id)
         return (None, "질문의 말과 맞는 칸이 없음") if tbl_id == "A" else (build(question), None)
 
@@ -196,20 +195,21 @@ def test_answer_skips_clarify_and_tries_candidates(monkeypatch) -> None:
 
     monkeypatch.setattr(d, "_build", fake_build)
     monkeypatch.setattr(qa, "answer", fake_answer)
-    found = {"status": "ok", "recommendations": [{"tbl_id": "A"}, {"tbl_id": "DT_1PL1502"}]}
-    trace: dict = {}
-    res = asyncio.run(d.answer("2020년 서울 1인 가구 수", BASE, found, trace))
-    assert tried == ["A", "DT_1PL1502"] and res["parsed"]["dynamic_spec"]["name"] == "1인 가구 수"
-    assert trace["dynamic"][0]["skip"] == "질문의 말과 맞는 칸이 없음"
-
-
-def test_nothing_fits_returns_none(monkeypatch) -> None:
-    async def fake_build(tbl_id, org_id, question, parsed, step, forced=None):
-        return None, "질문의 말과 맞는 칸이 없음"
-
-    monkeypatch.setattr(d, "_build", fake_build)
-    found = {"status": "ok", "recommendations": [{"tbl_id": "A"}, {"tbl_id": "B"}]}
-    assert asyncio.run(d.answer("서울 통근 인구", BASE, found, {})) is None
+    two = [{"tbl_id": "A"}, {"tbl_id": "DT_1PL1502"}]
+    # 2·3순위 표는 통계표 찾기가 덜 맞다고 본 표라 쓰지 않는다
+    assert asyncio.run(d.answer("질문", BASE, {"status": "ok", "recommendations": two}, {})) is None
+    assert tried == ["A"]
+    # 되묻기·일부 일치·여러 표(함께 볼 표)는 계산하지 않는다
+    for found in (
+        {"status": "clarify"},
+        {"status": "partial_match", "recommendations": two[1:]},
+        {"status": "ok", "recommendations": two[1:], "together": [{"tbl_id": "B"}]},
+    ):
+        assert asyncio.run(d.answer("2020년 서울 1인 가구 수", BASE, found, {})) is None
+    found = {"status": "ok", "recommendations": two[1:], "notice": "2020년 판 기준입니다"}
+    res = asyncio.run(d.answer("2020년 서울 1인 가구 수", BASE, found, {}))
+    spec = res["parsed"]["dynamic_spec"]
+    assert spec["name"] == "1인 가구 수" and spec["note"].endswith("2020년 판 기준입니다")
 
 
 # ---- 추계 표·결측 검증 -------------------------------------------------------------
@@ -257,20 +257,18 @@ def test_has_values(result: dict, expected: bool) -> None:
     assert d.has_values(result) is expected
 
 
-def test_answer_skips_table_without_values(monkeypatch) -> None:
-    async def fake_build(tbl_id, org_id, question, parsed, step, forced=None):
+def test_answer_without_values_falls_back(monkeypatch) -> None:
+    async def fake_build(tbl_id, org_id, question, parsed, step, forced=None, slots=None):
         return build(question), None
 
-    async def fake_answer(q, trace, question):
-        value = None if len(trace["dynamic"]) == 1 else 7  # 첫 표는 값이 비공개
-        return {"status": "ok", "result": {"status": "ok", "value": value}, "parsed": q}
+    async def fake_answer(q, trace, question):  # 그 칸 값이 비공개
+        return {"status": "ok", "result": {"status": "ok", "value": None}, "parsed": q}
 
     monkeypatch.setattr(d, "_build", fake_build)
     monkeypatch.setattr(qa, "answer", fake_answer)
-    found = {"status": "ok", "recommendations": [{"tbl_id": "A"}, {"tbl_id": "B"}]}
     trace: dict = {}
-    res = asyncio.run(d.answer("2020년 서울 1인 가구 수", BASE, found, trace))
-    assert res["result"]["value"] == 7
+    found = {"status": "ok", "recommendations": [{"tbl_id": "A"}]}
+    assert asyncio.run(d.answer("2020년 서울 1인 가구 수", BASE, found, trace)) is None
     assert trace["dynamic"][0]["skip"] == "값이 없음 (비공개·결측)"
 
 
@@ -281,8 +279,8 @@ def test_answer_asks_when_no_table_computes(fake_table: dict, monkeypatch) -> No
     stay = d.Dim(3, "거주기간별", {"1": "1년 미만", "2": "1~5년"})
     fake_table["tables"]["DT_1PL1502"] = ([*ONE_PERSON, stay], 1, "시군구")
 
-    async def fake_build(tbl_id, org_id, question, parsed, step, forced=None):
-        return d.build(tbl_id, question, parsed, forced)
+    async def fake_build(tbl_id, org_id, question, parsed, step, forced=None, slots=None):
+        return d.build(tbl_id, question, parsed, forced, slots)
 
     monkeypatch.setattr(d, "_build", fake_build)
     found = {"status": "ok", "recommendations": [{"tbl_id": "DT_1PL1502", "tbl_nm": "1인가구"}]}
@@ -302,8 +300,8 @@ def test_answer_choice_recomputes_with_picked_cell(fake_table: dict, monkeypatch
     fake_table["tables"]["DT_1PL1502"] = ([*ONE_PERSON, stay], 1, "시군구")
     seen = {}
 
-    async def fake_build(tbl_id, org_id, question, parsed, step, forced=None):
-        return d.build(tbl_id, question, parsed, forced)
+    async def fake_build(tbl_id, org_id, question, parsed, step, forced=None, slots=None):
+        return d.build(tbl_id, question, parsed, forced, slots)
 
     async def fake_answer(q, trace, question):
         seen["filters"] = q["dynamic_spec"]["sources"][0]["filters"]
@@ -432,3 +430,41 @@ def test_unspecified_dimension_total_policy(fake_table: dict, dim_name: str, not
     spec = build("2020년 서울 1인 가구 수")
     assert spec["sources"][0]["filters"]["c3_id"] == "0"
     assert (f"{dim_name}: 전체" in spec["note"]) is noted
+
+
+# ---- 질문 조건이 칸에 모두 반영됐는가 (통계표 찾기의 조건) -------------------------------------
+
+
+def slots(items=(), classes=(), exclude=()) -> dict:
+    cond = {"items": list(items), "classes": list(classes)}
+    return {"conditions": cond, "exclude": list(exclude)}
+
+
+@pytest.mark.parametrize(
+    ("question", "over", "found", "why"),
+    [
+        ("서울 1인 가구 수", {}, slots(items=["1인가구"]), None),
+        ("서울 미혼 1인 가구 수", {}, slots(items=["1인가구", "미혼"]), "'미혼'"),  # 표에 없는 조건
+        ("서울 70세 이상 1인 가구", {"ages": [[70, None]]}, slots(items=["70세 이상"]), None),
+        ("서울 여자 1인 가구", {"sex": "여"}, slots(items=["여자"]), None),
+        ("귀화자 빼고 1인 가구", {}, slots(exclude=["귀화자"]), "빼 달라는"),
+        ("연령별 1인 가구 수", {}, slots(classes=["연령"]), "나눠 보기"),
+        ("1인 가구 연령별 구성", {"type": "composition"}, slots(classes=["연령"]), None),
+    ],
+)
+def test_conditions_must_be_reflected_in_cells(question, over, found, why) -> None:
+    spec, reason = d.build("DT_1PL1502", question, {**BASE, **over}, None, found)
+    if why is None:
+        assert spec is not None, reason
+    else:
+        assert spec is None and why in reason
+
+
+def test_implied_age_word_kept_out_when_not_in_cell(fake_table: dict) -> None:
+    # "노인 1인 가구": 연령 분류가 없는 표에서 노인을 무시하면 전 연령 1인 가구가 된다
+    # → 계산하지 않음
+    items = d.Dim(0, "항목", {"A": "1인가구", "B": "2인가구"})
+    fake_table["tables"]["DT_1PL1502"] = ([items, ONE_PERSON[1]], 1, "시도")
+    implied = {"ages": [[65, None]], "age_group": {"expr": "노인"}}
+    spec, why = d.build("DT_1PL1502", "서울 노인 1인 가구 수", {**BASE, **implied})
+    assert spec is None and why == "질문의 연령 조건을 표의 칸에 반영할 수 없음"

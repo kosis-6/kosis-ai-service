@@ -1417,11 +1417,16 @@ async def _attach_cards(res: dict, asked: str) -> None:
         res["tables"] = {"status": "ok", "recommendations": cards}
 
 
+# 사전 지표로 답했거나 그 지표의 자료 사정을 안내한 상태. 근거 없는 지표면 둘 다 질문과 맞지 않는다
+# (예: "2020년 서울 1인 가구 수"를 미혼 인구로 읽고 "미혼 인구 자료는 2022~2025년만 있습니다")
+DICTIONARY_ANSWERED = ("ok", "out_of_range", "missing_data", "region_not_in_year")
+
+
 def ungrounded(res: dict) -> bool:
     """사전 지표로 답했지만 질문에 그 지표의 이름·별칭이 없는 새 질문 (qa.correct의 grounded)"""
     parsed = res.get("parsed") or {}
     return (
-        res.get("status") == "ok"
+        res.get("status") in DICTIONARY_ANSWERED
         and res.get("request_type") == NEW
         and parsed.get("grounded") is False
         and not parsed.get("dynamic_spec")
@@ -1429,11 +1434,18 @@ def ungrounded(res: dict) -> bool:
 
 
 async def _dynamic_instead(res: dict, state: dict | None, asked: str, user_id: int | None) -> bool:
-    """근거 없이 고른 사전 지표 대신 통계표에서 바로 계산해 본다. 되면 res를 바꾸고 True.
-    안 되면(표가 없거나 칸을 못 고름·되물어야 함) 사전 지표 답을 그대로 둔다"""
+    """근거 없이 고른 사전 지표 대신 통계표에서 바로 계산한다. res를 바꿨으면 True
+
+    질문에 그 지표의 이름·별칭이 없으면 HCX가 비슷한 다른 지표를 고른 것일 수 있다
+    (예: "1인 가구 중 여성 비율" → 서울 인구 성별 구성). 그래서 원래 답은 돌려주지 않는다.
+      바로 계산됨       그 답
+      칸을 되물어야 함   되묻기
+      그 밖             통계표 안내 (찾은 표가 없으면 원래 답 그대로: 통계표 찾기 실패 등)
+    """
     sid = (state or {}).get("search_session") or table_guide.new_search_session()
     trace = res.get("trace") or {}
     parsed = res.get("parsed") or {}
+    found = None
     try:
         computed = await dynamic_indicator.cached_answer(asked, parsed, trace)
         if computed is None:
@@ -1442,20 +1454,26 @@ async def _dynamic_instead(res: dict, state: dict | None, asked: str, user_id: i
     except Exception:
         logger.exception("근거 없는 지표의 바로 계산 실패")
         return False
-    if computed is None or computed.get("status") != "ok":
-        trace["dynamic_kept"] = (res.get("parsed") or {}).get("indicator")
+    if computed is None and found is None:
+        trace["dynamic_kept"] = parsed.get("indicator")
         return False
     # 바꾼 원래 답 (요청 기록·회귀 평가에서 사전 지표 답과 비교한다)
     trace["replaced"] = {
         "indicator": parsed.get("indicator"),
         "answer": lead(res.get("answer") or ""),
+        "by": (computed or {}).get("status") or "tables",
     }
     kind = res.get("request_type")
     res.clear()
-    res.update(computed)
-    res["chart"] = charts.build(res.get("result"))
+    if computed is not None:
+        res.update(computed)
+        if not res.get("clarification"):
+            res["chart"] = charts.build(res.get("result"))
+            await _attach_cards(res, asked)
+    else:
+        res.update(table_guide.tables_answer(found, {"parsed": parsed}))
+        res["trace"] = trace
     res["request_type"], res["question"], res["search_session"] = kind, asked, sid
-    await _attach_cards(res, asked)
     return True
 
 
