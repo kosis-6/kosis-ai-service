@@ -506,6 +506,18 @@ def test_recent_n_years_computed_indicator(monkeypatch) -> None:
     assert calls == [(2021, 2025)]
 
 
+@pytest.mark.parametrize(
+    ("question", "llm", "grounded"),
+    [
+        ("최근 5년 부산 고령화율", "고령인구 비율", True),  # 별칭이 질문에 있다
+        ("서울 1인 가구 중 여성 비율", "총인구", False),  # HCX가 비슷한 지표를 고름
+    ],
+)
+def test_grounded_marks_indicator_named_in_question(question, llm, grounded) -> None:
+    p = qa.correct(question, parsed(indicator=llm, regions=["서울"]), TODAY)
+    assert p["grounded"] is grounded
+
+
 FOREIGN = {
     **ALIASES,
     "외국인주민 수": ["외국인 주민 수", "외국인주민", "외국인 수", "외국인 주민"],
