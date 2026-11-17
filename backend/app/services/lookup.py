@@ -31,6 +31,7 @@ from app.core.stats_db import StatsNotLoadedError, StatsTableMissing
 from app.core.stats_db import rows as _rows
 from app.services import analysis
 from app.services import indicators as ind_mod
+from app.services.josa import josa
 
 LEVELS = {"전국": 0, "시도": 1, "시군구": 2}
 REGION_LEVEL = {"전국": "전국", "시도": "시도", "시군구": "시군구", "일반구": "시군구"}
@@ -372,7 +373,7 @@ def _pick(spec, level, y0, y1, sex):
         return None, {
             "status": "missing_data",
             "indicator": spec["name"],
-            "reason": f"{spec['name']}은(는) {top} 단위까지만 자료가 있습니다.",
+            "reason": f"{josa(spec['name'], '은는')} {top} 단위까지만 자료가 있습니다.",
         }
     for s in fits:
         lo, hi = _years(s)
@@ -420,7 +421,7 @@ def _band_mismatch(spec, src, ages):
         return {
             "status": "unknown_indicator",
             "indicator": name,
-            "reason": f"{name}은(는) 연령으로 나눈 자료가 없습니다.",
+            "reason": f"{josa(name, '은는')} 연령으로 나눈 자료가 없습니다.",
         }
     lo, hi = ages[0]
     bands = sorted(
@@ -438,7 +439,7 @@ def _band_mismatch(spec, src, ages):
     return {
         "status": "band_mismatch",
         "indicator": name,
-        "reason": f"{name}은(는) 표의 연령 구간이 질문한 {asked} 구간과 맞지 않아 "
+        "reason": f"{josa(name, '은는')} 표의 연령 구간이 질문한 {asked} 구간과 맞지 않아 "
         "그 값을 낼 수 없습니다.",
         "available_bands": labels,
         "alternative": f"대신 볼 수 있는 구간: {', '.join(labels)}",
@@ -577,7 +578,8 @@ def _trend_series(spec, reg, start_year, end_year, sex, ages, out_of_range):
             return {
                 "status": "unknown_indicator",
                 "indicator": spec["name"],
-                "reason": f"{spec['name']}은(는) 질문한 연령 구간으로 나눈 자료가 없습니다.",
+                "reason": josa(spec["name"], "은는")
+                + " 질문한 연령 구간으로 나눈 자료가 없습니다.",
             }
         got = _fetch(src, [reg["region_code"]], a, b, age_codes)
         vals.update({k: v for k, v in got.items() if k not in vals})
@@ -700,7 +702,7 @@ def rank(
         return {
             "status": "unknown_indicator",
             "indicator": spec["name"],
-            "reason": f"{spec['name']}은(는) 질문한 연령 구간으로 나눈 자료가 없습니다.",
+            "reason": f"{josa(spec['name'], '은는')} 질문한 연령 구간으로 나눈 자료가 없습니다.",
         }
     cond = ind_mod.rank_where(level, sido)
     if isinstance(cond, dict):

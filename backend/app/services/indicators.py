@@ -31,6 +31,7 @@ from pathlib import Path
 from app.core.stats_db import StatsTableMissing
 from app.core.stats_db import rows as _rows
 from app.services import analysis, population_latest
+from app.services.josa import josa
 
 POP_TABLE = "DT_1B04006"
 POP_SOURCE = "국가데이터처 (구 통계청), 행정구역(시군구)별/1세별 주민등록인구 (DT_1B04006)"
@@ -669,7 +670,7 @@ def _check(name, ind, reg, y0, y1):
             ind,
             "region_not_in_year",
             region=_display(reg),
-            reason=f"{_display(reg)}은(는) {period} 있는 지역입니다.",
+            reason=f"{josa(_display(reg), '은는')} {period} 있는 지역입니다.",
             notes=_change_notes(reg["region_code"]),
         )
     return None
@@ -769,7 +770,8 @@ def resolve_region(name, year=None, sigungu=False):
         return {
             "status": "ambiguous_region",
             "region": name,
-            "reason": f"'{name}'은(는) 여러 시도를 가리킵니다. 어느 지역인지 확인이 필요합니다.",
+            "reason": josa(f"'{name}'", "은는") + " 여러 시도를 가리킵니다. "
+            "어느 지역인지 확인이 필요합니다.",
             "candidates": AMBIGUOUS_NAMES[_norm(name)],
         }
     sql = """
@@ -1180,7 +1182,7 @@ def projection(indicator, region, year, scenario=DEFAULT_SCENARIO):
     # 그 연도에는 없어진 지역 (예: 2030년 광주광역시 → 전남광주통합특별시로 통합)
     if reg.get("valid_to") is not None and year > reg["valid_to"]:
         notes.append(
-            f"{reg['display']}은(는) {reg['valid_to']}년 이후 행정구역이 바뀌었습니다. "
+            f"{josa(reg['display'], '은는')} {reg['valid_to']}년 이후 행정구역이 바뀌었습니다. "
             "추계값은 2022년 기준 추계 당시의 행정구역 기준입니다."
         )
         notes += _change_notes(reg["region_code"])

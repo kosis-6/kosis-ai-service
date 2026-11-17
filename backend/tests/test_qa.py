@@ -290,7 +290,7 @@ def test_band_mismatch_text() -> None:
         ),
         (
             {"status": "unknown_indicator", "indicator": "혼인율"},
-            "'혼인율'은(는) 아직 지원하지 않는 지표입니다. 아래 지원 지표로 다시 질문해 주세요.",
+            "'혼인율'은 아직 지원하지 않는 지표입니다. 아래 지원 지표로 다시 질문해 주세요.",
         ),
         (
             {"status": "parse_error", "reason": "질문을 이해하지 못했습니다."},
@@ -496,7 +496,7 @@ def test_compute_each_indicator(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "출생아 수는 41,605명" in text and "사망자 수는 47,000명" in text
     assert "더 높습니다" not in text  # 다른 지표끼리 견주지 않는다
     assert [s["tbl_id"] for s in qa.sources(r)] == ["T_출생아 수", "T_사망자 수"]
-    assert "혼인 건수은(는) 이 조건으로 답할 수 없어 뺐습니다" in qa.render(r)
+    assert "혼인 건수는 이 조건으로 답할 수 없어 뺐습니다" in qa.render(r)
 
 
 def test_compute_population_rank_passes_the_asked_region(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -38,6 +38,7 @@ from app.services import (
     timeref,
 )
 from app.services.hcx_client import HcxClient
+from app.services.josa import josa, ro
 
 MODEL = "HCX-007"
 
@@ -435,7 +436,11 @@ def correct(question, parsed, today=None):
         # 예) "등록외국인 수"를 외국인주민 수(귀화자·자녀 포함)로 답하지 않고 표 안내로
         current = indicators.canonical_name(parsed.get("indicator") or "")
         if current and (phrase := indicators.excluded_phrase(current, question)):
-            fix("indicator", parsed.get("term") or phrase, f"'{current}'과(와) 다른 통계")
+            fix(
+                "indicator",
+                parsed.get("term") or phrase,
+                josa(f"'{current}'", "과와") + " 다른 통계",
+            )
             parsed["unsupported"] = True
         kind = parsed.get("type")
         # 질문에 고른 지표의 이름·별칭이 있는가. 없으면 HCX가 비슷한 지표를 고른 것일 수 있어
@@ -1055,7 +1060,7 @@ def compute(q):
         missed = [n for n, p in zip(names, parts, strict=False) if p.get("status") != "ok"]
         if missed:
             ok[0].setdefault("notes", []).append(
-                f"{', '.join(missed)}은(는) 이 조건으로 답할 수 없어 뺐습니다"
+                josa(", ".join(missed), "은는") + " 이 조건으로 답할 수 없어 뺐습니다"
             )
         return result
 
@@ -1171,7 +1176,7 @@ def compute(q):
     if result.get("status") == "ok" and term and indicators.canonical_name(term) == sp["name"]:
         if indicators._norm(term) != indicators._norm(sp["name"]):  # 예: 합계출생율 → 합계출산율
             for r in _leaves(result):
-                note = f"'{term}'을(를) {sp['name']}(으)로 보고 답했습니다"
+                note = f"{josa(repr_q(term), '을를')} {ro(sp['name'])} 보고 답했습니다"
                 r["notes"] = [note] + r.get("notes", [])
     if (group := q.get("group")) and result.get("status") == "ok" and "values" in result:
         # 묶음 비교·순위는 정의가 갈릴 수 있어 (예: 5대 광역시에 울산 포함 여부) 포함 지역을 밝힌다
@@ -1557,21 +1562,13 @@ REFUSAL_GUIDE = {
 }
 
 
-def _josa(word, pair):
-    """받침이 있으면 pair[0], 없으면 pair[1]을 붙인다. pair 예: "은는", "이가" """
-    base = re.sub(r"\([^()]*\)$", "", word) if word.endswith(")") else word
-    last = base[-1] if base else ""
-    if "가" <= last <= "힣":
-        return word + (pair[0] if (ord(last) - ord("가")) % 28 else pair[1])
-    return f"{word}{pair[0]}({pair[1]})"
+# 받침에 맞춘 조사 (josa.py). 예전 이름으로도 쓴다 (answer_summary, dynamic_indicator)
+_josa, _ro = josa, ro
 
 
-def _ro(word):
-    """(으)로: 받침이 있으면(ㄹ 제외) '으로'"""
-    last = word[-1] if word else ""
-    if "가" <= last <= "힣" and (ord(last) - ord("가")) % 28 not in (0, 8):
-        return word + "으로"
-    return word + "로"
+def repr_q(word):
+    """작은따옴표로 감싼 말 ('출산율')"""
+    return f"'{word}'"
 
 
 def _val(v, unit, full=False):
@@ -1843,7 +1840,7 @@ def _refusal_text(r):
             gap = gap.format(tables=", ".join(r["related"]))
         if r.get("reason"):
             return f"{r['reason']} {gap}아래 지원 지표로 다시 질문해 주세요."
-        what = f"'{r['indicator']}'은(는)" if r.get("indicator") else "질문하신 지표는"
+        what = josa(f"'{r['indicator']}'", "은는") if r.get("indicator") else "질문하신 지표는"
         return f"{what} 아직 지원하지 않는 지표입니다. {gap}아래 지원 지표로 다시 질문해 주세요."
     if status == "missing_year":
         return f"{r['reason']} {ask_followup.guide(r)}"

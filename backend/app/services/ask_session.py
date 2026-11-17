@@ -66,6 +66,7 @@ from app.services import (
     timeref,
 )
 from app.services.hcx_client import HcxClient
+from app.services.josa import josa
 from app.services.log_redaction import mask, redact
 from app.services.memory_cache import MISSING, MemoryCache
 
@@ -1124,7 +1125,8 @@ async def _turn(
                     # 같은 이름이 여러 곳(고성 등): 후보를 선택지로 보여 주며 다시 묻는다
                     again = {
                         "kind": "local_region",
-                        "prompt": f"'{name}'은(는) 여러 곳에 있습니다. 어느 지역인가요?",
+                        "prompt": josa(f"'{name}'", "은는")
+                        + " 여러 곳에 있습니다. 어느 지역인가요?",
                         "options": list(found["candidates"]),
                     }
                     return _clarification_answer(original, again), {}, None
