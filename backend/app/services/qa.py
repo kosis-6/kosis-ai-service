@@ -1327,6 +1327,14 @@ def _lookup_trend(q, sp, region, year, sex, ages):
     else:
         start = q.get("start_year") or end - 5
     notes = []
+    if end < lo:  # 물은 기간 전체가 수록 기간보다 앞 (예: 1970~1980년, 자료는 1990년부터)
+        return {
+            "status": "out_of_range",
+            "indicator": sp["name"],
+            "reason": f"{sp['name']} 자료는 {lo}~{hi}년만 있습니다.",
+            "available_years": [lo, hi],
+            "asked_year": q.get("start_year") or end,
+        }
     if start < lo:
         notes.append(f"{sp['name']} 자료가 {lo}년부터 있어 {lo}년부터 봤습니다")
         start = lo

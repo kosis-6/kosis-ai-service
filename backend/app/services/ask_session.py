@@ -1403,6 +1403,8 @@ async def _attach_tables(res: dict, state: dict | None, question: str, user_id: 
         return
     if ungrounded(res) and await _dynamic_instead(res, state, asked, user_id):
         return
+    if past_years(res) and await _dynamic_instead(res, state, asked, user_id, keep=True):
+        return
     await _attach_cards(res, asked)
 
 
@@ -1433,8 +1435,29 @@ def ungrounded(res: dict) -> bool:
     )
 
 
-async def _dynamic_instead(res: dict, state: dict | None, asked: str, user_id: int | None) -> bool:
-    """근거 없이 고른 사전 지표 대신 통계표에서 바로 계산한다. res를 바꿨으면 True
+def past_years(res: dict) -> bool:
+    """사전 지표가 물은 연도보다 늦게 시작해 '기간 밖'으로 끝난 새 질문
+    (예: 1980년 이혼 건수, 사전의 표는 1990년부터). 옛 연도는 KOSIS의 다른 표에 있을 수 있다"""
+    result = res.get("result") or {}
+    years = result.get("available_years") or []
+    asked = result.get("asked_year")
+    parsed = res.get("parsed") or {}
+    return (
+        res.get("status") == "out_of_range"
+        and res.get("request_type") == NEW
+        and not parsed.get("dynamic_spec")
+        and len(years) == 2
+        and isinstance(asked, int)
+        and asked < years[0]
+    )
+
+
+async def _dynamic_instead(
+    res: dict, state: dict | None, asked: str, user_id: int | None, keep: bool = False
+) -> bool:
+    """사전 지표 대신 통계표에서 바로 계산한다. res를 바꿨으면 True
+
+    keep=True (옛 연도, past_years): 바로 계산이 안 되면 사전 지표의 '기간 밖' 안내를 그대로 둔다
 
     질문에 그 지표의 이름·별칭이 없으면 HCX가 비슷한 다른 지표를 고른 것일 수 있다
     (예: "1인 가구 중 여성 비율" → 서울 인구 성별 구성). 그래서 원래 답은 돌려주지 않는다.
@@ -1450,11 +1473,13 @@ async def _dynamic_instead(res: dict, state: dict | None, asked: str, user_id: i
         computed = await dynamic_indicator.cached_answer(asked, parsed, trace)
         if computed is None:
             found = await table_guide.find_tables(asked, sid, None, user_id)
-            computed = await dynamic_indicator.answer(asked, parsed, found, trace)
+            computed = await dynamic_indicator.answer(asked, parsed, found, trace, lenient=keep)
     except Exception:
         logger.exception("근거 없는 지표의 바로 계산 실패")
         return False
-    if computed is None and found is None:
+    if (computed is None and found is None) or (
+        keep and (computed is None or computed.get("status") != "ok")
+    ):
         trace["dynamic_kept"] = parsed.get("indicator")
         return False
     # 바꾼 원래 답 (요청 기록·회귀 평가에서 사전 지표 답과 비교한다)

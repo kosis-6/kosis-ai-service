@@ -54,6 +54,7 @@ SAFE_TOTAL = re.compile(
     r"거주외국인|외국인(아내|남편)"
 )
 NOTE = "지표 사전에 없는 값을 통계표에서 바로 계산했습니다. 공식 지표 정의와 다를 수 있습니다"
+OTHER_TABLE_NOTE = "지표 사전의 표에 없는 값이라 같은 통계의 다른 통계표에서 바로 꺼냈습니다"
 PROJECTION_NOTE = "장래추계 표의 추계값입니다(실적 아님). 다음 추계 때 바뀔 수 있습니다"
 TOTAL_NAMES = {"계", "합계", "전체", "총계", "소계", "총", "전국"}
 SEX_NAMES = {"남": {"남자", "남", "남성"}, "여": {"여자", "여", "여성"}}
@@ -406,7 +407,9 @@ def _name(parsed: dict, dims: list[Dim], plan: Plan, counted: bool) -> str:
     words = [d.codes[plan.matched[d.no]] for d in dims if d.no in plan.matched]
     words = words or [dims[0].codes[plan.pick[0]]]
     for term in (parsed.get("term"), parsed.get("indicator")):
-        if not term or indicators.canonical_name(term) or re.search(r"\d{4}", str(term)):
+        # 사전 지표 이름도 고른 칸 이름을 모두 담으면 쓴다 (옛 연도: 이혼 ⊂ 이혼 건수).
+        # 근거 없이 고른 사전 지표(총인구 ⊅ 1인가구)는 아래 담김 검사에서 걸러진다
+        if not term or re.search(r"\d{4}", str(term)):
             continue
         if indicators.find_regions(str(term)):  # "전국 평균 가구원 수"처럼 지역까지 담은 표현
             continue
@@ -497,7 +500,8 @@ def build(
         "kind": "count" if counted else "value",
         "method": "lookup",
         "dynamic": True,
-        "note": NOTE,
+        # 사전 지표 이름으로 답하면 사전 표에 없는 연도 등을 다른 표에서 꺼낸 것이다 (옛 연도)
+        "note": OTHER_TABLE_NOTE if indicators.canonical_name(name) else NOTE,
         "sources": [src],
     }
     kind = parsed.get("type")
@@ -537,7 +541,8 @@ def build(
         )
     if ignore_ages:
         spec["ignore_ages"] = True  # qa.compute가 질문의 연령을 넘기지 않는다
-    spec["formula"] = spec.get("formula") or f"KOSIS 공표 값 ({_cells(plan, dims)})"
+    if not spec.get("formula") and (cells := _cells(plan, dims)):
+        spec["formula"] = f"KOSIS 공표 값 ({cells})"  # 칸이 하나뿐이면 lookup이 표 이름을 쓴다
     spec["cells"] = _cells(plan, dims)
     return spec, None
 
@@ -703,7 +708,9 @@ LAST_YEAR_KINDS = ("value", "compare", "rank", "composition")
 MAX_TABLES = 3  # 통계표 찾기 후보 중 이만큼까지 (순위대로) 시도한다
 
 
-async def answer(question: str, parsed: dict, found: dict, trace: dict) -> dict | None:
+async def answer(
+    question: str, parsed: dict, found: dict, trace: dict, lenient: bool = False
+) -> dict | None:
     """통계표 찾기가 고른 표로 바로 계산한 답 (qa.answer와 같은 모양). 못 하면 None → 표 안내
 
     통계표 찾기가 조건을 충족한 표를 찾았을 때만(status ok, 함께 볼 표 없음) 계산한다.
@@ -717,6 +724,12 @@ async def answer(question: str, parsed: dict, found: dict, trace: dict) -> dict 
     적재 안 된 작은 표는 바로 받아 넣는다 (table_cache.fetch_now).
     시도한 표와 결과는 trace["dynamic"]에 남긴다 (요청 기록)."""
     recs = (found.get("recommendations") or [])[:MAX_TABLES]
+    if lenient and found.get("status") == "ambiguous":
+        # 옛 연도처럼 지표의 뜻은 지표 사전으로 정해졌고 그 연도가 있는 표만 찾는 경우(lenient)는
+        # 비슷한 표가 여럿이라 되묻는 후보로도 계산해 본다 (칸·조건·값 검사는 그대로)
+        families = ((found.get("clarify") or {}).get("families") or [])[:MAX_TABLES]
+        recs = [{"tbl_id": f.get("tbl_id"), "tbl_nm": f.get("tbl_nm")} for f in families]
+        found = {**found, "status": "ok"}
     if found.get("together"):
         return None  # 한 통계가 여러 표로 나뉜 경우는 통계표 찾기 답을 그대로 쓴다
     if found.get("status") != "ok":

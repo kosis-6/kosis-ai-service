@@ -325,7 +325,7 @@ class Talk:
     async def _cached(self, question, parsed, trace):
         return copy.deepcopy(self.cached)
 
-    async def _dynamic(self, question, parsed, found, trace):
+    async def _dynamic(self, question, parsed, found, trace, lenient=False):
         return copy.deepcopy(self.dynamic)
 
     async def _cards(self, question, sources):
@@ -1360,3 +1360,30 @@ def test_region_split_keeps_additional_conditions_for_hcx(talk: Talk, said: str)
     res = talk.say(said)
     assert res["request_type"] not in ("detail", "source", "summary")
     assert talk.extracted == [said]
+
+
+def test_past_year_out_of_range_tries_other_tables(talk: Talk) -> None:
+    # 사전의 표보다 옛 연도 (1980년 이혼 건수, 사전 표는 1990년부터): 그 연도가 있는 표로 바로 계산
+    talk.parsed = {**BASE, "type": "value", "indicator": "이혼 건수"}
+    talk.fail_when = lambda parsed: True  # 가짜 qa: out_of_range
+
+    def old(result):
+        result["result"].update(available_years=[1990, 2025], asked_year=1980)
+        return result
+
+    original = talk._result
+    talk._result = lambda parsed, question="": old(original(parsed, question))
+    talk.dynamic = {
+        "status": "ok",
+        "answer": "1980년 서울특별시의 이혼 수는 7,935건입니다.",
+        "parsed": {**BASE, "type": "value", "indicator": "이혼"},
+        "result": {"status": "ok", "value": 7935, "method": "dynamic"},
+        "sources": [{"name": "옛 인구동태", "basis": "기준", "tbl_id": "DT_OLD", "url": None}],
+        "trace": {},
+    }
+    res = talk.say("1980년 서울 이혼 건수")
+    assert res["status"] == "ok" and res["result"]["method"] == "dynamic"
+    # 바로 계산이 안 되면 '기간 밖' 안내를 그대로 준다 (표 안내로 바꾸지 않음)
+    talk.dynamic = None
+    res = talk.say("1975년 부산 혼인 건수")
+    assert res["status"] == "out_of_range"

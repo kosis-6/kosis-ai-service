@@ -563,3 +563,23 @@ def test_partial_match_with_only_age_failures_is_computed(monkeypatch) -> None:
     assert (
         asyncio.run(d.answer("서울 미혼 1인 가구", {**BASE, "ages": [[62, 67]]}, found, {})) is None
     )
+
+
+def test_lenient_uses_ambiguous_candidates(monkeypatch) -> None:
+    # 옛 연도 찾기(lenient)는 '비슷한 표 여럿'의 후보로도 계산해 본다. 일반 질문은 되묻기 그대로
+    tried = []
+
+    async def fake_build(tbl_id, org_id, question, parsed, step, forced=None, slots=None):
+        tried.append(tbl_id)
+        return build(question), None
+
+    async def fake_answer(q, trace, question):
+        return {"status": "ok", "result": {"status": "ok", "value": 7935}, "parsed": q}
+
+    monkeypatch.setattr(d, "_build", fake_build)
+    monkeypatch.setattr(qa, "answer", fake_answer)
+    families = [{"tbl_id": "DT_OLD", "tbl_nm": "옛 인구동태"}, {"tbl_id": "DT_OLD2"}]
+    found = {"status": "ambiguous", "clarify": {"level": "family", "families": families}}
+    assert asyncio.run(d.answer("1980년 서울 1인 가구 수", BASE, found, {})) is None
+    res = asyncio.run(d.answer("1980년 서울 1인 가구 수", BASE, found, {}, lenient=True))
+    assert res["status"] == "ok" and tried == ["DT_OLD"]

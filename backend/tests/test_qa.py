@@ -572,3 +572,13 @@ def test_sigungu_future_year_is_prediction_with_sido_projection(monkeypatch) -> 
         out["reason"].startswith("부산광역시 해운대구의 2040년 값은")
         and "시도 단위까지만" in out["reason"]
     )
+
+
+def test_lookup_trend_entirely_before_coverage_is_out_of_range(monkeypatch) -> None:
+    # 1970~1980년을 물었는데 자료가 1990년부터: "1990~1980년 자료가 부족합니다"가 아니라 기간 밖
+    monkeypatch.setattr(qa, "_lookup_span", lambda sp, region, sex: (1990, 2025))
+    sp = {"name": "이혼 건수"}
+    q = {"type": "trend", "start_year": 1970, "end_year": 1980}
+    r = qa._lookup_trend(q, sp, "서울", None, "계", None)
+    assert r["status"] == "out_of_range" and r["available_years"] == [1990, 2025]
+    assert r["asked_year"] == 1970 and r["reason"] == "이혼 건수 자료는 1990~2025년만 있습니다."
