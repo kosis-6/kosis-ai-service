@@ -37,4 +37,8 @@ class SearchResponse(BaseModel):
     )
     recommendations: list[dict[str, Any]] = Field(description="추천 통계표 (1순위가 확정 표)")
     notice: str | None = Field(description="불충족 조건 등 고지")
+    reason: str | None = Field(
+        default=None,
+        description="거절(out_of_scope 등)한 경우 판정 근거 (범위 밖 단어·LLM 검토·점수)",
+    )
     debug: dict[str, Any] | None = None

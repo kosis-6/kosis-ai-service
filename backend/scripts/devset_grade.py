@@ -38,7 +38,11 @@ REFUSAL_TYPES = {
     "unknown_indicator": "범위 밖 주제",
     "not_supported_question": "범위 밖 주제",
     "missing_data": "값이 비어 있음",
+    # 통계표 찾기의 거절 (응답의 tables.status). 근거는 tables.reason
+    "out_of_scope": "범위 밖 주제",
+    "not_statistics": "범위 밖 주제",
 }
+SEARCH_REFUSALS = ("out_of_scope", "not_statistics")
 
 
 def action_of(res: dict) -> str:
@@ -509,12 +513,16 @@ def _first_wrong(g, answered, table_issue, cond_wrong, in_result, claims) -> str
 
 def _grade_refusal(g: Grade, row: dict[str, str], res: dict) -> Grade:
     status = res.get("status")
+    tables = res.get("tables") or {}
+    # 통계표 찾기가 범위 밖으로 거절한 답은 바깥 status가 "tables"라 안쪽 status를 본다
+    if status == "tables" and tables.get("status") in SEARCH_REFUSALS:
+        status = tables["status"]
+        g.details["거절 근거"] = tables.get("reason") or "(기록 없음)"
     g.details["안내 틀 ID"] = status
     want = row.get("답변 불가 유형", "")
     got = REFUSAL_TYPES.get(status or "", "")
     g.details["불가 유형"] = got or f"(정하지 못함: {status})"
     result = res.get("result") or {}
-    tables = res.get("tables") or {}
     alternative = bool(
         result.get("available_years")
         or result.get("suggestion")

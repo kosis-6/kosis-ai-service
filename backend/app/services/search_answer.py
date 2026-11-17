@@ -27,6 +27,7 @@ STATUS_MESSAGES = {
     ),
     "parse_error": "질문을 이해하지 못했습니다. 찾는 통계의 주제를 넣어 다시 질문해 주세요.",
 }
+REJECTED = ("out_of_scope", "not_statistics", "parse_error")
 NUMBERS = "①②③④⑤"
 AXIS_LABELS = {"target": "대상", "sex": "성별", "edition": "연도"}
 
@@ -247,6 +248,8 @@ def respond(
         "clarify": clarify,
         "recommendations": recs,
         "notice": result["notice"],
+        # 거절했으면 어디서 거절했는지 (범위 밖 단어 / LLM 검토 / 점수 문턱). 평가 기록용
+        "reason": result.get("reason") if status in REJECTED else None,
     }
     if debug:
         response["debug"] = {

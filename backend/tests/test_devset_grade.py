@@ -190,6 +190,22 @@ def test_refusal_type_and_alternative():
     assert dg.grade(r, wrong).reason == "행동 (불가 유형 오류)"
 
 
+def test_search_out_of_scope_is_off_topic_refusal():
+    r = row(**{"기대 행동": "답변 불가", "답변 불가 유형": "범위 밖 주제", "질문 종류": ""})
+    off = {
+        "status": "tables",
+        "answer": "제공 범위(KOSIS 인구 분야 통계표)에서 질문에 맞는 통계표를 찾지 못했습니다. "
+        "찾는 통계의 주제나 표 이름에 들어갈 단어로 다시 질문해 주세요.",
+        "tables": {"status": "out_of_scope", "reason": "검토 결과 후보 통계표가 …"},
+    }
+    g = dg.grade(r, off)
+    assert g.correct == "O"
+    assert g.details["거절 근거"].startswith("검토 결과")
+    # 표를 추천한 답은 범위 밖 거절이 아니다
+    rec = {"status": "tables", "answer": "추천 통계표: …", "tables": {"status": "ok"}}
+    assert dg.grade(r, rec).reason == "행동 (불가 유형 오류)"
+
+
 def test_tables_only_answer_counts_as_refusal():
     assert dg.action_of({"status": "tables", "tables": {"recommendations": [1]}}) == "답변 불가"
     assert dg.action_of({"status": "tables", "tables": {"clarify": {"options": []}}}) == "되묻기"

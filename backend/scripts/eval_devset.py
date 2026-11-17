@@ -112,6 +112,7 @@ def record(row: dict[str, str], g: dg.Grade, first: dict, final: dict | None, ms
         "status": last.get("status"),
         "request_type": last.get("request_type"),
         "쓴 표": ",".join(s.get("tbl_id") or "" for s in last.get("sources") or []),
+        "거절 근거": (last.get("tables") or {}).get("reason") or "",
         "응답 시간(ms)": ms,
         "상세": json.dumps(g.details, ensure_ascii=False, default=str),
         "되묻기 문장": (first.get("answer") or "") if final else "",
