@@ -42,10 +42,20 @@ YEARLY = "prd_se in ('A', 'F')"
 SEX_WORDS = {"남": "남자", "여": "여자"}
 # 분류 이름 → 연령 구간 (끝이 None이면 그 나이 이상)
 AGE_NAMES = [
-    (re.compile(r"(\d+)\s*[-~]\s*(\d+)\s*세"), lambda m: (int(m[1]), int(m[2]))),
+    # 구간: '15~19세', '15 - 19세', '만 7세~만 12세'
+    (re.compile(r"(\d+)\s*세?\s*[-~]\s*만?\s*(\d+)\s*세"), lambda m: (int(m[1]), int(m[2]))),
+    # 열린 구간: '20세미만', '85세 이상', '65세 이하'
     (re.compile(r"(\d+)\s*세\s*미만"), lambda m: (0, int(m[1]) - 1)),
     (re.compile(r"(\d+)\s*세\s*이상"), lambda m: (int(m[1]), None)),
+    (re.compile(r"(\d+)\s*세\s*이하"), lambda m: (0, int(m[1]))),
+    # 10세 구간: '90대 이상', '20대이하', '30대' (자세한 규칙을 먼저 본다)
+    (re.compile(r"(\d+)\s*대\s*이상"), lambda m: (int(m[1]), None)),
+    (re.compile(r"(\d+)\s*대\s*이하"), lambda m: (0, int(m[1]) + 9)),
     (re.compile(r"(\d+)\s*대"), lambda m: (int(m[1]), int(m[1]) + 9)),
+    # 한 살: '19세', '만3세' (값 전체가 이 모양일 때만)
+    (re.compile(r"^\s*만?\s*(\d+)\s*세\s*$"), lambda m: (int(m[1]), int(m[1]))),
+    # '세'가 빠진 구간: '60~64' (값 전체가 이 모양일 때만)
+    (re.compile(r"^\s*(\d+)\s*[-~]\s*(\d+)\s*$"), lambda m: (int(m[1]), int(m[2]))),
 ]
 
 
@@ -213,25 +223,30 @@ def _dim_labels(tbl_id, dim):
 
 def _age_codes(src, band):
     """연령 구간 → 더할 분류 코드 목록
-    표의 최소 연령보다 넓게 물으면(예: 15세 이상, 표는 18세 이상) 합계"""
+    표의 최소 연령보다 넓게 물으면(예: 15세 이상, 표는 18세 이상) 합계.
+    한 표에 5세 구간과 한 살 값이 함께 있으면(예: 20~24세와 20세) 겹치므로, 시작 나이부터
+    가장 넓은 구간을 차례로 골라 이어 붙인다 (19~34세 → 19세 + 20~24 + 25~29 + 30~34)"""
     lo, hi = band
     if hi is None and lo <= src.get("age_min", 0):
         return [src["age_total"]]
-    found = []
+    starts = {}
     for code, name in _dim_labels(src["table"], src["age_dim"]):
         b = parse_age(name)
         if b and b[0] >= lo and (hi is None or (b[1] is not None and b[1] <= hi)):
-            found.append((b, code))
-    found.sort()
-    bands = [b for b, _ in found]
-    if not bands:
+            starts.setdefault(b[0], []).append((b, code))
+    codes, pos = [], lo
+    while True:
+        cands = starts.get(pos)
+        if not cands:  # 시작이 안 맞거나 중간에 빈 곳
+            raise AgeMismatch
+        b, code = max(cands, key=lambda bc: float("inf") if bc[0][1] is None else bc[0][1])
+        codes.append(code)
+        if b[1] is None or b[1] == hi:
+            break
+        pos = b[1] + 1
+    if b[1] != hi:
         raise AgeMismatch
-    start_ok = bands[0][0] == lo or (bands[0][0] == 0 and lo <= src.get("age_min", 0))
-    end_ok = bands[-1][1] == hi
-    gaps = any(b[0] != a[1] + 1 for a, b in zip(bands, bands[1:], strict=False) if a[1] is not None)
-    if not start_ok or not end_ok or gaps:
-        raise AgeMismatch
-    return [code for _, code in found]
+    return codes
 
 
 # ---- 조회 ------------------------------------------------------------------------
