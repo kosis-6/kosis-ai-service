@@ -28,6 +28,7 @@ STATUS_MESSAGES = {
     ),
     "parse_error": "질문을 이해하지 못했습니다. 찾는 통계의 주제를 넣어 다시 질문해 주세요.",
 }
+REJECTED = ("out_of_scope", "not_statistics", "parse_error")
 NUMBERS = "①②③④⑤"
 AXIS_LABELS = {"target": "대상", "sex": "성별", "edition": "연도"}
 # 되묻기 선택지의 차이 줄: 지역 분류는 '지역 단위'로 따로 보여 주므로 분류 이름에서 뺀다
@@ -325,6 +326,8 @@ def respond(
         "recommendations": recs,
         "together": together,
         "notice": result["notice"],
+        # 거절했으면 어디서 거절했는지 (범위 밖 단어 / LLM 검토 / 점수 문턱). 평가 기록용
+        "reason": result.get("reason") if status in REJECTED else None,
     }
     if debug:
         response["debug"] = {

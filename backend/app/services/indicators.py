@@ -39,6 +39,9 @@ AREA_SOURCE = "국토교통부 지적통계, 행정구역별·지목별 국토�
 AREA_TABLE = "DT_MLTM_2300"
 AREA_ORG = "116"  # 카탈로그(catalog·table_meta)에 없는 표라 기관 ID를 적어 둔다
 AREA_BASIS = "지목 전체(계) 면적, 각 연도 12월 31일 기준"
+HH_TABLE = "DT_1B040B3"
+HH_SOURCE = "행정안전부, 행정구역(시군구)별 주민등록세대수 (DT_1B040B3)"
+HH_BASIS = "주민등록 세대수, 각 연도 12월 31일 기준"
 PROJ_SOURCE = "국가데이터처 (구 통계청), 장래인구추계 시도편 주요 인구지표 (DT_1BPB002)"
 PROJ_BASIS = "2022년 기준 장래인구추계, 각 연도 7월 1일 기준 (외국인 포함)"
 PROJ_TABLE = "DT_1BPB002"
@@ -80,6 +83,60 @@ INDICATORS = {
         "projection_c3": "50",
         # 답변 문장에서 값의 뜻을 풀어 쓸 때 사용 (qa.summary)
         "meaning": "유소년인구(0~14세) 100명당 65세 이상 인구가 {value}명",
+    },
+    "생산연령인구 비율": {
+        "unit": "%",
+        "kind": "ratio",
+        "formula": "15~64세 인구 ÷ 총인구 × 100",
+        "calc": lambda c: _div(c["working"], c["total"]),
+    },
+    "노년부양비": {
+        "unit": "생산연령인구 100명당 명",
+        "kind": "index",
+        "formula": "65세 이상 인구 ÷ 15~64세 인구 × 100",
+        "calc": lambda c: _div(c["old"], c["working"]),
+        "meaning": "생산연령인구(15~64세) 100명당 65세 이상 인구가 {value}명",
+    },
+    "유소년부양비": {
+        "unit": "생산연령인구 100명당 명",
+        "kind": "index",
+        "formula": "0~14세 인구 ÷ 15~64세 인구 × 100",
+        "calc": lambda c: _div(c["young"], c["working"]),
+        "meaning": "생산연령인구(15~64세) 100명당 0~14세 인구가 {value}명",
+    },
+    "총부양비": {
+        "unit": "생산연령인구 100명당 명",
+        "kind": "index",
+        "formula": "(0~14세 인구 + 65세 이상 인구) ÷ 15~64세 인구 × 100",
+        "calc": lambda c: _div((c["young"] or 0) + (c["old"] or 0), c["working"]),
+        "meaning": "생산연령인구(15~64세) 100명당 부양할 인구(0~14세 + 65세 이상)가 {value}명",
+    },
+    "성비": {
+        "unit": "여자 100명당 남자 수",
+        "kind": "index",
+        "formula": "남자 인구 ÷ 여자 인구 × 100",
+        "calc": lambda c: _div(c.get("male"), c.get("female")),
+        "sexes": True,  # _components가 남녀 인구(male, female)를 붙인다
+        "meaning": "여자 100명당 남자가 {value}명",
+    },
+    "중위연령": {
+        "unit": "세",
+        "kind": "value",
+        "diff_unit": "세",
+        "digits": 1,
+        "formula": "인구를 나이순으로 세웠을 때 가운데 사람의 나이 (1세별 인구로 보간)",
+        "calc": lambda c: c.get("median_age"),
+        "median": True,  # _components가 1세별 인구로 중위연령(median_age)을 붙인다
+        "meaning": "인구의 절반이 {value}세 미만",
+    },
+    "세대당 인구": {
+        "unit": "명",
+        "kind": "value",
+        "diff_unit": "명",
+        "formula": "주민등록 총인구 ÷ 주민등록 세대수",
+        "calc": lambda c: c["total"] / c["households"] if c.get("households") else None,
+        "households": True,  # _components가 세대수(households, DT_1B040B3)를 붙인다
+        "meaning": "한 세대에 평균 {value}명",
     },
     "인구밀도": {
         "unit": "명/㎢",
@@ -274,6 +331,15 @@ def _base(name, ind, status="ok", **extra):
         "tbl_id": POP_TABLE,
         "url": kosis_url(POP_TABLE),
     }
+    if ind.get("households"):  # 세대당 인구: 분모인 세대수 표도 출처로 밝힌다
+        out["extra_sources"] = [
+            {
+                "source": HH_SOURCE,
+                "basis": HH_BASIS,
+                "tbl_id": HH_TABLE,
+                "url": kosis_url(HH_TABLE),
+            }
+        ]
     if ind.get("area"):  # 인구밀도: 분모인 면적 표도 출처로 밝힌다 (qa.render·sources)
         out["extra_sources"] = [
             {
@@ -345,10 +411,11 @@ def _out_of_range_reason(lo, hi):
     return reason
 
 
-def _components(codes, y0, y1, sex, band=None, area=False):
+def _components(codes, y0, y1, sex, band=None, area=False, ind=None):
     """연도·지역별 총인구, 0~14세, 15~64세, 65세 이상 (100세 이상 포함)
     band=(시작 연령, 끝 연령 또는 None)이면 그 구간 인구(band)도 더한다
-    area=True면 면적(area, ㎢)도 붙인다 (인구밀도)"""
+    area=True면 면적(area, ㎢)도 붙인다 (인구밀도)
+    ind(지표 정의)에 sexes·median·households가 있으면 남녀 인구·중위연령·세대수도 붙인다"""
     marks = ", ".join("?" for _ in codes)
     lo, hi = band or (0, None)
     rows = _rows(
@@ -379,7 +446,86 @@ def _components(codes, y0, y1, sex, band=None, area=False):
                 }
     if area:
         _attach_area(out, codes, y1)
+    ind = ind or {}
+    if ind.get("sexes"):
+        _attach_sexes(out, codes, y0, y1)
+    if ind.get("median"):
+        _attach_median(out, codes, y0, y1, sex)
+    if ind.get("households"):
+        _attach_households(out, codes, y0, y1)
     return out
+
+
+def _median_age(ages):
+    """1세별 인구 {나이: 인구} → 중위연령. 가운데 사람이 든 나이 안에서 고르게 퍼져 있다고 보고 보간
+    예) 0~39세 누적이 48%, 40세가 4%면 중위연령 = 40 + (50 - 48) / 4 = 40.5세"""
+    counts = sorted((a, n) for a, n in ages.items() if a is not None and n)
+    total = sum(n for _, n in counts)
+    if not total:
+        return None
+    half, cum = total / 2, 0
+    for age, n in counts:
+        if cum + n >= half:
+            return age + (half - cum) / n
+        cum += n
+    return None
+
+
+def _attach_sexes(comps, codes, y0, y1):
+    """성비: 남자(male)·여자(female) 총인구를 붙인다. 최신 달 값은 KOSIS 월별 자료에서"""
+    marks = ", ".join("?" for _ in codes)
+    rows = _rows(
+        f"""
+        select year, region_code, sex, sum(population) as total from population
+        where age is null and sex in ('남', '여') and year between ? and ?
+              and region_code in ({marks})
+        group by year, region_code, sex
+    """,
+        [y0, y1, *codes],
+    )
+    got = {(r["year"], r["region_code"], r["sex"]): r["total"] for r in rows}
+    if y1 > _data_years()[1]:
+        for s in ("남", "여"):
+            for code, m in _month_values(list(codes), s, y1).items():
+                got[(y1, code, s)] = m["total"]
+    for (year, code), comp in comps.items():
+        comp["male"] = got.get((year, code, "남"))
+        comp["female"] = got.get((year, code, "여"))
+
+
+def _attach_median(comps, codes, y0, y1, sex):
+    """중위연령(median_age): 1세별 인구로 계산. 최신 달 값은 KOSIS 월별 자료의 1세별 인구로"""
+    marks = ", ".join("?" for _ in codes)
+    rows = _rows(
+        f"""
+        select year, region_code, age, sum(population) as n from population
+        where age is not null and sex = ? and year between ? and ? and region_code in ({marks})
+        group by year, region_code, age
+    """,
+        [sex, y0, y1, *codes],
+    )
+    ages = {}
+    for r in rows:
+        ages.setdefault((r["year"], r["region_code"]), {})[r["age"]] = r["n"]
+    if y1 > _data_years()[1]:
+        for code, m in _month_values(list(codes), sex, y1).items():
+            if m.get("ages"):
+                ages[(y1, code)] = m["ages"]
+    for key, comp in comps.items():
+        comp["median_age"] = _median_age(ages.get(key) or {})
+
+
+def _attach_households(comps, codes, y0, y1):
+    """세대당 인구: 그해 주민등록 세대수(households)를 붙인다 (DT_1B040B3, 조회 지표와 같은 방식).
+    세대수 표가 적재되지 않았거나 그해 값이 없으면 붙이지 않는다 (값 없음으로 답한다)"""
+    from app.services import lookup  # lookup이 indicators를 불러서 함수 안에서 부른다
+
+    try:
+        got = lookup._fetch({"table": HH_TABLE, "item_id": "T1"}, list(codes), y0, y1)
+    except StatsTableMissing:
+        return
+    for key, comp in comps.items():
+        comp["households"] = got.get(key)
 
 
 def _attach_area(comps, codes, y1):
@@ -698,7 +844,9 @@ def value(indicator, region, year, sex="계", ages=None):
     reg = regs[0]
     if bad := _check(name, ind, reg, year, year):
         return bad
-    comps = _components([reg["region_code"]], year, year, sex, ind.get("band"), ind.get("area"))
+    comps = _components(
+        [reg["region_code"]], year, year, sex, ind.get("band"), ind.get("area"), ind
+    )
     comp = comps.get((year, reg["region_code"]))
     v = ind["calc"](comp) if comp else None
     out = _base(
@@ -725,7 +873,7 @@ def trend(indicator, region, start_year, end_year, sex="계", ages=None):
     if bad := _check(name, ind, reg, start_year, end_year):
         return bad
     comps = _components(
-        [reg["region_code"]], start_year, end_year, sex, ind.get("band"), ind.get("area")
+        [reg["region_code"]], start_year, end_year, sex, ind.get("band"), ind.get("area"), ind
     )
     series = [{"year": y, "value": _r(ind["calc"](c), ind)} for (y, _), c in sorted(comps.items())]
     series = [p for p in series if p["value"] is not None] or series
@@ -770,7 +918,7 @@ def compare(indicator, regions, year, sex="계", ages=None):
         if bad := _check(name, ind, reg, year, year):
             return bad
     comps = _components(
-        [r["region_code"] for r in regs], year, year, sex, ind.get("band"), ind.get("area")
+        [r["region_code"] for r in regs], year, year, sex, ind.get("band"), ind.get("area"), ind
     )
     values = []
     for reg in regs:
@@ -932,7 +1080,7 @@ def rank(
             [year, *params],
         )
     comps = _components(
-        [r["region_code"] for r in regs], year, year, sex, ind.get("band"), ind.get("area")
+        [r["region_code"] for r in regs], year, year, sex, ind.get("band"), ind.get("area"), ind
     )
     items, missing = [], []
     for reg in regs:
