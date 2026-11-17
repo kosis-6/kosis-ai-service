@@ -658,6 +658,43 @@ def test_age_population_needs_people_only() -> None:
     assert p["indicator"] != "총인구" and p.get("unsupported") is True
 
 
+@pytest.mark.parametrize("llm", ["고령인구 비율", ""])
+@pytest.mark.parametrize("question", ["청년 취업자 몇 명이야?", "취업자 중 청년 몇 명이야?"])
+def test_other_target_with_age_is_not_population(question: str, llm: str) -> None:
+    # HCX가 엉뚱한 지표를 주거나 비워도, 연령 집단이 아닌 대상(취업자)을 세면 총인구로 바꾸지 않는다
+    p = qa.correct(question, parsed(indicator=llm), TODAY)
+    assert p["indicator"] != "총인구"
+
+
+@pytest.mark.parametrize(
+    ("question", "regions"),
+    [
+        ("광주랑 전남 노인 다 합치면 몇 명이야", ["광주광역시", "전라남도"]),
+        ("30대 중에 서울 사는 사람 몇 명", ["서울"]),
+        ("서울 사는 사람 중 30대 몇 명", ["서울"]),
+        ("20대 여자 몇 명이야", []),
+    ],
+)
+def test_age_population_with_filler_words(question: str, regions: list) -> None:
+    p = qa.correct(question, parsed(indicator="", regions=regions), TODAY)
+    assert p["indicator"] == "총인구"
+
+
+@pytest.mark.parametrize(
+    ("question", "ok"),
+    [
+        ("애들보다 노인이 몇 배 많아?", True),
+        ("유소년 대비 노인 몇 배야", True),
+        ("노인이랑 애들 몇 배 차이야", True),  # 나누는 쪽을 말하지 않으면 노령화지수
+        ("노인보다 애들이 몇 배 많아?", False),  # 유소년 ÷ 노인은 노령화지수가 아니다
+        ("노인 대비 유소년 몇 배야", False),
+    ],
+)
+def test_aging_index_direction(question: str, ok: bool) -> None:
+    p = qa.correct(question, parsed(indicator="노령화지수"), TODAY)
+    assert (p["indicator"] == "노령화지수" and not p.get("unsupported")) is ok
+
+
 def test_births_versus_deaths_is_natural_increase() -> None:
     # HCX가 지표를 비워도 "태어난 vs 돌아가신"은 자연증가 건수
     p = qa.correct("작년에 태어난 사람이 많아 돌아가신 사람이 많아?", {"type": "other"}, TODAY)

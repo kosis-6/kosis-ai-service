@@ -102,6 +102,22 @@ def resolve(question: str) -> AgeRef | None:
     return best[1] if best else None
 
 
+def spans(question: str) -> list[tuple[int, int, AgeRef]]:
+    """질문에 나온 연령 집단 이름마다 (시작 위치, 끝 위치, 구간). 같은 자리에서는 긴 이름"""
+    found: list[tuple[int, int, AgeRef]] = []
+    for words, lo, hi, basis in GROUPS:
+        for w in words:
+            pos = _find(question, w)
+            if pos >= 0:
+                found.append((pos, pos + len(w), AgeRef(w, lo, hi, basis)))
+    found.sort(key=lambda f: (f[0], -(f[1] - f[0])))
+    out: list[tuple[int, int, AgeRef]] = []
+    for f in found:
+        if not any(a < f[1] and f[0] < b for a, b, _ in out):
+            out.append(f)
+    return out
+
+
 def resolve_all(question: str) -> list[AgeRef]:
     """질문에 나온 연령 집단 이름 전부 (나온 순서, 같은 구간은 하나).
     "애들보다 노인이 몇 배"처럼 두 집단을 함께 물은 경우를 알아보는 데 쓴다"""

@@ -271,13 +271,23 @@ STATS_WORDS = re.compile(
 
 def extract_ages(question):
     """질문 속 연령 구간 → [[시작, 끝 또는 None], ...] (나온 순서, 중복 제거)"""
+    bands = []
+    for _, _, band in age_spans(question):
+        if band not in bands:
+            bands.append(band)
+    # "20대(20~29세)"처럼 같은 구간을 두 번 쓰면 하나로
+    return bands
+
+
+def age_spans(question):
+    """질문 속 숫자 연령 구간 → [(시작 위치, 끝 위치, [시작, 끝 또는 None]), ...] (나온 순서)"""
     found, covered = [], []
 
     def add(m, band):
         # 앞에서 더 구체적인 표현으로 이미 읽은 자리면 건너뛴다 ("60대 이상"의 "60대")
         if not any(a < m.end() and m.start() < b for a, b in covered):
             covered.append(m.span())
-            found.append((m.start(), band))
+            found.append((m.start(), m.end(), band))
 
     for m in AGE_OVER_UNDER.finditer(question):
         add(m, [int(m[1]), int(m[2]) - (m[3] == "미만")])
@@ -309,12 +319,7 @@ def extract_ages(question):
     for m in AGE_DECADE.finditer(question):
         if int(m[1]) % 10 == 0:
             add(m, [int(m[1]), int(m[1]) + 9])
-    bands = []
-    for _, band in sorted(found, key=lambda x: x[0]):
-        if band not in bands:
-            bands.append(band)
-    # "20대(20~29세)"처럼 같은 구간을 두 번 쓰면 하나로
-    return bands
+    return sorted(found, key=lambda x: x[0])
 
 
 def _pick_indicator(question, names):
@@ -612,10 +617,11 @@ def _merge_regions(regions):
 # 연령 집단으로 정의한 계산 지표 → (필요한 연령 구간들, 묻는 말). 질문에 그 집단(이름·숫자 구간)과
 # 묻는 말이 있으면 지표 이름이 없어도 근거가 있다
 # ("노인이 몇 퍼센트" → 고령인구 비율, "애들보다 노인이 몇 배" → 노령화지수)
+# 배수 지표는 나누는 쪽 구간도 적는다 (노령화지수 = 65세 이상 ÷ 0~14세 × 100)
 AGE_DEFINED = {
-    "고령인구 비율": ([(65, None)], PCT_ASK),
-    "유소년인구 비율": ([(0, 14)], PCT_ASK),
-    "노령화지수": ([(0, 14), (65, None)], re.compile(r"몇\s*배|대비")),
+    "고령인구 비율": ([(65, None)], PCT_ASK, None),
+    "유소년인구 비율": ([(0, 14)], PCT_ASK, None),
+    "노령화지수": ([(0, 14), (65, None)], re.compile(r"몇\s*배|대비"), (0, 14)),
 }
 # 사람 수를 묻는 말. 연령 집단 이름("노인", "어르신")은 그 자체로 사람이라 이 말이 없어도 된다
 PEOPLE_ASK = re.compile(r"인구|몇\s*(명|분)|사람|인원")
@@ -635,23 +641,82 @@ def _age_bands(question):
     return bands | {(r.lo, r.hi) for r in agegroup.resolve_all(question)}
 
 
+def _band_spans(question):
+    """질문 속 연령 구간의 자리: [(시작, 끝, (시작 나이, 끝 나이)), ...] (숫자 구간 + 집단 이름)"""
+    spans = [(a, b, tuple(band)) for a, b, band in age_spans(question)]
+    spans += [(a, b, (r.lo, r.hi)) for a, b, r in agegroup.spans(question)]
+    return sorted(spans)
+
+
+# "A보다 B가 몇 배", "A 대비 B"에서 A(나누는 쪽)
+BASE_MARK = re.compile(r"\s*(?:이|가|은|는|들)?\s*(?:보다|대비|에\s*비해|에\s*비하면)")
+
+
+def _base_band(question):
+    """배수·대비 질문에서 나누는 쪽 연령 구간. "보다·대비" 바로 앞의 구간, 없으면 None"""
+    for _a, b, band in _band_spans(question):
+        if BASE_MARK.match(question, b):
+            return band
+    return None
+
+
 def _age_grounded(question, name):
-    """연령 집단으로 정의한 지표를 질문이 그 집단으로 물었는지"""
+    """연령 집단으로 정의한 지표를 질문이 그 집단으로 물었는지.
+    배수 지표는 나누는 쪽도 맞아야 한다: 노령화지수는 노인 ÷ 유소년이라
+    "애들보다 노인이 몇 배"는 맞고 "노인보다 애들이 몇 배"는 아니다"""
     rule = AGE_DEFINED.get(name)
     if rule is None:
         return False
-    bands, ask = rule
-    return bool(ask.search(question)) and set(bands) <= _age_bands(question)
+    bands, ask, base = rule
+    if not ask.search(question) or not set(bands) <= _age_bands(question):
+        return False
+    said = _base_band(question)
+    return base is None or said is None or said == base
+
+
+# 연령 구간과 "몇 명" 사이에 와도 사람 수를 묻는 것으로 보는 말
+# ("광주랑 전남 노인 다 합치면 몇 명", "30대 중에 서울 사는 사람")
+COUNT_FILLER = frozenset(
+    "다 모두 전부 총 합치면 합하면 더하면 대략 약 대충 중 중에 중에서 사는 살고 있는 계신 사시는"
+    " 남자 여자 남성 여성 남자애 여자애 사람 인구 주민 인원".split()
+)
+PARTICLES = re.compile(r"(?:은|는|이|가|을|를|도|의|에|에서|랑|이랑|하고|와|과|들)$")
+
+
+def _counts_people(question, parsed):
+    """연령 구간 바로 뒤에서 "몇 명"까지 다른 대상(취업자·학생 등)이 없는지.
+    "청년 취업자 몇 명"은 청년 인구가 아니다"""
+    bands = _band_spans(question)
+    # 연령 구간 뒤에 처음 나오는 "몇 명·사람·인구" ("서울 사는 사람 중 30대 몇 명"의 "몇 명")
+    m = next((x for x in PEOPLE_ASK.finditer(question) if bands and x.start() >= bands[0][1]), None)
+    if m is None:
+        return bool(parsed.get("age_group"))  # "부산 어르신들 얼마나 늘었어"
+    spans = [s for s in bands if s[1] <= m.start()]
+    regions = parsed.get("regions") or []
+
+    def allowed(word):
+        bare = PARTICLES.sub("", word) or word
+        return any(w in COUNT_FILLER or any(w in r for r in regions) for w in (word, bare))
+
+    # 연령 구간 뒤 ~ "몇 명" 사이 ("청년 취업자 몇 명")
+    if not all(
+        allowed(w) for w in re.findall(r"[가-힣A-Za-z]+", question[spans[-1][1] : m.start()])
+    ):
+        return False
+    # 연령 구간 앞의 "○○ 중" ("취업자 중 청년 몇 명")
+    head = question[: spans[0][0]]
+    return all(allowed(w) for w in re.findall(r"([가-힣A-Za-z]+)\s*중(?:에|에서)?\s", head + " "))
 
 
 def _asks_age_population(question, parsed):
-    """연령 구간의 사람 수를 물었는지: 연령이 있고, 비율·배수가 아니고, 사람을 센다"""
+    """연령 구간의 사람 수를 물었는지: 연령이 있고, 비율·배수가 아니고, 연령 집단 자체를 센다"""
     return bool(
         parsed.get("ages")
         and not PCT_ASK.search(question)
         and not RATIO_ASK.search(question)
         and not OTHER_UNITS.search(question)
         and (PEOPLE_ASK.search(question) or parsed.get("age_group"))
+        and _counts_people(question, parsed)
     )
 
 
