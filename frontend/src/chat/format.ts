@@ -17,7 +17,7 @@ export const NO_RESULT_TITLES: Record<string, string> = {
   parse_error: "다시 질문해 주세요",
 };
 // 카드·알림으로 따로 보여 주는 줄은 말풍선에서 뺀다
-const CARD_LINES = ["추천 통계표:", "조건 확인:", "확인 필요:", "같은 표의 다른 버전:", "바로가기:"];
+const CARD_LINES = ["추천 통계표:", "조건 확인:", "확인 필요:", "같은 표의 다른 버전:", "바로가기:", "함께 볼 통계표:"];
 
 export function checkLabel(key: string, parsed?: Parsed): string {
   const c = parsed?.conditions ?? {};
@@ -66,7 +66,11 @@ export function bubbleText(data: SearchResponse): string {
   const lines = data.answer.split("\n");
   if (data.clarify) return lines[0];
   if (!data.recommendations?.length) return data.answer;
-  const kept = lines.filter((l) => !CARD_LINES.some((p) => l.startsWith(p))).map((l) => l.replace(/^참고: /, ""));
+  const kept = lines.filter((l) => {
+    // 카드 데이터가 없는 예전 응답은 문장 속 함께 볼 표 링크를 유지한다.
+    if (l.startsWith("함께 볼 통계표:") && !data.together?.length) return true;
+    return !CARD_LINES.some((p) => l.startsWith(p));
+  }).map((l) => l.replace(/^참고: /, ""));
   if (kept.length === 1) kept.push("아래 통계표에서 자세한 자료를 살펴보세요.");
   return kept.join("\n");
 }

@@ -172,6 +172,7 @@ function FamilyChoices({ families, busy, onSend }: { families: FamilyChoice[]; b
           >
             {`${"①②③④⑤"[i] || i + 1} ${f.tbl_nm}`}
             <small>{`${f.survey_nm} · ${f.period}년`}</small>
+            {f.diff && <small>{f.diff}</small>}
           </button>
         ))}
       </div>
@@ -218,6 +219,7 @@ export function Reply({ data, busy, onSend, onOthers, onDebug, onAskAgain }: Pro
       </div>
       {data.notice && <Notice data={data} />}
       {recs.length > 0 && <TopCard r={recs[0]} parsed={data.parsed} />}
+      {data.together?.map((r) => <TopCard key={r.tbl_id} r={r} badge="함께 볼 통계표" />)}
       {recs.length > 1 && (
         <button type="button" className="btn secondary card-link" onClick={() => onOthers(recs.slice(1), data.parsed)}>
           {`다른 후보 ${recs.length - 1}개 보기  ⌄`}
