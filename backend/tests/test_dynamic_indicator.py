@@ -525,3 +525,41 @@ def test_spoken_age_range_counts_as_age_condition() -> None:
         found,
     )
     assert spec is not None, why
+
+
+@pytest.mark.parametrize(
+    ("key", "ages", "expected"),
+    [
+        ("item:62살 이상", [[62, 67]], True),
+        ("item:62세 이상 67세 이하", [[62, 67]], True),
+        ("class:연령", [[62, 67]], True),
+        ("item:미혼", [[62, 67]], False),
+        ("sex", [[62, 67]], False),
+        ("item:62살 이상", None, False),  # 질문에 연령 구간이 없으면 연령 조건으로 보지 않는다
+    ],
+)
+def test_age_check(key: str, ages, expected: bool) -> None:
+    assert d._age_check(key, {"ages": ages}) is expected
+
+
+def test_partial_match_with_only_age_failures_is_computed(monkeypatch) -> None:
+    # 통계표 찾기가 '62살 이상' 칸이 없다고 ✘를 줘도 연령 구간은 바로 계산(lookup)이 맡는다
+    async def fake_build(tbl_id, org_id, question, parsed, step, forced=None, slots=None):
+        return build(question, ages=[[62, 67]]), None
+
+    async def fake_answer(q, trace, question):
+        return {"status": "band_mismatch", "result": {"status": "band_mismatch"}, "parsed": q}
+
+    monkeypatch.setattr(d, "_build", fake_build)
+    monkeypatch.setattr(qa, "answer", fake_answer)
+    age_only = {"year": True, "class:연령": True, "item:62살 이상": False}
+    found = {"status": "partial_match", "recommendations": [{"tbl_id": "T", "checks": age_only}]}
+    res = asyncio.run(
+        d.answer("서울 62살에서 67살 사이 1인 가구 수", {**BASE, "ages": [[62, 67]]}, found, {})
+    )
+    assert res["status"] == "band_mismatch"
+    other = {"year": True, "item:미혼": False}  # 연령 밖의 조건이 ✘면 계산하지 않는다
+    found = {"status": "partial_match", "recommendations": [{"tbl_id": "T", "checks": other}]}
+    assert (
+        asyncio.run(d.answer("서울 미혼 1인 가구", {**BASE, "ages": [[62, 67]]}, found, {})) is None
+    )

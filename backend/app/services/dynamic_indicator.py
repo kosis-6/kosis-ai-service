@@ -366,7 +366,7 @@ def uncovered(
             continue
         if any(word in n or n in word for n in names if len(n) >= 2):
             continue
-        is_age = lookup.parse_age(item) or qa.extract_ages(item)  # "62살에서 67살 사이"도
+        is_age = lookup.parse_age(item) or qa.extract_ages(item)  # "62살 이상"·"67살 이하"도
         if is_age and parsed.get("ages") and plan.age_dim is not None:
             continue  # 연령 구간은 lookup이 연령 칸으로 고른다 (안 맞으면 band_mismatch)
         if any(word in w for w in ("남자", "여자", "남성", "여성")) and plan.sex_dim is not None:
@@ -376,7 +376,9 @@ def uncovered(
         return f"질문의 조건 '{item}'을 표의 칸에 반영할 수 없음"
     if slots.get("exclude"):
         return f"빼 달라는 대상({', '.join(slots['exclude'])})이 합계 칸에 들어 있음"
-    classes = [c for c in cond.get("classes") or [] if _norm(c) not in ("성별",)]
+    # 성별, 그리고 질문에 연령 구간이 있을 때의 '연령'은 나눠 보기가 아니라 조건이다
+    skip = {"성별"} | ({"연령", "나이"} if parsed.get("ages") else set())
+    classes = [c for c in cond.get("classes") or [] if _norm(c) not in skip]
     if classes and parsed.get("type") not in ("composition", "rank", "trend"):
         return f"나눠 보기({', '.join(classes)}별)는 값 하나로 답할 수 없음"
     return None
@@ -714,15 +716,25 @@ async def answer(question: str, parsed: dict, found: dict, trace: dict) -> dict 
     그 칸을 되묻는다 (status clarify_question).
     적재 안 된 작은 표는 바로 받아 넣는다 (table_cache.fetch_now).
     시도한 표와 결과는 trace["dynamic"]에 남긴다 (요청 기록)."""
-    if found.get("status") != "ok" or found.get("together"):
-        return None  # 되묻기·범위 밖·일부 일치·여러 표는 통계표 찾기 답을 그대로 쓴다
+    recs = (found.get("recommendations") or [])[:MAX_TABLES]
+    if found.get("together"):
+        return None  # 한 통계가 여러 표로 나뉜 경우는 통계표 찾기 답을 그대로 쓴다
+    if found.get("status") != "ok":
+        # 일부 일치(partial_match)도 어긋난 조건이 연령뿐이면 계산해 본다 (_age_check).
+        # 그 밖은 표 안내
+        misses = [[k for k, ok in (c.get("checks") or {}).items() if not ok] for c in recs]
+        if found.get("status") != "partial_match" or not any(
+            m and all(_age_check(k, parsed) for k in m) for m in misses
+        ):
+            return None
     steps = trace.setdefault("dynamic", [])
     slots, first_ask = found.get("parsed") or {}, None
-    for card in (found.get("recommendations") or [])[:MAX_TABLES]:
+    for card in recs:
         tbl_id = card.get("tbl_id")
         if not tbl_id:
             continue
-        failed = [k for k, ok in (card.get("checks") or {}).items() if not ok]
+        checks = (card.get("checks") or {}).items()
+        failed = [k for k, ok in checks if not ok and not _age_check(k, parsed)]
         if failed:
             steps.append(
                 {"tbl_id": tbl_id, "skip": f"통계표 찾기 조건 불충족 ({', '.join(failed)})"}
@@ -740,6 +752,17 @@ async def answer(question: str, parsed: dict, found: dict, trace: dict) -> dict 
         return None
     card, ask = first_ask
     return ask_answer(question, parsed, card["tbl_id"], card.get("tbl_nm") or card["tbl_id"], ask)
+
+
+def _age_check(key: str, parsed: dict) -> bool:
+    """통계표 찾기의 조건이 연령 구간인가 (질문에 연령 구간이 있을 때만).
+    통계표 찾기는 "62살에서 67살 사이"를 '62살 이상'·'67살 이하' 칸이나 '연령별'로 찾다가 없으면
+    ✘로 둔다. 연령 구간은 lookup이 표의 연령 칸으로 직접 더하고, 맞는 칸이 없으면
+    맞는 구간 없음(band_mismatch)으로 볼 수 있는 구간을 안내하므로 바로 계산이 맡는다"""
+    if not parsed.get("ages"):
+        return False
+    word = key.split(":", 1)[1] if ":" in key else key
+    return "연령" in word or "나이" in word or bool(qa.extract_ages(word) or lookup.parse_age(word))
 
 
 async def answer_choice(question: str, context: dict, code: str, trace: dict) -> dict | None:
