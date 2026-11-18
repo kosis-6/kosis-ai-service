@@ -1182,3 +1182,10 @@ def test_item_check_is_left_to_cell_check() -> None:
     entry = {"kind": "picked", "checks": {"item:미성년 자녀 없는 경우": False, "year": True}}
     assert d.skip_reason(entry, False) is None
     assert d.skip_reason({**entry, "checks": {"year": False}}, False)
+
+
+def test_husband_wife_are_sex_cells() -> None:
+    # 혼인 · 이혼 표의 남편 · 아내는 성별 칸 ("이혼하는 남자 평균 나이" → 남편)
+    items = d.Dim(0, "항목", {"1": "남편", "2": "아내"})
+    plan, why = d.choose("이혼하는 남자 평균 나이", {"sex": "남"}, [items], None)
+    assert why is None and plan.pick[0] == "1"

@@ -68,7 +68,8 @@ NOTE = "지표 사전에 없는 값을 통계표에서 바로 계산했습니다
 OTHER_TABLE_NOTE = "지표 사전의 표에 없는 값이라 같은 통계의 다른 통계표에서 바로 꺼냈습니다"
 PROJECTION_NOTE = "장래추계 표의 추계값입니다(실적 아님). 다음 추계 때 바뀔 수 있습니다"
 TOTAL_NAMES = {"계", "합계", "전체", "총계", "소계", "총", "전국"}
-SEX_NAMES = {"남": {"남자", "남", "남성"}, "여": {"여자", "여", "여성"}}
+# 혼인 · 이혼 표는 성별을 남편 · 아내로 적는다 ("이혼하는 남자 평균 나이" → 남편)
+SEX_NAMES = {"남": {"남자", "남", "남성", "남편"}, "여": {"여자", "여", "여성", "아내"}}
 COUNT_UNITS = {"명", "가구", "건", "개", "세대", "호", "곳", "개소", "천명", "천가구"}
 # 표가 쓰는 말과 같은 뜻의 일상어 (글자 맞추기 전에 바꾼다). 뜻이 하나로 정해진 말만 둔다
 SAME_WORDS = {"출퇴근": "통근", "출근": "통근"}
@@ -391,6 +392,18 @@ def choose(
             if base is None:
                 rest = [c for c in d.codes if c not in sex_set]
                 base = rest[0] if len(rest) == 1 else None
+            if base is None and sex in ("남", "여"):
+                # 합계 칸이 없는 성별 분류 (남편 · 아내): 말한 성별의 칸 ("이혼하는 남자" → 남편)
+                plan.pick[d.no] = plan.matched[d.no] = d.sex_codes()[sex]
+                continue
+            if base is None and sex not in ("남", "여") and (husband := _couple_code(d)):
+                if parsed.get("ages"):
+                    return None, f"{d.name}에서 칸을 고르지 못함"  # 연령별이면 남편 · 아내가 다르다
+                # 남편 · 아내만 있는 분류: 부부 건수라 연령을 나누지 않으면 어느 쪽이나 같다
+                plan.pick[d.no] = husband
+                note = f"{d.codes[husband]} 기준 (부부 건수라 아내 기준과 같음)"
+                plan.defaults.append(f"{d.name}: {note}")
+                continue
             if len(others) > 1:
                 asks.append(Ask(d.no, d.name, [(c, d.codes[c]) for c in others]))
             elif base is None:

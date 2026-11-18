@@ -347,6 +347,13 @@ INDICATOR_PATTERNS = [
     ),
 ]
 MORE_SPECIFIC = {"조출생률": {"출생아 수"}}
+# 변화량 순위 ("작년에 인구 제일 많이 줄어든 시도 세 군데", "인구 증가 폭이 큰 구"):
+# 그해 값이 아니라 전년 대비 변화량으로 순위를 매긴다
+CHANGE_RANK = re.compile(
+    r"(가장|제일)\s*많이\s*(줄어|줄었|감소|빠졌|늘어|늘었|증가)|(감소|증가)\s*폭이?\s*(가장|제일)?\s*(큰|많)"
+)
+DECREASE_WORDS = re.compile(r"줄어|줄었|감소|빠졌")
+YEAR_ASKED = re.compile(r"(해|연도|년도|때)\s*(는|가|를|은|가\s*언제|$|\?)|언제")
 # 연령 구간 · 연령 집단을 말하고 사람 수를 물었으면 그 연령의 인구 ("수성구에 이십대 얼마나 살아?",
 # "광주하고 전남 어르신 수 합쳐줘", "서울 사는 19살부터 34살까지 몇 명")
 PEOPLE_COUNT = re.compile(
@@ -684,9 +691,28 @@ def correct(question, parsed, today=None):
         parsed["indicators"] = names  # 지표마다 따로 계산한다 (compute)
 
     _cross(question, parsed, fix)
+    _change_rank(question, parsed, fix)
     if fixes:
         parsed["corrections"] = fixes
     return parsed
+
+
+def _change_rank(question, parsed, fix):
+    """변화량 순위: rank_by에 감소(decrease) · 증가(increase)를 적는다. "인구"만 말했으면 총인구
+    (HCX가 "인구가 줄어든"을 자연증가 건수로 읽었다)"""
+    if parsed.get("cross") or not (m := CHANGE_RANK.search(question)):
+        return
+    if YEAR_ASKED.search(question):
+        return  # "출생아가 가장 많이 늘어난 해는?": 지역이 아니라 해를 묻는다 (추이의 극값 연도)
+    if parsed.get("type") not in ("rank", "compare", "value", None):
+        return
+    parsed["rank_by"] = "decrease" if DECREASE_WORDS.search(m[0]) else "increase"
+    if parsed.get("type") != "rank":
+        fix("type", "rank", "변화량이 큰 지역을 물음")
+    names = {name for *_, name in indicators.find_in_text(question)}
+    if names == {"총인구"} and parsed.get("indicator") != "총인구":
+        fix("indicator", "총인구", "'인구'의 변화량")
+        parsed["grounded"] = True
 
 
 CROSS_DYNAMIC = "cross_dynamic"  # 두 값 중 한쪽이 사전에 없음 (ask_session이 마저 계산)
@@ -1302,6 +1328,8 @@ def compute(q):
             "region": bad,
             "reason": "질문의 지역을 시도·시군구로 확인하지 못했습니다.",
         }
+    if kind == "rank" and q.get("rank_by") in ("decrease", "increase"):
+        return _rank_by_change(q, hi)
     if q.get("cross"):  # 두 지표를 나눈 값 (cross_indicator.py): 두 지표를 각각 계산해 나눈다
         if cond := q.get("unsupported_condition"):
             return {
@@ -1418,6 +1446,37 @@ def compute(q):
     if refusal:
         return _limit_result(refusal, result)
     return result
+
+
+def _rank_by_change(q, hi):
+    """전년 대비 변화량 순위: 그해와 전년 순위(모든 지역)를 각각 계산해 지역마다 뺀다"""
+    year = q.get("year") or hi
+    base = {**q, "rank_by": None, "top": None}
+    now, before = compute({**base, "year": year}), compute({**base, "year": year - 1})
+    for part in (now, before):
+        if part.get("status") != "ok":
+            return part
+    prev = {r["region"]: r.get("value") for r in before.get("ranking") or []}
+    rows = [
+        {"region": r["region"], "value": r["value"] - prev[r["region"]]}
+        for r in now.get("ranking") or []
+        if r.get("value") is not None and prev.get(r["region"]) is not None
+    ]
+    decrease = q["rank_by"] == "decrease"
+    rows.sort(key=lambda r: r["value"], reverse=not decrease)
+    top = q.get("top") or 3
+    out = {k: v for k, v in now.items() if k not in ("ranking", "notes")}
+    out.update(
+        ranking=[{**r, "rank": i} for i, r in enumerate(rows[:top], start=1)],
+        total_regions=len(rows),
+        rank_by=q["rank_by"],
+        order="감소 폭이 큰 순" if decrease else "증가 폭이 큰 순",
+        base_indicator=now.get("indicator"),
+        indicator=f"{now.get('indicator')} 변화량",
+        notes=[f"{year - 1}년 → {year}년 변화량으로 순위를 매겼습니다", *(now.get("notes") or [])],
+        kind="value",
+    )
+    return out
 
 
 LIMIT_REASONS = {
@@ -1840,9 +1899,16 @@ def _meaning(name, v):
     return f" {meaning.format(value=_val(v, ''))}이라는 뜻입니다."
 
 
+SEX_IN_NAME = re.compile(r"남편|아내|남자|여자|남성|여성")
+
+
 def _subject(r):
-    """성별을 붙인 지표 이름 (예: 여성 고령인구 비율)"""
-    return SEX_WORDS.get(r.get("sex"), "") + r.get("indicator", "")
+    """성별을 붙인 지표 이름 (예: 여성 고령인구 비율).
+    이름에 이미 성별이 있으면 붙이지 않는다 (표의 칸 '남편' → "남성 남편"이 되지 않게)"""
+    name = r.get("indicator", "")
+    if SEX_IN_NAME.search(name):
+        return name
+    return SEX_WORDS.get(r.get("sex"), "") + name
 
 
 # 값이 음수일 때 뜻 (지표 이름 → 문장)
@@ -2018,6 +2084,10 @@ def _rank_text(r):
     if unit in ("명", "건"):
         order = {"낮은": "적은", "높은": "많은"}[order]
     head = f"{_when(r)} {_josa(name, '이가')} 가장 {order} {r['level']}"
+    if r.get("rank_by") in ("decrease", "increase"):
+        moved = "줄어든" if r["rank_by"] == "decrease" else "늘어난"
+        who = _josa(r.get("base_indicator") or name, "이가")
+        head = f"{_when(r)} {who} 가장 많이 {moved} {r['level']}"
     if r.get("indicator") == "순이동" and r["order"] == "낮은 순":  # 순유출이 큰 순
         head = f"{_when(r)} 인구가 가장 많이 빠져나간(순유출이 가장 큰) {r['level']}"
     listed = ", ".join(f"{x['region']}({_val(x['value'], unit)})" for x in items)

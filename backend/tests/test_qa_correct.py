@@ -949,3 +949,34 @@ def test_baby_words_are_not_an_age_for_birth_indicators(monkeypatch) -> None:
 
 def test_counting_words_before_population_are_plain() -> None:
     assert qa.population_modifier("경기도에서 제일 큰 도시 3개 인구로") is None
+
+
+def test_change_rank_question(monkeypatch) -> None:
+    # "인구 제일 많이 줄어든 시도": 그해 값이 아니라 전년 대비 변화량 순위
+    # (HCX가 고른 자연증가 건수를 총인구로 고친다)
+    p = qa.correct("작년에 인구 제일 많이 줄어든 시도 세 군데",
+                   parsed(type="rank", indicator="자연증가 건수"), TODAY)  # fmt: skip
+    assert p["rank_by"] == "decrease" and p["indicator"] == "총인구" and p["type"] == "rank"
+    q = qa.correct("인구 증가 폭이 가장 큰 구는?", parsed(type="rank", indicator="총인구"), TODAY)
+    assert q["rank_by"] == "increase"
+    # 해를 묻는 질문은 아니다
+    asked_year = "출생아가 가장 많이 늘어난 해는?"
+    y = qa.correct(asked_year, parsed(type="trend", indicator="출생아 수"), TODAY)
+    assert "rank_by" not in y
+
+
+def test_rank_by_change(monkeypatch) -> None:
+    def fake(q):
+        if q.get("rank_by"):
+            return qa._rank_by_change(q, 2025)
+        base = {"서울": 100, "부산": 50, "경기": 200} if q["year"] == 2024 else {
+            "서울": 80, "부산": 45, "경기": 230}  # fmt: skip
+        rows = [{"region": k, "value": v, "rank": 0} for k, v in base.items()]
+        return {"status": "ok", "indicator": "총인구", "unit": "명", "ranking": rows,
+                "level": "시도", "order": "높은 순", "year": q["year"]}  # fmt: skip
+
+    monkeypatch.setattr(qa, "compute", fake)
+    r = qa._rank_by_change({"type": "rank", "rank_by": "decrease", "year": 2025, "top": 2}, 2025)
+    assert [(x["region"], x["value"]) for x in r["ranking"]] == [("서울", -20), ("부산", -5)]
+    assert r["order"] == "감소 폭이 큰 순" and "2024년 → 2025년" in r["notes"][0]
+    assert "가장 많이 줄어든" in qa._rank_text(r)

@@ -58,6 +58,7 @@ LEADING_NUMBER = re.compile(r"([\d,]+|천|만|백)$")
 BARE_HOUSEHOLD = re.compile(r"세대(?!\s*수)(?=\s*(?:[\d,]+|천|만|백)?\s*(?:세대)?\s*당)")
 
 
+AFTER_VERSUS = re.compile(r"^(?:에|의)?대비")
 # 분자 두 지표 사이의 말 ("혼인 건수와 이혼 건수"), 그 뒤의 합 표현 ("합", "합친", "더한")
 AND_BETWEEN = re.compile(r"^(?:와|과|하고|랑|이랑|및|,|그리고)$")
 SUM_TAIL = re.compile(r"^(?:의|을|를)?(?:합계|합친것|합친|합해서|합하면|합|더한것|더한|더하면)")
@@ -212,6 +213,11 @@ def detect(question: str) -> Cross | None:
     between, after = text[a_end:b_start], text[b_end:]
     if found := _diff_or_times(a, b, between, after, plus):
         return found
+    if not between and not plus and (m := AFTER_VERSUS.match(after)):
+        # "이사한 사람 인구 대비 몇 퍼센트": A가 B 바로 앞에 붙고 B 뒤에 '대비' → A ÷ B
+        scale = 100 if RATE_ANYWHERE.search(after[m.end() :]) else 1
+        official = OFFICIAL.get((a, b, scale))
+        return Cross(num=a, den=b, scale=scale, form="versus", official=official)
     form = "per"
     if m := PER.match(between):
         n = m.group("n")
@@ -369,6 +375,9 @@ def compute(q: dict, run) -> dict:
     if q.get("ages"):
         return _fail(c, "두 지표를 나눈 값은 연령 구간을 나눠 계산하지 않습니다.")
     base = {**q, "cross": None, "indicators": None}
+    if kind in ("value", "trend") and not q.get("regions"):
+        # 지역을 말하지 않은 비율 · 차이는 전국 ("이사한 사람 인구 대비 %")
+        base["regions"] = ["전국"]
     if kind == "rank":
         base["top"] = None  # 나눈 값으로 다시 순위를 매기므로 모든 지역을 받는다
 

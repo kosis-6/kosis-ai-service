@@ -550,3 +550,22 @@ def test_within_ratio_needs_part_of_whole() -> None:
     assert bigger["status"] == "missing_data" and "일부가 아닙니다" in bigger["reason"]
     part = x.combine_value(c, {**num, "unit": "가구", "value": 139070}, den, {"sex": "계"})
     assert part["status"] == "ok" and part["value"] == 10.0
+
+
+def test_numerator_right_before_denominator_versus() -> None:
+    # "이사한 사람 인구 대비 몇 퍼센트" → 이동자 수 ÷ 총인구 × 100
+    c = x.detect("작년에 이사한 사람 인구 대비 몇 퍼센트야?")
+    assert (c.num, c.den, c.scale, c.form) == ("이동자 수", "총인구", 100, "versus")
+
+
+def test_value_without_region_is_nationwide() -> None:
+    seen = []
+
+    def run(q):
+        seen.append(tuple(q.get("regions") or []))
+        return fake_run()(q)
+
+    q = q_of("value", year=2024)
+    q["regions"] = []
+    x.compute(q, run)
+    assert set(seen) == {("전국",)}

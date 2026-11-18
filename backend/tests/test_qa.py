@@ -582,3 +582,8 @@ def test_lookup_trend_entirely_before_coverage_is_out_of_range(monkeypatch) -> N
     r = qa._lookup_trend(q, sp, "서울", None, "계", None)
     assert r["status"] == "out_of_range" and r["available_years"] == [1990, 2025]
     assert r["asked_year"] == 1970 and r["reason"] == "이혼 건수 자료는 1990~2025년만 있습니다."
+
+
+def test_subject_does_not_repeat_sex_in_name() -> None:
+    assert qa._subject({"sex": "남", "indicator": "남편"}) == "남편"
+    assert qa._subject({"sex": "여", "indicator": "고령인구 비율"}) == "여성 고령인구 비율"
