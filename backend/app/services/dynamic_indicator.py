@@ -32,6 +32,7 @@ lookup.py(값·비교·추이·순위·구성비)가 한다. 그래서 숫자는
 """
 
 import asyncio
+import contextvars
 import logging
 import re
 import unicodedata
@@ -971,6 +972,13 @@ def _age_check(key: str, parsed: dict) -> bool:
 
 MAX_ATTEMPTS = 5
 MAX_FETCH_AT_ONCE = 3  # 적재 안 된 표를 KOSIS에서 동시에 받는 수
+# 한 질문에서 칸 고르기 LLM을 부르는 횟수 상한 (11/18 세진). 지표가 여럿이면 지표끼리 나눠 쓴다.
+# 예전에는 후보 5개를 동시에 계산하며 규칙이 실패한 표마다 불러 지표 하나에 최대 5회, 지표 여럿이면
+# 15회였고, 순위가 뒤라 답으로 쓰이지 않을 표에도 불렀다 (개발셋 150: 117회 중 56회가 '표에 없음')
+MAX_CELL_LLM = 3
+_cell_llm_budget: contextvars.ContextVar[list[int] | None] = contextvars.ContextVar(
+    "cell_llm_budget", default=None
+)
 HANDOFF_STATUSES = ("ok", "partial_match")
 WHOLE_COUNTRY = {"전국", "우리나라", "한국", "대한민국", "국내"}
 
@@ -1112,6 +1120,8 @@ async def compute_from_handoff(
     trace.setdefault("dynamic", [])
     if h.get("status") not in HANDOFF_STATUSES or not h.get("targets"):
         return None
+    # 이 질문의 칸 고르기 LLM 남은 횟수 (지표가 여럿이어도 함께 쓴다)
+    _cell_llm_budget.set([MAX_CELL_LLM])
     if len(h["targets"]) > 1:
         return await multi_answer(question, parsed, found, trace)  # 지표가 여럿 (구현 5)
     res = await _compute_target(question, parsed, found, h["targets"][0], trace)
@@ -1181,9 +1191,13 @@ async def _compute_target(
     picked = next((e for e in entries if e["kind"] == "picked"), None)
     picked_exact = bool(picked and (picked.get("review") or {}).get("match") == "exact")
     sem = asyncio.Semaphore(MAX_FETCH_AT_ONCE)
+    budget = _cell_llm_budget.get()
+    if budget is None:
+        budget = [MAX_CELL_LLM]
+        _cell_llm_budget.set(budget)
 
-    async def compute(entry: dict, q_used: dict, sub: dict):
-        """표 하나를 해석 q_used로 계산 → (답, 되물을 것). 기록은 sub에"""
+    def context(entry: dict) -> tuple[dict, str | None]:
+        """표 하나를 계산할 때 넘기는 조건 · 안내"""
         slots = {
             "conditions": u.get("conditions") or {},
             "exclude": exclude,
@@ -1194,19 +1208,37 @@ async def _compute_target(
             "check_target": (entry.get("review") or {}).get("match") != "exact",
             "table_words": [entry.get("tbl_nm"), entry.get("target")],
         }
-        notice = handoff_notice(entry, u, h.get("combine") or {}, found.get("notice"))
+        return slots, handoff_notice(entry, u, h.get("combine") or {}, found.get("notice"))
+
+    def wants_llm(res, ask, sub: dict) -> bool:
+        """규칙이 칸을 못 골라 칸 고르기 LLM이 도울 수 있는 표인가"""
+        return (
+            res is None
+            and ask is None
+            and bool(sub["dynamic"])
+            and cell_pick.needs_llm(sub["dynamic"][-1].get("skip"))
+        )
+
+    async def compute(entry: dict, q_used: dict, sub: dict, llm: bool = True):
+        """표 하나를 해석 q_used로 계산 → (답, 되물을 것). 기록은 sub에.
+        llm=False면 규칙으로만 (칸 고르기 LLM은 뒤에서 순위대로 부른다)"""
+        slots, notice = context(entry)
         res, ask = await _try(
             entry["tbl_id"], entry.get("org_id"), question, q_used, sub, {}, slots, notice, sem
         )
-        if res is None and ask is None and sub["dynamic"]:
-            if cell_pick.needs_llm(sub["dynamic"][-1].get("skip")):
-                res, ask = await with_cell_llm(entry, q_used, sub, slots, notice)
+        if llm and wants_llm(res, ask, sub):
+            res, ask = await with_cell_llm(entry, q_used, sub, slots, notice)
         if sub["dynamic"]:
             sub["dynamic"][0]["kind"] = entry["kind"]
         return res, ask
 
     async def with_cell_llm(entry: dict, q_used: dict, sub: dict, slots: dict, notice):
-        """규칙이 칸을 못 고른 표: LLM이 고른 칸(forced)으로 다시 계산한다 (cell_pick.py)"""
+        """규칙이 칸을 못 고른 표: LLM이 고른 칸(forced)으로 다시 계산한다 (cell_pick.py).
+        이 질문의 상한(MAX_CELL_LLM)을 다 썼으면 부르지 않는다"""
+        if budget[0] <= 0:
+            if sub["dynamic"]:
+                sub["dynamic"][-1]["cell_llm_skip"] = f"질문당 칸 고르기 LLM 상한({MAX_CELL_LLM}회)"
+            return None, None
         tbl_id = entry["tbl_id"]
         try:
             dims, region_dim, _ = await run_in_threadpool(schema, tbl_id)
@@ -1214,6 +1246,10 @@ async def _compute_target(
         except Exception:
             logger.exception("칸 고르기 LLM에 보낼 칸 만들기 실패: %s", tbl_id)
             return None, None
+        from app.core.config import get_settings
+
+        if groups and get_settings().handoff_cell_llm:
+            budget[0] -= 1  # 실제로 LLM을 부르는 경우만 센다
         picked = await cell_pick.choose(
             question, u, entry.get("tbl_nm"), groups, sub["dynamic"][-1]
         )
@@ -1268,7 +1304,7 @@ async def _compute_target(
                     {"tbl_id": tbl_id, "skip": "장래 추계를 물었는데 추계 표가 아님"}
                 )
                 return None, None, sub
-        res, ask = await compute(entry, q, sub)
+        res, ask = await compute(entry, q, sub, llm=False)
         return res, ask, sub
 
     def merge(sub: dict) -> None:  # 표마다 따로 남긴 기록을 순서대로 합친다
@@ -1276,7 +1312,23 @@ async def _compute_target(
         if sub.get("fetched"):
             trace.setdefault("fetched", []).extend(sub["fetched"])
 
-    outcomes = await asyncio.gather(*(attempt(e) for e in entries))
+    # 1. 후보를 규칙으로만 동시에 계산한다 (LLM 없음)
+    outcomes = list(await asyncio.gather(*(attempt(e) for e in entries)))
+    # 2. 칸 고르기 LLM은 순위대로 하나씩. 답은 '계산된 표 중 순위가 가장 앞인 것'이라, 규칙으로
+    #    계산된 첫 표보다 뒤의 표는 LLM으로 계산돼도 쓰이지 않는다 → 그 앞의 표만, 계산되면 멈춘다
+    first_ok = next(
+        (i for i, (res, _, _) in enumerate(outcomes) if res and res.get("status") == "ok"),
+        len(entries),
+    )
+    for i in range(first_ok):
+        res, ask, sub = outcomes[i]
+        if not wants_llm(res, ask, sub):
+            continue
+        slots, notice = context(entries[i])
+        res, ask = await with_cell_llm(entries[i], q, sub, slots, notice)
+        outcomes[i] = (res, ask, sub)
+        if res and res.get("status") == "ok":
+            break
     for _, _, sub in outcomes:
         merge(sub)
     trace["handoff"]["tried"] = len(entries)

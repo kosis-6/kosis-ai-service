@@ -982,6 +982,10 @@ async def _new(question: str, state: dict | None) -> tuple[dict, dict, str | Non
             )
         return parsed
 
+    if refused := await table_guide.off_domain_early(question):
+        # 집값 · 실업률 · 미세먼지처럼 인구 통계에 없는 주제: 질문 이해(HCX)도 부르지 않고 거절한다
+        refused["request_type"], refused["question"] = NEW, question
+        return refused, {}, None
     res = await qa.ask(question, adjust=adjust)
     sources = kept.get("sources") or sources_of(question, res.get("parsed") or {})
     notice = inherited_notice(res.get("parsed") or {}, sources)

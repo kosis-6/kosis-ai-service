@@ -39,6 +39,29 @@ SEARCH_AFTER = {"missing_data", "out_of_range", "region_not_in_year"}
 # 통계표 찾기도 답하지 못한 상태: 제공 범위(인구 분야) 밖, 통계 질문이 아님.
 # /ask 응답의 status도 이 값으로 둔다 (표 안내 "tables"와 구분해 거절로 센다)
 REFUSED = ("out_of_scope", "not_statistics")
+
+# ---- 범위 밖 질문을 LLM 호출 전에 거르기 (11/18) ----------------------------------------------
+# 집값 · 실업률 · 미세먼지처럼 인구 통계에 없는 주제는 지금까지 질문 이해(HCX) · 조건 추출 · 계획 ·
+# 검토를 다 거친 뒤에야 거절했다 (질문 하나에 LLM 3~4회, 13~17초). 아래 두 안전장치를 다 통과할
+# 때만 LLM 없이 바로 거절한다. 못 거른 질문은 지금처럼 검토 단계(llm_pick)가 판단한다.
+#   1. 걸린 말이 카탈로그 전체(표 이름 · 분류 · 항목)에 하나도 없을 때만 ('월세' · '실업자'처럼
+#      인구 표에 있는 말은 거절하지 않는다)
+#   2. 질문에 인구 통계 신호(지표 사전 이름 · 별칭, 인구 · 가구 · 출생 같은 말)가 없을 때만
+#      ("물가 비싼 서울에 사는 1인 가구"는 1인 가구를 묻는 질문이다)
+# 검토 단계의 OFF_DOMAIN(llm_pick)에 더한 말. 카탈로그에 없는 말만 골랐다 (부동산 · 월세 ·
+# 공기 · 대기 · 주가 · 성장률 · 수출은 인구 표에 있거나 '항공기' · '대기업' · '가구주가' ·
+# '인구성장률'에 걸려 뺐다)
+OFF_DOMAIN_EARLY = re.compile(
+    r"아파트\s*값|집\s*값|땅\s*값|공시지가|전셋값|"
+    r"실업률|취업률|고용률|연봉|급여|최저임금|"
+    r"미세먼지|오염|날씨|강수량|폭염|공기\s*질|공기\S*\s*(?:제일\s*|가장\s*)?(?:안\s*좋|나쁜|나빠)|"
+    r"경제\s*성장|GDP|국내총생산|물가|금리|환율|교통량",
+    re.IGNORECASE,
+)
+POPULATION_SIGNAL = re.compile(
+    r"인구|가구|세대|출생|태어|아기|아이|애기|사망|돌아가|혼인|결혼|이혼|외국인|이동|전입|전출|이사|"
+    r"노인|어르신|고령|청년|주민"
+)
 TOP_K = 3
 MAX_CARDS = 3  # 답에 쓴 표가 여럿이면 (과거 연도용 표 등) 이만큼만 카드로
 
@@ -169,6 +192,38 @@ def tables_answer(found: dict, refused: dict | None = None) -> dict:
         "tables": found,
         "trace": {},
     }
+
+
+async def off_domain_early(question: str) -> dict | None:
+    """LLM 없이 거를 수 있는 범위 밖 질문이면 거절 응답 (tables_answer 모양). 아니면 None.
+    질문 이해(HCX) 전에 부른다 (ask_session._new)"""
+    from app.services import indicators
+    from app.services.llm_pick import OFF_DOMAIN
+
+    words = [m.group(0) for rx in (OFF_DOMAIN, OFF_DOMAIN_EARLY) for m in rx.finditer(question)]
+    if not words:
+        return None
+    if POPULATION_SIGNAL.search(question) or indicators.find_in_text(question):
+        return None  # 안전장치 2: 인구 통계를 묻는 질문일 수 있다
+    tables = await search.load_tables()
+    catalog = [t["name_n"] + t["meta_n"] + t["path_n"] for t in tables]
+    for word in words:
+        n = search.norm(word)
+        if any(n in text for text in catalog):
+            continue  # 안전장치 1: 인구 표에 있는 말
+        found = {
+            "session_id": None,
+            "status": "out_of_scope",
+            "answer": search_answer.STATUS_MESSAGES["out_of_scope"],
+            "parsed": {},
+            "clarify": None,
+            "recommendations": [],
+            "together": [],
+            "notice": None,
+            "reason": f"'{word}'은 인구 통계 범위 밖입니다 (LLM 호출 전 단어 검사)",
+        }
+        return tables_answer(found)
+    return None
 
 
 def waiting_choice(found: dict | None) -> bool:

@@ -16,6 +16,7 @@ API: POST /ask
       python -m scripts.ask --question "..." --debug   (중간 결과 JSON도 출력)
 """
 
+import copy
 import json
 import re
 import time
@@ -25,6 +26,7 @@ from pathlib import Path
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.concurrency import run_in_threadpool
 
+from app.core.config import get_settings
 from app.core.stats_db import StatsTableMissing
 from app.prompts.qa import PARSE_SYSTEM
 from app.services import (
@@ -40,16 +42,19 @@ from app.services import (
 )
 from app.services.hcx_client import HcxClient
 from app.services.josa import josa, ro
+from app.services.memory_cache import MISSING, MemoryCache
 
 MODEL = "HCX-007"
-# 질문 해석 응답 최대 길이. HCX 한도(분당 6만 토큰)는 요청마다 이 값만큼을 미리 잡아서,
-# 5,120이면 이 호출만으로 분당 약 10질문에 한도가 찼다. 추론을 끄면 JSON만 나오고
-# 변형셋 v1에서 최대 130토큰(95%가 99토큰 이하)이었다 (11/18)
+# 질문 해석 응답 최대 길이. HCX 한도(분당 60,000토큰)는 요청마다 '보낸 글 + 이 값'을 미리 잡는다.
+# 예전 값 5,120(+ 추론 low)은 이전 프로젝트의 범용 chat() 기본값이 그대로 따라온 것으로,
+# 질문마다 약 7,000토큰을 잡아 분당 약 8질문이면 한도가 찼다. 추론까지 넣은 실제 응답도
+# 평균 약 600 · 최대 약 1,100토큰이었고 (개발셋, 11/18), 추론을 끄면 짧은 JSON만 나온다
 UNDERSTAND_MAX_TOKENS = 1024
 
 
 async def _chat(prompt, system, temperature=0.1, trace=None):
-    """HCX-007 호출 (질문 해석). 짧은 JSON만 받으므로 추론을 끄고 응답 길이를 줄인다"""
+    """HCX-007 호출 (질문 해석). 짧은 JSON만 받으므로 추론을 끄고 응답 길이를 줄인다
+    (이어 묻는 말의 변경 추출 ask_session._chat과 같은 방식)"""
     result = await HcxClient().chat(
         MODEL,
         [
@@ -69,22 +74,43 @@ async def _chat(prompt, system, temperature=0.1, trace=None):
     return result.content
 
 
+# 질문 단위 캐시 (11/18): 글자까지 같은 질문이면 질문 이해(HCX)를 다시 부르지 않는다.
+# '작년' · '최근 5년'은 오늘 날짜와 자료의 마지막 연도로 풀리므로 열쇠에 둘 다 넣는다.
+# 서버 메모리라 재시작하면 비고, 1시간 지나면 지운다. 평가처럼 질문 이해를 고친 효과를 잴 때는
+# QUESTION_CACHE=false (scripts.eval_devset은 기본으로 끈다)
+UNDERSTAND_CACHE = MemoryCache("understand", maxsize=1024, ttl=3600)
+
+
+def _cache_key(question, latest):
+    return (re.sub(r"\s+", " ", question).strip(), date.today().isoformat(), latest)
+
+
 async def understand(question, trace=None):
     """1단계: 질문 → dict. JSON을 못 읽으면 type이 parse_error
     trace(dict)를 주면 HCX 원본 출력을 담는다 (요청 로그용)"""
     lo, hi = await run_in_threadpool(indicators._data_years)
+    use_cache = get_settings().question_cache
+    key = _cache_key(question, hi)
+    if use_cache and (hit := UNDERSTAND_CACHE.get(key)) is not MISSING:
+        if trace is not None:
+            trace["hcx_raw"], trace["understand_cached"] = hit["raw"], True
+        return copy.deepcopy(hit["parsed"])
     system = PARSE_SYSTEM.replace("{INDICATORS}", _indicator_list()).replace("{LATEST}", str(hi))
     text = await _chat(question, system, trace=trace)
     if trace is not None:
         trace["hcx_raw"] = text
     objects = _json_objects(text)
     if not objects:
-        return {"type": "parse_error", "raw": text}
+        return {"type": "parse_error", "raw": text}  # 해석 실패는 남기지 않는다
     parsed = objects[0]
     # 남녀를 나눠 JSON을 두 번 쓴 경우 → 성별 구분 없이 (남녀를 함께 보여준다)
     if len({json.dumps(o.get("sex"), ensure_ascii=False) for o in objects}) > 1:
         parsed["sex"] = "계"
-    return await run_in_threadpool(correct, question, parsed)
+    result = await run_in_threadpool(correct, question, parsed)
+    if use_cache:
+        # 대화 이어받기(ask_session의 adjust)는 꺼낸 뒤에 적용되므로 이어받기 전 결과를 남긴다
+        UNDERSTAND_CACHE.set(key, {"raw": text, "parsed": copy.deepcopy(result)})
+    return result
 
 
 def _json_objects(text):

@@ -62,6 +62,20 @@ def test_plan_makes_year_and_other_table_alternatives_only() -> None:
     assert planned[2]["what"] == "다른 표 (고른 표 'P 표'로는 계산하지 못함)"
 
 
+@pytest.fixture(autouse=True)
+def alternatives_on(monkeypatch):
+    """대안 기능은 기본 꺼짐(11/18). 이 파일은 켠 상태의 동작을 본다"""
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "handoff_alternatives", True)
+
+
+def test_alternatives_are_off_by_default() -> None:
+    from app.core.config import Settings
+
+    assert Settings.model_fields["handoff_alternatives"].default is False
+
+
 @pytest.fixture
 def run_ok():
     calls = []
