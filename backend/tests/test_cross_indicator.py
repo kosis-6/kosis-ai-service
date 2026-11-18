@@ -364,3 +364,75 @@ def test_bare_per_people_means_population() -> None:
     assert x.detect("1000명당 혼인 건수 얼마나 돼?").official == "조혼인율"
     c = x.detect("2024년 서울 1000명당 외국인근로자 수")
     assert (c.num, c.den, c.scale) == ("외국인근로자 수", "총인구", 1000)
+
+
+# ---- 3단계 마무리: 분자 두 지표의 합 (표 3개), 주기 · 기준 시점 ------------------------------
+
+
+def test_detect_summed_numerator() -> None:
+    c = x.detect("2024년 서울 인구 1,000명당 혼인 건수와 이혼 건수 합")
+    assert (c.num, c.plus, c.den, c.scale) == ("혼인 건수", "이혼 건수", "총인구", 1000)
+    assert c.name == "인구 1,000명당 혼인 건수와 이혼 건수"
+    assert c.formula == "(혼인 건수 + 이혼 건수) ÷ 총인구 × 1,000"
+    assert c.official is None  # 합은 공식 지표가 아니다
+    s = x.detect("세대당 출생아 수랑 사망자 수 합친 것")
+    assert (s.num, s.plus, s.den) == ("출생아 수", "사망자 수", "세대수")
+    assert x.detect("서울 출생아 수와 사망자 수") is None  # 나누기가 아님
+
+
+def test_summed_numerator_value_trend_rank() -> None:
+    def run(q):
+        res = fake_run()(q)
+        if q["indicator"] == "사망자 수" and q["type"] == "value":
+            res = {**res, "value": 46000}
+        return res
+
+    q = q_of("value", year=2024)
+    q["cross"]["plus"] = "사망자 수"
+    res = x.compute(q, run)
+    assert res["status"] == "ok"
+    assert res["operands"][0] == {"label": "출생아 수와 사망자 수", "value": 87605, "unit": "명"}
+    assert res["value"] == x._div(41605 + 46000, 4482063, 1)
+
+    t = q_of("trend")
+    t["cross"]["plus"] = "출생아 수"  # 같은 지표 둘이어도 연도별로 더한다
+    assert [s["year"] for s in x.compute(t, fake_run())["series"]] == [2024, 2025]
+
+    r = q_of("rank", year=2024, top=1)
+    r["cross"]["plus"] = "출생아 수"
+    # 서울 (100+100) ÷ 40 = 5, 부산 (50+50) ÷ 10 = 10
+    assert x.compute(r, fake_run())["ranking"] == [
+        {"region": "부산광역시", "value": 10.0, "rank": 1}
+    ]
+
+
+def test_monthly_value_is_not_mixed_in_any_kind() -> None:
+    # 연간 값과 최신 달 값은 값 질문이 아니어도 섞지 않는다
+    def run(q):
+        res = fake_run()(q)
+        return {**res, "as_of": "2026년 10월 말"} if q["indicator"] == "세대수" else res
+
+    res = x.compute(q_of("compare", year=2024, regions=["서울특별시", "부산광역시"]), run)
+    assert res["status"] == "missing_data" and "최신 달" in res["reason"]
+
+
+def test_reference_date_note() -> None:
+    c = x.Cross("외국인주민 수", "총인구", 1000)
+    num = {"basis": "지방자치단체 외국인주민 현황, 각 연도 11월 1일"}
+    den = {"basis": "주민등록인구, 각 연도 12월 31일 기준"}
+    assert (
+        "기준 시점이 다릅니다 (외국인주민 수 11월 1일, 총인구 12월 31일)"
+        in x._reference_note(c, num, den)[0]
+    )
+    flow = {"basis": "인구동향조사, 각 연도 1월 1일 ~ 12월 31일"}
+    assert x._reference_note(c, flow, den) == []  # 기간 값 ÷ 시점 값은 보통이다
+
+
+def test_correct_summed_numerator_is_not_period_sum() -> None:
+    parsed = {"type": "trend", "indicator": "출생아 수", "aggregate": "sum"}
+    qa._cross(
+        "2020년부터 2024년까지 서울 세대당 출생아 수와 사망자 수 합친 것 추이",
+        parsed,
+        lambda k, v, r: parsed.update({k: v}),
+    )
+    assert parsed["cross"]["plus"] == "사망자 수" and "aggregate" not in parsed

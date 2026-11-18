@@ -698,6 +698,9 @@ def _cross(question, parsed, fix):
     parsed["indicators"] = None
     parsed["grounded"] = True
     parsed.pop("unsupported", None)
+    if found.plus and not parsed.get("group"):
+        # "혼인 건수와 이혼 건수 합"의 합은 분자 두 지표를 더하라는 말이다 (기간 · 지역 합계가 아니다)
+        parsed.pop("aggregate", None)
 
 
 # 지표 이름 사이에 이 말만 있으면 여러 지표를 함께 물은 것 ("출생아 수와 사망자 수")

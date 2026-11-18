@@ -55,6 +55,9 @@ LEADING_NUMBER = re.compile(r"([\d,]+|천|만|백)$")
 BARE_HOUSEHOLD = re.compile(r"세대(?!\s*수)(?=\s*(?:[\d,]+|천|만|백)?\s*(?:세대)?\s*당)")
 
 
+# 분자 두 지표 사이의 말 ("혼인 건수와 이혼 건수"), 그 뒤의 합 표현 ("합", "합친", "더한")
+AND_BETWEEN = re.compile(r"^(?:와|과|하고|랑|이랑|및|,|그리고)$")
+SUM_TAIL = re.compile(r"^(?:의|을|를)?(?:합계|합친것|합친|합해서|합하면|합|더한것|더한|더하면)")
 # "A당 B"에서 분모를 부르는 말 (총인구 → "인구 1,000명당", 세대수 → "세대당")
 DEN_LABEL = {"총인구": "인구", "세대수": "세대"}
 
@@ -68,20 +71,31 @@ class Cross:
     official: str | None = None  # 공식 지표가 있으면 그 이름
     dynamic: str | None = None  # 사전에 없는 쪽 ("num" · "den"). 그 쪽은 동적 지표로 구한다
     units: dict | None = None  # 사전에 없는 쪽의 단위 (계산한 뒤 채운다)
+    plus: str | None = None  # 분자를 두 지표의 합으로 ("혼인 건수와 이혼 건수"). 표는 3개까지
+
+    @property
+    def num_names(self) -> list[str]:
+        """분자에 더할 지표들"""
+        return [self.num, self.plus] if self.plus else [self.num]
+
+    @property
+    def num_label(self) -> str:
+        """분자를 부르는 말 ("혼인 건수와 이혼 건수")"""
+        return f"{josa(self.num, '과와')} {self.plus}" if self.plus else self.num
 
     def unit_of(self, name: str) -> str:
         return (self.units or {}).get(name) or _unit(name)
 
     @property
     def name(self) -> str:
-        den = DEN_LABEL.get(self.den, self.den)
+        den, num = DEN_LABEL.get(self.den, self.den), self.num_label
         if self.form == "within":
-            return f"{self.den} 중 {self.num} 비율"
+            return f"{self.den} 중 {num} 비율"
         if self.form == "versus":
-            return f"{self.den} 대비 {self.num}" + (" 비율" if self.scale == 100 else "")
+            return f"{self.den} 대비 {num}" + (" 비율" if self.scale == 100 else "")
         if self.scale == 1:
-            return f"{den}당 {self.num}"
-        return f"{den} {self.scale:,}{self.unit_of(self.den)}당 {self.num}"
+            return f"{den}당 {num}"
+        return f"{den} {self.scale:,}{self.unit_of(self.den)}당 {num}"
 
     @property
     def unit(self) -> str:
@@ -94,7 +108,8 @@ class Cross:
     @property
     def formula(self) -> str:
         times = f" × {self.scale:,}" if self.scale != 1 else ""
-        return f"{self.num} ÷ {self.den}{times}"
+        num = f"({self.num} + {self.plus})" if self.plus else self.num
+        return f"{num} ÷ {self.den}{times}"
 
     def as_dict(self) -> dict:
         out = {"num": self.num, "den": self.den, "scale": self.scale, "form": self.form}
@@ -102,6 +117,8 @@ class Cross:
             out["dynamic"] = self.dynamic
         if self.units:
             out["units"] = self.units
+        if self.plus:
+            out["plus"] = self.plus
         return out
 
     @property
@@ -137,12 +154,21 @@ def detect(question: str) -> Cross | None:
     question = _bare_per_people(question)
     spans = sorted(indicators.find_in_text(question))
     names = list(dict.fromkeys(name for _, _, name in spans))
-    if len(spans) != 2 or len(names) != 2:
+    text = indicators._norm(question)
+    plus = None
+    if len(spans) == 3 and len(names) == 3:
+        # "인구 1,000명당 혼인 건수와 이혼 건수 합": 분자가 두 지표의 합 (표 3개)
+        (_, b_end, b_name), (c_start, c_end, c_name) = spans[1], spans[2]
+        if not AND_BETWEEN.match(text[b_end:c_start]) or _unit(c_name) != _unit(b_name):
+            return None
+        # 세 번째 이름과 그 뒤의 합 표현을 지우고 두 지표처럼 읽는다 (뒤의 '비율' 등은 남긴다)
+        plus, spans = c_name, spans[:2]
+        text = text[:b_end] + SUM_TAIL.sub("", text[c_end:])
+    elif len(spans) != 2 or len(names) != 2:
         return None
     (a_start, a_end, a), (b_start, b_end, b) = spans
-    if not (_countable(a) and _countable(b)):
+    if not (_countable(a) and _countable(b)) or (plus and not _countable(plus)):
         return None
-    text = indicators._norm(question)
     between, after = text[a_end:b_start], text[b_end:]
     form = "per"
     if m := PER.match(between):
@@ -158,6 +184,8 @@ def detect(question: str) -> Cross | None:
         scale, form = 100, "within"
     else:
         return None
+    if plus:
+        return Cross(num=b, den=a, scale=scale, form=form, plus=plus)
     return Cross(num=b, den=a, scale=scale, form=form, official=OFFICIAL.get((b, a, scale)))
 
 
@@ -291,9 +319,11 @@ def compute(q: dict, run) -> dict:
     if kind == "rank":
         base["top"] = None  # 나눈 값으로 다시 순위를 매기므로 모든 지역을 받는다
 
+    names = [*c.num_names, c.den]
+
     def both(extra: dict | None = None):
         extra = extra or {}
-        return [run({**base, **extra, "indicator": name, "term": name}) for name in (c.num, c.den)]
+        return [run({**base, **extra, "indicator": name, "term": name}) for name in names]
 
     parts = both()
     if kind == "value" and all(p.get("status") == "ok" for p in parts) and not q.get("year"):
@@ -305,7 +335,7 @@ def compute(q: dict, run) -> dict:
             if any(p.get("as_of") for p in parts):
                 year = min(year, indicators._data_years()[1])
             parts = both({"year": year})
-    for name, p in zip((c.num, c.den), parts, strict=True):
+    for name, p in zip(names, parts, strict=True):
         if p.get("status") != "ok":
             # 재료 하나를 계산하지 못했다 (예: 시군구 자료 없음). 그 안내를 그대로 준다
             out = dict(p)
@@ -315,11 +345,24 @@ def compute(q: dict, run) -> dict:
             )
             out["reason"] = out["reason"].strip()
             return out
-    num, den = parts
+    *nums, den = parts
+    if len(nums) > 1:
+        # 분자 두 지표를 더한다 (먼저 둘끼리 지역 · 연도 · 성별이 맞는지 본다)
+        if why := _mismatch(nums[0], nums[1], q):
+            return _fail(
+                c, f"{josa(c.num, '과와')} {josa(c.plus, '을를')} 더할 수 없습니다: {why}."
+            )
+        num = _sum_parts(nums, kind)
+        if num is None:
+            return _fail(c, f"{josa(c.num, '과와')} {josa(c.plus, '을를')} 더할 값이 없습니다.")
+    else:
+        num = nums[0]
     if kind == "value":
         return combine_value(c, num, den, q)
     if why := _mismatch(num, den, q):
-        return _fail(c, f"{josa(c.num, '과와')} {josa(c.den, '을를')} 나눌 수 없습니다: {why}.")
+        return _fail(
+            c, f"{josa(c.num_label, '과와')} {josa(c.den, '을를')} 나눌 수 없습니다: {why}."
+        )
     out = _shell(c, num, den)
     if kind == "trend":
         dv = {s["year"]: s.get("value") for s in den.get("series") or []}
@@ -332,7 +375,7 @@ def compute(q: dict, run) -> dict:
         if len(series) < 2:
             return _fail(
                 c,
-                f"{josa(c.num, '과와')} {josa(c.den, '이가')} "
+                f"{josa(c.num_label, '과와')} {josa(c.den, '이가')} "
                 "함께 있는 연도가 두 해 이상 없습니다.",
             )
         out.update(region=num.get("region"), sex=num.get("sex"), series=series)
@@ -357,12 +400,14 @@ def compute(q: dict, run) -> dict:
 def combine_value(c: Cross, num: dict, den: dict, q: dict) -> dict:
     """값 질문: 분자 · 분모 결과(한 지역 · 한 해)를 나눈 결과. 맞지 않으면 숫자 없이 이유"""
     if why := _mismatch(num, den, {**q, "type": "value"}):
-        return _fail(c, f"{josa(c.num, '과와')} {josa(c.den, '을를')} 나눌 수 없습니다: {why}.")
+        return _fail(
+            c, f"{josa(c.num_label, '과와')} {josa(c.den, '을를')} 나눌 수 없습니다: {why}."
+        )
     out = _shell(c, num, den)
     out.update(region=num.get("region"), year=num.get("year"), sex=num.get("sex"))
     out["value"] = _div(num.get("value"), den.get("value"), c.scale)
     out["operands"] = [
-        {"label": c.num, "value": num.get("value"), "unit": c.unit_of(c.num)},
+        {"label": c.num_label, "value": num.get("value"), "unit": c.unit_of(c.num)},
         {"label": c.den, "value": den.get("value"), "unit": c.unit_of(c.den)},
     ]
     if c.scale != 100:
@@ -399,13 +444,14 @@ def _mismatch(num: dict, den: dict, q: dict) -> str | None:
     sex = q.get("sex") or "계"
     if any((p.get("sex") or "계") != sex for p in (num, den)):
         return f"{josa(_name(num, den, sex), '은는')} 성별로 나뉘어 있지 않습니다"
+    if bool(num.get("as_of")) != bool(den.get("as_of")):
+        # 주기가 다르다: 연간(12월 말) 값과 KOSIS 월별 자료의 최신 달 값은 섞지 않는다
+        return "한쪽은 최신 달 값이라 연간 값과 섞을 수 없습니다"
     if q.get("type") == "value":
         if num.get("year") != den.get("year"):
             return f"두 값의 연도가 다릅니다 ({num.get('year')}년, {den.get('year')}년)"
         if num.get("region") != den.get("region"):
             return "두 값의 지역이 다릅니다"
-        if bool(num.get("as_of")) != bool(den.get("as_of")):
-            return "한쪽은 최신 달 값이라 연간 값과 섞을 수 없습니다"
     if q.get("type") in ("compare", "rank"):
         if num.get("year") != den.get("year"):
             return f"두 값의 연도가 다릅니다 ({num.get('year')}년, {den.get('year')}년)"
@@ -428,8 +474,9 @@ def _shell(c: Cross, num: dict, den: dict) -> dict:
     ]
     notes = [
         f"지표 사전에 없는 값이라 {ro(c.formula)} 계산했습니다",
-        f"두 통계의 기준: {josa(c.num, '은는')} {num.get('basis')}, "
+        f"두 통계의 기준: {josa(c.num_label, '은는')} {num.get('basis')}, "
         f"{josa(c.den, '은는')} {den.get('basis')}",
+        *_reference_note(c, num, den),
         *(num.get("notes") or []),
         *(n for n in den.get("notes") or [] if n not in (num.get("notes") or [])),
     ]
@@ -453,6 +500,79 @@ def _shell(c: Cross, num: dict, den: dict) -> dict:
         "method": "cross",
         "cross": c.as_dict(),
     }
+
+
+# 한 시점의 값 ("각 연도 12월 31일 기준", "각 연도 11월 1일"). "1월 1일 ~ 12월 31일"은 기간 값
+POINT_DATE = re.compile(r"(\d{1,2})월\s*(\d{1,2})일(?!\s*~)(?:\s*기준)?\s*(?:\(|$|,)")
+
+
+def _point_date(basis) -> str | None:
+    text = str(basis or "")
+    if "~" in text:
+        return None
+    m = POINT_DATE.search(text)
+    return f"{int(m[1])}월 {int(m[2])}일" if m else None
+
+
+def _reference_note(c: Cross, num: dict, den: dict) -> list[str]:
+    """두 시점 값의 기준일이 다르면 알린다 (막지는 않는다: 공식 외국인주민 비율도 11월 1일 ÷
+    12월 31일이다). 기간 값(1년 동안의 출생아 수)을 시점 값(연말 인구)으로 나누는 것은 보통이다"""
+    a, b = _point_date(num.get("basis")), _point_date(den.get("basis"))
+    if a and b and a != b:
+        return [
+            f"두 값의 기준 시점이 다릅니다 ({c.num_label} {a}, {c.den} {b}). "
+            "같은 날의 값이 아니라 비율은 근사값입니다"
+        ]
+    return []
+
+
+def _sum_parts(parts: list[dict], kind: str) -> dict | None:
+    """분자 지표 둘을 더한 결과 (나누기 전). 더할 값이 없으면 None"""
+    a, b = parts
+
+    def add(x, y):
+        return None if x is None or y is None else x + y
+
+    out = {
+        **a,
+        "indicator": f"{a.get('indicator')} + {b.get('indicator')}",
+        "basis": a.get("basis")
+        if a.get("basis") == b.get("basis")
+        else f"{a.get('basis')} / {b.get('basis')}",
+        "notes": [
+            *(a.get("notes") or []),
+            *(n for n in b.get("notes") or [] if n not in (a.get("notes") or [])),
+        ],
+        "extra_sources": [
+            *(a.get("extra_sources") or []),
+            *(
+                [{k: b.get(k) for k in ("source", "basis", "tbl_id", "url")}]
+                if b.get("tbl_id") != a.get("tbl_id")
+                else []
+            ),
+            *(b.get("extra_sources") or []),
+        ],
+    }
+    if kind == "value":
+        out["value"] = add(a.get("value"), b.get("value"))
+        return out if out["value"] is not None else None
+    if kind == "trend":
+        bv = {s["year"]: s.get("value") for s in b.get("series") or []}
+        series = [
+            {"year": s["year"], "value": add(s.get("value"), bv[s["year"]])}
+            for s in a.get("series") or []
+            if s["year"] in bv
+        ]
+        out["series"] = [s for s in series if s["value"] is not None]
+        return out if out["series"] else None
+    key = "values" if kind == "compare" else "ranking"
+    bv = {v["region"]: v.get("value") for v in b.get(key) or []}
+    rows = [
+        {"region": v["region"], "value": add(v.get("value"), bv.get(v["region"]))}
+        for v in a.get(key) or []
+    ]
+    out[key] = [r for r in rows if r["value"] is not None]
+    return out if out[key] else None
 
 
 def _compare_facts(vals: list[dict], unit: str) -> dict:
