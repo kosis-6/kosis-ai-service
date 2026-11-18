@@ -18,6 +18,10 @@ class Settings(BaseSettings):
 
     hcx_api_key: str = ""
     hcx_base_url: str = "https://clovastudio.stream.ntruss.com"
+    # 한 프로세스가 HCX에 동시에 보내는 요청 수 (app/services/hcx_client.py).
+    # HCX-007 한도는 분당 60회·60,000토큰인데, 후보 표를 동시에 계산하면 칸 고르기 호출이
+    # 한꺼번에 몰려 질문 하나가 한도를 넘었다 (11/18 변형셋 평가). 0이면 제한하지 않는다
+    hcx_max_concurrency: int = 2
 
     # 통계표 찾기(조건 추출·계획·최종 검토)에 쓰는 LLM (app/services/search_llm.py)
     # auto(기본): GEMMA_BASE_URL이 있으면 Gemma 4 31B, 없으면 HCX-007
@@ -28,7 +32,9 @@ class Settings(BaseSettings):
     gemma_base_url: str = ""  # 예: http://gemma-host:8000/v1. 넣으면 통계표 찾기가 Gemma로 간다
     gemma_api_key: str = ""  # 서버가 키를 받지 않으면 비워 둔다
     gemma_model: str = "gemma-4-31b"  # 서버가 띄운 모델 이름
-    gemma_timeout: float = 120.0  # 초. 응답 시간 중앙값이 HCX의 약 2배(9초)다
+    # 초. 응답 시간 중앙값이 HCX의 약 2배(9초)다. 120초였을 때는 느린 응답을 다 기다린 뒤에야
+    # HCX로 넘어가 문항 하나가 수 분씩 걸렸다 (변형셋 v1 최대 403초, 11/18)
+    gemma_timeout: float = 30.0
 
     # /docs · /redoc · /openapi.json 을 열어 둘지. 기본은 닫힘: 열어 두면 관리자 API 목록까지
     # 누구나 본다. 설정을 빠뜨린 배포 서버가 열린 채로 뜨지 않게 켜는 쪽을 직접 적도록 했다.
@@ -77,8 +83,9 @@ class Settings(BaseSettings):
     llm_pick_mode: Literal["filter", "pick", "pick_decided", "resolve"] | None = None
     # 표를 고른 뒤 '함께 볼 표'를 묻는다 (Gemma 가 검토에 답했고, 고른 표와 이름이 거의 같은 표가
     # 후보에 있을 때만 호출 1회 추가). '외국인 배우자'처럼 남편 표 · 아내 표로 나뉜 통계를 함께
-    # 안내한다. LLM_PICK_TOGETHER=false 로 끈다
-    llm_pick_together: bool = True
+    # 안내한다. 기본은 끔 (LLM_PICK_TOGETHER=true 로 켠다): 668문항 중 32%에서 호출했지만
+    # 고른 표가 바뀐 문항은 0, 표가 덧붙은 문항은 5개뿐이었다 (11/18)
+    llm_pick_together: bool = False
     # /ask의 통계표 찾기에서 계획(질문을 지표로 나누기, HCX-007 1회)을 함께 돌린다
     # (app/agent/multi.py). 지표가 여럿이면 지표마다 찾은 표를 응답에 덧붙인다.
     # HCX 한도가 빠듯하면 SEARCH_PLAN=false 로 끈다

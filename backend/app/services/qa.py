@@ -42,26 +42,30 @@ from app.services.hcx_client import HcxClient
 from app.services.josa import josa, ro
 
 MODEL = "HCX-007"
+# 질문 해석 응답 최대 길이. HCX 한도(분당 6만 토큰)는 요청마다 이 값만큼을 미리 잡아서,
+# 5,120이면 이 호출만으로 분당 약 10질문에 한도가 찼다. 추론을 끄면 JSON만 나오고
+# 변형셋 v1에서 최대 130토큰(95%가 99토큰 이하)이었다 (11/18)
+UNDERSTAND_MAX_TOKENS = 1024
 
 
 async def _chat(prompt, system, temperature=0.1, trace=None):
-    """HCX-007 호출. 설정은 기존 pipeline/clova.py 기본값과 같다"""
+    """HCX-007 호출 (질문 해석). 짧은 JSON만 받으므로 추론을 끄고 응답 길이를 줄인다"""
     result = await HcxClient().chat(
         MODEL,
         [
             {"role": "system", "content": system},
             {"role": "user", "content": [{"type": "text", "text": prompt}]},
         ],
-        thinking={"effort": "low"},
+        thinking={"effort": "none"},
         topP=0.8,
         topK=0,
-        maxCompletionTokens=5120,
+        maxCompletionTokens=UNDERSTAND_MAX_TOKENS,
         temperature=temperature,
         repetitionPenalty=1.1,
     )
     if trace is not None:
         trace["understand_usage"] = dict(result.usage)
-        trace["understand_max_completion_tokens"] = 5120
+        trace["understand_max_completion_tokens"] = UNDERSTAND_MAX_TOKENS
     return result.content
 
 
