@@ -112,12 +112,20 @@ def parse(raw: str | None) -> dict | None:
 
 
 def decide(raw: dict | None, groups: list[Group]) -> Picked | None:
-    """LLM 응답 → 고른 칸. 표가 질문의 값을 담지 않는다고 했거나 응답이 이상하면 None"""
-    if not raw or raw.get("fits") != prompt.YES or not isinstance(raw.get("picks"), dict):
+    """LLM 응답 → 고른 칸. 표가 질문의 값을 담지 않는다고 했거나 응답이 이상하면 None.
+    응답이 잘려 picks가 없으면(fits 예까지는 씀) 모든 분류를 "정할 수 없음"으로 채운다.
+    버리는 대신 분류가 하나이고 칸이 적으면 사용자에게 되묻는다
+    (11/18, 세진 제안 "필수 값을 못 채우면 None으로")"""
+    if not raw or raw.get("fits") != prompt.YES:
         return None
+    picks = raw.get("picks")
+    if not isinstance(picks, dict):
+        if not raw.get("_salvaged"):
+            return None
+        picks = {}
     out = Picked(reason=str(raw.get("reason") or "")[:200])
     for key, g in zip(keys_of(groups), groups, strict=True):
-        value = str(raw["picks"].get(key) or "").strip()
+        value = str(picks.get(key) or "").strip()
         if value.isdigit() and 1 <= int(value) <= len(g.cells):
             out.forced[g.no] = g.cells[int(value) - 1][0]
         else:  # "정할 수 없음" · 빠짐 · 목록 밖 번호
@@ -189,7 +197,10 @@ def result_label(raw: dict | None, picked: Picked | None):
     """기록에 남길 결과: 고른 칸 / 정할 수 없음 / 표에 없음(LLM이 아니오) / 응답 해석 실패.
     (11/18 전에는 해석 실패도 '표에 없음'으로 적어 LLM이 틀린 판단을 한 것처럼 보였다)"""
     if picked is not None:
-        return "정할 수 없음" if picked.unsure else {str(k): v for k, v in picked.forced.items()}
+        if picked.unsure:
+            cut = raw is not None and not isinstance(raw.get("picks"), dict)
+            return "정할 수 없음 (응답 잘림)" if cut else "정할 수 없음"
+        return {str(k): v for k, v in picked.forced.items()}
     if raw and raw.get("fits") == prompt.NO:
         return "표에 없음"
     return "응답 해석 실패"

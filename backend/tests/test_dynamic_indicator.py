@@ -910,12 +910,20 @@ def test_handoff_missing_or_multi_uses_old_answer(monkeypatch) -> None:
         called.append(found.get("status"))
         return None
 
+    multi = []
+
+    async def several(question, parsed, found, trace):
+        multi.append(len(found["handoff"]["targets"]))
+        return None
+
     monkeypatch.setattr(d, "answer", old)
+    monkeypatch.setattr(d, "multi_answer", several)
     asyncio.run(d.compute_from_handoff(Q1, BASE, {"status": "ok"}, {}))
+    assert called == ["ok"]  # 꾸러미가 없으면 예전 방식
     two = _found([_cand("A", 1, picked=True)])
     two["handoff"]["targets"].append({"candidates": []})
     asyncio.run(d.compute_from_handoff(Q1, BASE, two, {}))
-    assert called == ["ok", "ok"]
+    assert multi == [2]  # 지표가 여럿이면 지표마다 계산해 합친다 (구현 5, multi_indicator.py)
     # 되묻기 · 범위 밖은 계산하지 않는다
     refused = _found([], status="clarify")
     refused["handoff"]["targets"] = []
@@ -1038,14 +1046,11 @@ def test_cell_llm_unsure_asks_that_dimension(cell_llm) -> None:
     assert res["clarification"]["options"] == ["1인가구", "남자", "여자"]
 
 
-def test_cell_llm_reading_counts_for_the_condition_check(cell_llm) -> None:
-    # 조건 '홀로 사는 가구'는 칸 이름에 글자로 없지만, LLM이 그 말을 1인가구로 읽었으면 반영된 것
-    cell_llm["reply"] = {
-        "fits": "예",
-        "picks": {"항목": "1"},
-        "read_as": [{"질문": "홀로 사는 가구", "표": "1인가구"}],
-        "reason": "r",
-    }
+@pytest.mark.parametrize("read_as", [None, [{"질문": "홀로 사는 가구", "표": "1인가구"}]])
+def test_cell_llm_cells_count_for_the_condition_check(cell_llm, read_as) -> None:
+    # 조건 '홀로 사는 가구'는 칸 이름에 글자로 없지만, 칸 고르기 LLM이 고른 칸은 조건까지 보고
+    # 고른 것으로 본다 (11/18). LLM이 바꿔 읽은 말을 적지 않아도(read_as null) 마찬가지
+    cell_llm["reply"] = {"fits": "예", "reason": "r", "read_as": read_as, "picks": {"항목": "1"}}
     u = _understanding()
     u["conditions"]["items"] = ["홀로 사는 가구"]
     cands = [_cand("A", 1, picked=True, checks={"year": True}, review={"match": "exact"})]
@@ -1075,3 +1080,44 @@ def test_cell_llm_fit_skips_the_target_word_check(cell_llm) -> None:
     res = asyncio.run(d.compute_from_handoff(Q1, BASE, _found(cands, u), trace))
     assert res["status"] == "ok"
     assert trace["dynamic"][-1]["by"] == "cell_llm"
+
+
+def test_ratio_does_not_use_region_named_cell(monkeypatch) -> None:
+    # 지역 분류가 둘인 표(현 거주지 · 통근통학지)에서 질문의 지역 이름이 통근통학지 칸에 걸려도
+    # 그 칸 ÷ 전국을 질문의 비율로 내지 않는다 ("1인 가구 중 통근 비율" → 서울 ÷ 전국이 나왔다)
+    monkeypatch.setattr(d.indicators, "find_regions", lambda t: [t] if t in ("서울특별시",) else [])
+    items = d.Dim(0, "항목", {"T": "통근통학 인구"})
+    place = d.Dim(2, "통근통학지별", {"00": "전국", "11": "서울특별시"})
+    plan = d.Plan(pick={0: "T", 2: "11"}, matched={2: "11"})
+    src = {"table": "X", "item_id": "T", "filters": {}}
+    spec, why = d._ratio({"name": "비율"}, src, plan, [items, place], {"sex": "계"})
+    assert spec is None and why == "비율의 분자·분모를 정하지 못함"
+
+
+def test_top_region_of_with_one_target_is_not_answered(computed) -> None:
+    # "A가 가장 많은 시도의 B"를 지표 하나로 읽으면 거르는 지표가 없어 전국 B가 나온다 → 표 안내
+    cands = [_cand("A", 1, picked=True, checks={"year": True}, review={"match": "exact"})]
+    q = "2020년 1인 가구가 가장 많은 시도의 통근 인구는?"
+    trace: dict = {}
+    assert asyncio.run(d.compute_from_handoff(q, BASE, _found(cands), trace)) is None
+    assert any("거르는 지표가 없음" in (s.get("skip") or "") for s in trace["dynamic"])
+
+
+def test_cut_cell_llm_reply_without_picks_asks_instead_of_failing(cell_llm) -> None:
+    # 칸 고르기 응답이 잘려 picks가 없으면 버리지 않고 그 분류를 되묻는다 (11/18)
+    cell_llm["reply"] = {"fits": "예", "reason": "r", "_salvaged": True}
+    cands = [_cand("A", 1, picked=True, checks={"year": True}, review={"match": "exact"})]
+    trace: dict = {}
+    res = asyncio.run(d.compute_from_handoff(Q1, BASE, _found(cands), trace))
+    assert res["clarification"]["kind"] == "table_cell"
+    assert trace["dynamic"][0]["cell_llm"]["result"] == "정할 수 없음 (응답 잘림)"
+
+
+def test_condition_words_still_checked_without_cell_llm(computed) -> None:
+    # 규칙으로 칸을 고른 표는 지금처럼 조건 낱말을 글자로 본다 (칸 고르기 LLM 때만 건너뜀)
+    u = _understanding()
+    u["conditions"]["items"] = ["홀로 사는 가구"]
+    cands = [_cand("A", 1, picked=True, checks={"year": True}, review={"match": "exact"})]
+    trace: dict = {}
+    assert asyncio.run(d.compute_from_handoff(Q1, BASE, _found(cands, u), trace)) is None
+    assert "홀로 사는 가구" in trace["dynamic"][0]["skip"]

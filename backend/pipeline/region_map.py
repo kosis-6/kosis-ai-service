@@ -50,11 +50,42 @@ REGION_WORDS = re.compile(r"행정구역|시도|시군구|읍면동|동읍면|�
 NOT_REGION_WORDS = re.compile(r"국적")
 
 # 예전 시도 이름 → 현재 이름 (다른 표의 지역 경로를 맞출 때 사용)
-OLD_SIDO_NAMES = {"강원도": "강원특별자치도", "전라북도": "전북특별자치도"}
+OLD_SIDO_NAMES = {"강원도": "강원특별자치도", "전라북도": "전북특별자치도", "제주도": "제주특별자치도"}
 # 전국 합계를 뜻하는 지역 이름
-TOTAL_NAMES = {"전국", "계", "합계"}
+TOTAL_NAMES = {"전국", "계", "합계", "총계"}
 # 표마다 다르게 쓰는 지역 경로 (공백 제거한 '시도>시군구' 형태)
-PATH_FIXES = {"세종특별자치시>세종시": "세종특별자치시>세종특별자치시"}
+PATH_FIXES = {
+    "세종특별자치시>세종시": "세종특별자치시>세종특별자치시",
+    "경상남도>통합창원시": "경상남도>창원시(통합)",
+    # 2008년 전에 이름만 바뀐 시군구 (군 → 시 승격, 범위 같음)
+    "경기도>포천군": "경기도>포천시",  # 2003
+    "경기도>양주군": "경기도>양주시",  # 2003
+    "경기도>광주군": "경기도>광주시",  # 2001
+    "경기도>화성군": "경기도>화성시",  # 2001
+    "경기도>김포군": "경기도>김포시",  # 1998
+    "경기도>안성군": "경기도>안성시",  # 1998
+    "경기도>용인군": "경기도>용인시",  # 1996
+    "경기도>이천군": "경기도>이천시",  # 1996
+    "경기도>파주군": "경기도>파주시",  # 1996
+    "충청남도>논산군": "충청남도>논산시",  # 1996
+    "경상남도>양산군": "경상남도>양산시",  # 1996
+    # 2008년 전에 시도만 바뀐 군 (1995, 범위 같음)
+    "경기도>강화군": "인천광역시>강화군",
+    "경기도>옹진군": "인천광역시>옹진군",
+    "경상북도>달성군": "대구광역시>달성군",
+    # 합쳐져 범위가 달라진 곳(남·북제주군, 여천군·여천시, 1995 도농통합, 울산시, 일산구 등)은 잇지 않는다
+}
+# 시도 없이 이름만 적힌 옛 시군구 (같은 이름이 다른 시도에 없는 것만)
+OLD_NAME_ONLY = {
+    "포천군": "경기도>포천시",
+    "양주군": "경기도>양주시",
+    "광주군": "경기도>광주시",
+    "화성군": "경기도>화성시",
+}
+# 일반구를 시 이름과 붙여 쓴 경우 ('수원시 권선구', '부천시소사구'). 기준 목록은 '경기도 > 권선구'
+CITY_GU = re.compile(r"^.+시(.+구)$")
+# 읍·면·동 (기준 목록은 시군구까지라 잇지 않음)
+TOWN_END = re.compile(r"(읍|면|동|가|리)$")
 
 MAP_COLUMNS = [
     "tbl_id",
@@ -130,19 +161,37 @@ def match_region(idx: RegionIndex, org_id: str, src: Source) -> tuple[list[str],
         key = PATH_FIXES.get(f"{parts[0]}>{parts[-1]}", f"{parts[0]}>{parts[-1]}")
         if key in idx.codes_by_path:
             return idx.codes_by_path[key], "path"
-    if len(parts) == 1 and parts[0] in idx.sido_by_name:
-        return [idx.sido_by_name[parts[0]]], "sido"
+        # '경기도 > 수원시 권선구' → '경기도 > 권선구' (못 찾았을 때만)
+        if m := CITY_GU.match(parts[-1]):
+            key = f"{parts[0]}>{m[1]}"
+            if key in idx.codes_by_path:
+                return idx.codes_by_path[key], "path"
+        # '전남광주통합특별시 > 광주광역시'처럼 경로 끝이 시도 이름 (KOSIS가 2026년 이름으로 경로를 바꾼 표)
+        if len(parts) == 2 and parts[-1] in idx.sido_by_name:
+            return [idx.sido_by_name[parts[-1]]], "sido"
+    if len(parts) == 1:
+        if parts[0] in idx.sido_by_name:
+            return [idx.sido_by_name[parts[0]]], "sido"
+        key = OLD_NAME_ONLY.get(parts[0])
+        if key in idx.codes_by_path:
+            return idx.codes_by_path[key], "path"
     return [], None
 
 
 def unmatched_reason(name: str | None) -> str:
-    name = name or ""
+    name = norm(name)
     if "변동전" in name:
         return "변동전 지역 (현재 지역과 범위가 달라 연결하지 않음)"
-    if norm(name) in {"동부", "읍부", "면부"}:
+    if name in {"동부", "읍부", "면부", "읍면부"}:
         return "지역이 아닌 동·읍·면부 분류"
     if "국외" in name:
         return "국외"
+    if name in {"기타", "미상"}:
+        return "지역이 아닌 분류 (기타·미상)"
+    if "출장" in name:
+        return "출장소 (기준 목록은 시군구까지)"
+    if TOWN_END.search(name):
+        return "읍·면·동 (기준 목록은 시군구까지)"
     return "기준 지역 목록(2008~2025 주민등록)에 없는 지역"
 
 

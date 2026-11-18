@@ -347,13 +347,206 @@ def test_cross_dynamic_divides(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "1인 가구 수 1,390,701가구 ÷ 총인구 9,668,465명" in res["answer"]
 
 
-def test_cross_dynamic_only_for_one_region_value() -> None:
+def test_cross_dynamic_trend_divides_each_year(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 한쪽만 사전에 있는 나누기의 추이: 동적 쪽을 추이 질문으로 한 번에 계산하고 연도마다 나눈다
     import asyncio
 
-    from app.services import ask_session
+    from app.services import ask_session, dynamic_indicator, table_guide
 
-    parsed = {"type": "trend", "regions": ["서울특별시"],
-              "cross": {"num": "1인 가구 수", "den": "총인구", "scale": 1000,
-                        "dynamic": "num"}}  # fmt: skip
+    asked = []
+
+    async def cached(question, parsed, trace):
+        asked.append((question, parsed["type"]))
+        series = [{"year": 2015, "value": 1000}, {"year": 2020, "value": 1500}]
+        result = {"status": "ok", "indicator": "1인 가구 수", "unit": "가구", "series": series,
+                  "region": "서울특별시", "sex": "계", "source": "1인가구 표",
+                  "basis": "인구총조사", "tbl_id": "DT_1PR2007"}  # fmt: skip
+        return {"status": "ok", "result": result}
+
+    def compute(q):
+        assert q["indicator"] == "총인구" and q["type"] == "trend"
+        series = [{"year": 2015, "value": 10000}, {"year": 2020, "value": 10000}]
+        return {"status": "ok", "indicator": "총인구", "unit": "명", "series": series,
+                "region": "서울특별시", "sex": "계", "source": "주민등록", "basis": "주민등록",
+                "tbl_id": "DT_1B04006"}  # fmt: skip
+
+    async def cards(res, asked):
+        return None
+
+    async def no_search(*a, **k):
+        raise AssertionError("캐시에 있으면 통계표 찾기를 부르지 않는다")
+
+    monkeypatch.setattr(dynamic_indicator, "cached_answer", cached)
+    monkeypatch.setattr(table_guide, "find_tables", no_search)
+    monkeypatch.setattr(qa, "compute", compute)
+    monkeypatch.setattr(ask_session, "_attach_cards", cards)
+    parsed = {"type": "trend", "regions": ["서울특별시"], "start_year": 2015, "end_year": 2020,
+              "sex": "계", "cross": {"num": "1인 가구 수", "den": "총인구", "scale": 1000,
+                                     "form": "per", "dynamic": "num"}}  # fmt: skip
     res = {"status": qa.CROSS_DYNAMIC, "parsed": parsed}
-    assert asyncio.run(ask_session._cross_dynamic(res, None, "질문", None)) is False
+    assert asyncio.run(ask_session._cross_dynamic(res, None, "질문", None)) is True
+    assert asked == [("2015년부터 2020년까지 서울특별시 1인 가구 수 추이", "trend")]
+    assert [s["value"] for s in res["result"]["series"]] == [100.0, 150.0]
+
+
+def test_side_question_by_kind() -> None:
+    from app.services import ask_session as s
+
+    p = {"regions": ["서울특별시", "부산광역시"], "year": 2020, "level": "시군구"}
+    assert s._side_question(p, "1인 가구 수", "compare") == (
+        "2020년 서울특별시 부산광역시 1인 가구 수 비교"
+    )
+    assert s._side_question(p, "1인 가구 수", "rank") == "2020년 시군구별 1인 가구 수"
+    assert s._side_question(p, "1인 가구 수", "value") == "2020년 서울특별시 1인 가구 수"
+
+
+def test_detect_both_unknown_only_on_request() -> None:
+    # 두 값 모두 사전에 없는 나누기: 질문 해석(qa)에서는 잡지 않고, 한 표 안의 비율을 먼저 찾은 뒤
+    # 안 되면 ask_session이 both=True로 잡는다
+    q = "2020년 서울 1인 가구 중 통근하는 사람 비율"
+    assert x.detect_partial(q) is None
+    c = x.detect_partial(q, both=True)
+    assert (c.num, c.den, c.scale, c.dynamic) == ("통근하는 사람", "1인 가구", 100, "both")
+
+
+
+def test_bare_per_people_means_population() -> None:
+    # "1000명당 혼인 건수"처럼 분모를 말하지 않으면 인구 1,000명당 → 공식 조혼인율
+    assert x.detect("1000명당 혼인 건수 얼마나 돼?").official == "조혼인율"
+    c = x.detect("2024년 서울 1000명당 외국인근로자 수")
+    assert (c.num, c.den, c.scale) == ("외국인근로자 수", "총인구", 1000)
+
+
+# ---- 3단계 마무리: 분자 두 지표의 합 (표 3개), 주기 · 기준 시점 ------------------------------
+
+
+def test_detect_summed_numerator() -> None:
+    c = x.detect("2024년 서울 인구 1,000명당 혼인 건수와 이혼 건수 합")
+    assert (c.num, c.plus, c.den, c.scale) == ("혼인 건수", "이혼 건수", "총인구", 1000)
+    assert c.name == "인구 1,000명당 혼인 건수와 이혼 건수"
+    assert c.formula == "(혼인 건수 + 이혼 건수) ÷ 총인구 × 1,000"
+    assert c.official is None  # 합은 공식 지표가 아니다
+    s = x.detect("세대당 출생아 수랑 사망자 수 합친 것")
+    assert (s.num, s.plus, s.den) == ("출생아 수", "사망자 수", "세대수")
+    assert x.detect("서울 출생아 수와 사망자 수") is None  # 나누기가 아님
+
+
+def test_summed_numerator_value_trend_rank() -> None:
+    def run(q):
+        res = fake_run()(q)
+        if q["indicator"] == "사망자 수" and q["type"] == "value":
+            res = {**res, "value": 46000}
+        return res
+
+    q = q_of("value", year=2024)
+    q["cross"]["plus"] = "사망자 수"
+    res = x.compute(q, run)
+    assert res["status"] == "ok"
+    assert res["operands"][0] == {"label": "출생아 수와 사망자 수", "value": 87605, "unit": "명"}
+    assert res["value"] == x._div(41605 + 46000, 4482063, 1)
+
+    t = q_of("trend")
+    t["cross"]["plus"] = "출생아 수"  # 같은 지표 둘이어도 연도별로 더한다
+    assert [s["year"] for s in x.compute(t, fake_run())["series"]] == [2024, 2025]
+
+    r = q_of("rank", year=2024, top=1)
+    r["cross"]["plus"] = "출생아 수"
+    # 서울 (100+100) ÷ 40 = 5, 부산 (50+50) ÷ 10 = 10
+    assert x.compute(r, fake_run())["ranking"] == [
+        {"region": "부산광역시", "value": 10.0, "rank": 1}
+    ]
+
+
+def test_monthly_value_is_not_mixed_in_any_kind() -> None:
+    # 연간 값과 최신 달 값은 값 질문이 아니어도 섞지 않는다
+    def run(q):
+        res = fake_run()(q)
+        return {**res, "as_of": "2026년 10월 말"} if q["indicator"] == "세대수" else res
+
+    res = x.compute(q_of("compare", year=2024, regions=["서울특별시", "부산광역시"]), run)
+    assert res["status"] == "missing_data" and "최신 달" in res["reason"]
+
+
+def test_reference_date_note() -> None:
+    c = x.Cross("외국인주민 수", "총인구", 1000)
+    num = {"basis": "지방자치단체 외국인주민 현황, 각 연도 11월 1일"}
+    den = {"basis": "주민등록인구, 각 연도 12월 31일 기준"}
+    assert (
+        "기준 시점이 다릅니다 (외국인주민 수 11월 1일, 총인구 12월 31일)"
+        in x._reference_note(c, num, den)[0]
+    )
+    flow = {"basis": "인구동향조사, 각 연도 1월 1일 ~ 12월 31일"}
+    assert x._reference_note(c, flow, den) == []  # 기간 값 ÷ 시점 값은 보통이다
+
+
+def test_correct_summed_numerator_is_not_period_sum() -> None:
+    parsed = {"type": "trend", "indicator": "출생아 수", "aggregate": "sum"}
+    qa._cross(
+        "2020년부터 2024년까지 서울 세대당 출생아 수와 사망자 수 합친 것 추이",
+        parsed,
+        lambda k, v, r: parsed.update({k: v}),
+    )
+    assert parsed["cross"]["plus"] == "사망자 수" and "aggregate" not in parsed
+
+
+# ---- 두 지표의 차이 · 몇 배 ---------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("question", "num", "den", "form"),
+    [
+        ("2024년 서울 혼인 건수와 이혼 건수 차이는?", "혼인 건수", "이혼 건수", "diff"),
+        ("2024년 서울 혼인 건수가 이혼 건수보다 몇 건 많아?", "혼인 건수", "이혼 건수", "diff"),
+        ("2024년 서울 전입자 수에서 전출자 수를 빼면?", "전입자 수", "전출자 수", "diff"),
+        # A는 B의 몇 배 = A ÷ B (대비와 같다)
+        ("2024년 서울 혼인 건수는 이혼 건수의 몇 배야?", "혼인 건수", "이혼 건수", "versus"),
+    ],
+)
+def test_detect_diff_and_times(question: str, num: str, den: str, form: str) -> None:
+    c = x.detect(question)
+    assert (c.num, c.den, c.form, c.scale) == (num, den, form, 1)
+
+
+def test_diff_names_and_official() -> None:
+    c = x.Cross("혼인 건수", "이혼 건수", 1, "diff")
+    assert c.name == "혼인 건수와 이혼 건수의 차이"
+    assert (c.unit, c.formula, c.verb) == ("건", "혼인 건수 − 이혼 건수", "뺄")
+    # 출생아 수 − 사망자 수는 공식 자연증가 건수
+    assert x.detect("2024년 서울 출생아 수와 사망자 수 차이는?").official == "자연증가 건수"
+    # 단위가 다르면 (건 − 명) 빼지 않는다
+    assert x.detect("2024년 서울 혼인 건수와 출생아 수 차이") is None
+
+
+def test_diff_value_and_trend() -> None:
+    q = q_of("value", num="출생아 수", den="세대수", year=2024)
+    q["cross"]["form"] = "diff"
+    res = x.compute(q, fake_run())
+    assert res["value"] == 41605 - 4482063 and res["op"] == "−" and "scale" not in res
+    t = q_of("trend", num="출생아 수", den="세대수")
+    t["cross"]["form"] = "diff"
+    series = x.compute(t, fake_run())["series"]
+    assert series[0] == {"year": 2024, "value": 41605 - 4482063}
+
+
+def test_operand_line_shows_scale_and_minus() -> None:
+    per = {"value": 4.04, "unit": "명", "kind": "value", "scale": 1000, "operands": [
+        {"label": "외국인근로자 수", "value": 37734, "unit": "명"},
+        {"label": "총인구", "value": 9331828, "unit": "명"}]}  # fmt: skip
+    assert "× 1,000 = 4.04명" in qa._body(per)[0]
+    diff = {"value": 30317, "unit": "건", "kind": "value", "op": "−", "operands": [
+        {"label": "혼인 건수", "value": 42471, "unit": "건"},
+        {"label": "이혼 건수", "value": 12154, "unit": "건"}]}  # fmt: skip
+    assert "혼인 건수 42,471건 − 이혼 건수 12,154건 = 30,317건" in qa._body(diff)[0]
+
+
+def test_within_ratio_needs_part_of_whole() -> None:
+    # 'A 중 B 비율'은 B가 A의 일부일 때만 (통근 인구 ÷ 1인 가구 = 322%를 막는다)
+    c = x.Cross("통근하는 사람", "1인 가구", 100, "within")
+    num = {"value": 4486774, "unit": "명", "year": 2020, "region": "서울", "sex": "계"}
+    den = {"value": 1390701, "unit": "가구", "year": 2020, "region": "서울", "sex": "계"}
+    res = x.combine_value(c, num, den, {"sex": "계"})
+    assert res["status"] == "missing_data" and "단위가 달라" in res["reason"]
+    bigger = x.combine_value(c, {**num, "unit": "가구"}, den, {"sex": "계"})
+    assert bigger["status"] == "missing_data" and "일부가 아닙니다" in bigger["reason"]
+    part = x.combine_value(c, {**num, "unit": "가구", "value": 139070}, den, {"sex": "계"})
+    assert part["status"] == "ok" and part["value"] == 10.0

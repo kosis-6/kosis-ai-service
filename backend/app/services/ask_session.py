@@ -365,7 +365,7 @@ CONTEXT_YEAR = [
     (re.compile(r"전년도|전년|(?:그|직)\s*전\s*해|이전\s*해|직전\s*연도|한\s*해\s*전"), -1),
     (re.compile(r"다음\s*해|이듬해|다음\s*연도|익년|한\s*해\s*(?:뒤|후)"), 1),
 ]
-FULL_YEAR = re.compile(r"(?:19|20)\d{2}\s*년?")
+FULL_YEAR = re.compile(r"(?:19|20)\d{2}(?!\d|\s*세대)\s*년?")  # "2030세대"는 연도가 아니다
 
 
 def follow_year(question: str, conditions: dict, today: date | None = None) -> int | None:
@@ -1419,6 +1419,19 @@ async def _attach_tables(res: dict, state: dict | None, question: str, user_id: 
             res["request_type"], res["question"], res["search_session"] = kind, asked, sid
             await _attach_cards(res, asked)
             return
+        try:
+            pair = cross_indicator.detect_partial(asked, both=True)
+        except Exception:
+            logger.exception("두 값 나누기 감지 실패")
+            pair = None
+        if pair is not None:
+            if pair.dynamic == "both":
+                # 두 값 모두 사전에 없는 나누기: 한 표 안에서 못 찾았으니 양쪽을 따로 찾아 나눈다
+                two = {"parsed": {**(parsed or {}), "cross": pair.as_dict()}, "trace": trace}
+                two["request_type"] = kind
+                if await _cross_dynamic(two, state, asked, user_id) and two.get("status") == "ok":
+                    res.update(two)
+                    return
         res.update(table_guide.tables_answer(found, {"parsed": parsed or {}}))
         # 수치 답을 하려다 표 찾기로 넘어온 경위(질문 해석)는 요청 기록에 남긴다
         res["request_type"], res["question"], res["trace"] = kind, asked, trace or {}
@@ -1492,63 +1505,108 @@ async def _search_after(res: dict, state: dict | None, asked: str, user_id: int 
     return True
 
 
-async def _cross_dynamic(res: dict, state: dict | None, asked: str, user_id: int | None) -> bool:
-    """두 값을 나누는데 한쪽이 사전에 없다 (cross_indicator.detect_partial). res를 바꿨으면 True
+CROSS_KINDS = ("value", "trend", "compare", "rank")
 
-    사전에 없는 쪽은 "연도 지역 그 말"을 따로 물은 것처럼 동적 지표로 구한다 (계산 방법 캐시 →
-    통계표 찾기 · 칸 고르기). 사전 쪽은 그 연도로 계산하고, 둘을 나누기 전에 지역 · 연도 · 성별을
-    확인한다 (cross_indicator.combine_value). 값 질문(한 지역 · 한 해)만 한다"""
-    parsed = res.get("parsed") or {}
-    trace = res.setdefault("trace", {})
-    c = cross_indicator.Cross(**parsed["cross"])
+
+def _side_question(parsed: dict, phrase: str, kind: str) -> str:
+    """사전에 없는 쪽만 따로 물은 질문 ("2020년 서울특별시 1인 가구 수",
+    "2015년부터 2020년까지 서울특별시 1인 가구 수 추이", "2020년 시도별 1인 가구 수")"""
     regions = parsed.get("regions") or []
-    if parsed.get("type") != "value" or len(regions) > 1:
-        trace["cross"] = {"skip": "한쪽이 사전에 없는 값은 한 지역 · 한 해만 계산"}
-        return False
-    year = parsed.get("year")
-    sub_q = " ".join(filter(None, [f"{year}년" if year else "", *regions, c.unknown]))
+    year, y0, y1 = parsed.get("year"), parsed.get("start_year"), parsed.get("end_year")
+    if kind == "trend":
+        when = f"{y0}년부터 {y1}년까지" if y0 and y1 else (f"{y0}년부터" if y0 else "최근")
+        return " ".join(filter(None, [when, *regions[:1], phrase, "추이"]))
+    when = f"{year}년" if year else ""
+    if kind == "rank":
+        return " ".join(filter(None, [when, f"{parsed.get('level') or '시도'}별", phrase]))
+    if kind == "compare":
+        return " ".join(filter(None, [when, *regions, phrase, "비교"]))
+    return " ".join(filter(None, [when, *regions[:1], phrase]))
+
+
+async def _dynamic_side(
+    phrase: str, parsed: dict, kind: str, sid: str, user_id: int | None, trace: dict
+) -> dict | None:
+    """사전에 없는 말 하나를 동적 지표로 계산한 결과(result). 건수 · 인원이 아니거나 못 하면 None.
+    계산 방법 캐시를 먼저 보고, 없으면 통계표 찾기 → 넘기기 계산 (처음 한 번만 HCX를 부른다.
+    성공하면 캐시에 남아 다음 연도 · 지역은 통계표 찾기 없이 계산된다)"""
+    sub_q = _side_question(parsed, phrase, kind)
     sub_parsed = {
         **parsed,
+        "type": kind,
         "cross": None,
         "indicators": None,
-        "indicator": c.unknown,
-        "term": c.unknown,
+        "indicator": phrase,
+        "term": phrase,
         "grounded": False,
         "dynamic_spec": None,
+        "top": None if kind == "rank" else parsed.get("top"),
     }
-    sid = (state or {}).get("search_session") or table_guide.new_search_session()
+    step = {"phrase": phrase, "question": sub_q}
+    trace.setdefault("cross_sides", []).append(step)
     try:
         part = await dynamic_indicator.cached_answer(sub_q, sub_parsed, trace)
         if part is None:
             found = await table_guide.find_tables(sub_q, sid, None, user_id)
             part = await dynamic_indicator.compute_from_handoff(sub_q, sub_parsed, found, trace)
     except Exception:
-        logger.exception("두 값 나누기: 사전에 없는 쪽 계산 실패")
-        return False
+        logger.exception("두 값 나누기: 사전에 없는 쪽 계산 실패 (%s)", phrase)
+        return None
     got = (part or {}).get("result") or {}
-    trace["cross"] = {"question": sub_q, "status": (part or {}).get("status")}
-    if (part or {}).get("status") != "ok" or part.get("clarification") or "value" not in got:
-        return False
-    unit = got.get("unit") or ""
-    if unit not in cross_indicator.COUNT_UNITS:
-        trace["cross"]["skip"] = f"건수 · 인원이 아닌 값 ({unit})"
-        return False
-    known = c.den if c.dynamic == "num" else c.num
-    q = {**parsed, "cross": None, "indicators": None, "indicator": known, "term": known}
-    q["year"] = got.get("year") or year
-    try:
-        other = await run_in_threadpool(qa.compute, q)
-    except Exception:
-        logger.exception("두 값 나누기: 사전 쪽 계산 실패")
-        return False
-    if other.get("status") != "ok":
-        return False
-    got = {**got, "indicator": c.unknown}
-    c.units = {c.unknown: unit}
-    num, den = (got, other) if c.dynamic == "num" else (other, got)
-    result = cross_indicator.combine_value(c, num, den, q)
+    step["status"] = (part or {}).get("status")
+    if step["status"] != "ok" or (part or {}).get("clarification"):
+        return None
+    if (got.get("unit") or "") not in cross_indicator.COUNT_UNITS:
+        step["skip"] = f"건수 · 인원이 아닌 값 ({got.get('unit')})"
+        return None
+    return {**got, "indicator": phrase}
+
+
+async def _cross_dynamic(res: dict, state: dict | None, asked: str, user_id: int | None) -> bool:
+    """두 값을 나누는데(빼는데) 한쪽 또는 양쪽이 사전에 없다. res를 바꿨으면 True
+
+    사전에 없는 쪽은 그 말만 따로 물은 것처럼 동적 지표로 구한다 (_dynamic_side). 사전 쪽은
+    qa.compute로 같은 조건을 계산한다. 값 · 추이 · 비교 · 순위 모두 cross_indicator.combine_parts가
+    지역 · 연도 · 성별 · 주기를 확인한 뒤 나눈다"""
+    parsed = res.get("parsed") or {}
+    trace = res.setdefault("trace", {})
+    c = cross_indicator.Cross(**parsed["cross"])
+    kind = parsed.get("type") if parsed.get("type") in CROSS_KINDS else "value"
+    if kind == "compare" and len(parsed.get("regions") or []) <= 1:
+        kind = "value"
+    q = {**parsed, "type": kind, "cross": None, "indicators": None}
+    sid = (state or {}).get("search_session") or table_guide.new_search_session()
+    sides = {"num": c.num, "den": c.den}
+    unknown = ["num", "den"] if c.dynamic == "both" else [c.dynamic]
+    got: dict = {}
+    for side in unknown:
+        got[side] = await _dynamic_side(sides[side], q, kind, sid, user_id, trace)
+        if got[side] is None:
+            return False
+        if kind == "value" and not q.get("year") and got[side].get("year"):
+            q["year"] = got[side]["year"]  # 동적 쪽이 답한 해로 나머지를 맞춘다
+    for side in ("num", "den"):
+        if side in got:
+            continue
+        known = {**q, "indicator": sides[side], "term": sides[side]}
+        if kind == "rank":
+            known["top"] = None  # 나눈 값으로 다시 순위를 매기므로 모든 지역을 받는다
+        try:
+            got[side] = await run_in_threadpool(qa.compute, known)
+        except Exception:
+            logger.exception("두 값 나누기: 사전 쪽 계산 실패")
+            return False
+        if got[side].get("status") != "ok":
+            return False
+    c.units = {sides[s]: got[s].get("unit") for s in unknown}
+    result = cross_indicator.combine_parts(c, [got["num"]], got["den"], q)
     result["cross"] = c.as_dict()
-    kind = res.get("request_type")
+    for r in qa._leaves(result):
+        if r.get("series"):
+            qa._add_yearly_change(r)
+            qa._add_trend_facts(r)
+        r["asked"] = {**(q.get("asked") or {}), "top": q.get("top")}
+    request_type = res.get("request_type")
     res.clear()
     res.update(
         {
@@ -1561,7 +1619,7 @@ async def _cross_dynamic(res: dict, state: dict | None, asked: str, user_id: int
             "chart": charts.build(result) if result.get("status") == "ok" else None,
         }
     )
-    res["request_type"], res["question"], res["search_session"] = kind, asked, sid
+    res["request_type"], res["question"], res["search_session"] = request_type, asked, sid
     if result.get("status") == "ok":
         await _attach_cards(res, asked)
     return True
@@ -1580,7 +1638,9 @@ async def _attach_cards(res: dict, asked: str) -> None:
 
 # 사전 지표로 답했거나 그 지표의 자료 사정을 안내한 상태. 근거 없는 지표면 둘 다 질문과 맞지 않는다
 # (예: "2020년 서울 1인 가구 수"를 미혼 인구로 읽고 "미혼 인구 자료는 2022~2025년만 있습니다")
-DICTIONARY_ANSWERED = ("ok", "out_of_range", "missing_data", "region_not_in_year")
+DICTIONARY_ANSWERED = ("ok", "out_of_range", "missing_data", "region_not_in_year", "missing_region")
+# missing_region: 근거 없는 지표로 지역을 되묻기보다 통계표 찾기가 낫다
+# ("1인 가구가 가장 많은 시도의 통근 인구"를 총인구로 읽고 "어느 지역인지"를 물었다)
 
 
 def ungrounded(res: dict) -> bool:
@@ -1617,6 +1677,12 @@ async def _dynamic_instead(res: dict, state: dict | None, asked: str, user_id: i
         return False
     if computed is None and found is None:
         return False
+    if res.get("status") == "ok" and (same := _same_dictionary_table(parsed, computed, found)):
+        # 바로 계산이 사전 지표가 쓰는 표를 골랐다 (예: 출생아 수 표 DT_1B8000H).
+        # 표 안내나 칸 되묻기, 같은 표의 다른 칸 대신 검증된 사전 계산을 쓴다
+        # (변형셋 1차: 사전 표를 고르고도 안내로 끝남)
+        trace["dynamic_kept"] = {"indicator": parsed.get("indicator"), "tbl_id": same}
+        return False
     # 바꾼 원래 답 (요청 기록·회귀 평가에서 사전 지표 답과 비교한다)
     trace["replaced"] = {
         "indicator": parsed.get("indicator"),
@@ -1635,6 +1701,22 @@ async def _dynamic_instead(res: dict, state: dict | None, asked: str, user_id: i
         res["trace"] = trace
     res["request_type"], res["question"], res["search_session"] = kind, asked, sid
     return True
+
+
+def _same_dictionary_table(parsed: dict, computed: dict | None, found: dict | None) -> str | None:
+    """바로 계산(또는 표 안내)이 고른 표가 사전 지표의 표이면 그 표 ID. 아니면 None"""
+    spec = indicators.spec(parsed.get("indicator") or "")
+    tables = {src.get("table") for src in (spec or {}).get("sources") or []}
+    if not tables:
+        return None
+    picked: list[str | None] = []
+    if computed:
+        picked += [s.get("tbl_id") for s in computed.get("sources") or []]
+        context = (computed.get("clarification") or {}).get("context") or {}
+        picked.append(context.get("tbl_id"))
+    elif found:
+        picked += [r.get("tbl_id") for r in (found.get("recommendations") or [])[:1]]
+    return next((t for t in picked if t and t in tables), None)
 
 
 def _summary(result: dict | None) -> dict | None:

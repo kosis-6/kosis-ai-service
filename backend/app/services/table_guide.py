@@ -193,7 +193,7 @@ MAX_CANDIDATES = 5
 COMPUTABLE = ("ok", "partial_match")  # 표를 골랐다 (후보를 넘긴다). 그 밖은 targets가 빈 목록
 REGION_SUFFIX = re.compile(r"(특별자치시|특별자치도|특별시|광역시|도|시|군|구)$")
 SEX_SAID = {"남": re.compile(r"남(자|성|녀)|성별"), "여": re.compile(r"여(자|성)|남녀|성별")}
-YEAR_SAID = re.compile(r"(?:19|20)\d{2}")
+YEAR_SAID = re.compile(r"(?:19|20)\d{2}(?!\d|\s*세대)")  # "2030세대"는 연도가 아니다
 
 
 def build_handoff(

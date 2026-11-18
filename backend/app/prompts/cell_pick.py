@@ -17,28 +17,36 @@ SYSTEM = """너는 통계표에서 질문에 맞는 칸을 고르는 도우미�
    - 질문이 그 분류를 말하지 않으면 합계 칸(계 · 총계 · 전체)을 고른다. 합계 칸이 없으면 "정할 수 없음".
    - 질문과 뜻이 다르거나 더 넓은 칸으로 대신하지 않는다. 맞는 칸이 없으면 fits를 "아니오"로 한다.
    - 두 칸 이상이 똑같이 맞으면 "정할 수 없음"으로 둔다 (사용자에게 묻는다).
-3. 질문의 낱말을 표의 다른 낱말로 바꿔 읽었으면 read_as에 적는다.
+3. 질문의 낱말을 표의 다른 낱말로 바꿔 읽었으면 read_as에 적고, 바꿔 읽지 않았으면 null로 둔다.
 4. 목록에 없는 번호는 쓰지 않는다. 값(숫자)은 추측하지 않는다."""
 
 
 def schema(groups: dict[str, int]) -> dict:
     """응답 모양을 고정한다. groups: {분류 이름: 칸 수}. 칸 번호는 목록에 있는 것만"""
-    # 칸 순서: picks를 맨 뒤에 둔다. 모델은 핵심 답(picks)을 쓰고 나면 JSON을 닫고 싶어 하는데, 그 뒤에
-    # 필수 칸(reason)이 남아 있으면 닫는 글자가 막혀 공백만 이어 쓰다 글자 수 한도에 잘렸다
-    # (11/18 Gemma: fits → picks → read_as → reason 순서는 세 표 모두 잘림, fits → reason → read_as →
-    # picks는 정상. reason을 맨 앞에 두면 이유부터 쓰다 "연도 분류가 없다"며 아니오로 기울었다)
+    # 칸 순서 fits → reason → read_as → picks: 핵심 답(picks)을 맨 뒤에 두고 그 뒤에 칸을 두지 않는다.
+    # 모델은 핵심 답을 쓰고 나면 JSON을 닫고 싶어 하는데, 뒤에 칸이 남아 있으면 닫는 글자 대신 공백만
+    # 이어 쓰다 글자 수 한도에 잘렸다. read_as는 바꿔 읽은 말이 없을 때 null을 쓸 수 있어야 한다
+    # (목록만 허용하면 그 자리에서 막혀 잘렸다). 11/18 Gemma로 잘렸던 34건 시험:
+    #   read_as(목록만) → picks 14/34 잘림, picks → read_as(null 허용) 8/34 한도까지,
+    #   read_as 없음 1/34 해석 실패, read_as(null 허용) → picks 0/34 · 전부 정상 종료.
+    # reason을 맨 앞에 두면 판단이 엇나갔다
     return {
         "type": "object",
         "properties": {
             "fits": {"type": "string", "enum": [YES, NO]},
             "reason": {"type": "string"},
             "read_as": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {"질문": {"type": "string"}, "표": {"type": "string"}},
-                    "required": ["질문", "표"],
-                },
+                "anyOf": [
+                    {"type": "null"},
+                    {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {"질문": {"type": "string"}, "표": {"type": "string"}},
+                            "required": ["질문", "표"],
+                        },
+                    },
+                ]
             },
             "picks": {
                 "type": "object",
@@ -48,5 +56,5 @@ def schema(groups: dict[str, int]) -> dict:
                 },
             },
         },
-        "required": ["fits", "reason", "picks"],
+        "required": ["fits", "reason", "read_as", "picks"],
     }

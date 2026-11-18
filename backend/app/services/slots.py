@@ -59,7 +59,8 @@ for _name, _aliases in SIDO.items():
     if _name.endswith(("특별시", "광역시", "특별자치시")) and _aliases[0] != "광주":
         SIDO_ALIAS.setdefault(_aliases[0] + "시", _name)
 
-YEAR = re.compile(r"(?<!\d)((?:19|20)\d{2})(?!\d)")
+# "2030세대"·"2030 세대"는 20~39세(agegroup.py)이지 2030년이 아니다
+YEAR = re.compile(r"(?<!\d)((?:19|20)\d{2})(?!\d|\s*세대)")
 # '95년', "'05년도". '10년 전', '20년간', '90년생', '80년대', '10년 넘게'는 연도가 아니다
 SHORT_YEAR = re.compile(
     r"(?<![\d~])'?(\d{2})\s*년(?!\s*(?:전|후|뒤|간|동안|생|대|째|만|마다|이상|이하|이내|미만|차|넘|넘게|넘는|넘은|가까이|정도|쯤|남짓))"
