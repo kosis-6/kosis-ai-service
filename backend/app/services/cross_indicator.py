@@ -67,11 +67,16 @@ class Cross:
     num: str  # 분자 지표 (사전 이름)
     den: str  # 분모 지표
     scale: int  # 1: 그대로, 100: %, 1000: N명당
-    form: str = "per"  # per: A당 B / versus: A 대비 B / within: A 중 B 비율
+    form: str = "per"  # per: A당 B / versus: A 대비 B / within: A 중 B 비율 / diff: A − B
     official: str | None = None  # 공식 지표가 있으면 그 이름
     dynamic: str | None = None  # 사전에 없는 쪽 ("num" · "den"). 그 쪽은 동적 지표로 구한다
     units: dict | None = None  # 사전에 없는 쪽의 단위 (계산한 뒤 채운다)
     plus: str | None = None  # 분자를 두 지표의 합으로 ("혼인 건수와 이혼 건수"). 표는 3개까지
+
+    @property
+    def verb(self) -> str:
+        """계산할 수 없을 때의 말 ("뺄 수 없습니다" · "나눌 수 없습니다")"""
+        return "뺄" if self.form == "diff" else "나눌"
 
     @property
     def num_names(self) -> list[str]:
@@ -89,6 +94,8 @@ class Cross:
     @property
     def name(self) -> str:
         den, num = DEN_LABEL.get(self.den, self.den), self.num_label
+        if self.form == "diff":
+            return f"{josa(num, '과와')} {self.den}의 차이"
         if self.form == "within":
             return f"{self.den} 중 {num} 비율"
         if self.form == "versus":
@@ -99,6 +106,8 @@ class Cross:
 
     @property
     def unit(self) -> str:
+        if self.form == "diff":
+            return self.unit_of(self.num)
         if self.scale == 100:
             return "%"
         if self.form == "versus":
@@ -109,6 +118,8 @@ class Cross:
     def formula(self) -> str:
         times = f" × {self.scale:,}" if self.scale != 1 else ""
         num = f"({self.num} + {self.plus})" if self.plus else self.num
+        if self.form == "diff":
+            return f"{num} − {self.den}"
         return f"{num} ÷ {self.den}{times}"
 
     def as_dict(self) -> dict:
@@ -147,6 +158,32 @@ def _bare_per_people(question: str) -> str:
     return f"{question[: m.start()]}인구 {question[m.start() :]}"
 
 
+# 두 지표의 차이 · 몇 배 ("혼인 건수와 이혼 건수 차이", "혼인 건수가 이혼 건수보다 몇 건 많아",
+# "출생아 수에서 사망자 수를 빼면", "혼인 건수는 이혼 건수의 몇 배"). 앞 지표가 A, 뒤 지표가 B
+SUBJECT = re.compile(r"^(?:은|는|이|가)$")
+DIFF_AFTER = re.compile(r"^(?:의)?(?:차이|격차)")
+MORE_AFTER = re.compile(r"^보다\S*?몇\S*?(?:많|적|높|낮|더)")
+MINUS = (re.compile(r"^에서$"), re.compile(r"^(?:을|를)?(?:빼|뺀)"))
+TIMES_AFTER = re.compile(r"^의?몇배")
+# 차이의 공식 지표 (A − B → 지표 사전 이름)
+OFFICIAL_DIFF = {("출생아 수", "사망자 수"): "자연증가 건수"}
+
+
+def _diff_or_times(a: str, b: str, between: str, after: str, plus) -> "Cross | None":
+    if plus:
+        return None
+    if SUBJECT.match(between) and TIMES_AFTER.match(after):
+        return Cross(num=a, den=b, scale=1, form="versus")  # A는 B의 몇 배 = A ÷ B
+    diff = (
+        (AND_BETWEEN.match(between) and DIFF_AFTER.match(after))
+        or (SUBJECT.match(between) and MORE_AFTER.match(after))
+        or (MINUS[0].match(between) and MINUS[1].match(after))
+    )
+    if not diff or _unit(a) != _unit(b):
+        return None  # 단위가 다르면(건 − 명) 빼지 않는다
+    return Cross(num=a, den=b, scale=1, form="diff", official=OFFICIAL_DIFF.get((a, b)))
+
+
 def detect(question: str) -> Cross | None:
     """질문에서 두 지표를 나눈 표현을 찾는다. 없으면 None.
     질문에 사전 지표 이름이 정확히 두 개 있고, 그 사이 말이 '당·대비·중'일 때만 본다"""
@@ -170,6 +207,8 @@ def detect(question: str) -> Cross | None:
     if not (_countable(a) and _countable(b)) or (plus and not _countable(plus)):
         return None
     between, after = text[a_end:b_start], text[b_end:]
+    if found := _diff_or_times(a, b, between, after, plus):
+        return found
     form = "per"
     if m := PER.match(between):
         n = m.group("n")
@@ -307,6 +346,13 @@ def _div(a, b, scale):
     return _round(a / b * scale)
 
 
+def _calc(c: Cross, a, b):
+    """두 값으로 계산: 차이면 A − B, 그 밖은 A ÷ B × 배율"""
+    if c.form == "diff":
+        return None if a is None or b is None else _round(a - b)
+    return _div(a, b, c.scale)
+
+
 def compute(q: dict, run) -> dict:
     """두 지표를 각각 계산(run = qa.compute)해 나눈 결과. qa.compute 결과와 같은 모양"""
     c = Cross(**q["cross"])
@@ -361,13 +407,13 @@ def compute(q: dict, run) -> dict:
         return combine_value(c, num, den, q)
     if why := _mismatch(num, den, q):
         return _fail(
-            c, f"{josa(c.num_label, '과와')} {josa(c.den, '을를')} 나눌 수 없습니다: {why}."
+            c, f"{josa(c.num_label, '과와')} {josa(c.den, '을를')} {c.verb} 수 없습니다: {why}."
         )
     out = _shell(c, num, den)
     if kind == "trend":
         dv = {s["year"]: s.get("value") for s in den.get("series") or []}
         series = [
-            {"year": s["year"], "value": _div(s.get("value"), dv[s["year"]], c.scale)}
+            {"year": s["year"], "value": _calc(c, s.get("value"), dv[s["year"]])}
             for s in num.get("series") or []
             if s["year"] in dv
         ]
@@ -384,7 +430,7 @@ def compute(q: dict, run) -> dict:
         key = "values" if kind == "compare" else "ranking"
         dv = {v["region"]: v.get("value") for v in den.get(key) or []}
         vals = [
-            {"region": v["region"], "value": _div(v.get("value"), dv.get(v["region"]), c.scale)}
+            {"region": v["region"], "value": _calc(c, v.get("value"), dv.get(v["region"]))}
             for v in num.get(key) or []
         ]
         if any(v["value"] is None for v in vals) or not vals:
@@ -401,16 +447,18 @@ def combine_value(c: Cross, num: dict, den: dict, q: dict) -> dict:
     """값 질문: 분자 · 분모 결과(한 지역 · 한 해)를 나눈 결과. 맞지 않으면 숫자 없이 이유"""
     if why := _mismatch(num, den, {**q, "type": "value"}):
         return _fail(
-            c, f"{josa(c.num_label, '과와')} {josa(c.den, '을를')} 나눌 수 없습니다: {why}."
+            c, f"{josa(c.num_label, '과와')} {josa(c.den, '을를')} {c.verb} 수 없습니다: {why}."
         )
     out = _shell(c, num, den)
     out.update(region=num.get("region"), year=num.get("year"), sex=num.get("sex"))
-    out["value"] = _div(num.get("value"), den.get("value"), c.scale)
+    out["value"] = _calc(c, num.get("value"), den.get("value"))
     out["operands"] = [
         {"label": c.num_label, "value": num.get("value"), "unit": c.unit_of(c.num)},
         {"label": c.den, "value": den.get("value"), "unit": c.unit_of(c.den)},
     ]
-    if c.scale != 100:
+    if c.form == "diff":
+        out["op"] = "−"
+    elif c.scale != 100:
         out["scale"] = c.scale
     return out
 

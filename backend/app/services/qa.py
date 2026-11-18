@@ -2226,8 +2226,11 @@ def _body(r):
         # 두 값을 나눈 지표의 값 답: 나눈 두 값을 보여 준다 (값 자체는 문장에 있다)
         a, b = ops
         times = " × 100" if r.get("kind") == "ratio" else ""
+        if (scale := r.get("scale")) and scale != 1:
+            times = f" × {scale:,}"  # 두 지표 나누기의 "인구 1,000명당"
+        op = r.get("op") or "÷"  # 두 지표의 차이는 "−" (cross_indicator.py)
         return [
-            f"- 계산: {a['label']} {a['value']:,}{a['unit']} ÷ "
+            f"- 계산: {a['label']} {a['value']:,}{a['unit']} {op} "
             f"{b['label']} {b['value']:,}{b['unit']}{times} = {_num(r['value'], unit)}"
         ]
     return []

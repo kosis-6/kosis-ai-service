@@ -436,3 +436,53 @@ def test_correct_summed_numerator_is_not_period_sum() -> None:
         lambda k, v, r: parsed.update({k: v}),
     )
     assert parsed["cross"]["plus"] == "사망자 수" and "aggregate" not in parsed
+
+
+# ---- 두 지표의 차이 · 몇 배 ---------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("question", "num", "den", "form"),
+    [
+        ("2024년 서울 혼인 건수와 이혼 건수 차이는?", "혼인 건수", "이혼 건수", "diff"),
+        ("2024년 서울 혼인 건수가 이혼 건수보다 몇 건 많아?", "혼인 건수", "이혼 건수", "diff"),
+        ("2024년 서울 전입자 수에서 전출자 수를 빼면?", "전입자 수", "전출자 수", "diff"),
+        # A는 B의 몇 배 = A ÷ B (대비와 같다)
+        ("2024년 서울 혼인 건수는 이혼 건수의 몇 배야?", "혼인 건수", "이혼 건수", "versus"),
+    ],
+)
+def test_detect_diff_and_times(question: str, num: str, den: str, form: str) -> None:
+    c = x.detect(question)
+    assert (c.num, c.den, c.form, c.scale) == (num, den, form, 1)
+
+
+def test_diff_names_and_official() -> None:
+    c = x.Cross("혼인 건수", "이혼 건수", 1, "diff")
+    assert c.name == "혼인 건수와 이혼 건수의 차이"
+    assert (c.unit, c.formula, c.verb) == ("건", "혼인 건수 − 이혼 건수", "뺄")
+    # 출생아 수 − 사망자 수는 공식 자연증가 건수
+    assert x.detect("2024년 서울 출생아 수와 사망자 수 차이는?").official == "자연증가 건수"
+    # 단위가 다르면 (건 − 명) 빼지 않는다
+    assert x.detect("2024년 서울 혼인 건수와 출생아 수 차이") is None
+
+
+def test_diff_value_and_trend() -> None:
+    q = q_of("value", num="출생아 수", den="세대수", year=2024)
+    q["cross"]["form"] = "diff"
+    res = x.compute(q, fake_run())
+    assert res["value"] == 41605 - 4482063 and res["op"] == "−" and "scale" not in res
+    t = q_of("trend", num="출생아 수", den="세대수")
+    t["cross"]["form"] = "diff"
+    series = x.compute(t, fake_run())["series"]
+    assert series[0] == {"year": 2024, "value": 41605 - 4482063}
+
+
+def test_operand_line_shows_scale_and_minus() -> None:
+    per = {"value": 4.04, "unit": "명", "kind": "value", "scale": 1000, "operands": [
+        {"label": "외국인근로자 수", "value": 37734, "unit": "명"},
+        {"label": "총인구", "value": 9331828, "unit": "명"}]}  # fmt: skip
+    assert "× 1,000 = 4.04명" in qa._body(per)[0]
+    diff = {"value": 30317, "unit": "건", "kind": "value", "op": "−", "operands": [
+        {"label": "혼인 건수", "value": 42471, "unit": "건"},
+        {"label": "이혼 건수", "value": 12154, "unit": "건"}]}  # fmt: skip
+    assert "혼인 건수 42,471건 − 이혼 건수 12,154건 = 30,317건" in qa._body(diff)[0]
