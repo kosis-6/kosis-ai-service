@@ -891,6 +891,22 @@ def test_handoff_computes_with_search_reading(computed, monkeypatch) -> None:
     assert q2["regions"] == ["서울", "부산"] and q2["sex"] == "계"
 
 
+def test_handoff_drops_guessed_year() -> None:
+    # 질문 이해가 연도 없는 질문에 올해를 짐작해 넣었고(종류 other라 qa.correct가 안 지움)
+    # 탐색 해석은 연도가 없다 → 지워서 표의 마지막 해로 계산한다
+    no_year = _understanding(conditions={**_understanding()["conditions"], "year": None})
+    q = {**BASE, "type": "other", "year": 2025}
+    assert d.drop_guessed_year("버스로 출근하는 사람 수", no_year, q) and q["year"] is None
+    # 질문에 연도를 말했으면 그대로 둔다 (숫자 연도 · 상대 연도)
+    for said in ("2023년 버스로 출근하는 사람 수", "작년 버스로 출근하는 사람 수"):
+        q = {**BASE, "type": "other", "year": 2023}
+        assert not d.drop_guessed_year(said, no_year, q) and q["year"] == 2023
+    # 탐색 해석에 연도가 있으면 to_parsed가 넣은 연도를 그대로 둔다
+    q = {**BASE, "year": 2020}
+    assert not d.drop_guessed_year("버스로 출근하는 사람 수", _understanding(), q)
+    assert q["year"] == 2020
+
+
 def test_handoff_notice_has_notes_and_age_basis() -> None:
     entry = {"kind": "picked", "notes": ["2020.11.1. 기준입니다."]}
     age = {"expr": "노인", "lo": 65, "hi": None, "basis": "노인복지법"}

@@ -1035,6 +1035,21 @@ def to_parsed(understanding: dict, parsed: dict) -> tuple[dict, dict]:
     return q, diff
 
 
+def drop_guessed_year(question: str, understanding: dict, q: dict) -> bool:
+    """탐색 해석에 연도가 없고 질문에도 연도 표현이 없으면 수치 해석의 연도를 지운다.
+    지웠으면 True. 지우면 _with_spec이 그 표의 마지막 해로 계산한다.
+    qa.correct는 질문 종류가 other면 HCX가 짐작해 넣은 연도(올해)를 지우지 않는다. 그 연도가
+    남아 "지하철로 출근하거나 학교 가는 사람 수"가 2020년까지 있는 표에서
+    out_of_range였다 (11/19)"""
+    cond = understanding.get("conditions") or {}
+    if cond.get("year") is not None or cond.get("year_end") is not None:
+        return False
+    if not q.get("year") or qa._says_year(question):
+        return False
+    q["year"] = None
+    return True
+
+
 def without_regions(words: list[str]) -> list[str]:
     """제외 대상에서 지역 이름을 뺀다 ("서울이랑 경기 말고 시도별": 지역은 지역 칸이 고른다.
     합계 칸에 그 대상이 섞였다는 검사(uncovered)에 넣으면 맞는 표를 막는다). DB를 읽어 스레드에서"""
@@ -1182,6 +1197,8 @@ async def _compute_target(
         logger.exception("탐색 해석 바꿔 담기 실패 → 수치 해석으로 계산")
         q, diff = dict(parsed), {}
     trace["handoff"] = {"parsed_from": "search", "mismatch": diff}
+    if (guessed := q.get("year")) and drop_guessed_year(question, u, q):
+        trace["handoff"]["year_dropped"] = guessed
     try:
         exclude = await run_in_threadpool(without_regions, list(u.get("exclude") or []))
     except Exception:
