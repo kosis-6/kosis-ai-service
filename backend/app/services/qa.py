@@ -31,6 +31,7 @@ from app.services import (
     agegroup,
     analysis,
     ask_followup,
+    cross_indicator,
     indicators,
     load_queue,
     lookup,
@@ -140,6 +141,25 @@ AGE_DECADE = re.compile(r"(\d+)\s*대(?!\s*(광역시|도시))")
 # 여러 지역 묶음
 # "충청도"는 묶음이 아니라 충북·충남 중 어디인지 되묻는다 (indicators.AMBIGUOUS_NAMES)
 REGION_GROUPS = {
+    # 위에서부터 차례로 보고 질문에 처음 들어 있는 묶음을 쓴다.
+    # "비수도권"은 "수도권"을 품고 있으므로 수도권보다 먼저 둔다
+    "비수도권": [
+        "부산", "대구", "광주광역시", "대전", "울산", "세종",
+        "강원", "충북", "충남", "전북", "전남", "경북", "경남", "제주",
+    ],
+    "수도권 외": [
+        "부산", "대구", "광주광역시", "대전", "울산", "세종",
+        "강원", "충북", "충남", "전북", "전남", "경북", "경남", "제주",
+    ],
+    "수도권 밖": [
+        "부산", "대구", "광주광역시", "대전", "울산", "세종",
+        "강원", "충북", "충남", "전북", "전남", "경북", "경남", "제주",
+    ],
+    # "지방"만으로는 넣지 않는다 ("지방소멸", "지방자치단체")
+    "지방 인구": [
+        "부산", "대구", "광주광역시", "대전", "울산", "세종",
+        "강원", "충북", "충남", "전북", "전남", "경북", "경남", "제주",
+    ],
     "수도권": ["서울", "인천", "경기"],
     "충청권": ["대전", "세종", "충북", "충남"],
     "호남권": ["광주광역시", "전북", "전남"],
@@ -149,6 +169,13 @@ REGION_GROUPS = {
     "대경권": ["대구", "경북"],
     "6대 광역시": ["부산", "대구", "인천", "광주광역시", "대전", "울산"],
     "5대 광역시": ["부산", "대구", "인천", "광주광역시", "대전"],
+    # "광역시 전체"의 "전체"를 전국으로 읽지 않게 묶음으로 먼저 잡는다
+    "광역시 전체": ["부산", "대구", "인천", "광주광역시", "대전", "울산"],
+    "모든 광역시": ["부산", "대구", "인천", "광주광역시", "대전", "울산"],
+    "광역시 모두": ["부산", "대구", "인천", "광주광역시", "대전", "울산"],
+    # "도 지역"은 넣지 않는다 ("시도 지역별"에 들어 있음). "모든 도"도 "모든 도시"에 걸림
+    "9개 도": ["경기", "강원", "충북", "충남", "전북", "전남", "경북", "경남", "제주"],
+    "9개도": ["경기", "강원", "충북", "충남", "전북", "전남", "경북", "경남", "제주"],
 }
 # "합계출산율"의 합계는 합산이 아니다.
 # "다 해서"·"전부 몇"·"통틀어"·"누적"도 합계 (2026-11-13 결함 1·2: 이 표현을 놓치면 첫 지역만,
@@ -558,9 +585,37 @@ def correct(question, parsed, today=None):
     if len(names) > 1 and parsed.get("type") in ("value", "trend", "compare"):
         parsed["indicators"] = names  # 지표마다 따로 계산한다 (compute)
 
+    _cross(question, parsed, fix)
     if fixes:
         parsed["corrections"] = fixes
     return parsed
+
+
+CROSS_DYNAMIC = "cross_dynamic"  # 두 값 중 한쪽이 사전에 없음 (ask_session이 마저 계산)
+
+
+def _cross(question, parsed, fix):
+    """두 지표를 나눈 값 ("세대당 출생아 수", "인구 1,000명당 외국인근로자 수"). cross_indicator.py
+    공식 지표가 있으면 그 지표로, 없으면 parsed["cross"]에 두 지표를 적어 compute가 나눠 계산한다.
+    HCX는 이런 질문을 재료 지표 하나(출생아 수)로 읽어 그 건수를 답하기 쉽다"""
+    found = cross_indicator.detect(question) or cross_indicator.detect_partial(question)
+    if found is None or parsed.get("type") in ("causal", "composition"):
+        return
+    if found.official:
+        if parsed.get("indicator") != found.official:
+            fix("indicator", found.official, f"{found.formula}의 공식 지표")
+    else:
+        fix("indicator", found.name, f"두 지표를 나눈 값 ({found.formula})")
+        parsed["cross"] = found.as_dict()
+    if parsed.get("type") in (None, "other", "parse_error"):
+        fix("type", "trend" if parsed.get("start_year") else "value", "두 지표를 나눈 값")
+    elif parsed.get("type") == "compare" and len(parsed.get("regions") or []) <= 1:
+        # "출생아 수 대비 사망자 수"의 '대비'를 지역 비교로 읽은 경우 (지역은 하나)
+        fix("type", "value", "'대비'는 두 지표를 나눈 것 (비교할 지역이 하나)")
+    parsed["term"] = found.official or found.name
+    parsed["indicators"] = None
+    parsed["grounded"] = True
+    parsed.pop("unsupported", None)
 
 
 # 지표 이름 사이에 이 말만 있으면 여러 지표를 함께 물은 것 ("출생아 수와 사망자 수")
@@ -1115,6 +1170,29 @@ def compute(q):
             "region": bad,
             "reason": "질문의 지역을 시도·시군구로 확인하지 못했습니다.",
         }
+    if q.get("cross"):  # 두 지표를 나눈 값 (cross_indicator.py): 두 지표를 각각 계산해 나눈다
+        if cond := q.get("unsupported_condition"):
+            return {
+                "status": "band_mismatch",
+                "indicator": ind,
+                "reason": f"'{cond}' 조건으로 나뉜 자료가 없어 그 값을 낼 수 없습니다.",
+            }
+        if q["cross"].get("dynamic"):
+            # 한쪽이 사전에 없다: 그 쪽은 통계표 찾기 · 칸 고르기가 필요해 대화 처리(ask_session.
+            # _cross_dynamic)가 맡는다. 거기서도 못 하면 지금처럼 통계표 안내로 간다
+            return {
+                "status": CROSS_DYNAMIC,
+                "indicator": ind,
+                "reason": f"{josa(ind, '은는')} 지표 사전에 없는 값이 섞여 있어 "
+                "통계표에서 찾아 계산해야 합니다.",
+            }
+        result = cross_indicator.compute(q, compute)
+        for r in _leaves(result):
+            if r.get("series"):
+                _add_yearly_change(r)
+                _add_trend_facts(r)
+            r["asked"] = {**(q.get("asked") or {}), "top": q.get("top")}
+        return result
     # 사전에 없는 지표를 통계표에서 바로 만든 정의 (dynamic_indicator.py). 조회 지표와 같이 계산한다
     dyn = q.get("dynamic_spec") if _dynamic_fits(q) else None
     sp = dyn or (None if q.get("unsupported") else indicators.spec(ind))

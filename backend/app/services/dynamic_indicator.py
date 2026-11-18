@@ -1181,6 +1181,7 @@ async def compute_from_handoff(
             sem,
         )
         sub["dynamic"][-1]["by"] = "cell_llm"
+        sub["dynamic"][-1]["read_as"] = [list(p) for p in picked.read_as]  # 캐시에 근거로 남긴다
         return res, ask
 
     async def attempt(entry: dict):
@@ -1217,8 +1218,10 @@ async def compute_from_handoff(
             # 칸 고르기 LLM이 고른 칸은 사람의 선택이 아니라 표의 칸 풀이라 캐시에 함께 남긴다
             # (다음에 같은 질문은 LLM 없이 그 칸으로 계산)
             last = sub["dynamic"][-1] if sub["dynamic"] else {}
-            forced = (last.get("forced") or {}) if last.get("by") == "cell_llm" else {}
-            await _remember(parsed, entry["tbl_id"], forced, res)
+            by_llm = last.get("by") == "cell_llm"
+            forced = (last.get("forced") or {}) if by_llm else {}
+            words = (last.get("read_as") or []) if by_llm else []
+            await _remember(parsed, entry["tbl_id"], forced, res, words)
             return res
     for entry, (_, ask, _) in zip(entries, outcomes, strict=True):
         if ask is not None:  # 맞는 표에서 칸 하나만 못 정함: 그 칸을 묻는다
@@ -1285,8 +1288,19 @@ async def cached_answer(question: str, parsed: dict, trace: dict) -> dict | None
     trace["plan_cache"] = "miss" if found else "skip"
     trace.setdefault("dynamic", [])
     for plan in plans:
-        forced = {int(k): v for k, v in (plan.get("forced") or {}).items()}
+        saved = {int(k): v for k, v in (plan.get("forced") or {}).items()}
+        forced = saved
+        if saved:
+            try:
+                dims, region_dim, _ = await run_in_threadpool(schema, plan["tbl_id"])
+            except Exception:
+                logger.exception("캐시한 표의 칸 목록 읽기 실패: %s", plan["tbl_id"])
+                continue
+            forced = reusable_forced(question, saved, plan.get("words") or [], dims, region_dim)
         res, ask = await _try(plan["tbl_id"], None, question, parsed, trace, forced)
+        if dropped := {k: v for k, v in saved.items() if k not in forced}:
+            # 저장한 칸 중 새 질문에 맞지 않아 쓰지 않은 칸 (요청 기록)
+            trace["dynamic"][-1]["cache_dropped"] = dropped
         if res is not None and res.get("status") != "ok":
             # 저장한 표에 그 연도·지역 자료가 없다 (예: 수록 기간 밖). 다른 표가 있을 수 있어
             # 여기서 답하지 않고 통계표 찾기로 넘긴다
@@ -1306,15 +1320,49 @@ async def cached_answer(question: str, parsed: dict, trace: dict) -> dict | None
     return None
 
 
-async def _remember(parsed: dict, tbl_id: str, forced: dict, res: dict) -> None:
-    """바로 계산에 성공한 계획을 캐시에 남긴다. 실패해도 답은 그대로 준다"""
+def reusable_forced(
+    question: str, forced: dict[int, str], words, dims: list[Dim], region_dim: int | None
+) -> dict[int, str]:
+    """캐시에 저장한 칸(forced) 중 새 질문에도 쓸 수 있는 칸만.
+
+    캐시의 키는 지표 표현뿐이라, 칸 고르기 LLM이 앞 질문의 말 때문에 고른 칸이 지표 표현만 같은
+    다른 질문에도 쓰일 수 있다. 저장한 칸은 질문의 말보다 먼저 정해지므로(choose) 그대로 쓰면
+    새 질문이 말한 칸 대신 예전 칸으로 계산한다. 그래서 분류마다
+      - 새 질문이 그 분류의 다른 칸을 글자로 말했다          → 쓰지 않는다 (새 질문의 칸)
+      - 합계·기본 칸이거나 새 질문이 그 칸을 글자로 말했다     → 쓴다
+      - 그 칸을 고른 근거 낱말(words)이 새 질문에도 있다      → 쓴다 (예: "결혼" → 혼인)
+      - 그 밖 (근거를 새 질문에서 찾을 수 없음)               → 쓰지 않는다
+    쓰지 않은 분류는 규칙이 새 질문으로 다시 고른다 (못 고르면 되묻기나 통계표 찾기)"""
+    by_no = {d.no: d for d in dims}
+    hits = _text_hits(question, dims, {region_dim})
+    q = _norm(question)
+    out = {}
+    for no, code in forced.items():
+        d = by_no.get(no)
+        if d is None or code not in d.codes:
+            continue  # 표가 다시 적재돼 칸이 없어졌다
+        said = hits.get(no) or []
+        if said and code not in said:
+            continue
+        name = _norm(d.codes[code])
+        grounded = any(
+            len(_norm(a)) >= 2 and _norm(a) in q and _norm(b) in name for a, b in words or []
+        )
+        if code in (d.total(), d.default()) or code in said or grounded:
+            out[no] = code
+    return out
+
+
+async def _remember(parsed: dict, tbl_id: str, forced: dict, res: dict, words=()) -> None:
+    """바로 계산에 성공한 계획을 캐시에 남긴다. 실패해도 답은 그대로 준다
+    words: 칸 고르기 LLM이 forced의 칸을 고른 근거 [(질문 낱말, 표 낱말)]"""
     spec = (res.get("parsed") or {}).get("dynamic_spec")
     if res.get("status") != "ok" or not spec:
         return
     try:
         found = await run_in_threadpool(plan_cache.key_of, parsed)
         if found:
-            await plan_cache.save(found[0], found[1], tbl_id, forced, spec)
+            await plan_cache.save(found[0], found[1], tbl_id, forced, spec, words)
     except Exception:
         logger.exception("계산 방법 캐시 저장 실패")
 

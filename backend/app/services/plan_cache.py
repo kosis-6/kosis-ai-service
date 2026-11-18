@@ -1,6 +1,9 @@
 """동적 지표 계산 방법 캐시 (동적 지표 4단계, 표 app.dynamic_plans, 마이그레이션 0018)
 
-사전에 없는 지표를 통계표에서 바로 계산했으면 어느 표로(되묻기에서 고른 칸까지) 계산했는지 남긴다.
+사전에 없는 지표를 통계표에서 바로 계산했으면 어느 표로(칸 고르기 LLM이 고른 칸까지) 계산했는지
+남긴다. 되묻기에서 사람이 고른 칸은 남기지 않는다 (모두의 기본값이 되지 않게).
+LLM이 고른 칸은 그 칸을 고른 근거 낱말(words)과 함께 남기고, 다시 쓸 때 새 질문에 맞는 칸만 쓴다
+(dynamic_indicator.reusable_forced: 지표 표현만 같은 다른 질문에 예전 칸을 쓰지 않게).
 같은 지표를 다시 물으면 통계표 찾기(HCX 3회, 십여 초)를 건너뛰고 그 표로 바로 계산한다.
 칸 고르기·검증은 매번 다시 한다 (DB 조회만이라 빠르다). 그래서
   - 표가 다시 적재돼 코드가 바뀌어도, 질문에 다른 조건이 붙어도 그 질문에 맞는 칸을 고른다
@@ -59,7 +62,7 @@ async def find(key: str) -> list[dict]:
             (
                 await conn.execute(
                     text(
-                        "SELECT id, key, term, tbl_id, forced, name, formula, cells, uses"
+                        "SELECT id, key, term, tbl_id, forced, words, name, formula, cells, uses"
                         " FROM app.dynamic_plans WHERE key = :key"
                         " ORDER BY uses DESC, last_used_at DESC"
                     ),
@@ -74,17 +77,21 @@ async def find(key: str) -> list[dict]:
     return plans
 
 
-async def save(key: str, term: str, tbl_id: str, forced: dict, spec: dict) -> None:
-    """바로 계산에 성공한 계획을 남긴다. 이미 있으면 쓴 횟수만 올린다"""
+async def save(key: str, term: str, tbl_id: str, forced: dict, spec: dict, words=()) -> None:
+    """바로 계산에 성공한 계획을 남긴다. 이미 있으면 쓴 횟수만 올린다
+    words: 칸 고르기 LLM이 forced의 칸을 고른 근거 [(질문 낱말, 표 낱말)] (마이그레이션 0020)"""
     from app.core.db import engine
 
     async with engine.begin() as conn:
         await conn.execute(
             text(
-                "INSERT INTO app.dynamic_plans (key, term, tbl_id, forced, name, formula, cells)"
-                " VALUES (:key, :term, :tbl_id, CAST(:forced AS jsonb), :name, :formula, :cells)"
+                "INSERT INTO app.dynamic_plans"
+                " (key, term, tbl_id, forced, words, name, formula, cells)"
+                " VALUES (:key, :term, :tbl_id, CAST(:forced AS jsonb), CAST(:words AS jsonb),"
+                " :name, :formula, :cells)"
                 " ON CONFLICT ON CONSTRAINT dynamic_plans_unique DO UPDATE"
                 " SET uses = app.dynamic_plans.uses + 1, last_used_at = now(),"
+                " words = EXCLUDED.words,"
                 " name = EXCLUDED.name, formula = EXCLUDED.formula, cells = EXCLUDED.cells"
             ),
             {
@@ -92,6 +99,7 @@ async def save(key: str, term: str, tbl_id: str, forced: dict, spec: dict) -> No
                 "term": term,
                 "tbl_id": tbl_id,
                 "forced": json.dumps({str(k): v for k, v in (forced or {}).items()}),
+                "words": json.dumps([list(w) for w in words or []], ensure_ascii=False),
                 "name": spec.get("name") or term,
                 "formula": spec.get("formula"),
                 "cells": spec.get("cells"),

@@ -76,7 +76,7 @@ def test_key_of(monkeypatch: pytest.MonkeyPatch, parsed: dict, key: str | None) 
 # ---- 캐시에서 꺼내 계산하기 ------------------------------------------------------------
 
 PARSED = {"type": "value", "term": "1인 가구 수", "regions": ["서울"], "year": 2020}
-PLAN = {"id": 5, "key": "1인가구수", "tbl_id": "DT_1PL1502", "forced": {"3": "2"}}
+PLAN = {"id": 5, "key": "1인가구수", "tbl_id": "DT_1PL1502", "forced": {"0": "2"}}
 
 
 @pytest.fixture
@@ -90,8 +90,19 @@ def plans(monkeypatch: pytest.MonkeyPatch) -> dict:
     async def used(plan_id):
         state["used"].append(plan_id)
 
-    async def save(key, term, tbl_id, forced, spec):
+    async def save(key, term, tbl_id, forced, spec, words=()):
         state["saved"].append((key, tbl_id, forced, spec["name"]))
+        state.setdefault("words", []).append(list(words or []))
+
+    def schema(tbl_id):  # 성별이 항목에 있는 1인가구 표 (항목 0: 1인가구 · 남자 · 여자)
+        dims = [
+            d.Dim(0, "항목", {"1": "1인가구", "3": "남자", "2": "여자"}),
+            d.Dim(1, "행정구역별", {"00": "전국", "11": "서울특별시"}),
+            d.Dim(4, "혼인상태별", {"0": "계", "M": "유배우", "S": "미혼"}),
+        ]
+        return dims, 1, "1인가구"
+
+    monkeypatch.setattr(d, "schema", schema)
 
     async def fake_try(tbl_id, org_id, question, parsed, trace, forced, slots=None, notice=None):
         state["tried"].append((tbl_id, forced))
@@ -113,11 +124,42 @@ def plans(monkeypatch: pytest.MonkeyPatch) -> dict:
 
 def test_cached_plan_skips_table_search(plans: dict) -> None:
     trace: dict = {}
-    res = asyncio.run(d.cached_answer("2020년 서울 1인 가구 수", PARSED, trace))
+    res = asyncio.run(d.cached_answer("2020년 서울 여자 1인 가구 수", PARSED, trace))
     assert res["status"] == "ok"
-    # 저장한 표와 되묻기에서 고른 칸으로 다시 계산 (칸 고르기·검증은 _try가 다시 한다)
-    assert plans["tried"] == [("DT_1PL1502", {3: "2"})]
+    # 저장한 표와 칸으로 다시 계산 (새 질문도 그 칸 '여자'를 말함). 칸 고르기·검증은 _try가 다시
+    assert plans["tried"] == [("DT_1PL1502", {0: "2"})]
     assert plans["used"] == [5] and trace["plan_cache"] == {"hit": 5, "tbl_id": "DT_1PL1502"}
+
+
+def test_cached_cell_is_not_used_when_new_question_names_another_cell(plans: dict) -> None:
+    # 앞 질문(여자)에서 저장한 칸을, 지표 표현만 같은 "남자" 질문에 쓰지 않는다
+    trace: dict = {}
+    asyncio.run(d.cached_answer("2020년 서울 남자 1인 가구 수", PARSED, trace))
+    assert plans["tried"] == [("DT_1PL1502", {})]  # 규칙이 새 질문으로 다시 고른다
+    assert trace["dynamic"][-1]["cache_dropped"] == {0: "2"}
+
+
+def test_cached_cell_without_grounds_in_new_question_is_dropped(plans: dict) -> None:
+    # 새 질문에 그 칸을 고른 근거가 없다: 예전 칸으로 계산하지 않는다
+    asyncio.run(d.cached_answer("2020년 서울 1인 가구 수", PARSED, {}))
+    assert plans["tried"] == [("DT_1PL1502", {})]
+
+
+def test_cached_llm_cell_kept_when_its_words_are_in_new_question(plans: dict) -> None:
+    # 칸 고르기 LLM이 "결혼한"을 '유배우'로 읽어 고른 칸: 새 질문에도 "결혼한"이 있으면 쓴다
+    plans["plans"] = [{**PLAN, "forced": {"4": "M"}, "words": [["결혼한", "유배우"]]}]
+    asyncio.run(d.cached_answer("2020년 서울 결혼한 1인 가구 수", PARSED, {}))
+    assert plans["tried"] == [("DT_1PL1502", {4: "M"})]
+    plans["tried"].clear()
+    asyncio.run(d.cached_answer("2020년 서울 1인 가구 수", PARSED, {}))
+    assert plans["tried"] == [("DT_1PL1502", {})]
+
+
+def test_cached_total_cell_is_kept(plans: dict) -> None:
+    # 합계 칸은 질문이 말하지 않아도 그대로 쓴다 (규칙도 같은 칸을 고른다)
+    plans["plans"] = [{**PLAN, "forced": {"4": "0"}}]
+    asyncio.run(d.cached_answer("2020년 서울 1인 가구 수", PARSED, {}))
+    assert plans["tried"] == [("DT_1PL1502", {4: "0"})]
 
 
 def test_cached_plan_that_no_longer_computes_is_a_miss(plans: dict) -> None:
