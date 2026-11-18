@@ -288,6 +288,9 @@ def build_handoff(
         "combine": {
             "op": combine.get("op") or "none",
             "note": combine.get("note"),
+            # ratio의 분자 · 분모 지표 span (계획 규칙 7-1). multi_indicator._two가 방향을 정할 때
+            "num": combine.get("num") or None,
+            "den": combine.get("den") or None,
             "out_of_scope": list(plan.get("out_of_scope") or []),
         },
         "clarify": response.get("clarify"),

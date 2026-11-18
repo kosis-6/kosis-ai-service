@@ -166,7 +166,40 @@ def _compare_line(ok) -> str | None:
     return f"{josa(more, '이가')} {less}보다 {text}{a.get('unit') or ''} 많습니다"
 
 
-def _two(op: str, question: str, parsed: dict, ok, trace: dict) -> dict | None:
+def ratio_order(question: str, ta: dict, tb: dict, combine: dict) -> tuple[bool, str]:
+    """ratio에서 ta가 분자인가 → (ta가 분자, 정한 근거 'rule' · 'plan' · 'default').
+    1. 코드 문형 규칙 (cross_indicator와 같은 기준): 'A는 B의 몇 배' → A ÷ B,
+       'A당 B' · 'A 대비 B' · 'A 중 B 비율' → B ÷ A. 질문에서 두 지표 말을 찾았을 때만
+    2. 계획의 분자 · 분모 (계획 규칙 7-1, LLM): combine.num · den이 두 지표 span과 맞을 때만
+    3. 예전 규칙: 뒤 지표 ÷ 앞 지표"""
+    x = cross_indicator
+    text = indicators._norm(question)
+    sa, sb = indicators._norm(_span(ta)), indicators._norm(_span(tb))
+    ia, ib = text.find(sa), text.find(sb)
+    if sa and sb and sa != sb and ia >= 0 and ib >= 0:
+        (first, f_end), (second, s_start, s_end) = (
+            ((ta, ia + len(sa)), (tb, ib, ib + len(sb)))
+            if ia < ib
+            else ((tb, ib + len(sb)), (ta, ia, ia + len(sa)))
+        )
+        if s_start >= f_end:
+            between, after = text[f_end:s_start], text[s_end:]
+            if x.SUBJECT.match(between) and x.TIMES_AFTER.match(after):
+                return first is ta, "rule"  # 앞에 말한 지표 ÷ 뒤에 말한 지표
+            if (
+                x.PER.match(between)
+                or x.VERSUS.match(between)
+                or (x.WITHIN.match(between) and x.RATE_AFTER.match(after))
+            ):
+                return second is ta, "rule"  # 뒤에 말한 지표 ÷ 앞에 말한 지표
+    num, den = (combine or {}).get("num"), (combine or {}).get("den")
+    spans = {_span(ta), _span(tb)}
+    if num and den and num != den and {num, den} == spans:
+        return num == _span(ta), "plan"
+    return False, "default"
+
+
+def _two(op: str, question: str, parsed: dict, ok, trace: dict, combine=None) -> dict | None:
     """diff · ratio: 두 값이 다 나오고 단위가 맞으면 빼거나 나눈다.
     안 되면 None (나란히 보여 준다)"""
     (ta, ra), (tb, rb) = ok
@@ -179,15 +212,16 @@ def _two(op: str, question: str, parsed: dict, ok, trace: dict) -> dict | None:
         c = cross_indicator.Cross(_span(ta), _span(tb), 1, "diff")
         num, den = a, b
     else:
-        # "A 중 B 비율", "A 대비 B": 뒤에 말한 지표가 분자
         units = cross_indicator.COUNT_UNITS
         if a.get("unit") not in units or b.get("unit") not in units:
             return None
+        a_is_num, by = ratio_order(question, ta, tb, combine or {})
+        trace.setdefault("multi", {})["ratio_by"] = by
+        (tn, num), (td, den) = ((ta, a), (tb, b)) if a_is_num else ((tb, b), (ta, a))
         scale = 100 if RATE_WORDS.search(question) else 1
         c = cross_indicator.Cross(
-            _span(tb), _span(ta), scale, "within" if scale == 100 else "versus"
+            _span(tn), _span(td), scale, "within" if scale == 100 else "versus"
         )
-        num, den = b, a
     c.units = {c.num: num.get("unit"), c.den: den.get("unit")}
     result = cross_indicator.combine_value(
         c, {**num, "indicator": c.num}, {**den, "indicator": c.den}, parsed
@@ -215,7 +249,8 @@ async def _filter_then_lookup(question, parsed, found, targets, trace) -> dict |
     ok = [(t, r) for t, (r, _) in zip(rest, outcomes, strict=True) if _ok(r)]
     failed = [t for t, (r, _) in zip(rest, outcomes, strict=True) if not _ok(r)]
     lead = (
-        f"{josa(_span(flt), '이가')} 가장 높은 지역은 {region}입니다. 그 지역의 값을 계산했습니다"
+        f"{josa(_span(flt), '이가')} 가장 {'낮은' if low else '높은'} 지역은 {region}입니다. "
+        "그 지역의 값을 계산했습니다"
     )
     if not ok:
         return _response(
@@ -299,7 +334,9 @@ async def answer(question: str, parsed: dict, found: dict, trace: dict) -> dict 
         return None
     notes = []
     if op in ("diff", "ratio") and len(ok) == 2 and not failed:
-        if combined := await run_in_threadpool(_two, op, question, parsed, ok, trace):
+        if combined := await run_in_threadpool(
+            _two, op, question, parsed, ok, trace, h.get("combine")
+        ):
             return combined
         notes.append("두 값의 단위나 기준이 달라 직접 계산하지 않고 나란히 보여 드립니다")
     if op == "compare" and (line := _compare_line(ok)):

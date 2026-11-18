@@ -572,7 +572,7 @@ def test_plain_foreigner_question_still_answers() -> None:
 
 def test_extract_ages_with_sal() -> None:
     # "세" 대신 "살", "미만" 대신 "안 된"
-    assert qa.extract_ages("서울청년 19~34살 몇명임?") == [[19, 34]]
+    assert qa.extract_ages("대전청년 19~34살 몇명?") == [[19, 34]]
     assert qa.extract_ages("울산에 100살 이상 어르신") == [[100, None]]
     assert qa.extract_ages("15살 안 된 애들") == [[0, 14]]
 
@@ -581,8 +581,8 @@ def test_extract_ages_with_sal() -> None:
     ("question", "ages"),
     [
         # 개발셋 D-139, D-140: 말로 이은 구간을 읽지 못해 연령 없이 답했다
-        ("해운대구에서 작년에 돌아가신 분 중 62살에서 67살 사이 몇 명이야?", [[62, 67]]),
-        ("등록 외국인 중에 33살부터 38살까지 몇 명이야?", [[33, 38]]),
+        ("동래구에서 재작년 돌아가신 분 중 62살에서 67살 사이는?", [[62, 67]]),
+        ("등록 외국인 가운데 33살부터 38살까지는 몇 명?", [[33, 38]]),
         ("33세부터 38세까지 인구", [[33, 38]]),
         ("62세와 67세 사이 인구", [[62, 67]]),
         ("62에서 67살", [[62, 67]]),
@@ -602,14 +602,14 @@ def test_extract_ages_spoken_range(question: str, ages: list) -> None:
 def test_age_group_grounds_age_defined_indicator() -> None:
     # 지표 이름이 없어도 연령 집단 + 묻는 말이 있으면 HCX가 고른 계산 지표를 쓴다
     p = qa.correct(
-        "우리나라 사람 중에 노인이 몇 퍼센트예요?",
+        "우리나라 사람 가운데 노인은 몇 퍼센트쯤 돼요?",
         parsed(indicator="고령인구 비율 (%)", regions=["전국"], term="노인이 몇 퍼센트"),
         TODAY,
     )
     assert p["indicator"] == "고령인구 비율" and not p.get("unsupported")
     p = qa.correct(
-        "의성군은 애들보다 노인이 몇 배나 많아?",
-        parsed(indicator="노령화지수", regions=["의성군"], term="노령화지수"),
+        "군위군은 애들보다 노인이 몇 배나 많아?",
+        parsed(indicator="노령화지수", regions=["군위군"], term="노령화지수"),
         TODAY,
     )
     assert p["indicator"] == "노령화지수" and not p.get("unsupported")
@@ -623,8 +623,8 @@ def test_age_group_grounds_age_defined_indicator() -> None:
 def test_age_group_count_without_population_word() -> None:
     # "인구"라는 말이 없어도 연령 집단의 사람 수를 물으면 연령 구간 인구
     p = qa.correct(
-        "광주랑 전남 노인 다 합치면 몇 명이야",
-        parsed(indicator="고령인구 비율", regions=["광주광역시", "전라남도"]),
+        "대전이랑 충남 노인 다 합치면 몇 명이야",
+        parsed(indicator="고령인구 비율", regions=["대전광역시", "충청남도"]),
         TODAY,
     )
     assert p["indicator"] == "총인구" and p["ages"] == [[65, None]]
@@ -639,14 +639,14 @@ def test_age_group_count_without_population_word() -> None:
 def test_unknown_label_that_is_age_population() -> None:
     # HCX가 사전에 없는 "연령 구간 인구" 이름을 주거나 지표를 비워도 총인구
     p = qa.correct(
-        "서울청년 19~34살 몇명임?", parsed(indicator="19~34세 인구 수", regions=["서울"]), TODAY
+        "대전청년 19~34살 몇명?", parsed(indicator="19~34세 인구 수", regions=["대전"]), TODAY
     )
     assert p["indicator"] == "총인구" and p["ages"] == [[19, 34]]
     p = qa.correct("애들 몇 명이야?", parsed(indicator="유소년인구 수", term="애들"), TODAY)
     assert p["indicator"] == "총인구" and p["ages"] == [[0, 14]]
     p = qa.correct(
-        "울산에 100살 이상 어르신 몇 분 계셔?",
-        parsed(type="other", indicator="", term="100살 이상 어르신", regions=["울산"]),
+        "광주에 100살 이상 어르신은 몇 분이야?",
+        parsed(type="other", indicator="", term="100살 이상 어르신", regions=["광주"]),
         TODAY,
     )
     assert (p["type"], p["indicator"], p["ages"]) == ("value", "총인구", [[100, None]])
@@ -675,7 +675,7 @@ def test_other_target_with_age_is_not_population(question: str, llm: str) -> Non
 @pytest.mark.parametrize(
     ("question", "regions"),
     [
-        ("광주랑 전남 노인 다 합치면 몇 명이야", ["광주광역시", "전라남도"]),
+        ("대전이랑 충남 노인 다 합치면 몇 명이야", ["대전광역시", "충청남도"]),
         ("30대 중에 서울 사는 사람 몇 명", ["서울"]),
         ("서울 사는 사람 중 30대 몇 명", ["서울"]),
         ("20대 여자 몇 명이야", []),
@@ -703,7 +703,7 @@ def test_aging_index_direction(question: str, ok: bool) -> None:
 
 def test_births_versus_deaths_is_natural_increase() -> None:
     # HCX가 지표를 비워도 "태어난 vs 돌아가신"은 자연증가 건수
-    p = qa.correct("작년에 태어난 사람이 많아 돌아가신 사람이 많아?", {"type": "other"}, TODAY)
+    p = qa.correct("작년엔 태어난 사람이 많았어 돌아가신 사람이 많았어?", {"type": "other"}, TODAY)
     assert (p["type"], p["indicator"]) == ("value", "자연증가 건수")
     assert not p.get("unsupported")
 
@@ -720,7 +720,7 @@ def data_years(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.mark.parametrize(
     ("question", "year", "prediction"),
     [
-        ("앞으로 출산율 다시 오를까?", None, True),
+        ("출산율이 앞으로 다시 오를까요?", None, True),
         ("서울 인구는 계속 줄어들까?", None, True),
         ("향후 고령인구 비율 전망", None, True),
         ("2040년 서울 인구는 몇 명이 될까요?", 2040, False),  # 미래 연도: 장래추계로 답한다
@@ -851,18 +851,18 @@ def test_generation_population_is_total_population(question: str) -> None:
 @pytest.mark.parametrize(
     ("question", "llm", "expected"),
     [
-        ("해운대구 일할 나이 인구 100명당 노인 몇 명이야?", "총인구", "노년부양비"),
-        ("의성군 어르신 수가 아이들 수의 몇 배야?", "고령인구 비율", "노령화지수"),
-        ("영도구 주민 나이 순으로 줄 세우면 가운데가 몇 살이야?", None, "중위연령"),
-        ("세종이랑 전남, 인구에 비해 아기 태어나는 정도 얼마나 차이 나?", "출생아 수", "조출생률"),
-        ("작년에 이사 온 사람에서 떠난 사람 빼면 제일 많이 남는 시도 3곳", "순이동", "순이동"),
-        ("어르신 비율이 가장 높은 지역 세 군데 알려줘", "고령인구 비율%", "고령인구 비율"),
-        ("대구랑 부산 중에 여자 1명이 평생 낳는 아이 수 많은 곳은?", "합계출산율", "합계출산율"),
-        ("요새 사람들 애 몇 명씩 낳아?", "출생아 수", "합계출산율"),
+        ("수영구는 일할 나이 사람 100명당 노인이 몇 명이야?", "총인구", "노년부양비"),
+        ("청송군 노인 수가 아이들 수의 몇 배나 돼?", "고령인구 비율", "노령화지수"),
+        ("중구 사람들 나이 순으로 세우면 가운데가 몇 살?", None, "중위연령"),
+        ("광주랑 강원, 인구에 비해 아기 태어나는 정도 비교해 줘", "출생아 수", "조출생률"),
+        ("작년 이사 온 사람에서 떠난 사람 빼면 가장 많이 남은 시도 다섯 곳", "순이동", "순이동"),
+        ("노인 비율 제일 높은 지역 다섯 군데", "고령인구 비율%", "고령인구 비율"),
+        ("광주랑 울산 중 여자 1명이 평생 낳는 아이 수가 더 많은 곳?", "합계출산율", "합계출산율"),
+        ("요즘 사람들은 애를 몇 명씩 낳아?", "출생아 수", "합계출산율"),
         ("노원구가 강남구보다 사람이 많아 적어?", "총인구", "총인구"),
-        ("서울에서 사람 제일 많이 사는 구 다섯 곳", "총인구", "총인구"),
-        ("수성구에 이십대 얼마나 살아?", "총인구", "총인구"),
-        ("광주하고 전라남도 어르신 수 합쳐줘", "고령인구 수", "총인구"),
+        ("부산에서 사람 제일 많이 사는 구 세 곳", "총인구", "총인구"),
+        ("북구에 사는 이십대는 얼마나 돼?", "총인구", "총인구"),
+        ("대전하고 충청남도 어르신 수 합쳐 줘", "고령인구 수", "총인구"),
     ],
 )
 def test_spelled_out_indicators(question: str, llm, expected: str) -> None:
@@ -875,9 +875,13 @@ def test_spelled_out_indicators(question: str, llm, expected: str) -> None:
 @pytest.mark.parametrize(
     "question",
     [
-        "제주도에 외국인 등록한 사람 몇 명 있어?",  # 등록외국인이지 총인구가 아니다
-        "2010년 기준으로 전철로 통근이나 통학한 사람 몇 명이었어?",
-        "작년 사망자 중에 일흔 살 이상인 분 몇 명이야?",
+        "강원도에 외국인으로 등록한 사람 몇 명이야?",  # 등록외국인이지 총인구가 아니다
+        "2015년에 지하철로 통근하거나 통학한 사람은 몇 명?",
+        "재작년 사망자 가운데 일흔 살 넘은 분 몇 명?",
+        # 사는 방식 · 집 · 장애는 다른 통계 (11/18: 총인구로 답하던 문제)
+        "혼자 사는 사람 몇 명이야?",
+        "장애가 있는 사람 수 알려줘",
+        "아파트에 사는 사람 몇 명?",
     ],
 )
 def test_other_people_are_not_total_population(question: str) -> None:
@@ -888,9 +892,9 @@ def test_other_people_are_not_total_population(question: str) -> None:
 @pytest.mark.parametrize(
     ("question", "ages"),
     [
-        ("수성구에 이십대 얼마나 살아?", [[20, 29]]),
-        ("울산에 백 살 이상 되신 분 얼마나 계세요?", [[100, None]]),
-        ("작년 사망자 중에 일흔 살 이상인 분", [[70, None]]),
+        ("달서구에 이십대 몇 명 살아?", [[20, 29]]),
+        ("부산에 백 살 이상 되신 분 몇 분 계셔?", [[100, None]]),
+        ("재작년 사망자 중 일흔 살 이상", [[70, None]]),
         ("오십 대 남자", [[50, 59]]),
     ],
 )
@@ -899,23 +903,23 @@ def test_korean_number_ages(question: str, ages) -> None:
 
 
 def test_korea_population_is_nationwide() -> None:
-    p = qa.correct("한국 인구 중 어르신 비중 몇 %야?", parsed(indicator="고령인구 비율"), TODAY)
+    p = qa.correct("한국 인구에서 노인 비중은 몇 %?", parsed(indicator="고령인구 비율"), TODAY)
     assert p["regions"] in ([], ["전국"]) and p["indicator"] == "고령인구 비율"
 
 
 def test_merging_words_before_population_are_plain() -> None:
     # "합쳐서 인구", "시군 중 인구"의 앞말은 다른 통계가 아니다
-    assert qa.population_modifier("부산 울산 경남 합쳐서 인구 몇 명이야?") is None
-    assert qa.population_modifier("경기도 시군 중 인구 많은 순서로 세 곳") is None
+    assert qa.population_modifier("대구 경북 합쳐서 인구 몇 명?") is None
+    assert qa.population_modifier("충남 시군 중 인구 많은 순서로 다섯 곳") is None
     assert qa.population_modifier("2020년 통학 인구") == "통학"
 
 
 @pytest.mark.parametrize(
     "question",
     [
-        "여성 평균 초혼연령 높은 시도 3곳",
-        "경기도 시군 중 인구 많은 순서로 세 곳",
-        "작년 출생아 수 많은 시군구 상위 3곳",
+        "아내 평균 초혼 나이 높은 시도 다섯 곳",
+        "전남 시군 중 인구 많은 순으로 네 곳",
+        "재작년 출생아 많은 시군구 상위 다섯 곳",
     ],
 )
 def test_high_rank_overrides_ascending(question) -> None:
@@ -927,7 +931,7 @@ def test_high_rank_overrides_ascending(question) -> None:
 @pytest.mark.parametrize(
     "question",
     [
-        "작년 한 해 인구 감소 폭 큰 시도 top3",  # 감소 순위는 낮은 순이 맞다
+        "지난해 인구 감소 폭 큰 시도 top5",  # 감소 순위는 낮은 순이 맞다
         "합계출산율 가장 낮은 시도 3곳",
     ],
 )

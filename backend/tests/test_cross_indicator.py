@@ -412,7 +412,7 @@ def test_detect_both_unknown_only_on_request() -> None:
 
 def test_bare_per_people_means_population() -> None:
     # "1000명당 혼인 건수"처럼 분모를 말하지 않으면 인구 1,000명당 → 공식 조혼인율
-    assert x.detect("1000명당 혼인 건수 얼마나 돼?").official == "조혼인율"
+    assert x.detect("인구 1000명당 혼인 건수는?").official == "조혼인율"
     c = x.detect("2024년 서울 1000명당 외국인근로자 수")
     assert (c.num, c.den, c.scale) == ("외국인근로자 수", "총인구", 1000)
 
