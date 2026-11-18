@@ -603,3 +603,25 @@ def test_latest_month_out_of_range_retries_with_annual(monkeypatch) -> None:
     assert qa.compute({"asked": {"latest": True}})["status"] == "ok" and seen == [True, False]
     seen.clear()
     assert qa.compute({"asked": {"latest": True}, "year": 2030})["status"] == "out_of_range"
+
+
+def test_mean_of_regions_averages_ranking(monkeypatch) -> None:
+    rows = [{"region": "가", "value": 10, "rank": 1}, {"region": "나", "value": 20, "rank": 2},
+            {"region": "다", "value": None, "rank": 3}]  # fmt: skip
+
+    def fake(q):
+        assert not q["region_mean"] and q["top"] is None
+        return {"status": "ok", "kind": "count", "unit": "명", "ranking": rows, "level": "시도"}
+
+    monkeypatch.setattr(qa, "_compute", fake)
+    r = qa._mean_of_regions({"region_mean": True, "level": "시도", "top": 3})
+    assert r["value"] == 15 and r["region"] == "2개 시도 평균" and "ranking" not in r
+
+
+def test_unknown_ratio_indicator_is_not_population_composition(monkeypatch) -> None:
+    # 사전에 없는 '○○ 비율' 구성비 질문을 인구 성별 구성으로 읽지 않는다 (지역 없음으로 끝났다)
+    monkeypatch.setattr(qa.lookup, "refresh_if_reloaded", lambda: None)
+    monkeypatch.setattr(qa.lookup, "data_gap", lambda term: {})
+    monkeypatch.setattr(qa.indicators, "_data_years", lambda: (2008, 2025))
+    r = qa.compute({"type": "composition", "indicator": "재혼 비율", "regions": [], "year": 2024})
+    assert r["status"] == "unknown_indicator"

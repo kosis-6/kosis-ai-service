@@ -1216,3 +1216,20 @@ def test_rank_dim_ignores_parentheses() -> None:
     nat = d.Dim(3, "국적(지역)별", {"0": "계", "1": "베트남", "2": "중국"})
     items = d.Dim(0, "항목", {"T": "등록외국인"})
     assert d._rank_dim("등록외국인 국적별로 많은 순서 세 나라", [items, nat], None, "") is nat
+
+
+def test_per_average_divides_members_by_households() -> None:
+    # "가구당 평균 가구원 수": 같은 묶음(일반가구)의 가구원 ÷ 가구, 비율이 아니라 평균
+    assert d.PER_AVERAGE.search("가구당 평균 가구원 수 알려줘")
+    items = d.Dim(0, "항목", {"a": "총가구_가구", "b": "총가구_가구원_계", "c": "일반가구_가구",
+                              "e": "일반가구_가구원_계"})  # fmt: skip
+    spec = d._per_average("T", [items, d.Dim(1, "행정구역별", {"00": "전국"})], 1, "시도")
+    src = spec["sources"][0]
+    assert (src["item_id"], src["den_item_id"], src["den_scale"]) == ("e", "c", 1)
+    assert spec["name"] == "가구당 평균 가구원 수" and spec["unit"] == "명"
+    assert d._per_average("T", [d.Dim(0, "항목", {"a": "가구"})], None, "시도") is None
+
+
+def test_now_asked_words() -> None:
+    assert d.NOW_ASKED.search("2015년 대비 지금 얼마나 늘었어")
+    assert not d.NOW_ASKED.search("2015년 대비 2020년")

@@ -76,6 +76,7 @@ SAME_WORDS = {
     "출퇴근": "통근", "출근": "통근",
     "학교다닌": "통학", "학교다니는": "통학", "학교가는": "통학", "등교": "통학",
 }  # fmt: skip
+UNIT_TAIL = re.compile(r"\s*\([^()]*\)\s*$")
 TOTAL_SUFFIX = re.compile(r"(계|합계|소계|전체)$")  # 공백·기호를 뺀 이름 끝의 합계 표시
 PCT_ASK = re.compile(r"%|퍼센트|비율|비중|몇\s*프로")
 NORM = re.compile(r"[\s·,.()\[\]{}<>\"'‘’“”_/-]")
@@ -96,7 +97,11 @@ class Dim:
         return "item_id" if self.no == 0 else f"c{self.no}_id"
 
     def total(self) -> str | None:
-        found = [c for c, n in self.codes.items() if _norm(n) in TOTAL_NAMES]
+        # "계(쌍)"처럼 이름 끝 괄호의 단위는 떼고 본다
+        found = [
+            c for c, n in self.codes.items()
+            if _norm(n) in TOTAL_NAMES or _norm(UNIT_TAIL.sub("", n)) in TOTAL_NAMES
+        ]  # fmt: skip
         return found[0] if len(found) == 1 else None
 
     def default(self) -> str | None:
@@ -695,6 +700,8 @@ def build(
         tbl_nm = lookup._table(tbl_id)["tbl_nm"]
     except Exception:  # 표 이름은 분류 안 순위에서만 쓴다
         tbl_nm = ""
+    if PER_AVERAGE.search(question) and (avg := _per_average(tbl_id, dims, region_dim, level)):
+        return avg, None
     plan, why = choose(question, parsed, dims, region_dim, forced, tbl_nm)
     if plan is not None and (missing := _missing_subject(question, tbl_nm, dims)):
         plan, why = None, missing  # 칸은 골랐지만 질문이 묻는 집단(통근 · 통학)의 표가 아니다
@@ -798,7 +805,8 @@ def build(
     if not spec.get("formula") and (cells := _cells(plan, dims)):
         spec["formula"] = f"KOSIS 공표 값 ({cells})"  # 칸이 하나뿐이면 lookup이 표 이름을 쓴다
     spec["cells"] = _cells(plan, dims)
-    if PAIRS_ASKED.search(question) and "쌍" not in (spec.get("unit") or "") + spec["cells"]:
+    pair_unit = spec.get("unit") == "쌍" or "(쌍)" in spec["cells"]  # "쌍태아 (명)"은 사람 수
+    if PAIRS_ASKED.search(question) and not pair_unit:
         # "쌍둥이 몇 쌍": 사람 수(쌍태아 14,963명)가 아니라 쌍 단위 값이어야 한다
         return None, "질문은 '쌍' 단위인데 표의 칸은 다른 단위"
     return spec, None
@@ -847,6 +855,62 @@ def _item_whole(d: Dim, tbl_nm: str) -> str | None:
     # 이름 끝에 합계 표시가 붙은 첫 칸 ("이혼건수-계"): 다른 칸 이름에는 합계 표시가 없을 때만
     marked = [c for c, n in d.codes.items() if TOTAL_SUFFIX.search(_norm(n)) and "-" in n]
     return code if marked == [code] else None
+
+
+# "가구당 평균 가구원 수": 같은 표의 가구원 칸 ÷ 가구 칸
+PER_AVERAGE = re.compile(
+    r"(가구|세대)\s*당\s*(평균\s*)?(가구원|세대원)|평균\s*(가구원|세대원)\s*수"
+)
+MEMBER_CELL = re.compile(r"^(.*?)_?(가구원|세대원)(_?계)?$")
+
+
+def _per_average(tbl_id: str, dims: list[Dim], region_dim: int | None, level: str) -> dict | None:
+    """항목에 '가구원'과 같은 묶음의 '가구'가 함께 있으면 가구원 ÷ 가구 (평균 가구원 수).
+    나머지 분류는 합계로 둔다. 합계가 없는 분류가 있거나 짝이 없으면 None"""
+    names = {re.sub(r"\s", "", n): c for c, n in dims[0].codes.items()}  # 밑줄은 둔다 (묶음 구분)
+    pair = None
+    for name, code in names.items():
+        m = MEMBER_CELL.match(name)
+        if not m:
+            continue
+        prefix = m[1].rstrip("_")
+        household = "가구" if m[2] == "가구원" else "세대"
+        den = names.get(f"{prefix}_{household}" if prefix else household)
+        if den is None and prefix.endswith(household):
+            den = names.get(prefix)  # "일반가구" + "일반가구_가구원" 꼴
+        if den and (pair is None or prefix.startswith("일반")):
+            # 공식 평균 가구원 수는 일반가구 기준이라 일반가구 짝이 있으면 그쪽
+            pair = (code, den, dims[0].codes[code], dims[0].codes[den])
+    if pair is None:
+        return None
+    filters = {}
+    for d in dims:
+        if d.no in (0, region_dim):
+            continue
+        if not (code := d.total()):
+            return None
+        filters[d.col] = code
+    num, den, num_nm, den_nm = pair
+    num_nm, den_nm = num_nm.replace("_", " "), den_nm.replace("_", " ")
+    src = {"table": tbl_id, "level": level, "item_id": num, "den_item_id": den, "den_scale": 1}
+    if level == "전국":
+        src["national_only"] = True
+    if filters:
+        src["filters"] = filters
+        src["den_filters"] = filters
+    member = "가구원" if "가구원" in num_nm else "세대원"
+    return {
+        "name": f"{'가구' if member == '가구원' else '세대'}당 평균 {member} 수",
+        "unit": "명",
+        "kind": "value",
+        "method": "lookup",
+        "dynamic": True,
+        "note": NOTE,
+        "formula": f"{num_nm} ÷ {den_nm}",
+        "cells": f"항목 {num_nm} ÷ {den_nm}",
+        "sources": [src],
+        "fixed": {"sex": "계"},
+    }
 
 
 def _ratio(spec: dict, src: dict, plan: Plan, dims: list[Dim], parsed: dict, tbl_nm: str = ""):
@@ -1183,6 +1247,8 @@ def attempt_list(target: dict, q: dict) -> list[dict]:
 
 # 쌍둥이를 몇 쌍인지 물음 ("이혼한 부부 몇 쌍"은 건수라 해당하지 않는다)
 PAIRS_ASKED = re.compile(r"(쌍둥이|쌍태아)\S*\s*(\S+\s*){0,2}몇\s*쌍")
+NOW_ASKED = re.compile(r"지금|현재|요즘|최근")
+NOW_YEARS = 1  # "지금"을 물으면 자료 마지막 해에서 이만큼 안까지 있는 표
 RECENT_YEARS = 5  # 연도를 말하지 않은 질문: 자료 마지막 해에서 이만큼 안의 자료가 있는 표만
 
 
@@ -1390,7 +1456,14 @@ async def _compute_target(
         return res, ask
 
     said_year = any(q.get(k) for k in ("year", "start_year", "end_year"))
-    recent = None if said_year else await run_in_threadpool(_recent_floor)
+    # "2015년 대비 지금": 시작 해는 말했어도 끝은 지금이다.
+    # 최근 자료가 있는 후보가 있으면 옛 표는 뺀다
+    now_asked = bool(NOW_ASKED.search(question)) and not q.get("year")
+    recent = None if said_year and not now_asked else await run_in_threadpool(_recent_floor)
+    if recent and now_asked:
+        recent += RECENT_YEARS - NOW_YEARS  # "지금"은 마지막 해에 가까운 표만
+    if recent and now_asked and not any((e.get("end_year") or 0) >= recent for e in entries):
+        recent = None  # 최근 자료가 있는 후보가 없으면 있는 표로 답한다 (안내 대신)
 
     async def attempt(entry: dict):
         sub: dict = {"dynamic": []}
@@ -1401,7 +1474,8 @@ async def _compute_target(
         if recent and entry.get("end_year") and entry["end_year"] < recent:
             # 연도를 말하지 않았는데 최근 자료가 없는 옛 표 ("이혼 몇 건이나 돼?" → 1980년 표의
             # 마지막 해로 답했다). 연도를 말하지 않으면 최신 연도를 묻는 것이다
-            why = f"연도를 말하지 않았는데 {entry['end_year']}년까지인 표"
+            said = "지금을 물었는데" if now_asked else "연도를 말하지 않았는데"
+            why = f"{said} {entry['end_year']}년까지인 표"
             sub["dynamic"].append({"tbl_id": tbl_id, "kind": entry["kind"], "skip": why})
             return None, None, sub
         if u.get("projection"):

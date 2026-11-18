@@ -517,10 +517,12 @@ def correct(question, parsed, today=None):
         if bare != name and indicators.spec(bare) is not None:
             fix("indicator", bare, "지표 이름 뒤의 단위 표기")
 
+    undone_pct = False
     if kind == "causal" and not (CAUSAL.search(question) or WHY_WORDS.search(question)):
         # "작년 혼인 중에 남녀 모두 초혼인 비율" 같은 비율 질문을 HCX가 원인 질문으로 읽었다
-        kind = "composition" if PCT_ASK.search(question) else "value"
+        kind = "value"
         fix("type", kind, "원인을 묻는 말이 없음")
+        undone_pct = bool(PCT_ASK.search(question))
     if kind == "other" and CAUSAL.search(question):
         fix("type", "causal", "원인·효과를 묻는 질문")
         kind = "causal"
@@ -618,6 +620,11 @@ def correct(question, parsed, today=None):
             # "통학 인구"·"외국인 인구"처럼 '인구' 앞에 다른 통계를 가리키는 말이 있으면
             # 별칭 '인구'만으로 총인구라고 볼 수 없다 → 바로 계산을 시도한다
             parsed["grounded"] = False
+        chosen_spec = indicators.spec(chosen) if chosen else None
+        if undone_pct and chosen_spec and lookup.kind_of(chosen_spec) == "count":
+            # 원인 질문으로 잘못 읽은 비율 질문인데 고른 지표가 건수다 ("혼인 중 초혼 비율" → 혼인
+            # 건수): 건수로 답하지 않고 통계표에서 비율을 계산해 본다
+            parsed["grounded"] = False
 
     sp = indicators.spec(parsed.get("indicator"))
     is_comp = sp is not None and lookup.kind_of(sp) == "composition"
@@ -704,6 +711,7 @@ def correct(question, parsed, today=None):
 
     _cross(question, parsed, fix)
     _change_rank(question, parsed, fix)
+    _region_mean(question, parsed, fix)
     other_axis = OTHER_AXIS.search(question) and not AXIS_REGION.search(question)
     if parsed.get("type") == "rank" and other_axis:
         # "등록외국인 국적별로 많은 순서 세 나라": 지역이 아닌 분류의 순위. 사전 지표는 지역 순위만
@@ -733,6 +741,62 @@ def _change_rank(question, parsed, fix):
         parsed["grounded"] = True
 
 
+# "시도 평균 출생아 수", "서울 구별 평균": 여러 지역 값의 단순 평균 ("전국 평균과 비교"는 아니다)
+REGION_MEAN = re.compile(
+    r"(시도|광역|시군구|구|군|지역|도시)\s*(별|들|마다)?\s*(의\s*)?평균(?!\s*(과|보다|이랑|대비))"
+)
+
+
+def _region_mean(question, parsed, fix):
+    """지역 평균: 순위(모든 지역 값)를 구해 평균한다 (compute의 region_mean)"""
+    if parsed.get("cross") or parsed.get("rank_by") or not (m := REGION_MEAN.search(question)):
+        return
+    if parsed.get("type") not in ("value", "rank", "compare", None):
+        return
+    regions = [r for r in parsed.get("regions") or [] if r != "전국"]
+    sido = parsed.get("sido")  # "서울 구별"은 지역별 목록이 이미 시도 안의 시군구로 읽었다
+    level = "시도" if m[1] in ("시도", "광역") or not (regions or sido) else "시군구"
+    parsed["region_mean"] = True
+    if parsed.get("type") != "rank":
+        fix("type", "rank", "여러 지역 값의 평균")
+    if parsed.get("level") != level:
+        fix("level", level, "평균할 지역 수준")
+    parsed["top"] = None
+    # 시군구 평균은 그 시도 안의 순위 (regions에 시도 하나: 순위가 그 범위로 계산한다)
+    # 시군구 평균은 그 시도 안의 시군구 순위로 (지역별 목록과 같이 sido에 범위)
+    if level == "시군구" and not sido and regions:
+        fix("sido", regions[0], "평균할 범위")
+    if level == "시도" and sido:
+        fix("sido", None, "시도 평균")
+    if parsed.get("regions"):
+        fix("regions", [], "지역 평균")
+
+
+def _mean_of_regions(q):
+    """지역 평균 = 순위의 모든 지역 값의 단순 평균 (값이 없는 지역은 뺀다)"""
+    r = _compute({**q, "region_mean": False, "top": None, "target": None})
+    rows = [x for x in r.get("ranking") or [] if x.get("value") is not None]
+    if r.get("status") != "ok" or not rows:
+        return r
+    mean = sum(x["value"] for x in rows) / len(rows)
+    within = (q.get("regions") or [None])[0] or q.get("sido")
+    if within:
+        within = (indicators.resolve_region(within) or {}).get("display") or within
+    scope = f"{within} " if within else ""
+    unit_name = {"시도": "시도", "시": "시"}.get(q.get("level") or "시도", "시군구")
+    out = {
+        k: v for k, v in r.items() if k not in ("ranking", "order", "level", "total_regions")
+    }
+    out.update(
+        value=round(mean, 1 if r.get("kind") == "count" else 2),
+        kind="value" if r.get("kind") == "count" else r.get("kind"),
+        region=f"{scope}{len(rows)}개 {unit_name} 평균",
+        formula=f"{len(rows)}개 {unit_name} 값의 합 ÷ {len(rows)} (단순 평균)",
+    )
+    return out
+
+
+PEOPLE_INDICATOR = re.compile(r"인구|사람|주민|남녀|성별|연령|나이")
 CROSS_DYNAMIC = "cross_dynamic"  # 두 값 중 한쪽이 사전에 없음 (ask_session이 마저 계산)
 
 
@@ -1361,6 +1425,8 @@ def _compute(q):
         }
     if kind == "rank" and q.get("rank_by") in ("decrease", "increase"):
         return _rank_by_change(q, hi)
+    if kind == "rank" and q.get("region_mean"):
+        return _mean_of_regions(q)
     if q.get("cross"):  # 두 지표를 나눈 값 (cross_indicator.py): 두 지표를 각각 계산해 나눈다
         if cond := q.get("unsupported_condition"):
             return {
@@ -1389,7 +1455,9 @@ def _compute(q):
     sp = dyn or (None if q.get("unsupported") else indicators.spec(ind))
     if dyn and (dyn.get("ages_in_filters") or dyn.get("ignore_ages")):
         ages = None  # 비율의 분자에 연령이 이미 들어 있거나, 말에서 짐작한 연령을 쓰지 않는 정의
-    population = sp is None or sp["name"] == "총인구"
+    # 사전에 없는 지표는 인구를 가리킬 때만 인구 구성비로 본다 ("초혼 비율"을 인구 성별 구성으로
+    # 읽어 '지역이 없음'으로 끝났다 → 지원하지 않는 지표로 보내 통계표에서 계산하게 한다)
+    population = sp["name"] == "총인구" if sp else not ind or bool(PEOPLE_INDICATOR.search(ind))
     if kind == "composition" and population and not q.get("unsupported"):
         # 구성비는 지표가 아니라 총인구를 나눠 보므로 지표 확인을 건너뜀
         if not regions:

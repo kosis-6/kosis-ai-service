@@ -1519,3 +1519,34 @@ def test_reply_turn_can_search_other_tables() -> None:
     res = {"status": "missing_data", "request_type": s.REPLY, "result": {}}
     assert s.searchable_after(res) is True
     assert s.searchable_after({**res, "request_type": s.CHART}) is False
+
+
+def test_alternative_picked_by_its_words() -> None:
+    # 대안 되묻기에 번호 대신 대안의 내용으로 답하면 그 대안 (새 질문으로 보내 지역을 잃지 않는다)
+    answers = [{"answer": "2024년 부산의 값은 10명입니다.", "result": {"notes": ["귀화자 포함"]}}]
+    assert s.alternative_by_words("귀화자까지 포함으로요", answers) == "0"
+    assert s.alternative_by_words("응 그걸로", answers) == "0"
+    assert s.alternative_by_words("서울은?", answers) is None
+    two = [*answers, {"answer": "다른 값", "result": {}}]
+    assert s.alternative_by_words("응", two) is None
+
+
+def test_after_table_choice_computes_with_original_question(monkeypatch) -> None:
+    # 표 선택지에 답하면 고른 표로 원래 질문을 바로 계산해 본다 (못 하면 None → 표 안내)
+    seen = []
+
+    async def fake_compute(question, parsed, found, trace):
+        seen.append(question)
+        return {"status": "ok", "answer": "값", "result": {"status": "ok", "value": 1}}
+
+    async def no_cards(res, asked):
+        return None
+
+    monkeypatch.setattr(dynamic_indicator, "compute_from_handoff", fake_compute)
+    monkeypatch.setattr(s, "_attach_cards", no_cards)
+    monkeypatch.setattr(table_guide, "waiting_choice", lambda found: False)
+    pending = {"missing": "table", "original_question": "원래 질문", "parsed": {"type": "value"}}
+    res = asyncio.run(s._after_table_choice(pending, {"status": "ok"}))
+    assert res["question"] == "원래 질문" and res["request_type"] == s.REPLY
+    assert seen == ["원래 질문"]
+    assert asyncio.run(s._after_table_choice({"missing": "table"}, {"status": "ok"})) is None

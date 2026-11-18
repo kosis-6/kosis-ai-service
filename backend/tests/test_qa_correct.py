@@ -996,3 +996,14 @@ def test_rank_by_other_axis_is_not_region_rank() -> None:
     assert p["rank_axis"] == "국적" and p["grounded"] is False
     q = qa.correct("2024년 등록외국인이 가장 많은 시도 3곳", parsed(type="rank", top=3), TODAY)
     assert "rank_axis" not in q
+
+
+def test_region_mean_is_mean_of_regions() -> None:
+    p = qa.correct("2024년 시도 평균 출생아 수 알려줘", parsed(regions=[]), TODAY)
+    assert p["region_mean"] and p["type"] == "rank" and p["level"] == "시도"
+    q = qa.correct("2024년 부산 구별 평균 출생아 수", parsed(regions=["부산"]), TODAY)
+    assert q["region_mean"] and q["level"] == "시군구" and q["sido"] == "부산"
+    assert q["regions"] == []
+    # 전국 평균과의 비교는 지역 평균이 아니다
+    c = qa.correct("부산 출생아 수 지역 평균보다 많아?", parsed(regions=["부산"]), TODAY)
+    assert not c.get("region_mean")
