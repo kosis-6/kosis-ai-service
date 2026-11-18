@@ -226,6 +226,11 @@ PREV_YEAR = re.compile(r"(작년|전년|지난해)\s*(보다|대비|에 비해)"
 RATIO_ASK = re.compile(r"몇\s*배")
 LEVEL_CITY = re.compile(r"전국\s*(의\s*)?시\s*(중|가운데)|시\s*단위")
 ASCENDING = re.compile(r"꼴찌|최하위|가장\s*(낮|적)|제일\s*(낮|적)")
+# 높은 순으로 물음 ("초혼연령 높은 시도 3곳", "인구 많은 순서로", "상위 3곳"). 질문 해석이 추론 없이
+# "높은"을 낮은 순(ascending)으로 읽은 경우를 되돌린다 (변형셋 v1 P-081, 11/18)
+DESCENDING = re.compile(r"(높|많)(은|게|을)|상위|1등|1위|top", re.I)
+# 감소·유출 순위는 값이 음수라 "큰" 쪽이 낮은 순이다 ("감소 폭 큰 시도") → 고치지 않는다
+DECREASE = re.compile(r"낮|적은|적게|감소|줄|유출|빠져")
 TOP_N = re.compile(r"(상위|하위)\s*(\d+)|(\d+)\s*(곳|개|위까지)(?!\s*\S*\s*중)")
 # "최근 5년", "과거 10년간", "지난 3년 동안" (timeref와 같은 표현)
 RECENT = timeref.RECENT_N_YEARS
@@ -1162,6 +1167,12 @@ def _read_question(question, parsed, fix):
             fix("level", "시", "전국 시 중 순위")
         if ASCENDING.search(question) and not parsed.get("ascending"):
             fix("ascending", True, "가장 낮은 순위")
+        elif (
+            parsed.get("ascending")
+            and DESCENDING.search(question)
+            and not DECREASE.search(question)
+        ):
+            fix("ascending", False, "높은 순위")
         if parsed.get("indicator") == "순이동" and re.search(r"빠져나간|유출", question):
             if not parsed.get("ascending"):
                 fix("ascending", True, "순유출이 큰 순 = 순이동이 낮은 순")
