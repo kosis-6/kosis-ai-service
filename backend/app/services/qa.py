@@ -272,6 +272,12 @@ RANK_ASK = re.compile(
     r"(가장|제일|꼴찌|최하위)\S*\s*(\S+\s*){0,3}?(시군구|시도|지역|곳|구|시)(는|가|은|이|를|\s|$|\?)"
 )
 # 별칭으로 못 찾은 지표 표현 (질문 표현 → 지표 이름)
+# "아기 몇 명 낳"은 여자 한 명이 평균 몇 명 낳는지(합계출산율)를 물을 때와 그해 태어난 아이 수
+# (출생아 수)를 물을 때가 있다. '한 명당 · 한 명이 · 평균 · 평생'이 있으면 합계출산율
+BIRTHS_PER_WOMAN = re.compile(
+    r"(?:여자|여성|엄마|가임\s*여성)?\s*(?:한|1)\s*명\s*(?:당|이|이서|마다)|평균|평생|일생"
+)
+BABIES_BORN = re.compile(r"(?:아이|아기|애|신생아)\S*\s*몇\s*명\S*\s*(?:\S+\s*){0,2}낳")
 INDICATOR_PATTERNS = [
     (re.compile(r"(아이|아기|신생아)\S*\s*(\S+\s*){0,3}태어"), "출생아 수"),
     (re.compile(r"결혼(을|한)?\s*(\S+\s*){0,2}(많이|적게)"), "혼인 건수"),
@@ -469,6 +475,9 @@ def correct(question, parsed, today=None):
         names = {name for *_, name in indicators.find_in_text(question)}
         if not names - {"총인구"}:
             names |= {name for pattern, name in INDICATOR_PATTERNS if pattern.search(question)}
+            if BABIES_BORN.search(question):
+                per_woman = BIRTHS_PER_WOMAN.search(question)
+                names |= {"합계출산율" if per_woman else "출생아 수"}
         name = _pick_indicator(question, names)
         current = indicators.canonical_name(parsed.get("indicator") or "")
         if name and current != name:
@@ -635,6 +644,9 @@ POPULATION_NOUN = re.compile(r"([가-힣]+)\s*인구")
 
 def population_modifier(question):
     """'인구' 바로 앞의 말이 지역·성별·연령이 아닌 다른 통계를 가리키면 그 말 (예: 통학, 외국인)"""
+    if group := agegroup.resolve(question):
+        # 연령 집단 이름은 연령 조건이다 ("2030세대 인구"의 '세대'를 다른 통계로 보지 않는다)
+        question = question.replace(group.expr, " ")
     for m in POPULATION_NOUN.finditer(question):
         # 조사를 뗀 말과 그대로의 말을 모두 본다 ("나이"의 '이'는 조사가 아니다)
         words = {m[1], re.sub(r"(의|은|는|이|가|에서|에|별)$", "", m[1]) or m[1]}
@@ -918,11 +930,23 @@ def _region_list(question, parsed, fix):
         fix("top", None, "지역별 목록은 전체")
 
 
+# "수도권 외"·"수도권 밖"의 외·밖 뒤에 낱말이 이어지면 다른 말이다 ("수도권 외국인", "수도권 외곽").
+# 조사 · "지역"만 붙어도 된다 ("수도권 외의", "수도권 외 지역", "수도권 외에서")
+GROUP_TAIL = re.compile(r"(?:의|에서|에|은|는|이|가|로|으로|도|만|지역|인구)?(?![가-힣])")
+
+
+def _group_in(word, question):
+    """지역 묶음 이름이 질문에 있는가. 끝이 외·밖이면 뒤에 다른 낱말이 이어지지 않아야 한다"""
+    if not word.endswith((" 외", " 밖")):
+        return word in question
+    return any(GROUP_TAIL.match(question, m.end()) for m in re.finditer(re.escape(word), question))
+
+
 def _read_question(question, parsed, fix):
     """질문 원문에서 바로 읽을 수 있는 조건 (지역 묶음, 합계, 극값 연도, 연속, 반등 등)"""
     kind = parsed.get("type")
     for word, members in REGION_GROUPS.items():
-        if word in question:
+        if _group_in(word, question):
             fix("regions", members, f"'{word}'")
             parsed["group"] = word
             break

@@ -365,7 +365,7 @@ CONTEXT_YEAR = [
     (re.compile(r"전년도|전년|(?:그|직)\s*전\s*해|이전\s*해|직전\s*연도|한\s*해\s*전"), -1),
     (re.compile(r"다음\s*해|이듬해|다음\s*연도|익년|한\s*해\s*(?:뒤|후)"), 1),
 ]
-FULL_YEAR = re.compile(r"(?:19|20)\d{2}\s*년?")
+FULL_YEAR = re.compile(r"(?:19|20)\d{2}(?!\d|\s*세대)\s*년?")  # "2030세대"는 연도가 아니다
 
 
 def follow_year(question: str, conditions: dict, today: date | None = None) -> int | None:

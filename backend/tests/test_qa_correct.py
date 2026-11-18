@@ -819,3 +819,27 @@ def test_percent_question_uses_the_ratio_sibling(registered_aliases, question, e
         assert p["indicator"] == expected
         # 바꾼 비율 지표는 질문에 근거가 있는 지표다 (근거 없는 지표 검사가 되돌리지 않는다)
         assert not p.get("unsupported")
+
+
+@pytest.mark.parametrize(
+    ("question", "llm", "expected"),
+    [
+        # 그해 태어난 아이 수: HCX가 출생아 수로 바르게 읽었으면 덮어쓰지 않는다
+        ("2024년 서울에서 아기 몇 명 낳았어?", "출생아 수", "출생아 수"),
+        ("2024년 서울에서 아기 몇 명 낳았어?", "합계출산율", "출생아 수"),
+        # 여자 한 명이 평균 몇 명 낳는지: 합계출산율
+        ("2024년 서울 여자 한 명이 평균 아이 몇 명 낳아?", "출생아 수", "합계출산율"),
+        ("여성 1명당 아기 몇 명 낳아?", None, "합계출산율"),
+    ],
+)
+def test_babies_born_or_per_woman(question: str, llm, expected: str) -> None:
+    p = qa.correct(question, parsed(indicator=llm, regions=["서울"]), TODAY)
+    assert p["indicator"] == expected
+
+
+@pytest.mark.parametrize("question", ["서울 2030세대 인구는?", "서울 2030 세대 인구는?"])
+def test_generation_population_is_total_population(question: str) -> None:
+    # "2030세대"는 연령 조건 (20~39세). '세대 인구'를 다른 통계로 보지 않고, 2030년으로도 읽지 않는다
+    p = qa.correct(question, parsed(indicator="총인구", regions=["서울"], year=2030), TODAY)
+    assert p["indicator"] == "총인구" and p["grounded"] is not False
+    assert p["ages"] == [[20, 39]] and p["year"] is None
