@@ -558,7 +558,7 @@ def test_sigungu_future_year_is_prediction_with_sido_projection(monkeypatch) -> 
     monkeypatch.setattr(  # 표 정보(DB)를 읽지 않게
         indicators, "_base", lambda name, ind, status, **kw: {"status": status, **kw}
     )
-    monkeypatch.setattr(indicators, "_out_of_range_reason", lambda lo, hi: "자료 기간 밖")
+    monkeypatch.setattr(indicators, "_out_of_range_reason", lambda lo, hi, ind=None: "자료 기간 밖")
     reg = {
         "kind": "시군구",
         "region_code": "26350",

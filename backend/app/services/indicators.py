@@ -43,6 +43,13 @@ AREA_BASIS = "지목 전체(계) 면적, 각 연도 12월 31일 기준"
 HH_TABLE = "DT_1B040B3"
 HH_SOURCE = "행정안전부, 행정구역(시군구)별 주민등록세대수 (DT_1B040B3)"
 HH_BASIS = "주민등록 세대수, 각 연도 12월 31일 기준"
+# 등록외국인 비율의 분자 (법무부). 성별 칸은 c2, 국적
+# 계는 c3 B001 (지표 사전의 등록외국인 수와 같은 칸)
+FOREIGN_TABLE = "DT_1B040A9C"
+FOREIGN_ORG = "111"
+FOREIGN_SOURCE = "법무부, 시군구별 및 국적(지역)별 등록외국인 현황 (DT_1B040A9C)"
+FOREIGN_BASIS = "법무부 출입국·외국인정책 통계의 등록외국인"
+FOREIGN_SEX = {"계": "0", "남": "1", "여": "2"}
 PROJ_SOURCE = "국가데이터처 (구 통계청), 장래인구추계 시도편 주요 인구지표 (DT_1BPB002)"
 PROJ_BASIS = "2022년 기준 장래인구추계, 각 연도 7월 1일 기준 (외국인 포함)"
 PROJ_TABLE = "DT_1BPB002"
@@ -135,9 +142,22 @@ INDICATORS = {
         "kind": "value",
         "diff_unit": "명",
         "formula": "주민등록 총인구 ÷ 주민등록 세대수",
+        "rate": True,  # 추이에 증감률도 (세대당 인구는 명 단위 값이라 증감률을 함께 본다)
         "calc": lambda c: c["total"] / c["households"] if c.get("households") else None,
         "households": True,  # _components가 세대수(households, DT_1B040B3)를 붙인다
         "meaning": "한 세대에 평균 {value}명",
+        # 값 답에 보여 줄 분자 · 분모 (구성 요소 키, 이름, 단위). qa._body가 "계산: A ÷ B" 줄로
+        "operands": [("total", "주민등록인구", "명"), ("households", "주민등록 세대수", "세대")],
+    },
+    "등록외국인 비율": {
+        "unit": "%",
+        "kind": "ratio",
+        "formula": "등록외국인 수 ÷ 주민등록 총인구 × 100",
+        "calc": lambda c: _div(c.get("foreigners"), c["total"]),
+        # _components가 그해 등록외국인 수(foreigners, DT_1B040A9C)를 붙인다. 등록외국인 표에 있는
+        # 연도만 답한다 (_years_of). 분모 주민등록인구에는 외국인이 들어 있지 않다
+        "foreigners": True,
+        "operands": [("foreigners", "등록외국인", "명"), ("total", "주민등록인구", "명")],
     },
     "인구밀도": {
         "unit": "명/㎢",
@@ -149,6 +169,7 @@ INDICATORS = {
         "calc": lambda c: c["total"] / c["area"] if c.get("area") else None,
         "area": True,  # _components가 면적(mart.area)도 붙인다
         "meaning": "1㎢(가로세로 1km 넓이)마다 평균 {value}명",
+        "operands": [("total", "주민등록인구", "명"), ("area", "면적", "㎢")],
     },
 }
 # 지표의 다른 이름(별칭)은 config/catalog_notes.toml의 지표 사전에서 읽는다 (_get_indicator)
@@ -189,6 +210,13 @@ def _round(v, kind, digits=2):
     if v is None:
         return None
     return int(v) if kind == "count" else round(v, digits)
+
+
+def _operand(v):
+    """분자 · 분모 표시값: 사람 · 세대 수는 정수, 면적은 소수 둘째 자리"""
+    if v is None:
+        return None
+    return int(v) if float(v).is_integer() else round(v, 2)
 
 
 def _r(v, ind):
@@ -341,6 +369,15 @@ def _base(name, ind, status="ok", **extra):
                 "url": kosis_url(HH_TABLE),
             }
         ]
+    if ind.get("foreigners"):  # 등록외국인 비율: 분자인 등록외국인 표도 출처로 밝힌다
+        out["extra_sources"] = [
+            {
+                "source": FOREIGN_SOURCE,
+                "basis": FOREIGN_BASIS,
+                "tbl_id": FOREIGN_TABLE,
+                "url": KOSIS_URL.format(org_id=FOREIGN_ORG, tbl_id=FOREIGN_TABLE),
+            }
+        ]
     if ind.get("area"):  # 인구밀도: 분모인 면적 표도 출처로 밝힌다 (qa.render·sources)
         out["extra_sources"] = [
             {
@@ -351,6 +388,12 @@ def _base(name, ind, status="ok", **extra):
             }
         ]
     out.update(extra)
+    # 지표 사전에 적은 주의 문구(note)도 답에 붙인다 (조회 지표는 lookup이 붙인다. 11/18 전에는
+    # 계산 지표만 빠져 중위연령 · 등록외국인 비율의 기준 안내가 나가지 않았다)
+    if (note := (specs().get(name) or {}).get("note")) and status in ("ok", "out_of_range"):
+        notes = list(out.get("notes") or [])
+        if note not in notes:
+            out["notes"] = [*notes, note]
     return out
 
 
@@ -402,7 +445,9 @@ def _series_break_notes(y0, y1):
     return [f"{r['year']}년: {r['description']}" for r in rows]
 
 
-def _out_of_range_reason(lo, hi):
+def _out_of_range_reason(lo, hi, ind=None):
+    if (ind or {}).get("foreigners"):  # 기간을 정한 것은 붙인 등록외국인 표다
+        return f"등록외국인(법무부) 자료가 {lo}~{hi}년(연간)만 있어 이 기간만 계산할 수 있습니다."
     reason = f"수집된 주민등록인구 자료는 {lo}~{hi}년(연간)만 있습니다."
     if m := population_latest.components("00"):  # 받아 온 최신 달 (설정의 적어 둔 값보다 정확)
         return reason + f" KOSIS 원표에는 {m['year']}년 {m['month']}월(월별)까지 자료가 있습니다."
@@ -454,6 +499,8 @@ def _components(codes, y0, y1, sex, band=None, area=False, ind=None):
         _attach_median(out, codes, y0, y1, sex)
     if ind.get("households"):
         _attach_households(out, codes, y0, y1)
+    if ind.get("foreigners"):
+        _attach_foreigners(out, codes, y0, y1, sex)
     return out
 
 
@@ -527,6 +574,38 @@ def _attach_households(comps, codes, y0, y1):
         return
     for key, comp in comps.items():
         comp["households"] = got.get(key)
+
+
+def _attach_foreigners(comps, codes, y0, y1, sex):
+    """등록외국인 비율: 그해 등록외국인 수(foreigners)를 붙인다 (DT_1B040A9C, 성별마다 칸이 다름).
+    표가 적재되지 않았거나 그해 값이 없으면 붙이지 않는다 (값 없음으로 답한다)"""
+    from app.services import lookup  # lookup이 indicators를 불러서 함수 안에서 부른다
+
+    src = {
+        "table": FOREIGN_TABLE,
+        "item_id": "H001",
+        "filters": {"c2_id": FOREIGN_SEX.get(sex, "0"), "c3_id": "B001"},
+    }
+    try:
+        got = lookup._fetch(src, list(codes), y0, y1)
+    except StatsTableMissing:
+        return
+    for key, comp in comps.items():
+        comp["foreigners"] = got.get(key)
+
+
+def _years_of(ind):
+    """지표가 답할 수 있는 연도 (lo, hi, 최신 달 허용). 다른 표를 붙이는 지표는 그 표의 연도까지"""
+    lo, hi = _data_years()
+    if ind.get("foreigners"):
+        from app.services import lookup
+
+        try:
+            flo, fhi = lookup._years({"table": FOREIGN_TABLE, "item_id": "H001"})
+        except StatsTableMissing:
+            return lo, hi, False
+        return max(lo, flo), min(hi, fhi), False  # 등록외국인은 연간 자료만 (최신 달 없음)
+    return lo, hi, True
 
 
 def _attach_area(comps, codes, y1):
@@ -625,17 +704,17 @@ def _mark_monthly(out, code, sex, year):
 
 def _check(name, ind, reg, y0, y1):
     """수록 기간·지역 유효 기간 확인. 문제가 있으면 안내용 dict, 없으면 None"""
-    lo, hi = _data_years()
+    lo, hi, month_ok = _years_of(ind)
     # 연간 자료 다음 해는 같은 표의 최신 달 값으로 답한다 (_components). 기간은 맞는 것으로 보되
     # 아래 지역 유효 기간 확인은 그대로 한다 (예: 2023년에 생긴 군위군을 2020년부터 물으면 안내)
-    monthly = y1 > hi and y0 >= lo and _monthly(reg["region_code"], "계", y1)
+    monthly = month_ok and y1 > hi and y0 >= lo and _monthly(reg["region_code"], "계", y1)
     if not monthly and (y0 < lo or y1 > hi):
         out = _base(
             name,
             ind,
             "out_of_range",
             region=_display(reg),
-            reason=_out_of_range_reason(lo, hi),
+            reason=_out_of_range_reason(lo, hi, ind),
             available_years=[lo, hi],
         )
         if y1 > hi and reg["kind"] in ("전국", "시도") and "projection_c3" in ind:
@@ -815,7 +894,20 @@ def resolve_region(name, year=None, sigungu=False):
             [short + "시", short + "군"],
         )
         if same and found[0]["region_name"] != short:
-            found = found + same
+            if all(s["sido_code"] == found[0]["region_code"] for s in same):
+                # "제주"(제주특별자치도 / 그 안의 제주시): 같은 시도 안의 시라 시도로 답하고 알린다.
+                # "광주"(광주광역시 / 경기 광주시)처럼 다른
+                # 시도의 시와 겹치면 아래처럼 되묻는다 (11/18)
+                city = same[0]["region_name"]
+                found = [
+                    {
+                        **found[0],
+                        "note": f"지역 '{name}' → {found[0]['region_name']} 전체로 답했습니다 "
+                        f"({city}만 보시려면 '{city}'로 질문해 주세요)",
+                    }
+                ]
+            else:
+                found = found + same
 
     if len(found) > 1 and year is not None:
         found = [
@@ -874,6 +966,12 @@ def value(indicator, region, year, sex="계", ages=None):
     if ind.get("area") and comp and comp.get("area"):
         out["area_km2"] = round(comp["area"], 2)
         out["population"] = int(comp["total"])
+    if ind.get("operands") and comp and v is not None:
+        # 두 값을 나눈 지표: 나눈 두 값을 함께 보여 준다 (예: 등록외국인 ○명 ÷ 주민등록인구 ○명)
+        out["operands"] = [
+            {"label": label, "value": _operand(comp.get(key)), "unit": unit}
+            for key, label, unit in ind["operands"]
+        ]
     return _mark_monthly(out, reg["region_code"], sex, year)
 
 
@@ -888,9 +986,11 @@ def trend(indicator, region, start_year, end_year, sex="계", ages=None):
     comps = _components(
         [reg["region_code"]], start_year, end_year, sex, ind.get("band"), ind.get("area"), ind
     )
-    series = [{"year": y, "value": _r(ind["calc"](c), ind)} for (y, _), c in sorted(comps.items())]
-    series = [p for p in series if p["value"] is not None] or series
-    first, last = series[0]["value"], series[-1]["value"]
+    raw = [(y, ind["calc"](c)) for (y, _), c in sorted(comps.items())]
+    raw = [p for p in raw if p[1] is not None] or raw
+    series = [{"year": y, "value": _r(v, ind)} for y, v in raw]
+    # 변화량 · 증감률은 반올림 전 값으로 (반올림한 값끼리 빼면 끝자리가 0.01 틀린다. 11/18)
+    first, last = raw[0][1], raw[-1][1]
     change = {
         "from_year": series[0]["year"],
         "to_year": series[-1]["year"],
@@ -902,6 +1002,14 @@ def trend(indicator, region, start_year, end_year, sex="계", ages=None):
     if ind["kind"] == "count" or ind.get("rate"):
         change["rate"] = round(analysis.growth_rate(first, last), 2)
         change["rate_unit"] = "%"
+    elif ind["kind"] == "ratio" and first:
+        # 비율 지표: %p 변화에 더해 비율 자체가 몇 % 커졌는지 (증감률). %p와 헷갈리지 않게
+        # rate가 아닌 따로 된 칸으로 두고 "비율 자체는 ~% 커짐"으로 보여 준다 (qa._body)
+        change["relative_rate"] = round(analysis.growth_rate(first, last), 1)
+    years = series[-1]["year"] - series[0]["year"]
+    if "rate" in change and years and first and last and first > 0 and last > 0:
+        # 연평균 증감률도 반올림 전 값으로 (qa._add_trend_facts는 이미 있으면 그대로 둔다)
+        change["cagr"] = round(((last / first) ** (1 / years) - 1) * 100, 1)
     out = _base(
         name,
         ind,
@@ -1058,11 +1166,16 @@ def rank(
         }
     if missing := _area_missing(name, ind):
         return missing
-    lo, hi = _data_years()
-    monthly = year > hi and _monthly("00", "계", year)  # 연간 자료 다음 해: 최신 달 값으로 순위
+    lo, hi, month_ok = _years_of(ind)
+    # 연간 자료 다음 해: 최신 달 값으로 순위
+    monthly = month_ok and year > hi and _monthly("00", "계", year)
     if not lo <= year <= hi and not monthly:
         return _base(
-            name, ind, "out_of_range", reason=_out_of_range_reason(lo, hi), available_years=[lo, hi]
+            name,
+            ind,
+            "out_of_range",
+            reason=_out_of_range_reason(lo, hi, ind),
+            available_years=[lo, hi],
         )
 
     cond = rank_where(level, sido)

@@ -377,7 +377,7 @@ sources = [{ table = "DT_1B04006", level = "시군구" }]
 
 [[indicators]]
 name = "세대당 인구"
-aliases = ["세대당 인구수", "세대 당 인구", "세대당 평균 인구", "한 세대 인구", "세대원 수"]
+aliases = ["세대당 인구수", "세대 당 인구", "세대당 평균 인구", "한 세대 인구", "세대원 수", "한 세대에 사는 사람", "한 세대에 평균", "세대당 사람", "한 세대에 몇 명"]
 unit = "명"
 method = "computed"
 desc = "주민등록 총인구 ÷ 주민등록 세대수 (한 세대에 평균 몇 명)"
@@ -778,11 +778,15 @@ sources = [{ table = "DT_1BB0002", item_id = "T02", level = "시군구" }]
 [[indicators]]
 name = "외국인주민 수"
 aliases = ["외국인 주민 수", "외국인주민", "외국인 수", "외국인 주민"]
-not_in = ["등록외국인", "체류외국인"]  # 법무부 통계 (귀화자·외국인주민 자녀 없음)
+not_in = ["등록외국인", "등록된 외국인", "등록 외국인", "체류외국인"]  # 법무부 통계 (귀화자·외국인주민 자녀 없음)
 unit = "명"
 method = "lookup"
 note = "귀화자·외국인주민 자녀 포함 (행정안전부, 11월 1일 기준)"
-sources = [{ table = "TX_11025_A000_A", item_id = "16110AAA0", level = "시도", filters = { c2_id = "15110AA000" }, by_sex = { "계" = { filters = { c3_id = "A001A" } }, "남" = { filters = { c3_id = "A001B" } }, "여" = { filters = { c3_id = "A001C" } } } }]
+# 시도 · 전국은 시도 표, 시군구는 시군구 표 (칸 코드는 같고 성별 코드만 다름. 11/18 세션 B)
+sources = [
+  { table = "TX_11025_A000_A", item_id = "16110AAA0", level = "시도", filters = { c2_id = "15110AA000" }, by_sex = { "계" = { filters = { c3_id = "A001A" } }, "남" = { filters = { c3_id = "A001B" } }, "여" = { filters = { c3_id = "A001C" } } } },
+  { table = "TX_11025_A001_A", item_id = "16110AAA0", level = "시군구", filters = { c2_id = "15110AA000" }, by_sex = { "계" = { filters = { c3_id = "C001" } }, "남" = { filters = { c3_id = "C002" } }, "여" = { filters = { c3_id = "C003" } } } },
+]
 
 [[indicators]]
 name = "등록외국인 수"
@@ -792,6 +796,17 @@ method = "lookup"
 desc = "법무부 등록외국인 (90일 넘게 머물러 외국인등록을 한 외국인). 귀화자·외국인주민 자녀는 빠짐"
 note = "법무부 출입국·외국인정책 통계의 등록외국인입니다. 행정안전부 외국인주민 수(귀화자·자녀 포함)와 기준이 다릅니다"
 sources = [{ table = "DT_1B040A9C", item_id = "H001", level = "시군구", filters = { c3_id = "B001" }, by_sex = { "계" = { filters = { c2_id = "0" } }, "남" = { filters = { c2_id = "1" } }, "여" = { filters = { c2_id = "2" } } } }]
+
+# 두 표를 나누는 계산 지표 (app/services/indicators.py, 세대당 인구와 같은 방식. 11/18 세션 B)
+# "등록된 외국인 비율"이 별칭 "외국인 비율"로 외국인주민 비율(행정안전부)에 잡히던 것을 막는다
+[[indicators]]
+name = "등록외국인 비율"
+aliases = ["등록된 외국인 비율", "등록 외국인 비율", "등록외국인 비중", "등록된 외국인 비중", "외국인 등록자 비율"]
+unit = "%"
+method = "computed"
+desc = "법무부 등록외국인 수 ÷ 주민등록 총인구 × 100. 행정안전부 외국인주민 비율(귀화자·자녀 포함)과 다름"
+note = "법무부 등록외국인 ÷ 주민등록인구(외국인 제외)로 계산했습니다. 행정안전부 외국인주민 비율과 기준이 다릅니다"
+sources = [{ table = "DT_1B04006", level = "시군구" }, { table = "DT_1B040A9C", level = "시군구" }]
 
 [[indicators]]
 name = "외국인근로자 수"
@@ -833,11 +848,15 @@ sources = [{ table = "TX_11025_A000_A", item_id = "16110AAA0", level = "시도",
 name = "외국인주민 비율"
 formula = "외국인주민 수 ÷ 총인구 × 100"
 aliases = ["외국인 주민 비율", "외국인 비율", "외국인주민 비중", "외국인 주민 비중"]
-not_in = ["등록외국인", "체류외국인"]  # 법무부 통계 (귀화자·외국인주민 자녀 없음)
+not_in = ["등록외국인", "등록된 외국인", "등록 외국인", "체류외국인"]  # 법무부 통계 (귀화자·외국인주민 자녀 없음)
 unit = "%"
 method = "lookup"
 desc = "외국인주민 수 ÷ 총인구 × 100 (같은 표의 총인구, 11월 1일 기준)"
-sources = [{ table = "TX_11025_A000_A", item_id = "16110AAA0", level = "시도", filters = { c2_id = "15110AA000", c3_id = "A001A" }, den_item_id = "16110AAA0", den_filters = { c2_id = "15110AA0AA", c3_id = "A001A" } }]
+# 시도 · 전국은 시도 표, 시군구는 시군구 표 (같은 표 안의 외국인주민 합계 ÷ 총인구. 11/18 세션 B)
+sources = [
+  { table = "TX_11025_A000_A", item_id = "16110AAA0", level = "시도", filters = { c2_id = "15110AA000", c3_id = "A001A" }, den_item_id = "16110AAA0", den_filters = { c2_id = "15110AA0AA", c3_id = "A001A" } },
+  { table = "TX_11025_A001_A", item_id = "16110AAA0", level = "시군구", filters = { c2_id = "15110AA000", c3_id = "C001" }, den_item_id = "16110AAA0", den_filters = { c2_id = "15110AA0AA", c3_id = "C001" } },
+]
 
 [[indicators]]
 name = "외국인주민 유형 구성"

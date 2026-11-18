@@ -93,9 +93,7 @@ def plans(monkeypatch: pytest.MonkeyPatch) -> dict:
     async def save(key, term, tbl_id, forced, spec):
         state["saved"].append((key, tbl_id, forced, spec["name"]))
 
-    async def fake_try(
-        tbl_id, org_id, question, parsed, trace, forced, slots=None, notice=None, need=()
-    ):
+    async def fake_try(tbl_id, org_id, question, parsed, trace, forced, slots=None, notice=None):
         state["tried"].append((tbl_id, forced))
         trace.setdefault("dynamic", []).append({"tbl_id": tbl_id})  # 진짜 _try처럼 단계를 남긴다
         if state.get("fail"):

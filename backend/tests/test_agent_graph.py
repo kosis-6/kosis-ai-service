@@ -249,7 +249,10 @@ def test_one_indicator_runs_no_indicator_search(world) -> None:
         "indicators": [{"span": "시도별 혼인", "search": "시도별 혼인", "scope": "in"}]
     }
     found = asyncio.run(multi.handle("시도별 혼인", "S"))["multi"]
-    assert (found["mode"], found["indicators"], found["whole"]) == ("single", [], [])
+    assert (found["mode"], found["indicators"]) == ("single", [])
+    # 지표가 하나여도 질문 전체 검색의 표 묶음 상위 후보는 넘긴다 (뒤 단계가 계산해 볼 재료)
+    assert found["whole"][0]["tbl_id"] == "M1"
+    assert all("checks" in c for c in found["whole"])
 
 
 def test_indicators_landing_on_the_same_table_are_one_indicator(world) -> None:

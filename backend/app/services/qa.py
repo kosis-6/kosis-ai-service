@@ -353,6 +353,26 @@ def _pick_indicator(question, names):
     return None
 
 
+def _ratio_sibling(question, parsed, fix):
+    """'몇 프로'를 물었는데 수 지표를 골랐으면 같은 이름의
+    비율 지표로 (등록외국인 수 → 등록외국인 비율).
+    "○○구 주민 중 등록외국인이 몇 %"처럼 '비율'이라는 말 없이 물으면 수로 답했다 (11/18).
+    '몇 퍼센트 늘었어'처럼 증감을 물으면 증감률이라 그대로 두고, '전국 중 ~ 비중'은 아래의
+    전국 대비 비중(share_of)이 맡으므로 그대로 둔다. 바꿨으면 그 지표 이름, 아니면 None"""
+    current = indicators.canonical_name(parsed.get("indicator") or "")
+    sp = indicators.spec(current) if current else None
+    if sp is None or lookup.kind_of(sp) != "count":
+        return None
+    if not PCT_ASK.search(question) or CHANGE_ASK.search(question) or "전국" in question:
+        return None
+    base = re.sub(r"\s*수$", "", current)
+    for sibling in (f"{base} 비율", f"{base} 비중"):
+        if sibling in indicators.specs():
+            fix("indicator", sibling, "비율(몇 프로)을 물음")
+            return sibling
+    return None
+
+
 def correct(question, parsed, today=None):
     """같은 질문도 실행마다 HCX 해석이 달라서, 질문 원문에서 확실히 알 수 있는 것은 코드가 맞춘다.
 
@@ -430,6 +450,8 @@ def correct(question, parsed, today=None):
             if name != "총인구" or current is None or (ages and not PCT_ASK.search(question)):
                 fix("indicator", name, "질문의 지표 표현")
                 parsed.pop("unsupported", None)
+        if sibling := _ratio_sibling(question, parsed, fix):
+            names = names | {sibling}  # 질문의 수 지표 표현 + '몇 프로'가 근거
         _guard_indicator(question, parsed, names, fix)
         _age_population(question, parsed, fix)
         # 질문이 다른 통계를 가리키면 비슷한 이름의 지표로 답하지 않는다
@@ -1511,6 +1533,13 @@ def _add_trend_facts(result):
     years = series[-1]["year"] - series[0]["year"]
     if years:
         c["per_year"] = round(c["diff"] / years, 3)
+    first, last = series[0]["value"], series[-1]["value"]
+    if "cagr" in c:  # 계산 지표는 반올림 전 값으로 이미 냈다 (indicators.trend)
+        pass
+    elif years and "rate" in c and c.get("diff_unit") != "%p" and first > 0 and last > 0:
+        # 연평균 증감률 (복리): (마지막 ÷ 처음)^(1/햇수) − 1. 증감률이 있는 추이만 (사람 수 · 건수 ·
+        # 연령 등). 비율 지표(%p)는 %p와 헷갈려 뺀다. 0 이하 값이 끼면 계산할 수 없다 (11/18)
+        c["cagr"] = round(((last / first) ** (1 / years) - 1) * 100, 1)
     ordered = sorted(series, key=lambda s: s["value"])
     result["lowest_years"] = [{"year": s["year"], "value": s["value"]} for s in ordered[:5]]
     result["highest_years"] = [{"year": s["year"], "value": s["value"]} for s in ordered[::-1][:5]]
@@ -1984,6 +2013,10 @@ def _body(r):
         total = _signed(c["diff"], c["diff_unit"])
         if "rate" in c:
             total += f", {_signed(c['rate'], c['rate_unit'])}"
+        if (cagr := c.get("cagr")) is not None:
+            total += f", 연평균 {_signed(cagr, '%')}"
+        if (rel := c.get("relative_rate")) is not None:  # 비율 지표: %p와 구분해 적는다
+            total += f" (비율 자체는 {abs(rel):g}% {'커짐' if rel >= 0 else '작아짐'})"
         lines.append(f"- {c['from_year']}년 → {c['to_year']}년 전체 변화: {total}")
         return lines
     if "values" in r:  # 지역 비교
@@ -2009,6 +2042,14 @@ def _body(r):
         ]
         lines += [f"- {p['label']}: {p['count']:,}{unit} ({p['share']}%)" for p in r["parts"]]
         return lines
+    if (ops := r.get("operands")) and all(o.get("value") is not None for o in ops):
+        # 두 값을 나눈 지표의 값 답: 나눈 두 값을 보여 준다 (값 자체는 문장에 있다)
+        a, b = ops
+        times = " × 100" if r.get("kind") == "ratio" else ""
+        return [
+            f"- 계산: {a['label']} {a['value']:,}{a['unit']} ÷ "
+            f"{b['label']} {b['value']:,}{b['unit']}{times} = {_num(r['value'], unit)}"
+        ]
     return []
 
 

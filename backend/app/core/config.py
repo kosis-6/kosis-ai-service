@@ -83,6 +83,13 @@ class Settings(BaseSettings):
     # (app/agent/multi.py). 지표가 여럿이면 지표마다 찾은 표를 응답에 덧붙인다.
     # HCX 한도가 빠듯하면 SEARCH_PLAN=false 로 끈다
     search_plan: bool = True
+    # 표에서 바로 계산하지 못했을 때, 가까운 연도 · 다른 표로 계산한 대안을 LLM 1회가 골라 값과 함께
+    # 되묻는다 (app/services/alternative.py). 대안이 계산되지 않으면 LLM을 부르지 않는다.
+    # HANDOFF_ALTERNATIVES=false 로 끄면 지금처럼 표 안내
+    handoff_alternatives: bool = True
+    # 넘기기 꾸러미의 후보 표에서 규칙(글자 맞추기)이 칸을 못 고르면 LLM 1회가 칸을 고른다
+    # (app/services/cell_pick.py, Gemma 기본). HANDOFF_CELL_LLM=false 로 끄면 지금처럼 계산하지 않음
+    handoff_cell_llm: bool = True
 
 
 @lru_cache

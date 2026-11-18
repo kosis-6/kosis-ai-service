@@ -31,6 +31,7 @@ lookup.py(값·비교·추이·순위·구성비)가 한다. 그래서 숫자는
 답에는 계산식·쓴 표·칸과 "지표 사전에 없는 값을 표에서 바로 계산했다"는 주의를 붙인다.
 """
 
+import asyncio
 import logging
 import re
 import unicodedata
@@ -41,7 +42,8 @@ from starlette.concurrency import run_in_threadpool
 from app.core.stats_db import StatsTableMissing
 from app.core.stats_db import rows as _rows
 from app.services import (
-    cell_words,
+    alternative,
+    cell_pick,
     indicators,
     load_queue,
     lookup,
@@ -241,6 +243,7 @@ class Ask:
     dim_no: int
     dim_name: str
     options: list[tuple[str, str]]  # (코드, 이름)
+    forced: dict[int, str] = field(default_factory=dict)  # 이미 정한 다른 분류 (칸 고르기 LLM)
 
     def __str__(self) -> str:
         return f"{self.dim_name}에서 칸을 고르지 못함 (후보 {len(self.options)}개)"
@@ -380,6 +383,23 @@ def choose(
     return plan, None
 
 
+def llm_groups(question: str, dims: list[Dim], region_dim: int | None) -> list[cell_pick.Group]:
+    """칸 고르기 LLM에 보낼 분류: 지역 · 연령 · 성별만 있는 분류는 코드가 고르므로 뺀다 (choose와
+    같은 기준)"""
+    out = []
+    for d in dims:
+        if d.no == region_dim:
+            continue
+        if d.no != 0 and d.is_age() and d.total():
+            continue
+        sex = set(d.sex_codes().values())
+        if sex and not [c for c in d.codes if c not in sex and c != d.total()]:
+            continue
+        cells = list(d.codes.items())
+        out.append(cell_pick.Group(d.no, d.name, cell_pick.narrow(question, cells), len(cells)))
+    return out
+
+
 # ---- 계산 계획 (지표 사전의 sources와 같은 모양) --------------------------------------
 
 
@@ -443,11 +463,16 @@ def uncovered(
     if plan.multi:  # 합·비교·순위하는 칸들도 반영된 것
         md = plan.multi_dim or next(d for d in dims if d.no == plan.multi[0])
         names += [_norm(md.codes[c]) for c in plan.multi[1]]
+    # 칸 고르기 LLM이 고른 칸의 말로 바꿔 읽은 질문 낱말
+    # (예: 결혼 → 혼인). 칸 이름에 반영된 것으로 본다
+    read = [_norm(a) for a, _ in slots.get("read_as") or [] if len(_norm(a)) >= 2]
     for item in cond.get("items") or []:
         word = _norm(item)
         if not word:
             continue
         if any(word in n or n in word for n in names if len(n) >= 2):
+            continue
+        if any(word in r or r in word for r in read):
             continue
         is_age = lookup.parse_age(item) or qa.extract_ages(item)  # "62살 이상"·"67살 이하"도
         if is_age and parsed.get("ages") and plan.age_dim is not None:
@@ -459,6 +484,12 @@ def uncovered(
         return f"질문의 조건 '{item}'을 표의 칸에 반영할 수 없음"
     if slots.get("exclude"):
         return f"빼 달라는 대상({', '.join(slots['exclude'])})이 합계 칸에 들어 있음"
+    if slots.get("check_target") and (target := _norm(slots.get("target") or "")):
+        # 대상("유학생", "결혼이민자")을 물었는데 표 · 고른 칸 어디에도 없으면 전체 값을 답하게 된다
+        # (넘기기 꾸러미로 계산할 때만 본다. slots["table_words"]: 표 이름 · 표의 대상)
+        words = [*names, *(_norm(w) for w in slots.get("table_words") or [] if w), *read]
+        if not any(target in w or (len(w) >= 2 and w in target) for w in words):
+            return f"질문의 대상 '{slots['target']}'이 표나 고른 칸에 없음"
     # 성별, 그리고 질문에 연령 구간이 있을 때의 '연령'은 나눠 보기가 아니라 조건이다
     skip = {"성별"} | ({"연령", "나이"} if parsed.get("ages") else set())
     classes = [c for c in cond.get("classes") or [] if _norm(c) not in skip]
@@ -859,9 +890,7 @@ LAST_YEAR_KINDS = ("value", "compare", "rank", "composition")
 MAX_TABLES = 3  # 통계표 찾기 후보 중 이만큼까지 (순위대로) 시도한다
 
 
-async def answer(
-    question: str, parsed: dict, found: dict, trace: dict, lenient: bool = False
-) -> dict | None:
+async def answer(question: str, parsed: dict, found: dict, trace: dict) -> dict | None:
     """통계표 찾기가 고른 표로 바로 계산한 답 (qa.answer와 같은 모양). 못 하면 None → 표 안내
 
     통계표 찾기가 조건을 충족한 표를 찾았을 때만(status ok, 함께 볼 표 없음) 계산한다.
@@ -875,21 +904,14 @@ async def answer(
     적재 안 된 작은 표는 바로 받아 넣는다 (table_cache.fetch_now).
     시도한 표와 결과는 trace["dynamic"]에 남긴다 (요청 기록)."""
     recs = (found.get("recommendations") or [])[:MAX_TABLES]
-    if lenient and found.get("status") == "ambiguous":
-        # 옛 연도처럼 지표의 뜻은 지표 사전으로 정해졌고 그 연도가 있는 표만 찾는 경우(lenient)는
-        # 비슷한 표가 여럿이라 되묻는 후보로도 계산해 본다 (칸·조건·값 검사는 그대로)
-        families = ((found.get("clarify") or {}).get("families") or [])[:MAX_TABLES]
-        recs = [{"tbl_id": f.get("tbl_id"), "tbl_nm": f.get("tbl_nm")} for f in families]
-        found = {**found, "status": "ok"}
     if found.get("together"):
         return None  # 한 통계가 여러 표로 나뉜 경우는 통계표 찾기 답을 그대로 쓴다
     if found.get("status") != "ok":
         # 일부 일치(partial_match)도 어긋난 조건이 연령뿐이면 계산해 본다 (_age_check).
         # 그 밖은 표 안내
         misses = [[k for k, ok in (c.get("checks") or {}).items() if not ok] for c in recs]
-        # 표에 글자가 없는 찾는 값(item:낮)도 칸 이름 잇기(cell_words)로 풀 수 있어 계산해 본다
         if found.get("status") != "partial_match" or not any(
-            m and all(_age_check(k, parsed) or k.startswith(WORD_CHECK) for k in m) for m in misses
+            m and all(_age_check(k, parsed) for k in m) for m in misses
         ):
             return None
     steps = trace.setdefault("dynamic", [])
@@ -900,23 +922,13 @@ async def answer(
             continue
         checks = (card.get("checks") or {}).items()
         failed = [k for k, ok in checks if not ok and not _age_check(k, parsed)]
-        need = [k[len(WORD_CHECK) :] for k in failed if k.startswith(WORD_CHECK)]
-        failed = [k for k in failed if not k.startswith(WORD_CHECK)]
         if failed:
             steps.append(
                 {"tbl_id": tbl_id, "skip": f"통계표 찾기 조건 불충족 ({', '.join(failed)})"}
             )
             continue
         res, ask = await _try(
-            tbl_id,
-            card.get("org_id"),
-            question,
-            parsed,
-            trace,
-            {},
-            slots,
-            found.get("notice"),
-            need,
+            tbl_id, card.get("org_id"), question, parsed, trace, {}, slots, found.get("notice")
         )
         if res is not None:
             await _remember(parsed, tbl_id, {}, res)
@@ -938,6 +950,309 @@ def _age_check(key: str, parsed: dict) -> bool:
         return False
     word = key.split(":", 1)[1] if ":" in key else key
     return "연령" in word or "나이" in word or bool(qa.extract_ages(word) or lookup.parse_age(word))
+
+
+# ---- 넘기기 꾸러미로 계산 (계약_초안 5-2 ~ 5-5,
+# 2026-11-17) ------------------------------
+# 통계표 찾기가 넘긴 꾸러미(found["handoff"])의 후보를 동시에 계산해 보고 우선순위로 고른다.
+#   시도 목록  고른 표 → (물은 연도가 없으면) 그 표의 다른 판 → 나머지 후보. 최대 5개
+# 건너뜀     ✘가 있는 표 / 고른 표가 아닌데 확인한 조건이 없음 / 검토가 고른 표를 '모두 충족'으로 봄
+#   계산 조건  탐색 해석(Gemma)이 먼저, 빈 칸은 수치 해석(HCX). 질문 종류는 수치 해석
+#   고르기     계산된 표 중 목록 순서가 가장 앞인 것 (동시에 계산해도 차례로 할 때와 같은 결과)
+# 꾸러미가 없거나 지표가 여럿이면 예전 answer()로 처리한다.
+
+MAX_ATTEMPTS = 5
+MAX_FETCH_AT_ONCE = 3  # 적재 안 된 표를 KOSIS에서 동시에 받는 수
+HANDOFF_STATUSES = ("ok", "partial_match")
+WHOLE_COUNTRY = {"전국", "우리나라", "한국", "대한민국", "국내"}
+
+
+def to_parsed(understanding: dict, parsed: dict) -> tuple[dict, dict]:
+    """탐색 해석 → 계산용 질문 해석 (qa.understand와 같은 모양). 탐색 해석에 없는 칸은 수치 해석.
+    → (새 해석, 둘이 달랐던 칸 {칸: [수치 해석, 탐색 해석]}).
+    지역 이름을 DB로 풀므로 스레드에서 부른다"""
+    cond = understanding.get("conditions") or {}
+    q = dict(parsed)
+    diff: dict = {}
+
+    def put(key, value):
+        before = parsed.get(key)
+        if before not in (None, [], "") and before != value:
+            diff[key] = [before, value]
+        q[key] = value
+
+    kind = parsed.get("type")
+    if kind in (None, "other", "parse_error"):
+        # 수치 해석이 질문 종류를 못 정했다 (예전에는 이 경우 계산이 늘 '지원 안 함'으로 끝났다)
+        kind = q["type"] = "trend" if cond.get("year_end") else "value"
+    region = cond.get("region")
+    if region and len(parsed.get("regions") or []) <= 1:  # 탐색은 지역을 하나만 담는다
+        if _norm(region) in WHOLE_COUNTRY:
+            put("regions", ["전국"])
+        else:
+            found = indicators.resolve_region(region)
+            if found.get("status") == "ok":
+                put("regions", [found["display"]])
+    year, year_end = cond.get("year"), cond.get("year_end")
+    if year is not None:
+        if kind == "trend":
+            if year_end:
+                put("start_year", year)
+                put("end_year", year_end)
+            elif (understanding.get("time_ref") or {}).get("open_end"):
+                put("start_year", year)  # '최근 5년', '2020년 이후'
+        else:
+            put("year", year_end or year)
+    if cond.get("sex") in ("남", "여"):
+        put("sex", cond["sex"])
+    age = understanding.get("age")
+    if age and age.get("lo") is not None:
+        put("ages", [[age["lo"], age.get("hi")]])
+        if age.get("basis"):
+            q["age_group"] = {
+                "expr": age.get("expr"),
+                "range": indicators.age_label((age["lo"], age.get("hi"))),
+                "basis": age["basis"],
+            }
+    if not parsed.get("level") and cond.get("region_level") in ("시도", "시군구"):
+        q["level"] = cond["region_level"]
+    return q, diff
+
+
+def without_regions(words: list[str]) -> list[str]:
+    """제외 대상에서 지역 이름을 뺀다 ("서울이랑 경기 말고 시도별": 지역은 지역 칸이 고른다.
+    합계 칸에 그 대상이 섞였다는 검사(uncovered)에 넣으면 맞는 표를 막는다). DB를 읽어 스레드에서"""
+    return [w for w in words if not indicators.find_regions(w)]
+
+
+def attempt_list(target: dict, q: dict) -> list[dict]:
+    """시도할 표 목록 (순서 = 우선순위). 항목마다 kind: picked / edition / other"""
+    cands = target.get("candidates") or []
+    picked = next((c for c in cands if c.get("picked")), None)
+    years = [y for y in (q.get("year"), q.get("start_year"), q.get("end_year")) if y]
+    out: list[dict] = []
+
+    def add(entry: dict) -> None:
+        if entry["tbl_id"] not in {e["tbl_id"] for e in out}:
+            out.append(entry)
+
+    def covers(e: dict) -> bool:
+        lo, hi = e.get("start_year"), e.get("end_year")
+        return lo is not None and hi is not None and lo <= min(years) and max(years) <= hi
+
+    if picked:
+        add({**picked, "kind": "picked"})
+        if years and not covers(picked):
+            # 고른 표에 물은 연도가 없으면 같은 대상 · 성별의
+            # 다른 판으로. 연도 조건만 다르므로 연도 ✘는 뺀다
+            checks = {k: v for k, v in picked["checks"].items() if k not in ("year", "period")}
+            for e in picked.get("editions") or []:
+                if covers(e):
+                    add({**picked, **e, "checks": checks, "editions": [], "kind": "edition"})
+    for c in cands:
+        if c is not picked:
+            add({**c, "kind": "other"})
+    return out[:MAX_ATTEMPTS]
+
+
+def skip_reason(entry: dict, picked_exact: bool, parsed: dict | None = None) -> str | None:
+    """바로 계산하지 않는 이유 (계약 5-2의 3번). None이면 계산한다.
+    연령 구간의 ✘는 건너뛰지 않는다 (_age_check: lookup이 연령 칸으로 고르거나
+    맞는 구간 없음으로 안내한다)"""
+    failed = [
+        k
+        for k, ok in (entry.get("checks") or {}).items()
+        if not ok and not _age_check(k, parsed or {})
+    ]
+    if failed:
+        return f"통계표 찾기 조건 불충족 ({', '.join(failed)})"
+    if entry["kind"] == "other":
+        if not entry.get("checks"):
+            return "고른 표가 아닌데 확인한 조건이 없음"
+        if picked_exact:
+            return "검토가 고른 표를 '모두 충족'으로 봄"
+    return None
+
+
+def handoff_notice(entry: dict, understanding: dict, combine: dict, found_notice) -> str | None:
+    """답의 주의에 붙일 것: 표의 주석, 연령 이름의 기준, 답하지 못한 범위 밖 지표"""
+    lines = [found_notice] if entry["kind"] == "picked" and found_notice else []
+    lines += list(entry.get("notes") or [])
+    age = understanding.get("age") or {}
+    if age.get("basis") and age.get("lo") is not None:
+        label = indicators.age_label((age["lo"], age.get("hi")))
+        lines.append(f"'{age.get('expr')}'은(는) {label}으로 계산했습니다 ({age['basis']})")
+    if oos := combine.get("out_of_scope"):
+        lines.append(f"{', '.join(oos)}은(는) 인구 통계가 아니라 답하지 못했습니다")
+    return ". ".join(line.rstrip(". ") for line in lines if line) or None
+
+
+async def compute_from_handoff(
+    question: str, parsed: dict, found: dict, trace: dict
+) -> dict | None:
+    """넘기기 꾸러미의 후보로 바로 계산한 답 (answer와 같은 자리, 같은 모양).
+    못 하면 None → 표 안내"""
+    h = found.get("handoff")
+    if not h or len(h.get("targets") or []) > 1:
+        return await answer(question, parsed, found, trace)  # 지표 여럿은 다음 단계 (계약 4절)
+    trace.setdefault("dynamic", [])
+    if h.get("status") not in HANDOFF_STATUSES or not h.get("targets"):
+        return None
+    target = h["targets"][0]
+    if target.get("together"):
+        trace["dynamic"].append({"skip": "한 통계가 여러 표로 나뉨 (함께 볼 표)"})
+        return None
+    u = h.get("understanding") or {}
+    try:
+        q, diff = await run_in_threadpool(to_parsed, u, parsed)
+    except Exception:
+        logger.exception("탐색 해석 바꿔 담기 실패 → 수치 해석으로 계산")
+        q, diff = dict(parsed), {}
+    trace["handoff"] = {"parsed_from": "search", "mismatch": diff}
+    try:
+        exclude = await run_in_threadpool(without_regions, list(u.get("exclude") or []))
+    except Exception:
+        logger.exception("제외 대상의 지역 이름 확인 실패 → 제외 대상 그대로")
+        exclude = list(u.get("exclude") or [])
+    entries = attempt_list(target, q)
+    picked = next((e for e in entries if e["kind"] == "picked"), None)
+    picked_exact = bool(picked and (picked.get("review") or {}).get("match") == "exact")
+    sem = asyncio.Semaphore(MAX_FETCH_AT_ONCE)
+
+    async def compute(entry: dict, q_used: dict, sub: dict):
+        """표 하나를 해석 q_used로 계산 → (답, 되물을 것). 기록은 sub에"""
+        slots = {
+            "conditions": u.get("conditions") or {},
+            "exclude": exclude,
+            "target": u.get("target"),
+            # 대상 낱말 검사: 검토(LLM)가 이 표를 '모두 충족'으로 봤으면 하지 않는다 (가, 11/18).
+            # 탐색 쪽 trust_exact(48a7e37)와 같은 기준. 질문은 "해외 유학생", 표는 "유학생 현황"처럼
+            # 낱말이 글자로 겹치지 않아도 뜻으로 맞는 표를 막았다
+            "check_target": (entry.get("review") or {}).get("match") != "exact",
+            "table_words": [entry.get("tbl_nm"), entry.get("target")],
+        }
+        notice = handoff_notice(entry, u, h.get("combine") or {}, found.get("notice"))
+        res, ask = await _try(
+            entry["tbl_id"], entry.get("org_id"), question, q_used, sub, {}, slots, notice, sem
+        )
+        if res is None and ask is None and sub["dynamic"]:
+            if cell_pick.needs_llm(sub["dynamic"][-1].get("skip")):
+                res, ask = await with_cell_llm(entry, q_used, sub, slots, notice)
+        if sub["dynamic"]:
+            sub["dynamic"][0]["kind"] = entry["kind"]
+        return res, ask
+
+    async def with_cell_llm(entry: dict, q_used: dict, sub: dict, slots: dict, notice):
+        """규칙이 칸을 못 고른 표: LLM이 고른 칸(forced)으로 다시 계산한다 (cell_pick.py)"""
+        tbl_id = entry["tbl_id"]
+        try:
+            dims, region_dim, _ = await run_in_threadpool(schema, tbl_id)
+            groups = llm_groups(question, dims, region_dim)
+        except Exception:
+            logger.exception("칸 고르기 LLM에 보낼 칸 만들기 실패: %s", tbl_id)
+            return None, None
+        picked = await cell_pick.choose(
+            question, u, entry.get("tbl_nm"), groups, sub["dynamic"][-1]
+        )
+        if picked is None:
+            return None, None
+        if picked.unsure:
+            g = picked.unsure[0]
+            codes = next((d.codes for d in dims if d.no == g.no), {})
+            if len(picked.unsure) == 1 and 1 < len(codes) <= MAX_ASK_OPTIONS:
+                # 질문만으로 정할 수 없는 분류 하나: 그 분류만
+                # 사용자에게 묻는다 (다른 분류는 LLM이 정한 칸)
+                return None, Ask(g.no, g.name, list(codes.items()), dict(picked.forced))
+            return None, None
+        # 칸 고르기 LLM이 "이 표가 질문의 값(대상 포함)을
+        # 담고 있다"고 답했으므로 대상 낱말 검사는 하지 않는다
+        # (나, 11/18. 프롬프트: "질문이 묻는 대상이나 값이 표에 없으면 아니오")
+        slots_llm = {**slots, "read_as": picked.read_as, "check_target": False}
+        lines = [n for n in (notice, picked.notice()) if n]
+        res, ask = await _try(
+            tbl_id,
+            entry.get("org_id"),
+            question,
+            q_used,
+            sub,
+            picked.forced,
+            slots_llm,
+            ". ".join(lines) or None,
+            sem,
+        )
+        sub["dynamic"][-1]["by"] = "cell_llm"
+        return res, ask
+
+    async def attempt(entry: dict):
+        sub: dict = {"dynamic": []}
+        tbl_id = entry["tbl_id"]
+        if why := skip_reason(entry, picked_exact, q):
+            sub["dynamic"].append({"tbl_id": tbl_id, "kind": entry["kind"], "skip": why})
+            return None, None, sub
+        if u.get("projection"):
+            try:
+                projection = await run_in_threadpool(is_projection, tbl_id)
+            except Exception:
+                projection = True  # 모르면 막지 않는다 (build가 연도로 다시 본다)
+            if not projection:
+                sub["dynamic"].append(
+                    {"tbl_id": tbl_id, "skip": "장래 추계를 물었는데 추계 표가 아님"}
+                )
+                return None, None, sub
+        res, ask = await compute(entry, q, sub)
+        return res, ask, sub
+
+    def merge(sub: dict) -> None:  # 표마다 따로 남긴 기록을 순서대로 합친다
+        trace["dynamic"].extend(sub["dynamic"])
+        if sub.get("fetched"):
+            trace.setdefault("fetched", []).extend(sub["fetched"])
+
+    outcomes = await asyncio.gather(*(attempt(e) for e in entries))
+    for _, _, sub in outcomes:
+        merge(sub)
+    trace["handoff"]["tried"] = len(entries)
+    for entry, (res, _, sub) in zip(entries, outcomes, strict=True):
+        if res is not None and res.get("status") == "ok":
+            trace["handoff"]["used"] = {"tbl_id": entry["tbl_id"], "kind": entry["kind"]}
+            # 칸 고르기 LLM이 고른 칸은 사람의 선택이 아니라 표의 칸 풀이라 캐시에 함께 남긴다
+            # (다음에 같은 질문은 LLM 없이 그 칸으로 계산)
+            last = sub["dynamic"][-1] if sub["dynamic"] else {}
+            forced = (last.get("forced") or {}) if last.get("by") == "cell_llm" else {}
+            await _remember(parsed, entry["tbl_id"], forced, res)
+            return res
+    for entry, (_, ask, _) in zip(entries, outcomes, strict=True):
+        if ask is not None:  # 맞는 표에서 칸 하나만 못 정함: 그 칸을 묻는다
+            name = entry.get("tbl_nm") or entry["tbl_id"]
+            return ask_answer(question, q, entry["tbl_id"], name, ask)
+
+    # 모두 계산하지 못함: 가까운 연도 · 다른 표로 계산한 대안을 LLM이 골라 값과 함께 묻는다
+    # (alternative.py)
+    async def run(entry: dict, q_alt: dict) -> dict | None:
+        sub: dict = {"dynamic": []}
+        res, _ = await compute(entry, q_alt, sub)
+        for step in sub["dynamic"]:
+            step["alternative"] = True
+        merge(sub)
+        return res
+
+    attempts = [
+        {"entry": e, "res": res, "skip": (sub["dynamic"] or [{}])[0].get("skip")}
+        for e, (res, _, sub) in zip(entries, outcomes, strict=True)
+    ]
+    try:
+        offered = await alternative.offer(
+            question, q, attempts, (picked or {}).get("tbl_nm"), run, trace
+        )
+    except Exception:
+        logger.exception("대안 만들기 실패 → 표 안내")
+        offered = None
+    if offered is not None:
+        return offered
+    for entry, (res, _, _) in zip(entries, outcomes, strict=True):
+        if res is not None:  # 수록 기간 밖: 그 표의 기간을 안내하는 답 (예전과 같음)
+            trace["handoff"]["used"] = {"tbl_id": entry["tbl_id"], "kind": entry["kind"]}
+            return res
+    return None
 
 
 async def answer_choice(question: str, context: dict, code: str, trace: dict) -> dict | None:
@@ -1004,40 +1319,16 @@ async def _remember(parsed: dict, tbl_id: str, forced: dict, res: dict) -> None:
         logger.exception("계산 방법 캐시 저장 실패")
 
 
-async def _try(tbl_id, org_id, question, parsed, trace, forced, slots=None, notice=None, need=()):
+async def _try(
+    tbl_id, org_id, question, parsed, trace, forced, slots=None, notice=None, fetch_sem=None
+):
     """표 하나로 계산해 본다 → (답 또는 None, 되물을 것 또는 None)
     slots: 통계표 찾기의 조건 (칸 반영 검사), notice: 통계표 찾기의 주의 (답에 붙인다)
-    need: 통계표 찾기가 표에 없다고 본 질문의 말 ("낮", "자가용"). 모두 칸 이름으로 이어져야 계산"""
+    fetch_sem: 적재 안 된 표를 KOSIS에서 동시에 받는 수 제한 (꾸러미로 여러 표를 계산할 때)"""
     step = {"tbl_id": tbl_id, **({"forced": forced} if forced else {})}
     trace["dynamic"].append(step)
-    spec, why = await _build(tbl_id, org_id, question, parsed, step, forced, slots)
-    word_miss = isinstance(why, str) and (why in WORD_MISS or why.endswith(PICK_MISS))
-    if need or (spec is None and word_miss):
-        # 질문의 말이 칸 이름과 글자가 달라 고르지 못함 ("자가용" ↔ 승용차): LLM에게 짝만 묻고,
-        # 질문을 칸 이름으로 바꿔 쓴 뒤 규칙으로 다시 고른다 (2단계 LLM 보조, cell_words.py)
-        got = await _words(tbl_id, question, parsed, trace)
-        if got is not None and not _covers(need, got[1]):
-            step["cell_words"] = got[1]
-            got = None
-        if got is not None:
-            rewritten, pairs = got
-            spec2, why2 = await _build(
-                tbl_id,
-                org_id,
-                rewritten,
-                _rewrite_terms(parsed, pairs),
-                step,
-                forced,
-                _rewrite_slots(slots, pairs),
-            )
-            step["cell_words"] = pairs
-            if need or spec2 is not None or isinstance(why2, (Ask, BandMiss)):
-                spec, why, question = spec2, why2, rewritten
-                if spec is not None:
-                    spec["note"] = f"{spec['note']}. {cell_words.note(pairs)}"
-        elif need:
-            step["skip"] = f"질문의 말({', '.join(need)})을 표의 칸으로 잇지 못함"
-            return None, None
+    extra = {"fetch_sem": fetch_sem} if fetch_sem is not None else {}
+    spec, why = await _build(tbl_id, org_id, question, parsed, step, forced, slots, **extra)
     if isinstance(why, BandMiss):
         step["skip"] = str(why)
         return await run_in_threadpool(band_answer, parsed, tbl_id, why), None
@@ -1063,54 +1354,6 @@ async def _try(tbl_id, org_id, question, parsed, trace, forced, slots=None, noti
         # 기간 밖·구간 불일치도 맞는 표를 찾은 뒤의 안내라 답으로 쓴다 (볼 수 있는 기간·구간을 알림)
         return res, None  # result["method"] = "dynamic"은 qa.compute가 단다
     return None, None
-
-
-# 칸 고르기가 이 이유로 실패하면 일상어 짝을 LLM에게 묻는다
-WORD_MISS = ("질문의 말과 맞는 칸이 없음", "비율의 분자·분모를 정하지 못함")
-WORD_CHECK = "item:"  # 통계표 찾기가 찾는 값이 표에 없다고 본 조건 ("item:낮")
-PICK_MISS = "에서 칸을 고르지 못함"  # 합계 없는 큰 분류에서 맞는 칸이 없음 ("항목에서 …")
-
-
-def _covers(need, pairs: list[tuple[str, str]]) -> bool:
-    """통계표 찾기가 표에 없다고 본 말이 모두 짝으로 이어졌는가"""
-    said = [_norm(w) for w, _ in pairs]
-    return all(any(_norm(n) in w or w in _norm(n) for w in said) for n in need)
-
-
-def _rewrite_slots(slots: dict | None, pairs: list[tuple[str, str]]) -> dict | None:
-    """통계표 찾기 조건의 찾는 값도 칸 이름으로 ("낮" → "주간 인구"). 칸 반영 검사(uncovered)용"""
-    cond = (slots or {}).get("conditions") or {}
-    if not cond.get("items"):
-        return slots
-    items = []
-    for item in cond["items"]:
-        hit = next(
-            (c for w, c in pairs if _norm(w) in _norm(item) or _norm(item) in _norm(w)), None
-        )
-        items.append(hit or item)
-    return {**slots, "conditions": {**cond, "items": items}}
-
-
-def _rewrite_terms(parsed: dict, pairs: list[tuple[str, str]]) -> dict:
-    """질문 해석의 지표 표현도 칸 이름으로 ("자가용 이용 비율" → "승용차 소형 승합차 이용 비율")"""
-    out = dict(parsed)
-    for key in ("term", "indicator"):
-        if isinstance(out.get(key), str):
-            for word, cell in pairs:
-                out[key] = out[key].replace(word, cell)
-    return out
-
-
-async def _words(tbl_id: str, question: str, parsed: dict, trace: dict):
-    """cell_words.match를 표의 분류로 부른다 (지역·연령 분류는 빼고)"""
-    try:
-        dims, region_dim, _ = await run_in_threadpool(schema, tbl_id)
-        tbl_nm = (await run_in_threadpool(lookup._table, tbl_id))["tbl_nm"]
-    except Exception:
-        logger.exception("칸 이름 잇기 준비 실패: %s", tbl_id)
-        return None
-    skip = {region_dim} | {d.no for d in dims if d.no != 0 and d.is_age()}
-    return await cell_words.match(tbl_id, tbl_nm, question, dims, skip, trace)
 
 
 TOP_N = re.compile(r"(?:top|상위)\s*(\d+)|(\d+)\s*(?:위|개|가지)까지", re.I)
@@ -1246,6 +1489,7 @@ def ask_answer(question, parsed, tbl_id, tbl_nm, ask: Ask, forced=None) -> dict:
     """칸 되묻기 응답 (ask_session의 되묻기와 같은 모양). context는 대화 상태에만 남고
     API 응답(QuestionClarification)에는 나가지 않는다"""
     names = [name for _, name in ask.options]
+    forced = forced or ask.forced
     prompt = f"'{tbl_nm}' 표에서 {ask.dim_name} 중 어느 것을 볼까요?"
     return {
         "status": "clarify_question",
@@ -1301,7 +1545,8 @@ def has_values(result: dict) -> bool:
     return False
 
 
-async def _build(tbl_id, org_id, question, parsed, step, forced=None, slots=None):
+async def _build(tbl_id, org_id, question, parsed, step, forced=None, slots=None, fetch_sem=None):
+    """fetch_sem: 후보 여러 개를 동시에 계산할 때 KOSIS에서 받는 일을 동시에 몇 개까지 할지"""
     try:
         return await run_in_threadpool(build, tbl_id, question, parsed, forced, slots)
     except StatsTableMissing:
@@ -1312,7 +1557,11 @@ async def _build(tbl_id, org_id, question, parsed, step, forced=None, slots=None
     # 적재 안 된 표: 작은 표는 지금 받아 넣는다. 못 받으면 대기열에 넣고 이번에는 표 안내
     try:
         org_id = org_id or (await load_queue.table_info(tbl_id))["org_id"]
-        outcome = await table_cache.fetch_now(tbl_id, org_id, step)
+        if fetch_sem is None:
+            outcome = await table_cache.fetch_now(tbl_id, org_id, step)
+        else:
+            async with fetch_sem:
+                outcome = await table_cache.fetch_now(tbl_id, org_id, step)
         if outcome != "loaded":
             await load_queue.enqueue(tbl_id, "question")
             return None, f"적재 안 됨 ({outcome}, 대기열에 넣음)"
