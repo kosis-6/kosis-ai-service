@@ -708,6 +708,87 @@ def test_births_versus_deaths_is_natural_increase() -> None:
     assert not p.get("unsupported")
 
 
+# ---- 원인·예측 질문, 지원하지 않는 조건 -------------------------------------------------
+
+
+@pytest.fixture
+def data_years(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(indicators, "_data_years", lambda: (2008, 2025))
+
+
+@pytest.mark.usefixtures("data_years")
+@pytest.mark.parametrize(
+    ("question", "year", "prediction"),
+    [
+        ("앞으로 출산율 다시 오를까?", None, True),
+        ("서울 인구는 계속 줄어들까?", None, True),
+        ("향후 고령인구 비율 전망", None, True),
+        ("2040년 서울 인구는 몇 명이 될까요?", 2040, False),  # 미래 연도: 장래추계로 답한다
+        ("2060년 전남 고령인구 비율은 얼마로 예상돼요?", 2060, False),
+        ("2025년 서울 출생아 수", 2025, False),
+    ],
+)
+def test_prediction_question(question: str, year, prediction: bool) -> None:
+    p = qa.correct(question, parsed(type="trend", indicator="합계출산율", year=year), TODAY)
+    assert bool(p.get("prediction")) is prediction
+
+
+@pytest.mark.usefixtures("data_years")
+@pytest.mark.parametrize(
+    ("question", "condition"),
+    [
+        ("2025년 체중 3.2kg으로 태어난 아기는 몇 명이야?", "체중"),
+        ("3.2kg 출생아 수", "3.2kg"),
+        ("결혼 1년 반 만에 이혼한 부부는 몇 쌍이야?", "1년 반"),
+        ("동거기간 7년 이상 이혼 건수", "동거기간"),
+        ("2025년 서울 출생아 수", None),
+        ("최근 5년 서울 이혼 건수", None),
+    ],
+)
+def test_unsupported_condition(question: str, condition) -> None:
+    p = qa.correct(question, parsed(indicator="출생아 수", regions=["서울"]), TODAY)
+    assert p.get("unsupported_condition") == condition
+
+
+def test_unsupported_condition_is_not_dropped(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 지표 사전 표는 체중으로 나뉘어 있지 않다: 전체 출생아 수로 답하지 않고 맞는 구간 없음
+    monkeypatch.setattr(qa.lookup, "refresh_if_reloaded", lambda: False)
+    monkeypatch.setattr(indicators, "_data_years", lambda: (2008, 2025))
+    q = parsed(indicator="출생아 수", regions=[], year=2025, unsupported_condition="3.2kg")
+    r = qa.compute(q)
+    assert r["status"] == "band_mismatch" and "'3.2kg' 조건" in r["reason"]
+    assert "조건 없는 전국 출생아 수는 확인할 수 있습니다" in r["alternative"]
+
+
+@pytest.mark.parametrize(
+    ("question", "word"),
+    [
+        ("2010년 통학 인구는 몇 명이야?", "통학"),
+        ("외국인 인구", "외국인"),
+        ("2025년 서울의 인구는?", None),
+        ("65세 이상 인구는?", None),
+        ("남자 인구", None),
+        ("수도권 인구 합계", None),
+        ("만 6~11세 초등학생 나이 인구는?", None),  # '나이'의 '이'는 조사가 아니다
+        ("작년에 인구가 줄었나", None),
+        ("주민등록인구", None),
+    ],
+)
+def test_population_modifier(monkeypatch, question: str, word) -> None:
+    regions = {"서울", "서울의"}
+    monkeypatch.setattr(indicators, "find_regions", lambda t: [t] if t in regions else [])
+    assert qa.population_modifier(question) == word
+
+
+def test_total_population_with_other_statistic_word_is_not_grounded(monkeypatch) -> None:
+    # "통학 인구"를 별칭 '인구'만 보고 총인구로 답하지 않는다 → 바로 계산을 시도한다
+    monkeypatch.setattr(indicators, "find_regions", lambda t: [])
+    p = qa.correct("2010년 전국 통학 인구는 몇 명이야?", parsed(indicator="총인구"), TODAY)
+    assert p["grounded"] is False
+    p = qa.correct("2010년 전국 인구는 몇 명이야?", parsed(indicator="총인구"), TODAY)
+    assert p["grounded"] is True
+
+
 @pytest.fixture
 def registered_aliases(monkeypatch: pytest.MonkeyPatch) -> None:
     aliases = {

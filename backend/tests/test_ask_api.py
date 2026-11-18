@@ -38,6 +38,7 @@ def test_ask_empty_question() -> None:
         (StatsNotLoadedError("DB 없음"), 503),
         (HcxError("42901", "Too many requests", 429), 429),
         (HcxError("40100", "Unauthorized", 401), 502),
+        (HcxError("network", "HCX에 연결하지 못했습니다 (ConnectError)"), 502),
     ],
 )
 def test_ask_errors(monkeypatch: pytest.MonkeyPatch, error: Exception, status_code: int) -> None:
@@ -63,3 +64,13 @@ def test_question_clarification_is_exposed_without_ai(monkeypatch):
     response = client.post("/ask", json={"question": "수원에서 이사한 건수는?"})
     assert response.status_code == 200
     assert len(response.json()["clarification"]["options"]) == 2
+
+
+def test_ask_hcx_error_detail_hides_raw_message(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 화면에는 HCX 원문 오류 대신 다시 질문하라는 안내만
+    async def fail(question: str, adjust=None) -> dict:
+        raise HcxError("network", "HCX에 연결하지 못했습니다 (ConnectError)")
+
+    monkeypatch.setattr(qa, "ask", fail)
+    detail = client.post("/ask", json={"question": "서울 인구"}).json()["detail"]
+    assert "잠시 후 다시 질문해 주세요" in detail and "ConnectError" not in detail

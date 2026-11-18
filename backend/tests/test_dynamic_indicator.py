@@ -50,6 +50,7 @@ def fake_table(monkeypatch: pytest.MonkeyPatch) -> dict:
     # 분자·분모 관계 검사: 지역·연도마다 (분자, 분모). 기본은 맞는 관계
     rows = {"rows": [(1.0, 2.0), (3.0, 3.0)]}
     monkeypatch.setattr(d, "_part_rows", lambda *args: rows["rows"])
+    monkeypatch.setattr(lookup, "_table", lambda tbl_id: {"tbl_nm": "성 및 연령별 1인가구"})
     d.CHECKS.clear()
     return {"tables": tables, "units": units, "projection": projection, "rows": rows}
 
@@ -111,7 +112,8 @@ def test_refuses_when_no_cell_matches_the_question() -> None:
 
 
 def test_asks_when_two_cells_match_in_one_dimension(fake_table: dict) -> None:
-    stay = d.Dim(3, "거주기간별", {"0": "계", "1": "1년미만", "2": "1~5년"})
+    # (세부 칸을 모두 말하면 합계라서, 칸을 하나 더 둔다)
+    stay = d.Dim(3, "거주기간별", {"0": "계", "1": "1년미만", "2": "1~5년", "3": "6~10년"})
     fake_table["tables"]["DT_1PL1502"] = ([*ONE_PERSON, stay], 1, "시군구")
     spec, ask = d.build("DT_1PL1502", "서울 1년미만과 1~5년 1인 가구", BASE)
     assert spec is None and isinstance(ask, d.Ask)
@@ -475,6 +477,213 @@ def test_implied_age_word_kept_out_when_not_in_cell(fake_table: dict) -> None:
     implied = {"ages": [[65, None]], "age_group": {"expr": "노인"}}
     spec, why = d.build("DT_1PL1502", "서울 노인 1인 가구 수", {**BASE, **implied})
     assert spec is None and why == "질문의 연령 조건을 표의 칸에 반영할 수 없음"
+
+
+# ---- 맞는 구간 없음 (숫자 조건이 표의 구간 분류와 맞지 않음) --------------------------------
+
+
+def weight_table(fake_table: dict) -> None:
+    weight = d.Dim(
+        3, "출생시 체중별", {"0": "계", "1": "2.5㎏미만", "2": "2.5 - 2.9㎏", "3": "3.0 - 3.4㎏"}
+    )
+    items = d.Dim(0, "항목", {"B": "출생"})
+    fake_table["tables"]["DT_1PL1502"] = ([items, ONE_PERSON[1], weight], 1, "시도")
+
+
+@pytest.mark.parametrize(
+    ("question", "item"),
+    [
+        (
+            "2025년 체중 3.2kg으로 태어난 아기는 몇 명이야?",
+            "3.2kg",
+        ),  # 칸 글자가 안 맞아도 (출생 ≠ 아기)
+        ("2025년 3.2 kg 출생", "3.2kg"),
+    ],
+)
+def test_measure_condition_without_matching_band(
+    fake_table: dict, question: str, item: str
+) -> None:
+    weight_table(fake_table)
+    spec, miss = d.build("DT_1PL1502", question, {**BASE, "indicator": "출생아 수"})
+    assert spec is None and isinstance(miss, d.BandMiss)
+    # 표의 단위 기호(㎏)도 kg으로 맞춰 비교하고, 소수점은 지우지 않는다
+    assert miss.item == item and miss.dim_name == "출생시 체중별"
+    assert miss.labels == ["2.5㎏미만", "2.5 - 2.9㎏", "3.0 - 3.4㎏"]
+
+
+def test_year_is_not_a_measure_condition(fake_table: dict) -> None:
+    weight_table(fake_table)
+    assert d._band_miss(["2025년 출생"], fake_table["tables"]["DT_1PL1502"][0], 1) is None
+
+
+def test_spoken_age_range_counts_as_age_condition() -> None:
+    # "62살에서 67살 사이"도 연령 조건으로 보고 lookup에 넘긴다 (구간이 안 맞으면 band_mismatch)
+    found = {"conditions": {"items": ["62살에서 67살 사이"], "classes": []}, "exclude": []}
+    spec, why = d.build(
+        "DT_1PL1502",
+        "서울 62살에서 67살 사이 1인 가구 수",
+        {**BASE, "ages": [[62, 67]]},
+        None,
+        found,
+    )
+    assert spec is not None, why
+
+
+@pytest.mark.parametrize(
+    ("key", "ages", "expected"),
+    [
+        ("item:62살 이상", [[62, 67]], True),
+        ("item:62세 이상 67세 이하", [[62, 67]], True),
+        ("class:연령", [[62, 67]], True),
+        ("item:미혼", [[62, 67]], False),
+        ("sex", [[62, 67]], False),
+        ("item:62살 이상", None, False),  # 질문에 연령 구간이 없으면 연령 조건으로 보지 않는다
+    ],
+)
+def test_age_check(key: str, ages, expected: bool) -> None:
+    assert d._age_check(key, {"ages": ages}) is expected
+
+
+def test_partial_match_with_only_age_failures_is_computed(monkeypatch) -> None:
+    # 통계표 찾기가 '62살 이상' 칸이 없다고 ✘를 줘도 연령 구간은 바로 계산(lookup)이 맡는다
+    async def fake_build(tbl_id, org_id, question, parsed, step, forced=None, slots=None):
+        return build(question, ages=[[62, 67]]), None
+
+    async def fake_answer(q, trace, question):
+        return {"status": "band_mismatch", "result": {"status": "band_mismatch"}, "parsed": q}
+
+    monkeypatch.setattr(d, "_build", fake_build)
+    monkeypatch.setattr(qa, "answer", fake_answer)
+    age_only = {"year": True, "class:연령": True, "item:62살 이상": False}
+    found = {"status": "partial_match", "recommendations": [{"tbl_id": "T", "checks": age_only}]}
+    res = asyncio.run(
+        d.answer("서울 62살에서 67살 사이 1인 가구 수", {**BASE, "ages": [[62, 67]]}, found, {})
+    )
+    assert res["status"] == "band_mismatch"
+    other = {"year": True, "item:미혼": False}  # 연령 밖의 조건이 ✘면 계산하지 않는다
+    found = {"status": "partial_match", "recommendations": [{"tbl_id": "T", "checks": other}]}
+    assert (
+        asyncio.run(d.answer("서울 미혼 1인 가구", {**BASE, "ages": [[62, 67]]}, found, {})) is None
+    )
+
+
+def test_total_suffix_names_match_plain_words(fake_table: dict) -> None:
+    # "통학-계"처럼 이름 끝에 합계 표시가 붙은 항목도 "통학 인구"와 맞춘다
+    items = d.Dim(0, "항목", {"A": "통근·통학-계", "B": "통학-계", "C": "통학-남자"})
+    fake_table["tables"]["DT_1PL1502"] = ([items, ONE_PERSON[1]], 1, "시도")
+    fake_table["units"]["DT_1PL1502"] = ("명", True)
+    spec = build("2010년 전국 통학 인구는 몇 명이야?", indicator="통학 인구", term="통학 인구")
+    assert spec["sources"][0]["item_id"] == "B" and spec["name"] == "통학 인구"
+
+
+@pytest.mark.parametrize(
+    ("term", "name"),
+    [
+        ("30대 미혼 인구", "미혼 인구"),
+        ("62살에서 67살 사이 사망자 수", "사망자 수"),
+        ("70세 이상 1인 가구 수", "1인 가구 수"),
+        ("미혼 인구", "미혼 인구"),
+    ],
+)
+def test_age_words_removed_from_name(term: str, name: str) -> None:
+    # lookup이 연령 표현을 이름 앞에 붙이므로 ("30대 미혼 인구") 두 번 나오지 않게 뺀다
+    assert d._without_age_words(term) == name
+
+
+# ---- 한 분류 안의 칸들로 합·비교·순위 ------------------------------------------------------
+
+MODES = {
+    "T": "통근·통학 인구(12세 이상)",
+    "S": "단일 수단-계",
+    "W": "걸어서",
+    "C": "승용차 소형 승합차",
+    "B": "자전거",
+}
+VALUES = {"T": 30.0, "S": 28.0, "W": 7.0, "C": 9.0, "B": 1.0}
+
+
+@pytest.fixture
+def commute(fake_table: dict, monkeypatch: pytest.MonkeyPatch) -> None:
+    items = d.Dim(0, "항목", MODES)
+    kind = d.Dim(2, "통근·통학여부별", {"0": "계", "1": "통근", "2": "통학"})
+    fake_table["tables"]["DT_1PL1502"] = ([items, ONE_PERSON[1], kind], 1, "시도")
+    fake_table["units"]["DT_1PL1502"] = ("명", True)
+    monkeypatch.setattr(
+        lookup,
+        "_table",
+        lambda tbl_id: {"tbl_nm": "소요시간 및 이용 교통수단별 통근 통학 인구(12세 이상)-시군구"},
+    )
+    monkeypatch.setattr(lookup, "_years", lambda src: (2010, 2020))
+
+    def value(spec, region, year, sex="계", ages=None):
+        code = spec["sources"][0]["item_id"]
+        base = {"status": "ok", "unit": "명", "region": "전국", "source": "출처", "basis": "기준"}
+        return {**base, "value": VALUES[code], "tbl_id": "DT_1PL1502", "url": "u"}
+
+    monkeypatch.setattr(lookup, "value", value)
+
+
+def answer_for(question: str, **over) -> dict:
+    p = {**BASE, "regions": [], "year": 2010, **over}
+    spec, why = d.build("DT_1PL1502", question, p)
+    assert spec is not None and spec.get("parts_op"), why
+    return d.parts_answer(p, spec, question)
+
+
+@pytest.mark.usefixtures("commute")
+def test_sum_of_two_cells_and_all_leaves_means_total() -> None:
+    # "출퇴근"은 "통근"과 같은 말, 통근·통학을 모두 말하면 그 분류의 합계
+    res = answer_for("2010년 걸어서나 자전거로 출퇴근 통학한 사람은 몇 명이야?")
+    assert res["answer"].startswith(
+        "2010년 전국의 걸어서·자전거 통근 통학 인구는 합해서 8명입니다."
+    )
+    assert res["parsed"]["dynamic_spec"]["sources"][0]["filters"]["c2_id"] == "0"
+
+
+@pytest.mark.usefixtures("commute")
+def test_compare_two_cells() -> None:
+    res = answer_for("2010년 걸어서 통근한 사람과 자전거로 한 사람 차이는?")
+    assert "걸어서가 자전거보다 6명 많습니다 (7.0배)" in res["answer"]
+
+
+@pytest.mark.usefixtures("commute")
+def test_rank_within_classification_skips_totals() -> None:
+    res = answer_for("2010년 가장 많이 이용한 교통수단 top2는?", type="other")
+    # 소계(단일 수단-계)는 이름으로, 합계(통근·통학 인구)는 값으로 알아보고 뺀다
+    assert "교통수단 가운데" in res["answer"]
+    assert "가장 많은 2개는 승용차 소형 승합차(9명), 걸어서(7명)입니다" in res["answer"]
+
+
+@pytest.mark.usefixtures("commute")
+def test_region_rank_is_not_category_rank() -> None:
+    p = {**BASE, "regions": [], "year": 2010, "type": "rank"}
+    spec, _ = d.build("DT_1PL1502", "2010년 걸어서 통근한 사람이 가장 많은 시도는?", p)
+    assert spec is None or not spec.get("parts_op")
+
+
+@pytest.mark.parametrize(
+    ("question", "op"),
+    [
+        ("걸어서나 자전거로", "sum"),
+        ("걸어서와 자전거 합계", "sum"),
+        ("걸어서와 자전거 차이", "compare"),
+        ("주간 인구가 상주 인구보다 몇 배", "compare"),
+        ("걸어서와 자전거", None),
+    ],
+)
+def test_multi_op(question: str, op) -> None:
+    assert d._multi_op(question) == op
+
+
+def test_set_code_keeps_sex_filter_of_separate_sex_dimension() -> None:
+    # 성별이 따로 분류(c3)인 표: 항목을 바꿔도 성별 '계' 조건은 그대로 (빼면 계+남+여 = 두 배)
+    by_sex = {"계": {"filters": {"c3_id": "0"}}, "남": {"filters": {"c3_id": "1"}}}
+    spec = {"sources": [{"item_id": "T000", "by_sex": by_sex}], "parts_op": {"col": "item_id"}}
+    assert d._set_code(spec, "item_id", "T101")["sources"][0]["by_sex"] == by_sex
+    # 성별이 항목에 들어 있는 표: 항목을 바꾸면 성별 바꾸기는 뺀다
+    in_item = {"계": {"item_id": "T00"}, "여": {"item_id": "T20"}}
+    spec = {"sources": [{"item_id": "T00", "by_sex": in_item}], "parts_op": {"col": "item_id"}}
+    assert "by_sex" not in d._set_code(spec, "item_id", "T10")["sources"][0]
 
 
 # ---- 넘기기 꾸러미로 계산 (compute_from_handoff, 2026-11-17) ---------------------------

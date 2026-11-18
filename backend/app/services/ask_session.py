@@ -66,6 +66,7 @@ from app.services import (
     timeref,
 )
 from app.services.hcx_client import HcxClient
+from app.services.josa import josa
 from app.services.log_redaction import mask, redact
 from app.services.memory_cache import MISSING, MemoryCache
 
@@ -1125,7 +1126,8 @@ async def _turn(
                     # 같은 이름이 여러 곳(고성 등): 후보를 선택지로 보여 주며 다시 묻는다
                     again = {
                         "kind": "local_region",
-                        "prompt": f"'{name}'은(는) 여러 곳에 있습니다. 어느 지역인가요?",
+                        "prompt": josa(f"'{name}'", "은는")
+                        + " 여러 곳에 있습니다. 어느 지역인가요?",
                         "options": list(found["candidates"]),
                     }
                     return _clarification_answer(original, again), {}, None
@@ -1512,7 +1514,7 @@ def ungrounded(res: dict) -> bool:
 
 
 async def _dynamic_instead(res: dict, state: dict | None, asked: str, user_id: int | None) -> bool:
-    """근거 없이 고른 사전 지표 대신 통계표에서 바로 계산한다. res를 바꿨으면 True
+    """사전 지표 대신 통계표에서 바로 계산한다. res를 바꿨으면 True
 
     질문에 그 지표의 이름·별칭이 없으면 HCX가 비슷한 다른 지표를 고른 것일 수 있다
     (예: "1인 가구 중 여성 비율" → 서울 인구 성별 구성). 그래서 원래 답은 돌려주지 않는다.
@@ -1533,7 +1535,6 @@ async def _dynamic_instead(res: dict, state: dict | None, asked: str, user_id: i
         logger.exception("근거 없는 지표의 바로 계산 실패")
         return False
     if computed is None and found is None:
-        trace["dynamic_kept"] = parsed.get("indicator")
         return False
     # 바꾼 원래 답 (요청 기록·회귀 평가에서 사전 지표 답과 비교한다)
     trace["replaced"] = {
