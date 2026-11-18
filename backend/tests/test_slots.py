@@ -241,3 +241,11 @@ def test_single_age_becomes_an_item_condition() -> None:
     out = _slots("서른 살 여성의 출산율")
     assert any(f["key"] == "items" and "30세" in f["reason"] for f in out["fixes"])
 
+
+@pytest.mark.parametrize("question", ["서울 2030세대 인구", "2030 세대 서울 인구는?"])
+def test_generation_is_not_a_year(question: str) -> None:
+    # "2030세대"는 20~39세 (agegroup). 2030년 · 장래 추계로 읽지 않는다
+    out = _slots(question, year=2030)
+    assert out["conditions"]["year"] is None and out["projection"] is False
+    assert (out["age"]["lo"], out["age"]["hi"]) == (20, 39)
+    assert _slots("2030년 서울 인구는?", year=2030)["projection"] is True

@@ -1481,3 +1481,28 @@ def test_projection_suggestion_and_follow_ups_are_not_searched(talk: Talk, monke
     assert not s.searchable_after({**res, "result": {}, "request_type": "change"})
     for status in ("missing_region", "unknown_region", "data_loading", "error", "ambiguous_region"):
         assert not s.searchable_after({**res, "result": {}, "status": status}), status
+
+
+def test_dynamic_picking_dictionary_table_keeps_dictionary_answer(monkeypatch) -> None:
+    # 바로 계산이 사전 지표의 표(출생아 수 → DT_1B8000H)를 골랐으면 사전 답을 쓴다
+    from app.services import ask_session as s
+
+    monkeypatch.setattr(indicators, "spec", lambda n: {"sources": [{"table": "DT_1B8000H"}]})
+
+    parsed = {"indicator": "출생아 수"}
+    computed = {"sources": [{"tbl_id": "DT_1B8000H"}]}
+    assert s._same_dictionary_table(parsed, computed, None) == "DT_1B8000H"
+    asked = {"clarification": {"context": {"tbl_id": "DT_1B8000H"}}}
+    assert s._same_dictionary_table(parsed, asked, None) == "DT_1B8000H"
+    found = {"recommendations": [{"tbl_id": "DT_1B8000H"}]}
+    assert s._same_dictionary_table(parsed, None, found) == "DT_1B8000H"
+    other = {"sources": [{"tbl_id": "DT_1B83A35"}]}
+    assert s._same_dictionary_table(parsed, other, None) is None
+
+
+def test_ungrounded_missing_region_goes_to_table_search() -> None:
+    # 근거 없는 지표로 "어느 지역인지"를 되묻기보다 통계표 찾기로 넘긴다
+    res = {"status": "missing_region", "request_type": s.NEW, "parsed": {"grounded": False}}
+    assert s.ungrounded(res) is True
+    res["parsed"]["grounded"] = True
+    assert s.ungrounded(res) is False

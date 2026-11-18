@@ -9,7 +9,7 @@ from app.services import qa
 
 
 def first_group(question):
-    return next((w for w in qa.REGION_GROUPS if w in question), None)
+    return next((w for w in qa.REGION_GROUPS if qa._group_in(w, question)), None)
 
 
 @pytest.mark.parametrize(
@@ -17,6 +17,13 @@ def first_group(question):
     [
         ("비수도권 인구", "비수도권"),
         ("수도권 외 인구", "수도권 외"),
+        ("수도권 외의 출생아 수", "수도권 외"),
+        ("수도권 외 지역 출생아 수", "수도권 외"),
+        ("수도권 외에서 태어난 아이", "수도권 외"),
+        ("수도권 밖 인구", "수도권 밖"),
+        # '외' 뒤에 낱말이 이어지면 다른 말: 수도권 (외국인 · 외곽)
+        ("2024년 수도권 외국인 수는?", "수도권"),
+        ("수도권 외곽 인구", "수도권"),
         ("지방 인구 알려줘", "지방 인구"),
         ("수도권 인구", "수도권"),
         ("광역시 전체 인구", "광역시 전체"),

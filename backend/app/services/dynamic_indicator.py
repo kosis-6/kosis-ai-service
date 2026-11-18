@@ -752,6 +752,11 @@ def _ratio(spec: dict, src: dict, plan: Plan, dims: list[Dim], parsed: dict, tbl
         if d.no in plan.matched and whole and plan.matched[d.no] != whole:
             if d is not plan.sex_dim:
                 code = plan.matched[d.no]
+                if indicators.find_regions(d.codes[code]):
+                    # 질문의 지역 이름이 지역 분류가 아닌 칸에 걸렸다
+                    # (예: 통근통학지별 '서울특별시'). 그 칸 ÷ 합계(전국)는 질문이 묻는 비율이
+                    # 아니다 ("1인 가구 중 통근 비율" → 서울로 통근 ÷ 전국 88%가 나왔다)
+                    continue
                 parts.append((d.col, [code], whole, d.codes[code]))
     if len(parts) != 1:
         return None, "비율의 분자·분모를 정하지 못함"
@@ -1058,10 +1063,14 @@ def attempt_list(target: dict, q: dict) -> list[dict]:
     return out[:MAX_ATTEMPTS]
 
 
-def skip_reason(entry: dict, picked_exact: bool, parsed: dict | None = None) -> str | None:
+def skip_reason(
+    entry: dict, picked_exact: bool, parsed: dict | None = None, multi: bool = False
+) -> str | None:
     """바로 계산하지 않는 이유 (계약 5-2의 3번). None이면 계산한다.
     연령 구간의 ✘는 건너뛰지 않는다 (_age_check: lookup이 연령 칸으로 고르거나
-    맞는 구간 없음으로 안내한다)"""
+    맞는 구간 없음으로 안내한다).
+    multi: 지표가 여럿인 질문의 지표 하나. 지표마다 검토(review)를 하지 않아 picked가 거의 없고
+    확인한 조건도 비어 있을 수 있어 ✘ 후보 건너뛰기만 쓴다 (후보를 다 계산해도 결과는 같다)"""
     failed = [
         k
         for k, ok in (entry.get("checks") or {}).items()
@@ -1069,6 +1078,8 @@ def skip_reason(entry: dict, picked_exact: bool, parsed: dict | None = None) -> 
     ]
     if failed:
         return f"통계표 찾기 조건 불충족 ({', '.join(failed)})"
+    if multi:
+        return None
     if entry["kind"] == "other":
         if not entry.get("checks"):
             return "고른 표가 아닌데 확인한 조건이 없음"
@@ -1096,16 +1107,65 @@ async def compute_from_handoff(
     """넘기기 꾸러미의 후보로 바로 계산한 답 (answer와 같은 자리, 같은 모양).
     못 하면 None → 표 안내"""
     h = found.get("handoff")
-    if not h or len(h.get("targets") or []) > 1:
-        return await answer(question, parsed, found, trace)  # 지표 여럿은 다음 단계 (계약 4절)
+    if not h:
+        return await answer(question, parsed, found, trace)
     trace.setdefault("dynamic", [])
     if h.get("status") not in HANDOFF_STATUSES or not h.get("targets"):
         return None
-    target = h["targets"][0]
+    if len(h["targets"]) > 1:
+        return await multi_answer(question, parsed, found, trace)  # 지표가 여럿 (구현 5)
+    res = await _compute_target(question, parsed, found, h["targets"][0], trace)
+    from app.services import multi_indicator
+
+    if res and multi_indicator.TOP_REGION_OF.search(question):
+        # "1인 가구가 가장 많은 시도의 통근 인구"를 통계표 찾기가 지표 하나로 읽었다.
+        # 거르는 지표 없이 계산하면 1위 지역이 아니라 전국 값이 나온다 → 숫자 대신 표 안내
+        if "value" in (res.get("result") or {}) and "ranking" not in (res.get("result") or {}):
+            trace["dynamic"].append({"skip": "'가장 많은 지역의 값'인데 거르는 지표가 없음"})
+            return None
+    return res
+
+
+async def multi_answer(question: str, parsed: dict, found: dict, trace: dict) -> dict | None:
+    """지표가 여럿인 질문 (구현 5): 지표마다 계산해 combine.op대로 합친다 (multi_indicator.py)"""
+    from app.services import multi_indicator
+
+    return await multi_indicator.answer(question, parsed, found, trace)
+
+
+def _target_understanding(u: dict, target: dict) -> dict:
+    """지표 하나의 해석: 질문 전체 해석에 계획의 지표별 조건
+    (연도 · 지역 수준 · 성별 · 연령)을 덮는다.
+    항목 · 분류는 계획에 없어 비운다 (질문 전체의 항목이 다른 지표 칸 검사를 막지 않게)"""
+    cond = dict(u.get("conditions") or {})
+    own = target.get("conditions") or {}
+    for key in ("region", "region_level", "year", "year_end", "sex"):
+        if own.get(key) not in (None, "", []):
+            cond[key] = own[key]
+    cond["items"], cond["classes"] = [], []
+    out = {**u, "conditions": cond}
+    if text := own.get("age_text"):
+        bands = qa.extract_ages(str(text))
+        if bands:
+            lo, hi = bands[0]
+            out["age"] = {"expr": str(text), "lo": lo, "hi": hi, "basis": None}
+    return out
+
+
+async def _compute_target(
+    question: str, parsed: dict, found: dict, target: dict, trace: dict, multi: bool = False
+) -> dict | None:
+    """꾸러미의 지표 하나(target)를 후보 표로 계산한 답. 못 하면 None.
+    multi: 지표가 여럿인 질문의 지표 하나 (지표별 질문 · 조건으로 계산하고,
+    대안 제안 LLM은 부르지 않는다)"""
+    h = found["handoff"]
+    trace.setdefault("dynamic", [])
     if target.get("together"):
         trace["dynamic"].append({"skip": "한 통계가 여러 표로 나뉨 (함께 볼 표)"})
         return None
     u = h.get("understanding") or {}
+    if multi:
+        u = _target_understanding(u, target)
     try:
         q, diff = await run_in_threadpool(to_parsed, u, parsed)
     except Exception:
@@ -1195,7 +1255,7 @@ async def compute_from_handoff(
     async def attempt(entry: dict):
         sub: dict = {"dynamic": []}
         tbl_id = entry["tbl_id"]
-        if why := skip_reason(entry, picked_exact, q):
+        if why := skip_reason(entry, picked_exact, q, multi):
             sub["dynamic"].append({"tbl_id": tbl_id, "kind": entry["kind"], "skip": why})
             return None, None, sub
         if u.get("projection"):
@@ -1235,6 +1295,14 @@ async def compute_from_handoff(
         if ask is not None:  # 맞는 표에서 칸 하나만 못 정함: 그 칸을 묻는다
             name = entry.get("tbl_nm") or entry["tbl_id"]
             return ask_answer(question, q, entry["tbl_id"], name, ask)
+
+    if multi:
+        # 지표가 여럿이면 지표마다 대안 LLM을 부르지 않는다 (HCX · Gemma 호출이 지표 수만큼 는다)
+        for entry, (res, _, _) in zip(entries, outcomes, strict=True):
+            if res is not None:
+                trace["handoff"]["used"] = {"tbl_id": entry["tbl_id"], "kind": entry["kind"]}
+                return res
+        return None
 
     # 모두 계산하지 못함: 가까운 연도 · 다른 표로 계산한 대안을 LLM이 골라 값과 함께 묻는다
     # (alternative.py)
