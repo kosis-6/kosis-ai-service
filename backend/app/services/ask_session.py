@@ -51,6 +51,7 @@ from uuid import uuid4
 
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
+from starlette.concurrency import run_in_threadpool
 
 from app.prompts.qa import FOLLOW_SYSTEM
 from app.services import (
@@ -58,6 +59,7 @@ from app.services import (
     ask_followup,
     charts,
     conversations,
+    cross_indicator,
     dynamic_indicator,
     indicators,
     qa,
@@ -1379,6 +1381,10 @@ async def _attach_tables(res: dict, state: dict | None, question: str, user_id: 
     ):
         return
     asked = res.get("question") or question
+    if res.get("status") == qa.CROSS_DYNAMIC:
+        if await _cross_dynamic(res, state, asked, user_id):
+            return
+        res["status"] = "unknown_indicator"  # 한쪽 값을 못 구했다: 지금처럼 통계표 찾기로 (아래)
     if res.get("status") in table_guide.SEARCH_INSTEAD:
         sid = (state or {}).get("search_session") or table_guide.new_search_session()
         kind, trace, parsed = res.get("request_type"), res.get("trace") or {}, res.get("parsed")
@@ -1483,6 +1489,81 @@ async def _search_after(res: dict, state: dict | None, asked: str, user_id: int 
         await _attach_cards(res, asked)
     res.setdefault("trace", trace)
     res["request_type"], res["question"], res["search_session"] = kind, asked, sid
+    return True
+
+
+async def _cross_dynamic(res: dict, state: dict | None, asked: str, user_id: int | None) -> bool:
+    """두 값을 나누는데 한쪽이 사전에 없다 (cross_indicator.detect_partial). res를 바꿨으면 True
+
+    사전에 없는 쪽은 "연도 지역 그 말"을 따로 물은 것처럼 동적 지표로 구한다 (계산 방법 캐시 →
+    통계표 찾기 · 칸 고르기). 사전 쪽은 그 연도로 계산하고, 둘을 나누기 전에 지역 · 연도 · 성별을
+    확인한다 (cross_indicator.combine_value). 값 질문(한 지역 · 한 해)만 한다"""
+    parsed = res.get("parsed") or {}
+    trace = res.setdefault("trace", {})
+    c = cross_indicator.Cross(**parsed["cross"])
+    regions = parsed.get("regions") or []
+    if parsed.get("type") != "value" or len(regions) > 1:
+        trace["cross"] = {"skip": "한쪽이 사전에 없는 값은 한 지역 · 한 해만 계산"}
+        return False
+    year = parsed.get("year")
+    sub_q = " ".join(filter(None, [f"{year}년" if year else "", *regions, c.unknown]))
+    sub_parsed = {
+        **parsed,
+        "cross": None,
+        "indicators": None,
+        "indicator": c.unknown,
+        "term": c.unknown,
+        "grounded": False,
+        "dynamic_spec": None,
+    }
+    sid = (state or {}).get("search_session") or table_guide.new_search_session()
+    try:
+        part = await dynamic_indicator.cached_answer(sub_q, sub_parsed, trace)
+        if part is None:
+            found = await table_guide.find_tables(sub_q, sid, None, user_id)
+            part = await dynamic_indicator.compute_from_handoff(sub_q, sub_parsed, found, trace)
+    except Exception:
+        logger.exception("두 값 나누기: 사전에 없는 쪽 계산 실패")
+        return False
+    got = (part or {}).get("result") or {}
+    trace["cross"] = {"question": sub_q, "status": (part or {}).get("status")}
+    if (part or {}).get("status") != "ok" or part.get("clarification") or "value" not in got:
+        return False
+    unit = got.get("unit") or ""
+    if unit not in cross_indicator.COUNT_UNITS:
+        trace["cross"]["skip"] = f"건수 · 인원이 아닌 값 ({unit})"
+        return False
+    known = c.den if c.dynamic == "num" else c.num
+    q = {**parsed, "cross": None, "indicators": None, "indicator": known, "term": known}
+    q["year"] = got.get("year") or year
+    try:
+        other = await run_in_threadpool(qa.compute, q)
+    except Exception:
+        logger.exception("두 값 나누기: 사전 쪽 계산 실패")
+        return False
+    if other.get("status") != "ok":
+        return False
+    got = {**got, "indicator": c.unknown}
+    c.units = {c.unknown: unit}
+    num, den = (got, other) if c.dynamic == "num" else (other, got)
+    result = cross_indicator.combine_value(c, num, den, q)
+    result["cross"] = c.as_dict()
+    kind = res.get("request_type")
+    res.clear()
+    res.update(
+        {
+            "status": result.get("status"),
+            "answer": f"{qa.summary(result)}\n\n{qa.render(result)}".strip(),
+            "parsed": {**parsed, "cross": c.as_dict()},
+            "result": result,
+            "sources": qa.sources(result),
+            "trace": trace,
+            "chart": charts.build(result) if result.get("status") == "ok" else None,
+        }
+    )
+    res["request_type"], res["question"], res["search_session"] = kind, asked, sid
+    if result.get("status") == "ok":
+        await _attach_cards(res, asked)
     return True
 
 
