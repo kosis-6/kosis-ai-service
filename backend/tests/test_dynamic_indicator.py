@@ -1137,3 +1137,48 @@ def test_no_year_question_skips_old_tables(computed, monkeypatch) -> None:
     res = asyncio.run(d.compute_from_handoff("서울 1인 가구 수", parsed, _found(cands, u), trace))
     assert res["status"] == "ok" and trace["handoff"]["used"]["tbl_id"] == "NEW"
     assert "1980년까지인 표" in trace["dynamic"][0]["skip"]
+
+
+# ---- 개발셋 2차: 표를 찾고도 계산하지 못하던 질문 ------------------------------------------------
+
+
+def test_word_inside_cell_name() -> None:
+    # 칸 이름이 질문에 그대로 없어도 질문 낱말이 칸 이름 안에 들면 그 칸
+    names = {"T": "통근·통학 인구(12세 이상)", "A": "시내·좌석·마을 버스", "B": "전철 지하철",
+             "C": "고속 시외 버스", "D": "통근·통학버스"}  # fmt: skip
+    items = d.Dim(0, "항목", names)
+    hits = d._text_hits("지하철이랑 시내버스 중에 뭘 더 많이 탔어", [items], set())
+    assert sorted(hits[0]) == ["A", "B"]
+    kids = d.Dim(0, "항목", {"0": "이혼건수-계", "1": "미성년자녀-없음", "2": "1명"})
+    assert d._text_hits("이혼 부부 중 미성년 자녀 없는 경우", [kids], set()) == {0: ["1"]}
+    # 낱말 하나가 칸 여럿에 걸리면 맞춘 것으로 보지 않는다 ("버스" → 버스 칸 셋)
+    assert d._word_hits("버스 몇 명", items) == []
+
+
+def test_more_is_a_comparison() -> None:
+    assert d._multi_op("지하철이랑 시내버스 중에 뭘 더 많이 탔어") == "compare"
+    assert d._multi_op("남자애가 더 많이 태어났어 여자애가 더 많이 태어났어?") == "compare"
+
+
+def test_sexes_compared_within_item() -> None:
+    items = d.Dim(0, "항목", {"0": "계", "1": "남자", "2": "여자"})
+    plan, why = d.choose("작년에 남자애가 더 많이 태어났어 여자애가 더 많이 태어났어?",
+                         {"sex": "계"}, [items], None)  # fmt: skip
+    assert why is None and plan.multi == (0, ["1", "2"], "compare")
+
+
+def test_husband_wife_dimension_defaults_to_husband() -> None:
+    items = d.Dim(0, "항목", {"0": "이혼건수-계", "1": "미성년자녀-없음"})
+    couple = d.Dim(1, "성별", {"1": "남편", "2": "아내"})
+    plan, why = d.choose("이혼 부부 중 미성년 자녀 없는 경우", {"sex": "계"}, [items, couple], None)
+    assert why is None and plan.pick[1] == "1"
+    assert "부부 건수라 아내 기준과 같음" in plan.defaults[0]
+    # 칸 이름 끝의 '-계'는 항목 전체 (비율의 분모)
+    assert d._item_whole(items, "연령/미성년자녀수별 이혼") == "0"
+
+
+def test_item_check_is_left_to_cell_check() -> None:
+    # 통계표 찾기가 찾는 값을 ✘로 봐도 건너뛰지 않는다 (칸 반영 검사가 다시 본다)
+    entry = {"kind": "picked", "checks": {"item:미성년 자녀 없는 경우": False, "year": True}}
+    assert d.skip_reason(entry, False) is None
+    assert d.skip_reason({**entry, "checks": {"year": False}}, False)

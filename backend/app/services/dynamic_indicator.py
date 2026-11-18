@@ -233,7 +233,44 @@ def _text_hits(question: str, dims: list[Dim], skip: set[int]) -> dict[int, list
         hits.setdefault(no, [])
         if code not in hits[no]:
             hits[no].append(code)
+    for d in dims:
+        if d.no in skip or d.no in hits:
+            continue
+        if found := _word_hits(question, d):
+            hits[d.no] = found
     return hits
+
+
+MAX_WORD_CELLS = 2  # 낱말 하나로 고를 수 있는 칸 수 ("외국인" → 외국인 아내 · 외국인 남편)
+# 칸 이름 일부로 맞추기에서 쓰지 않는 낱말 (칸마다 흔히 붙는 말)
+GENERIC_WORDS = {
+    "인구", "이상", "이하", "미만", "전체", "합계", "소계", "기타", "가구", "건수", "사람",
+}  # fmt: skip
+JOSA_TAIL = re.compile(
+    r"(이랑|랑|하고|와|과|이나|나|으로|로|에서|에|의|은|는|이|가|을|를|도|만|중에|중|들)$"
+)
+
+
+def _word_hits(question: str, d: Dim) -> list[str]:
+    """칸 이름이 질문에 글자 그대로 없을 때: 질문 낱말이 칸 이름 안에 든 칸.
+    "지하철" ⊂ "전철 지하철", "미성년 자녀" ⊂ "미성년자녀-없음",
+    "외국인" ⊂ "한국인 남편 + 외국인 아내". "시내버스"처럼 이름 사이에 다른 말이 낀 경우는
+    낱말의 앞 두 글자와 뒤 두 글자가 모두 이름에 있으면.
+    합계 칸은 맞추지 않는다 (세부 칸을 고르는 것이므로)"""
+    words = []
+    for token in question.split():
+        w = _norm(JOSA_TAIL.sub("", token))
+        if len(w) >= 2 and w not in GENERIC_WORDS and not w.isdigit():
+            words.append(w)
+    whole = {d.total()} | {c for c, n in d.codes.items() if TOTAL_SUFFIX.search(_norm(n))}
+    cells = [(c, _norm(n)) for c, n in d.codes.items() if c not in whole]
+    out: list[str] = []
+    for w in words:
+        found = [c for c, n in cells if w in n or (len(w) >= 4 and w[:2] in n and w[-2:] in n)]
+        # 낱말 하나가 칸 셋 이상에 걸리면 그 낱말로는 고르지 않는다 ("버스" → 버스 칸 셋)
+        if len(found) <= MAX_WORD_CELLS:
+            out += [c for c in found if c not in out]
+    return out
 
 
 @dataclass
@@ -254,7 +291,9 @@ MAX_ASK_OPTIONS = 8  # 이보다 칸이 많은 분류는 되묻지 않고 표 �
 
 # 한 분류 안의 여러 칸으로 하는 연산을 고르는 말
 SUM_WORDS = re.compile(r"합|합계|합친|더한|더하면|모두|전부|또는|이거나|(?<=[가-힣])(이)?나\s")
-COMPARE_WORDS = re.compile(r"비교|차이|몇\s*배|보다|대비|vs", re.I)
+COMPARE_WORDS = re.compile(
+    r"비교|차이|몇\s*배|보다|대비|vs|더\s*(많|적|높|낮)|어느\s*(게|쪽|것)|뭐가\s*더|뭘\s*더", re.I
+)
 RANK_PARTS = re.compile(r"top\s*\d|상위\s*\d|순위|(가장|제일)\s*(많|적|높|낮)|1위|몇\s*위", re.I)
 REGION_RANK = re.compile(r"시도|시군구|지역|곳|어디|구별|도시|광역시")
 SUBTOTAL = re.compile(r"(계|합계|소계)$")
@@ -337,6 +376,17 @@ def choose(
             # 성별 칸 말고 다른 칸(예: 항목의 1인가구)이 질문에 나왔으면 그것이 '계'
             sex_set = set(d.sex_codes().values())
             others = [c for c in codes if c not in sex_set]
+            if (
+                not plan.multi
+                and not others
+                and sex_set <= set(codes)
+                and _multi_op(question) == "compare"
+            ):
+                # "남자애가 더 많이 태어났어 여자애가 더 많이?": 남 · 여 칸끼리 비교
+                both = [d.sex_codes()["남"], d.sex_codes()["여"]]
+                plan.multi, plan.multi_dim = (d.no, both, "compare"), d
+                plan.pick[d.no] = plan.matched[d.no] = both[0]
+                continue
             base = (others[:1] or [d.total()] or [None])[0]
             if base is None:
                 rest = [c for c in d.codes if c not in sex_set]
@@ -372,6 +422,12 @@ def choose(
         elif (default := d.default()) is not None:
             plan.pick[d.no] = default
             plan.defaults.append(f"{d.name}: {d.codes[default]}")
+        elif (husband := _couple_code(d)) and not parsed.get("ages"):
+            # 남편 · 아내만 있는 분류 (혼인 · 이혼 표): 부부 단위 건수라 연령을 나누지 않으면 어느
+            # 쪽으로 세도 같다 ("이혼 부부 중 미성년 자녀 없는 비율"을 성별로 되묻고 있었다)
+            plan.pick[d.no] = husband
+            note = f"{d.codes[husband]} 기준 (부부 건수라 아내 기준과 같음)"
+            plan.defaults.append(f"{d.name}: {note}")
         elif len(d.codes) <= MAX_ASK_OPTIONS:
             asks.append(Ask(d.no, d.name, list(d.codes.items())))
         else:
@@ -381,6 +437,14 @@ def choose(
     if asks:
         return None, asks[0]
     return plan, None
+
+
+def _couple_code(d: Dim) -> str | None:
+    """분류가 남편 · 아내 두 칸뿐이면 남편 칸 코드"""
+    names = {_norm(n): c for c, n in d.codes.items()}
+    if set(names) == {"남편", "아내"}:
+        return names["남편"]
+    return None
 
 
 def llm_groups(question: str, dims: list[Dim], region_dim: int | None) -> list[cell_pick.Group]:
@@ -728,7 +792,11 @@ def _item_whole(d: Dim, tbl_nm: str) -> str | None:
     # 첫 칸만 본다 (KOSIS는 전체를 맨 앞에 둔다). "상주(야간) · 주간 인구" 표의 "주간 인구"처럼
     # 표 이름에 든 세부 칸을 전체로 보지 않게
     code, name = next(iter(d.codes.items()), (None, ""))
-    return code if len(_norm(name)) >= 4 and _norm(name) in _norm(tbl_nm) else None
+    if len(_norm(name)) >= 4 and _norm(name) in _norm(tbl_nm):
+        return code
+    # 이름 끝에 합계 표시가 붙은 첫 칸 ("이혼건수-계"): 다른 칸 이름에는 합계 표시가 없을 때만
+    marked = [c for c, n in d.codes.items() if TOTAL_SUFFIX.search(_norm(n)) and "-" in n]
+    return code if marked == [code] else None
 
 
 def _ratio(spec: dict, src: dict, plan: Plan, dims: list[Dim], parsed: dict, tbl_nm: str = ""):
@@ -1074,6 +1142,12 @@ def _recent_floor() -> int | None:
         return None
 
 
+# 통계표 찾기가 '찾는 값이 표에 없다'고 본 조건 ("item:미성년 자녀 없는 경우").
+# 표의 칸 이름과 글자가 달라 ✘가 된 경우가 있어 건너뛰지 않는다: 계산할 때 칸 반영 검사
+# (uncovered)가 그 값이 고른 칸에 반영됐는지 다시 보므로, 반영되지 않으면 계산하지 않는다
+ITEM_CHECK = "item:"
+
+
 def skip_reason(
     entry: dict, picked_exact: bool, parsed: dict | None = None, multi: bool = False
 ) -> str | None:
@@ -1085,7 +1159,7 @@ def skip_reason(
     failed = [
         k
         for k, ok in (entry.get("checks") or {}).items()
-        if not ok and not _age_check(k, parsed or {})
+        if not ok and not _age_check(k, parsed or {}) and not k.startswith(ITEM_CHECK)
     ]
     if failed:
         return f"통계표 찾기 조건 불충족 ({', '.join(failed)})"
@@ -1524,15 +1598,22 @@ def parts_answer(parsed: dict, spec: dict, question: str) -> dict:
     region = (parsed.get("regions") or ["전국"])[0]
     year = parsed.get("year") or lookup._years(spec["sources"][0])[1]
     sex = parsed.get("sex") or "계"
+    y0, y1 = parsed.get("start_year"), parsed.get("end_year")
+    # 기간의 합 ("최근 5년간 외국인이랑 결혼한 거 다 합치면"): 칸마다 그 기간을 모두 더한다
+    years = list(range(y0, y1 + 1)) if op["op"] == "sum" and y0 and y1 and y0 < y1 else [year]
     rows, first = [], None
     for code, label in zip(op["codes"], op["labels"], strict=True):
-        r = lookup.value(_set_code(spec, op["col"], code), region, year, sex)
-        if r.get("status") != "ok":
-            return {"status": r.get("status"), "answer": r.get("reason") or "", "result": r}
-        first = first or r
-        rows.append({"label": label, "value": r.get("value")})
+        total_of_code = 0
+        for y in years:
+            r = lookup.value(_set_code(spec, op["col"], code), region, y, sex)
+            if r.get("status") != "ok" or r.get("value") is None:
+                return {"status": r.get("status"), "answer": r.get("reason") or "", "result": r}
+            first = first or r
+            total_of_code += r["value"]
+        rows.append({"label": label, "value": total_of_code})
     unit, name = first.get("unit") or "", spec["name"]
-    where = f"{year}년 {first.get('region') or region}"
+    when = f"{years[0]}~{years[-1]}년" if len(years) > 1 else f"{year}년"
+    where = f"{when} {first.get('region') or region}"
     valid = [x for x in rows if x["value"] is not None]
     if not valid:
         return {"status": "missing_data", "answer": "", "result": {"status": "missing_data"}}
