@@ -73,6 +73,14 @@ SEX_NAMES = {"남": {"남자", "남", "남성"}, "여": {"여자", "여", "여�
 COUNT_UNITS = {"명", "가구", "건", "개", "세대", "호", "곳", "개소", "천명", "천가구"}
 # 표가 쓰는 말과 같은 뜻의 일상어 (글자 맞추기 전에 바꾼다). 뜻이 하나로 정해진 말만 둔다
 SAME_WORDS = {"출퇴근": "통근", "출근": "통근"}
+# "학교 가는 · 다니는"은 통학일 수도 재학일 수도 있어 위 목록에 넣지 않는다. 이동을 말할 때만
+# 통학으로 바꾼다 ("출근하거나 학교 가는 사람 수" → 통근 + 통학). "학교 다니는 학생 수"(재학)와
+# "고등학교 다니는"(교육정도의 고등학교 칸)은 그대로 둔다 (11/19). 목록 밖 말("등굣길")은
+# 에이전트화 때 실패 분석 · 쿼리 재작성이 맡는다
+SCHOOL_GOING = re.compile(r"(?:^|(?<=\s))학교\s*(?:에\s*)?(?:가는|가고|간|다니는|다니고|다닌)")
+MOVE_CONTEXT = re.compile(
+    r"출근|출퇴근|통근|지하철|전철|버스|자가용|승용차|자전거|타고|걸어서|교통"
+)
 TOTAL_SUFFIX = re.compile(r"(계|합계|소계|전체)$")  # 공백·기호를 뺀 이름 끝의 합계 표시
 PCT_ASK = re.compile(r"%|퍼센트|비율|비중|몇\s*프로")
 NORM = re.compile(r"[\s·,.()\[\]{}<>\"'‘’“”_/-]")
@@ -207,11 +215,19 @@ def _unit(tbl_id: str, item: str) -> tuple[str | None, bool]:
 # ---- 칸 고르기 -------------------------------------------------------------------
 
 
+def table_words(question: str) -> str:
+    """칸 이름과 글자를 맞추기 전에 질문의 일상어를 표가 쓰는 말로 바꾼 글자 (공백 · 기호 뺌)"""
+    if MOVE_CONTEXT.search(question):  # 띄어쓰기를 지우기 전에 봐야 "고등학교"를 피한다
+        question = SCHOOL_GOING.sub("통학", question)
+    q = _norm(question)
+    for word, same in SAME_WORDS.items():  # "출퇴근" → "통근"
+        q = q.replace(word, same)
+    return q
+
+
 def _text_hits(question: str, dims: list[Dim], skip: set[int]) -> dict[int, list[str]]:
     """질문에 이름이 그대로 나온 칸 {분류 번호: [코드...]}. 더 긴 이름 안에 든 짧은 이름은 뺀다"""
-    q = _norm(question)
-    for word, same in SAME_WORDS.items():  # 표가 쓰는 말로 ("출퇴근" → "통근")
-        q = q.replace(word, same)
+    q = table_words(question)
     spans = []
     for d in dims:
         if d.no in skip:

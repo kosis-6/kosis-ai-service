@@ -891,6 +891,19 @@ def test_handoff_computes_with_search_reading(computed, monkeypatch) -> None:
     assert q2["regions"] == ["서울", "부산"] and q2["sex"] == "계"
 
 
+def test_school_going_is_commute_only_with_movement() -> None:
+    # 이동을 말하면 "학교 가는 · 다니는"은 통학 (통근 + 통학을 함께 묻는 질문)
+    assert {"통근", "통학"} <= {
+        w for w in ("통근", "통학") if w in d.table_words("출근하거나 학교 가는 사람 수")
+    }
+    assert "통학" in d.table_words("버스 타고 학교에 다니는 학생 수")
+    # 이동을 말하지 않으면 재학일 수 있어 그대로 둔다
+    assert "통학" not in d.table_words("학교 다니는 학생 몇 명이야")
+    # "고등학교 · 대학교"는 학교급 이름이라 바꾸지 않는다 (교육정도 칸과 맞아야 한다)
+    words = d.table_words("지하철 타고 고등학교 다니는 학생 수")
+    assert "고등학교" in words and "통학" not in words
+
+
 def test_handoff_drops_guessed_year() -> None:
     # 질문 이해가 연도 없는 질문에 올해를 짐작해 넣었고(종류 other라 qa.correct가 안 지움)
     # 탐색 해석은 연도가 없다 → 지워서 표의 마지막 해로 계산한다
