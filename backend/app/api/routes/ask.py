@@ -43,7 +43,13 @@ async def ask(body: AskRequest, user: OptionalUser) -> AskResponse:
             raise HTTPException(
                 status_code=429, detail="요청이 많아 잠시 후 다시 질문해 주세요."
             ) from e
-        raise HTTPException(status_code=502, detail=f"HCX 호출 실패: {e}") from e
+        # HCX 원문 오류는 기록(error)에만 남기고, 화면에는 다시 질문하라는 안내만
+        detail = (
+            "질문을 해석하는 AI 서버에 잠시 연결하지 못했습니다. 잠시 후 다시 질문해 주세요."
+            if e.is_transient
+            else "질문을 해석하는 AI 서버가 응답하지 못했습니다. 잠시 후 다시 질문해 주세요."
+        )
+        raise HTTPException(status_code=502, detail=detail) from e
     except Exception as e:  # 예상 못 한 오류도 기록은 남긴다
         error = f"{type(e).__name__}: {e}"
         raise

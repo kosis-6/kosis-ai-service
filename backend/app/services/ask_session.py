@@ -66,6 +66,7 @@ from app.services import (
     timeref,
 )
 from app.services.hcx_client import HcxClient
+from app.services.josa import josa
 from app.services.log_redaction import mask, redact
 from app.services.memory_cache import MISSING, MemoryCache
 
@@ -1040,7 +1041,8 @@ async def _after_asking(original: str, kind: str, user_id: int | None):
     if kind == "move_scope":
         told = f"범위를 알아듣지 못해 '{question_clarify.MOVE_OPTIONS[1]}'으로 답했습니다."
         return await _movement(original, "exclude", user_id, told)
-    if kind == "table_cell":  # 표의 칸을 끝내 고르지 못함: 원래 질문의 통계표를 안내한다
+    if kind in ("table_cell", "alternative"):
+        # 표의 칸을 끝내 고르지 못함 · 대안을 고르지 않음: 원래 질문의 통계표를 안내한다
         return await _find_tables(original, None, user_id)
     return (
         {
@@ -1124,7 +1126,8 @@ async def _turn(
                     # 같은 이름이 여러 곳(고성 등): 후보를 선택지로 보여 주며 다시 묻는다
                     again = {
                         "kind": "local_region",
-                        "prompt": f"'{name}'은(는) 여러 곳에 있습니다. 어느 지역인가요?",
+                        "prompt": josa(f"'{name}'", "은는")
+                        + " 여러 곳에 있습니다. 어느 지역인가요?",
                         "options": list(found["candidates"]),
                     }
                     return _clarification_answer(original, again), {}, None
@@ -1141,6 +1144,16 @@ async def _turn(
                     if not res.get("clarification"):
                         res["chart"] = charts.build(res.get("result"))
                     res.update(request_type=REPLY, question=original)
+                    return res, {}, None
+        elif kind == "alternative":
+            # 조건을 모두 만족하는 값이 없어 제안한 대안
+            # (alternative.py): 고른 대안의 답은 미리 계산해 두었다
+            if code := dynamic_indicator.pick_option(choice, pending["clarification"]):
+                answers = (pending["clarification"].get("context") or {}).get("answers") or []
+                if 0 <= int(code) < len(answers):
+                    res = copy.deepcopy(answers[int(code)])
+                    res["chart"] = charts.build(res.get("result"))
+                    res.update(request_type=REPLY, question=original, trace={})
                     return res, {}, None
         elif scope := question_clarify.scope_reply(choice):
             return await _movement(original, scope, user_id)
@@ -1385,7 +1398,11 @@ async def _attach_tables(res: dict, state: dict | None, question: str, user_id: 
             logger.exception("통계표 찾기 실패")
             return
         try:  # 사전에 없는 지표: 찾은 표에서 바로 계산해 본다 (dynamic_indicator.py)
-            computed = await dynamic_indicator.answer(asked, parsed or {}, found, trace)
+            # 넘기기 꾸러미(found["handoff"])의 후보 5개를
+            # 동시에 계산해 고른다. 꾸러미가 없으면 예전 방식
+            computed = await dynamic_indicator.compute_from_handoff(
+                asked, parsed or {}, found, trace
+            )
         except Exception:
             logger.exception("동적 지표 계산 실패")
             computed = None
@@ -1403,7 +1420,70 @@ async def _attach_tables(res: dict, state: dict | None, question: str, user_id: 
         return
     if ungrounded(res) and await _dynamic_instead(res, state, asked, user_id):
         return
+    if searchable_after(res) and await _search_after(res, state, asked, user_id):
+        return
     await _attach_cards(res, asked)
+
+
+def searchable_after(res: dict) -> bool:
+    """사전 지표가 자료가 없어 답하지 못한 새 질문 (table_guide.SEARCH_AFTER).
+    추계값 제안(suggestion)이 이미 있으면 그대로 둔다 (수록 기간 밖 미래 연도 → 장래추계)"""
+    result = res.get("result") or {}
+    return (
+        res.get("status") in table_guide.SEARCH_AFTER
+        and res.get("request_type") == NEW
+        and not (result.get("suggestion") or {}).get("status") == "ok"
+    )
+
+
+async def _search_after(res: dict, state: dict | None, asked: str, user_id: int | None) -> bool:
+    """사전이 자료가 없어 답하지 못한 지표를 다른 통계표에서 찾아 계산한다. res를 바꿨으면 True
+
+      바로 계산됨 · 대안 제안 · 칸 되묻기   그 답 (계산했으면 사전이 왜 못 했는지 한 줄을 앞에)
+      그 밖                               사전의 안내를 그대로 두고, 찾은 표를 표 카드로 붙인다
+    바꾼 원래 답은 trace["replaced"]에 남긴다 (사전 답이 어떻게 바뀌었는지 나중에 센다)"""
+    sid = (state or {}).get("search_session") or table_guide.new_search_session()
+    trace = res.setdefault("trace", {})
+    parsed = res.get("parsed") or {}
+    why = (res.get("result") or {}).get("reason") or ""
+    try:
+        found = await table_guide.find_tables(asked, sid, None, user_id)
+        computed = await dynamic_indicator.compute_from_handoff(asked, parsed, found, trace)
+    except Exception:
+        logger.exception("사전에 자료가 없는 지표의 통계표 찾기 · 계산 실패")
+        return False
+    trace["search_after"] = {
+        "status": res.get("status"),
+        "found": found.get("status"),
+        "computed": (computed or {}).get("status"),
+    }
+    if computed is None or (computed.get("status") != "ok" and not computed.get("clarification")):
+        # 다른 표도 수록 기간 밖 등으로 끝났으면 사전의 안내가 더 낫다
+        recs = found.get("recommendations") or []
+        if found.get("status") in ("ok", "partial_match") and recs:
+            res["tables"] = {"status": "ok", "recommendations": recs}
+            res["search_session"] = sid
+            return True
+        return False
+    trace["replaced"] = {
+        "indicator": parsed.get("indicator"),
+        "answer": lead(res.get("answer") or ""),
+        "by": computed.get("status"),
+        "reason": res.get("status"),
+    }
+    kind = res.get("request_type")
+    res.clear()
+    res.update(computed)
+    if not res.get("clarification"):
+        if res.get("status") == "ok" and why:
+            res["answer"] = (
+                f"{why} 그래서 다른 통계표에서 찾아 계산했습니다.\n{res.get('answer') or ''}"
+            )
+        res["chart"] = charts.build(res.get("result"))
+        await _attach_cards(res, asked)
+    res.setdefault("trace", trace)
+    res["request_type"], res["question"], res["search_session"] = kind, asked, sid
+    return True
 
 
 async def _attach_cards(res: dict, asked: str) -> None:
@@ -1434,7 +1514,7 @@ def ungrounded(res: dict) -> bool:
 
 
 async def _dynamic_instead(res: dict, state: dict | None, asked: str, user_id: int | None) -> bool:
-    """근거 없이 고른 사전 지표 대신 통계표에서 바로 계산한다. res를 바꿨으면 True
+    """사전 지표 대신 통계표에서 바로 계산한다. res를 바꿨으면 True
 
     질문에 그 지표의 이름·별칭이 없으면 HCX가 비슷한 다른 지표를 고른 것일 수 있다
     (예: "1인 가구 중 여성 비율" → 서울 인구 성별 구성). 그래서 원래 답은 돌려주지 않는다.
@@ -1450,12 +1530,11 @@ async def _dynamic_instead(res: dict, state: dict | None, asked: str, user_id: i
         computed = await dynamic_indicator.cached_answer(asked, parsed, trace)
         if computed is None:
             found = await table_guide.find_tables(asked, sid, None, user_id)
-            computed = await dynamic_indicator.answer(asked, parsed, found, trace)
+            computed = await dynamic_indicator.compute_from_handoff(asked, parsed, found, trace)
     except Exception:
         logger.exception("근거 없는 지표의 바로 계산 실패")
         return False
     if computed is None and found is None:
-        trace["dynamic_kept"] = parsed.get("indicator")
         return False
     # 바꾼 원래 답 (요청 기록·회귀 평가에서 사전 지표 답과 비교한다)
     trace["replaced"] = {

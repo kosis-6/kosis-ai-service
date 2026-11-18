@@ -1360,3 +1360,124 @@ def test_region_split_keeps_additional_conditions_for_hcx(talk: Talk, said: str)
     res = talk.say(said)
     assert res["request_type"] not in ("detail", "source", "summary")
     assert talk.extracted == [said]
+
+
+def test_past_year_out_of_range_tries_other_tables(talk: Talk) -> None:
+    # 사전의 표보다 옛 연도 (1980년 이혼 건수, 사전 표는 1990년부터): 그 연도가 있는 표로 바로 계산
+    talk.parsed = {**BASE, "type": "value", "indicator": "이혼 건수"}
+    talk.fail_when = lambda parsed: True  # 가짜 qa: out_of_range
+
+    def old(result):
+        result["result"].update(available_years=[1990, 2025], asked_year=1980)
+        return result
+
+    original = talk._result
+    talk._result = lambda parsed, question="": old(original(parsed, question))
+    talk.dynamic = {
+        "status": "ok",
+        "answer": "1980년 서울특별시의 이혼 수는 7,935건입니다.",
+        "parsed": {**BASE, "type": "value", "indicator": "이혼"},
+        "result": {"status": "ok", "value": 7935, "method": "dynamic"},
+        "sources": [{"name": "옛 인구동태", "basis": "기준", "tbl_id": "DT_OLD", "url": None}],
+        "trace": {},
+    }
+    res = talk.say("1980년 서울 이혼 건수")
+    assert res["status"] == "ok" and res["result"]["method"] == "dynamic"
+    # 바로 계산이 안 되면 '기간 밖' 안내를 그대로 준다 (표 안내로 바꾸지 않음)
+    talk.dynamic = None
+    res = talk.say("1975년 부산 혼인 건수")
+    assert res["status"] == "out_of_range"
+
+
+@pytest.mark.parametrize(
+    ("reply", "selections", "value"),
+    [
+        ("2번", None, 2023),
+        (
+            "2024년 기준",
+            {"clarification_kind": "alternative", "clarification_value": "2024년 기준"},
+            2024,
+        ),
+    ],
+)
+def test_alternative_offer_then_pick_returns_the_precomputed_answer(
+    talk: Talk, reply: str, selections: dict | None, value: int
+) -> None:
+    # 조건을 모두 만족하는 값이 없어 대안을 값과 함께 물었다. 고르면 미리 계산한 답을 그대로 준다
+    from app.services import alternative
+
+    talk.parsed = {**BASE, "type": "value", "indicator": "반려동물 수"}
+
+    def ready(year):
+        return {
+            "status": "ok",
+            "answer": f"{year}년 답",
+            "parsed": {**BASE, "type": "value", "indicator": "1인 가구 수", "year": year},
+            "result": {"status": "ok", "value": year, "method": "dynamic"},
+            "sources": [],
+            "trace": {},
+        }
+
+    chosen = [
+        {
+            "label": "2024년 기준",
+            "value": "2024년 답",
+            "entry": {"tbl_nm": "T"},
+            "res": ready(2024),
+        },
+        {"label": "다른 표", "value": "2023년 답", "entry": {"tbl_nm": "U"}, "res": ready(2023)},
+    ]
+    talk.dynamic = alternative.answer("2026년 서울 1인 가구 수", dict(BASE), chosen)
+    first = talk.say("2026년 서울 1인 가구 수")
+    assert first["status"] == "clarify_question"
+    assert first["clarification"]["options"] == ["2024년 기준", "다른 표"]
+    asked = len(talk.asked)
+    res = talk.say(reply, selections=selections)  # 번호로 답하거나 버튼으로 고른다
+    assert res["status"] == "ok" and res["request_type"] == "reply"
+    assert res["result"]["value"] == value and res["answer"].startswith(f"{value}년 답")
+    assert len(talk.asked) == asked  # 고를 때는 질문 해석(HCX)을 다시 부르지 않는다
+
+
+# ---- 사전이 자료가 없어 답하지 못하면 다른 통계표에서 (table_guide.SEARCH_AFTER, 11/18) ----------
+
+
+def _computed(value: int) -> dict:
+    return {
+        "status": "ok",
+        "answer": f"다른 표의 값 {value}",
+        "parsed": {**BASE, "type": "value", "indicator": "인구 수"},
+        "result": {"status": "ok", "value": value, "method": "dynamic"},
+        "sources": [{"name": "출처", "basis": "기준", "tbl_id": "DT_Y", "url": None}],
+        "trace": {},
+    }
+
+
+def test_no_data_in_dictionary_searches_other_tables(talk: Talk) -> None:
+    talk.fail_when = lambda parsed: True  # 가짜 qa: 사전 표 수록 기간 밖 (out_of_range)
+    talk.dynamic = _computed(42)
+    res = talk.say("부산 출생아 2030년")
+    assert res["status"] == "ok" and res["result"]["value"] == 42
+    assert res["request_type"] == "new" and talk.searched[-1][0] == "부산 출생아 2030년"
+
+
+def test_dictionary_notice_is_kept_when_other_tables_do_not_compute(talk: Talk) -> None:
+    talk.fail_when = lambda parsed: True
+    talk.dynamic = None  # 다른 표로도 계산하지 못함
+    res = talk.say("부산 출생아 2030년")
+    assert res["status"] == "out_of_range"  # 사전의 안내 그대로
+    assert res["tables"]["recommendations"] == [{"tbl_id": "DT_X"}]  # 찾은 표는 카드로
+
+
+def test_projection_suggestion_and_follow_ups_are_not_searched(talk: Talk, monkeypatch) -> None:
+    talk.fail_when = lambda parsed: True
+    talk.dynamic = _computed(42)
+    res = {
+        "status": "out_of_range",
+        "request_type": "new",
+        "result": {"suggestion": {"status": "ok"}},
+    }
+    assert not s.searchable_after(res)  # 추계값 제안이 있으면 그대로 (장래추계)
+    assert s.searchable_after({**res, "result": {}})
+    assert not s.searchable_after({**res, "result": {}, "request_type": "change"})
+    for status in ("missing_region", "unknown_region", "data_loading", "error", "ambiguous_region"):
+        assert not s.searchable_after({**res, "result": {}, "status": status}), status

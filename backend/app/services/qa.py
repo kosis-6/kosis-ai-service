@@ -38,6 +38,7 @@ from app.services import (
     timeref,
 )
 from app.services.hcx_client import HcxClient
+from app.services.josa import josa, ro
 
 MODEL = "HCX-007"
 
@@ -227,6 +228,18 @@ SINCE = re.compile(r"((?:19|20)\d{2})\s*년\s*(이후|이래|부터)(?!.*까지)
 UNTIL = re.compile(r"((?:19|20)\d{2})\s*년\s*까지")
 NATIONWIDE = re.compile(r"전국|우리나라|대한민국|한국\s*(전체|의|은|는)|국내\s*(전체)?")
 CAUSAL = re.compile(r"효과가?\s*(있|없|컸)|효과적|원인|왜\s|영향을?\s*(줬|주|미쳤|끼쳤)")
+# 지표 사전이 나누지 않는 조건 (체중·기간 등). 버리고 전체 값으로 답하면 틀린 답이 된다
+# ("체중 3.2kg 출생아 수" → 전국 출생아 수, "결혼 1년 반 만에 이혼한 건수" → 전체 이혼 건수)
+UNSUPPORTED_MEASURE = re.compile(
+    r"\d+(?:\.\d+)?\s*(?:kg|킬로그램|킬로|키로|그램)|\d+(?:\.\d+)?\s*(?:cm|센티)|"
+    r"\d+\s*년\s*반|\d+\s*개월|(?:결혼|혼인|동거|거주|근속|재직)\s*기간|체중|몸무게|키가"
+)
+# 앞으로를 묻는 질문 ("앞으로 출산율 다시 오를까?").
+# 미래 연도를 말했으면 장래추계로 답하므로 따로 본다
+PREDICT = re.compile(
+    r"앞으로|향후|미래에?|전망|예측|예상(?!보다)|"
+    r"(오를|내릴|늘|줄|늘어날|줄어들|증가할|감소할|떨어질|올라갈|내려갈|회복할|반등할)\s*(까|지)"
+)
 # "가장 많이 빠져나간 시군구", "합계출산율이 가장 높은 시도" → 순위
 RANK_ASK = re.compile(
     r"(가장|제일|꼴찌|최하위)\S*\s*(\S+\s*){0,3}?(시군구|시도|지역|곳|구|시)(는|가|은|이|를|\s|$|\?)"
@@ -340,6 +353,26 @@ def _pick_indicator(question, names):
     return None
 
 
+def _ratio_sibling(question, parsed, fix):
+    """'몇 프로'를 물었는데 수 지표를 골랐으면 같은 이름의
+    비율 지표로 (등록외국인 수 → 등록외국인 비율).
+    "○○구 주민 중 등록외국인이 몇 %"처럼 '비율'이라는 말 없이 물으면 수로 답했다 (11/18).
+    '몇 퍼센트 늘었어'처럼 증감을 물으면 증감률이라 그대로 두고, '전국 중 ~ 비중'은 아래의
+    전국 대비 비중(share_of)이 맡으므로 그대로 둔다. 바꿨으면 그 지표 이름, 아니면 None"""
+    current = indicators.canonical_name(parsed.get("indicator") or "")
+    sp = indicators.spec(current) if current else None
+    if sp is None or lookup.kind_of(sp) != "count":
+        return None
+    if not PCT_ASK.search(question) or CHANGE_ASK.search(question) or "전국" in question:
+        return None
+    base = re.sub(r"\s*수$", "", current)
+    for sibling in (f"{base} 비율", f"{base} 비중"):
+        if sibling in indicators.specs():
+            fix("indicator", sibling, "비율(몇 프로)을 물음")
+            return sibling
+    return None
+
+
 def correct(question, parsed, today=None):
     """같은 질문도 실행마다 HCX 해석이 달라서, 질문 원문에서 확실히 알 수 있는 것은 코드가 맞춘다.
 
@@ -417,13 +450,19 @@ def correct(question, parsed, today=None):
             if name != "총인구" or current is None or (ages and not PCT_ASK.search(question)):
                 fix("indicator", name, "질문의 지표 표현")
                 parsed.pop("unsupported", None)
+        if sibling := _ratio_sibling(question, parsed, fix):
+            names = names | {sibling}  # 질문의 수 지표 표현 + '몇 프로'가 근거
         _guard_indicator(question, parsed, names, fix)
         _age_population(question, parsed, fix)
         # 질문이 다른 통계를 가리키면 비슷한 이름의 지표로 답하지 않는다
         # 예) "등록외국인 수"를 외국인주민 수(귀화자·자녀 포함)로 답하지 않고 표 안내로
         current = indicators.canonical_name(parsed.get("indicator") or "")
         if current and (phrase := indicators.excluded_phrase(current, question)):
-            fix("indicator", parsed.get("term") or phrase, f"'{current}'과(와) 다른 통계")
+            fix(
+                "indicator",
+                parsed.get("term") or phrase,
+                josa(f"'{current}'", "과와") + " 다른 통계",
+            )
             parsed["unsupported"] = True
         kind = parsed.get("type")
         # 질문에 고른 지표의 이름·별칭이 있는가. 없으면 HCX가 비슷한 지표를 고른 것일 수 있어
@@ -431,6 +470,10 @@ def correct(question, parsed, today=None):
         chosen = indicators.canonical_name(parsed.get("indicator") or "")
         # 지표가 없으면(원인 질문 등) 판단하지 않는다 (None)
         parsed["grounded"] = (chosen in names) if chosen else None
+        if chosen == "총인구" and population_modifier(question):
+            # "통학 인구"·"외국인 인구"처럼 '인구' 앞에 다른 통계를 가리키는 말이 있으면
+            # 별칭 '인구'만으로 총인구라고 볼 수 없다 → 바로 계산을 시도한다
+            parsed["grounded"] = False
 
     sp = indicators.spec(parsed.get("indicator"))
     is_comp = sp is not None and lookup.kind_of(sp) == "composition"
@@ -522,6 +565,30 @@ def correct(question, parsed, today=None):
 
 # 지표 이름 사이에 이 말만 있으면 여러 지표를 함께 물은 것 ("출생아 수와 사망자 수")
 AND_WORDS = re.compile(r"^(와|과|하고|랑|이랑|및|,|그리고|,그리고|와함께|과함께)$")
+
+
+# '인구' 앞에 와도 총인구인 말: 지역·성별·연령·전체를 뜻하는 말 (그 밖이면 다른 통계일 수 있다)
+PLAIN_POPULATION = {
+    "총", "전체", "주민등록", "우리나라", "한국", "국내", "전국", "남자", "여자", "남성", "여성",
+    "남녀", "이상", "이하", "미만", "대", "세", "살", "노인", "고령", "노년", "청년", "청소년",
+    "유소년", "어린이", "아동", "생산연령", "중장년", "현재", "작년", "올해", "지난해", "의",
+    "수도권", "비수도권", "광역시", "특별시", "시군구", "시도", "지역", "구", "군", "시", "도",
+    "나이", "연령", "연령대", "만",
+}  # fmt: skip
+POPULATION_NOUN = re.compile(r"([가-힣]+)\s*인구")
+
+
+def population_modifier(question):
+    """'인구' 바로 앞의 말이 지역·성별·연령이 아닌 다른 통계를 가리키면 그 말 (예: 통학, 외국인)"""
+    for m in POPULATION_NOUN.finditer(question):
+        # 조사를 뗀 말과 그대로의 말을 모두 본다 ("나이"의 '이'는 조사가 아니다)
+        words = {m[1], re.sub(r"(의|은|는|이|가|에서|에|별)$", "", m[1]) or m[1]}
+        if any(w in PLAIN_POPULATION or re.search(r"\d", w) for w in words):
+            continue
+        if any(indicators.find_regions(w) or agegroup.resolve(w) for w in words):
+            continue
+        return min(words, key=len)
+    return None
 
 
 def asked_indicators(question):
@@ -812,6 +879,14 @@ def _read_question(question, parsed, fix):
     if CAUSAL.search(question) and kind not in ("causal", "composition", "other"):
         fix("type", "causal", "원인·효과를 묻는 질문")
         kind = "causal"
+    if (m := UNSUPPORTED_MEASURE.search(question)) and kind not in ("other", "parse_error"):
+        parsed["unsupported_condition"] = m[0].strip()
+    if PREDICT.search(question) and kind not in ("other", "parse_error"):
+        # 미래 연도를 말했으면 장래추계로 답한다 (예: "2040년 서울 인구는 몇 명이 될까?")
+        lo, hi = indicators._data_years()
+        years = [y for y in (parsed.get("year"), parsed.get("end_year")) if y]
+        if not any(y > hi for y in years):
+            parsed["prediction"] = True
     if (m := SPAN.search(question)) and kind in ("value", "trend", "causal"):
         start, end = int(m[1]), int(m[3])
         if kind == "value":
@@ -1007,16 +1082,25 @@ def compute(q):
         missed = [n for n, p in zip(names, parts, strict=False) if p.get("status") != "ok"]
         if missed:
             ok[0].setdefault("notes", []).append(
-                f"{', '.join(missed)}은(는) 이 조건으로 답할 수 없어 뺐습니다"
+                josa(", ".join(missed), "은는") + " 이 조건으로 답할 수 없어 뺐습니다"
             )
         return result
 
-    causal = kind == "causal"
-    if causal:  # 답변 불가 사례 4: 인과 판단 없이 수치 변화만 제시
+    # 원인·정책 효과·앞으로의 변화는 통계로 답할 수 없다 (답변 불가). 대신 그 지표의 추이를 볼 수
+    # 있는 통계표를 안내한다. 추이는 안내할 표를 고르려고만 계산하고 숫자는 답에 쓰지 않는다
+    refusal = (
+        "causal_question"
+        if kind == "causal"
+        else "prediction_question"
+        if q.get("prediction")
+        else None
+    )
+    if refusal:
+        if not (q.get("dynamic_spec") or indicators.spec(ind)) or q.get("unsupported"):
+            return _limit_result(refusal, None)
         kind = "trend" if regions else "rank"
-        if not indicators.spec(ind) or q.get("unsupported"):  # 지표가 없으면 전국 인구 추이
-            ind, regions, kind = "총인구", ["전국"], "trend"
-            q = {**q, "unsupported": False, "start_year": None, "end_year": None}
+        q = {**q, "prediction": False, "start_year": None, "end_year": None}
+        q["year"] = None if kind == "trend" else q.get("year")
 
     if area := q.get("sub_area"):
         return {
@@ -1062,6 +1146,17 @@ def compute(q):
             **lookup.data_gap(term),
         }
 
+    if (cond := q.get("unsupported_condition")) and not q.get("dynamic_spec"):
+        # 지표 사전의 표는 이 조건으로 나뉘어 있지 않다: 버리고 전체 값으로 답하지 않는다
+        where = " ".join(regions) if regions else "전국"
+        return {
+            "status": "band_mismatch",
+            "indicator": sp["name"],
+            "reason": f"{sp['name']} 자료는 '{cond}' 조건으로 나뉘어 있지 않아 "
+            "그 값을 낼 수 없습니다.",
+            "alternative": f"대신 조건 없는 {where} {sp['name']}는 확인할 수 있습니다",
+        }
+
     def calc(rs):
         if sp["method"] == "lookup":
             return _compute_lookup(q, sp, kind, rs, year, sex, ages)
@@ -1103,18 +1198,44 @@ def compute(q):
     if result.get("status") == "ok" and term and indicators.canonical_name(term) == sp["name"]:
         if indicators._norm(term) != indicators._norm(sp["name"]):  # 예: 합계출생율 → 합계출산율
             for r in _leaves(result):
-                note = f"'{term}'을(를) {sp['name']}(으)로 보고 답했습니다"
+                note = f"{josa(repr_q(term), '을를')} {ro(sp['name'])} 보고 답했습니다"
                 r["notes"] = [note] + r.get("notes", [])
     if (group := q.get("group")) and result.get("status") == "ok" and "values" in result:
         # 묶음 비교·순위는 정의가 갈릴 수 있어 (예: 5대 광역시에 울산 포함 여부) 포함 지역을 밝힌다
         names = ", ".join(v["region"] for v in result["values"])
         scope = f"{_josa(group, '은는')} {names} 기준입니다."
         result["answer_note"] = " ".join(filter(None, [scope, result.get("answer_note")]))
-    if causal:
-        result["causal_question"] = (
-            "원인이나 정책 효과는 통계 수치만으로 판단할 수 없어 수치 변화만 보여드립니다."
-        )
+    if refusal:
+        return _limit_result(refusal, result)
     return result
+
+
+LIMIT_REASONS = {
+    "causal_question": "원인이나 정책 효과는 통계 수치만으로 판단할 수 없어 답할 수 없습니다.",
+    "prediction_question": "앞으로의 변화는 지금까지의 통계로 예측해 답할 수 없습니다.",
+}
+
+
+def _limit_result(status, alternative):
+    """원인·예측 질문의 답변 불가. alternative: 대신 볼 수 있는 통계(그 지표의 추이) 계산 결과.
+    숫자는 쓰지 않고 그 통계와 통계표만 안내한다 (출처·표 카드는 alternative의 표)"""
+    out = {"status": status, "reason": LIMIT_REASONS[status]}
+    alt = _source_result(alternative) if alternative else {}
+    if not alternative or alternative.get("status") != "ok" or not alt.get("source"):
+        out["guide"] = (
+            "궁금한 지표와 지역·기간을 넣어 다시 질문해 주세요 (예: 최근 10년 서울 출생아 수)."
+        )
+        return out
+    name = alt.get("indicator") or "그 지표"
+    where = alt.get("region") or ("시도별" if "ranking" in alt else "")
+    what = (
+        f"{where} {name}의 변화" if "series" in alt or "split" in alternative else f"{where} {name}"
+    )
+    out["guide"] = f"대신 {_josa(what.strip(), '은는')} 아래 통계표에서 확인할 수 있습니다."
+    if status == "prediction_question":
+        out["guide"] += " 미래 연도를 넣어 물으면 장래인구추계가 있는 지표는 추계값으로 답합니다."
+    out.update({k: alt.get(k) for k in ("indicator", "region", "source", "basis", "tbl_id", "url")})
+    return out
 
 
 def _dynamic_fits(q):
@@ -1261,6 +1382,14 @@ def _lookup_trend(q, sp, region, year, sex, ages):
     else:
         start = q.get("start_year") or end - 5
     notes = []
+    if end < lo:  # 물은 기간 전체가 수록 기간보다 앞 (예: 1970~1980년, 자료는 1990년부터)
+        return {
+            "status": "out_of_range",
+            "indicator": sp["name"],
+            "reason": f"{sp['name']} 자료는 {lo}~{hi}년만 있습니다.",
+            "available_years": [lo, hi],
+            "asked_year": q.get("start_year") or end,
+        }
     if start < lo:
         notes.append(f"{sp['name']} 자료가 {lo}년부터 있어 {lo}년부터 봤습니다")
         start = lo
@@ -1404,6 +1533,13 @@ def _add_trend_facts(result):
     years = series[-1]["year"] - series[0]["year"]
     if years:
         c["per_year"] = round(c["diff"] / years, 3)
+    first, last = series[0]["value"], series[-1]["value"]
+    if "cagr" in c:  # 계산 지표는 반올림 전 값으로 이미 냈다 (indicators.trend)
+        pass
+    elif years and "rate" in c and c.get("diff_unit") != "%p" and first > 0 and last > 0:
+        # 연평균 증감률 (복리): (마지막 ÷ 처음)^(1/햇수) − 1. 증감률이 있는 추이만 (사람 수 · 건수 ·
+        # 연령 등). 비율 지표(%p)는 %p와 헷갈려 뺀다. 0 이하 값이 끼면 계산할 수 없다 (11/18)
+        c["cagr"] = round(((last / first) ** (1 / years) - 1) * 100, 1)
     ordered = sorted(series, key=lambda s: s["value"])
     result["lowest_years"] = [{"year": s["year"], "value": s["value"]} for s in ordered[:5]]
     result["highest_years"] = [{"year": s["year"], "value": s["value"]} for s in ordered[::-1][:5]]
@@ -1455,21 +1591,13 @@ REFUSAL_GUIDE = {
 }
 
 
-def _josa(word, pair):
-    """받침이 있으면 pair[0], 없으면 pair[1]을 붙인다. pair 예: "은는", "이가" """
-    base = re.sub(r"\([^()]*\)$", "", word) if word.endswith(")") else word
-    last = base[-1] if base else ""
-    if "가" <= last <= "힣":
-        return word + (pair[0] if (ord(last) - ord("가")) % 28 else pair[1])
-    return f"{word}{pair[0]}({pair[1]})"
+# 받침에 맞춘 조사 (josa.py). 예전 이름으로도 쓴다 (answer_summary, dynamic_indicator)
+_josa, _ro = josa, ro
 
 
-def _ro(word):
-    """(으)로: 받침이 있으면(ㄹ 제외) '으로'"""
-    last = word[-1] if word else ""
-    if "가" <= last <= "힣" and (ord(last) - ord("가")) % 28 not in (0, 8):
-        return word + "으로"
-    return word + "로"
+def repr_q(word):
+    """작은따옴표로 감싼 말 ('출산율')"""
+    return f"'{word}'"
 
 
 def _val(v, unit, full=False):
@@ -1741,11 +1869,14 @@ def _refusal_text(r):
             gap = gap.format(tables=", ".join(r["related"]))
         if r.get("reason"):
             return f"{r['reason']} {gap}아래 지원 지표로 다시 질문해 주세요."
-        what = f"'{r['indicator']}'은(는)" if r.get("indicator") else "질문하신 지표는"
+        what = josa(f"'{r['indicator']}'", "은는") if r.get("indicator") else "질문하신 지표는"
         return f"{what} 아직 지원하지 않는 지표입니다. {gap}아래 지원 지표로 다시 질문해 주세요."
     if status == "missing_year":
         return f"{r['reason']} {ask_followup.guide(r)}"
-    guide = REFUSAL_GUIDE.get(status, "")
+    guide = r.get("guide") or REFUSAL_GUIDE.get(status, "")
+    if status == "band_mismatch" and r.get("alternative"):
+        again = " (구간을 바꿔 다시 질문해 주세요)" if r.get("available_bands") else "."
+        guide = r["alternative"] + again
     if status == "unknown_region" and r.get("alternative"):
         guide = f"속한 시군구({r['alternative']})로 다시 질문해 주세요."
     if status == "out_of_range" and r.get("available_years"):
@@ -1811,8 +1942,6 @@ def summary(r):
     status = r.get("status")
     if status == "ok" and r.get("split"):
         text = _split_text(r)
-        if r.get("causal_question"):
-            text = f"{r['causal_question']} {text}"
         return text
     if status == "ok":
         if "scenario" in r:
@@ -1827,12 +1956,12 @@ def summary(r):
             text = _composition_text(r)
         else:
             text = _value_text(r)
-        if r.get("causal_question"):
-            text = f"{r['causal_question']} {text}"
         if r.get("answer_note"):
             text += " " + r["answer_note"]
         return text
-    if status == "out_of_range" and r.get("suggestion", {}).get("status") == "ok":
+    if status in ("out_of_range", "prediction_question") and (
+        r.get("suggestion", {}).get("status") == "ok"
+    ):
         return f"{r['reason']} 대신 장래인구추계 값을 보여드립니다. " + _projection_text(
             r["suggestion"]
         )
@@ -1884,6 +2013,10 @@ def _body(r):
         total = _signed(c["diff"], c["diff_unit"])
         if "rate" in c:
             total += f", {_signed(c['rate'], c['rate_unit'])}"
+        if (cagr := c.get("cagr")) is not None:
+            total += f", 연평균 {_signed(cagr, '%')}"
+        if (rel := c.get("relative_rate")) is not None:  # 비율 지표: %p와 구분해 적는다
+            total += f" (비율 자체는 {abs(rel):g}% {'커짐' if rel >= 0 else '작아짐'})"
         lines.append(f"- {c['from_year']}년 → {c['to_year']}년 전체 변화: {total}")
         return lines
     if "values" in r:  # 지역 비교
@@ -1909,6 +2042,14 @@ def _body(r):
         ]
         lines += [f"- {p['label']}: {p['count']:,}{unit} ({p['share']}%)" for p in r["parts"]]
         return lines
+    if (ops := r.get("operands")) and all(o.get("value") is not None for o in ops):
+        # 두 값을 나눈 지표의 값 답: 나눈 두 값을 보여 준다 (값 자체는 문장에 있다)
+        a, b = ops
+        times = " × 100" if r.get("kind") == "ratio" else ""
+        return [
+            f"- 계산: {a['label']} {a['value']:,}{a['unit']} ÷ "
+            f"{b['label']} {b['value']:,}{b['unit']}{times} = {_num(r['value'], unit)}"
+        ]
     return []
 
 
@@ -1928,7 +2069,9 @@ def _source_result(result):
                         extra.append({k: one.get(k) for k in ("source", "basis", "tbl_id", "url")})
         return {**first, "notes": notes, "extra_sources": extra}
     suggestion = result.get("suggestion", {})
-    if result.get("status") == "out_of_range" and suggestion.get("status") == "ok":
+    if result.get("status") in ("out_of_range", "prediction_question") and (
+        suggestion.get("status") == "ok"
+    ):
         return suggestion
     return result
 

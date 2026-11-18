@@ -63,7 +63,7 @@ export type Parsed = {
 };
 
 export type Axis = { axis: string; options: string[] };
-export type FamilyChoice = { family_id: string; tbl_nm: string; survey_nm: string; period: string };
+export type FamilyChoice = { family_id: string; tbl_nm: string; survey_nm: string; period: string; diff?: string | null };
 export type Clarify =
   | { level: "member"; axes: Axis[] }
   | { level: "family"; families: FamilyChoice[] };
@@ -78,6 +78,7 @@ export type SearchResponse = {
   parsed: Parsed;
   clarify: Clarify | null;
   recommendations: Recommendation[];
+  together?: Recommendation[];
   notice: string | null;
   debug?: Debug | null;
 };

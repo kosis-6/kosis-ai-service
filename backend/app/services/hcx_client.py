@@ -9,12 +9,15 @@ from app.core.config import get_settings
 
 SUCCESS_CODE = "20000"
 RATE_LIMIT_CODE = "42901"
+NETWORK_CODE = "network"  # HCX에 연결하지 못함 (연결 거부, 응답 시간 초과 등)
 # 호출 제한에 걸리면 기다렸다가 다시 시도하는 간격 (초). 다 실패하면 HcxError
 RETRY_WAITS = (1.0, 3.0, 6.0)
+# 연결 실패·HCX 서버 오류(5xx)는 잠깐의 끊김일 수 있어 짧게 한 번만 다시 시도한다
+TRANSIENT_WAITS = (1.0,)
 
 
 class HcxError(RuntimeError):
-    """CLOVA Studio가 오류 상태 코드를 돌려준 경우."""
+    """CLOVA Studio가 오류 상태 코드를 돌려주거나, 연결하지 못한 경우 (code "network")."""
 
     def __init__(self, code: str, message: str, http_status: int | None = None) -> None:
         super().__init__(f"[{code}] {message}")
@@ -25,6 +28,11 @@ class HcxError(RuntimeError):
     @property
     def is_rate_limit(self) -> bool:
         return self.code == RATE_LIMIT_CODE or self.http_status == 429
+
+    @property
+    def is_transient(self) -> bool:
+        """연결 실패·HCX 서버 오류: 잠시 뒤 다시 하면 될 수 있다"""
+        return self.code == NETWORK_CODE or (self.http_status or 0) >= 500
 
 
 @dataclass
@@ -57,14 +65,19 @@ class HcxClient:
         """메시지를 보내고 답변을 받는다. options는 temperature, maxTokens 등 요청 본문 필드.
 
         호출 제한(42901, HTTP 429)에 걸리면 retry_waits 간격으로 다시 시도한다.
+        연결 실패·서버 오류는 TRANSIENT_WAITS만큼 다시 시도한다. 다 실패하면 HcxError
         """
-        for wait in (*self.retry_waits, None):
+        limit_waits, transient_waits = list(self.retry_waits), list(TRANSIENT_WAITS)
+        while True:
             try:
                 return await self._chat_once(model, messages, **options)
             except HcxError as e:
-                if not e.is_rate_limit or wait is None:
+                waits = (
+                    limit_waits if e.is_rate_limit else transient_waits if e.is_transient else []
+                )
+                if not waits:
                     raise
-                await asyncio.sleep(wait)
+                await asyncio.sleep(waits.pop(0))
 
     async def _chat_once(
         self, model: str, messages: list[dict[str, Any]], **options: Any
@@ -74,19 +87,24 @@ class HcxClient:
             "X-NCP-CLOVASTUDIO-REQUEST-ID": uuid4().hex,
         }
         body = {"messages": messages, **options}
-        async with httpx.AsyncClient(
-            base_url=self.base_url, timeout=self.timeout, transport=self.transport
-        ) as client:
-            response = await client.post(
-                f"/v3/chat-completions/{model}", headers=headers, json=body
-            )
+        try:
+            async with httpx.AsyncClient(
+                base_url=self.base_url, timeout=self.timeout, transport=self.transport
+            ) as client:
+                response = await client.post(
+                    f"/v3/chat-completions/{model}", headers=headers, json=body
+                )
+        except httpx.TransportError as e:  # 연결 거부, 응답 시간 초과, 연결 끊김
+            raise HcxError(NETWORK_CODE, f"HCX에 연결하지 못했습니다 ({type(e).__name__})") from e
 
         # 오류도 {"status": {"code": "...", "message": "..."}} 형태로 옴
         try:
             data = response.json()
         except ValueError:
-            response.raise_for_status()
-            raise
+            # 게이트웨이 오류처럼 JSON이 아닌 응답
+            raise HcxError(
+                str(response.status_code), response.reason_phrase, response.status_code
+            ) from None
         status = data.get("status") or {}
         if response.is_error or status.get("code") != SUCCESS_CODE:
             raise HcxError(

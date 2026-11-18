@@ -102,6 +102,7 @@ export function Answer({ data, busy, onSend, onOthers, onAskAgain }: Props) {
       parsed: tables.parsed ?? {},
       clarify: tables.clarify ?? null,
       recommendations: tables.recommendations ?? [],
+      together: tables.together,
       notice: tables.notice ?? null,
     };
     return (

@@ -29,8 +29,10 @@ import argparse
 import csv
 import json
 import os
+import re
 import sys
 import time
+import tomllib
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
@@ -70,6 +72,54 @@ class Scan:
     # (칸 번호, 코드) → (이름, 단계, 경로). 칸 번호 0은 항목
     codes: dict[tuple[int, str], tuple[str, int | None, str | None]] = field(default_factory=dict)
     units: set[str] = field(default_factory=set)
+    # 합쳐진 단위를 고침표로도 나누지 못한 (단위, 항목 이름 · 칸 이름) — 적재 기록에 경고로 남긴다
+    unsplit: set[tuple[str, str]] = field(default_factory=set)
+    fixed_units: int = 0  # 합쳐진 단위를 나눈 행 수
+
+
+# ---- 합쳐진 단위 나누기 (config/unit_fixes.toml, 2026-11-18) ------------------------------
+# KOSIS가 항목 · 칸마다 다른 단위를 한 글자로 합쳐
+# 모든 행에 주는 표가 있다 ("명 가임여자 1명당 명").
+# 그 행만 단위를 다시 정한다: 표의 칸별 단위 → 칸 이름
+# 끝 괄호의 단위 → 표의 기본값 → 받은 그대로(경고)
+
+UNIT_FIXES = ROOT / "config" / "unit_fixes.toml"
+# 칸 이름 끝 괄호 안이 이 낱말이면 단위로 본다 ("출생아수(명)"). "일반혼인율(남편)"은 단위가 아니다
+BRACKET_UNIT = re.compile(
+    r"\(\s*(명|건|가구|세대|세|%|천명당|천 명당|천명|천가구|개|호|원|배)\s*\)\s*$"
+)
+
+
+@dataclass
+class UnitFixes:
+    merged: frozenset[str] = frozenset()
+    tables: dict[str, dict[str, str]] = field(default_factory=dict)
+
+
+def load_unit_fixes(path: Path = UNIT_FIXES) -> UnitFixes:
+    if not path.exists():
+        return UnitFixes()
+    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    return UnitFixes(frozenset(data.get("merged") or []), dict(data.get("tables") or {}))
+
+
+def row_unit(r: dict[str, str], dims: int, tbl_id: str, fixes: UnitFixes) -> tuple[str, bool]:
+    """행의 단위 → (단위, 정했는가). 합쳐진 단위가 아니면 받은 그대로"""
+    unit = r["unit"]
+    if unit not in fixes.merged:
+        return unit, True
+    table = fixes.tables.get(tbl_id) or {}
+    keys = [r["item_id"], *(f"c{d}:{r[f'c{d}_id']}" for d in range(1, dims + 1))]
+    for key in keys:
+        if key in table:
+            return table[key], True
+    names = [r["item_nm"], *(r[f"c{d}_nm"] for d in range(1, dims + 1))]
+    for name in names:
+        if m := BRACKET_UNIT.search(name or ""):
+            return m.group(1), True
+    if "*" in table:
+        return table["*"], True
+    return unit, False
 
 
 def dim_count(header: list[str]) -> int:
@@ -94,12 +144,21 @@ def is_big(row_count: int) -> bool:
     return row_count >= BIG_ROWS
 
 
-def scan_csv(path: Path) -> Scan:
+def scan_csv(path: Path, fixes: UnitFixes | None = None) -> Scan:
     scan = Scan()
+    fixes = load_unit_fixes() if fixes is None else fixes
     with path.open(encoding="utf-8-sig", newline="") as f:
         reader = csv.DictReader(f)
         dims = dim_count(reader.fieldnames or [])
         for r in reader:
+            if r["unit"] in fixes.merged:
+                unit, ok = row_unit(r, dims, path.stem, fixes)
+                if ok:
+                    scan.fixed_units += 1
+                else:
+                    where = " / ".join([r["item_nm"], *(r[f"c{d}_nm"] for d in range(1, dims + 1))])
+                    scan.unsplit.add((r["unit"], where))
+                r["unit"] = unit
             scan.row_count += 1
             if r["value"]:
                 scan.value_sum += Decimal(r["value"])
@@ -125,12 +184,21 @@ def scan_csv(path: Path) -> Scan:
     return scan
 
 
-def value_rows(path: Path, tbl_key: int, keys: dict[tuple[int, str], int], units: dict[str, int]):
-    """CSV 행 → raw.stat_value 행"""
+def value_rows(
+    path: Path,
+    tbl_key: int,
+    keys: dict[tuple[int, str], int],
+    units: dict[str, int],
+    fixes: UnitFixes | None = None,
+):
+    """CSV 행 → raw.stat_value 행. 합쳐진 단위는 scan_csv와 같은 방법으로 나눈다"""
+    fixes = load_unit_fixes() if fixes is None else fixes
     with path.open(encoding="utf-8-sig", newline="") as f:
         reader = csv.DictReader(f)
         dims = dim_count(reader.fieldnames or [])
         for r in reader:
+            if r["unit"] in fixes.merged:
+                r["unit"] = row_unit(r, dims, path.stem, fixes)[0]
             classes = [keys[(d, r[f"c{d}_id"])] for d in range(1, dims + 1)]
             classes += [None] * (MAX_DIMS - dims)
             yield (
@@ -420,9 +488,14 @@ def merge_into(pg: psycopg.Connection, tbl_key: int, rows, scan: Scan, name: str
 def load_table(pg: psycopg.Connection, path: Path, merge: bool = False) -> None:
     """표 하나 적재. merge면 기존 표에 덧붙인다 (적재된 표만. 처음 적재하는 표는 그냥 넣는다)"""
     start = time.perf_counter()
-    scan = scan_csv(path)
+    fixes = load_unit_fixes()
+    scan = scan_csv(path, fixes)
+    if scan.fixed_units:
+        print(f"{path.stem}: 합쳐진 단위를 나눔 {scan.fixed_units:,}행 (config/unit_fixes.toml)")
+    for unit, where in sorted(scan.unsplit)[:10]:
+        print(f"{path.stem}: 경고 — 합쳐진 단위 '{unit}'를 나누지 못함 ({where})", flush=True)
     tbl_key, keys, units = save_codes(pg, path, scan)
-    rows = value_rows(path, tbl_key, keys, units)
+    rows = value_rows(path, tbl_key, keys, units, fixes)
     loaded = pg.execute(
         "SELECT row_count, value_sum, first_period, last_period FROM raw.stat_load"
         " WHERE tbl_key = %s",

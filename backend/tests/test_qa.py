@@ -246,9 +246,39 @@ def test_compute_composition_without_parts_answers_the_value(
     }
 
 
-def test_summary_causal_prefix() -> None:
-    r = {**TREND, "causal_question": "원인은 판단하지 않습니다."}
-    assert qa.summary(r).startswith("원인은 판단하지 않습니다. 대구광역시의 총인구는")
+def test_causal_question_refuses_and_points_to_trend_table() -> None:
+    # 원인·정책 효과는 답하지 않고, 그 지표의 추이를 볼 수 있는 통계표만 안내한다 (숫자 없음)
+    r = qa._limit_result("causal_question", TREND)
+    text = qa.summary(r)
+    assert r["status"] == "causal_question" and r["source"] == TREND["source"]
+    assert text.startswith("원인이나 정책 효과는 통계 수치만으로 판단할 수 없어 답할 수 없습니다.")
+    assert "대구광역시 총인구의 변화는 아래 통계표에서 확인할 수 있습니다" in text
+    assert not any(ch.isdigit() for ch in text)
+    assert "출처: 테스트 출처" in qa.render(r) and qa.sources(r)[0]["name"] == "테스트 출처"
+
+
+def test_limit_without_indicator_asks_for_one() -> None:
+    r = qa._limit_result("causal_question", None)
+    assert "궁금한 지표와 지역·기간을 넣어 다시 질문해 주세요" in qa.summary(r)
+    p = qa._limit_result("prediction_question", TREND)
+    assert qa.summary(p).startswith("앞으로의 변화는 지금까지의 통계로 예측해 답할 수 없습니다.")
+    assert "장래인구추계" in qa.summary(p)
+
+
+def test_band_mismatch_text() -> None:
+    bands = {
+        "status": "band_mismatch",
+        "reason": "사망자 수은(는) 표의 연령 구간이 질문한 62~67세 구간과 맞지 않습니다.",
+        "available_bands": ["60~64세", "65~69세"],
+        "alternative": "대신 볼 수 있는 구간: 60~64세, 65~69세",
+    }
+    assert qa.summary(bands).endswith("60~64세, 65~69세 (구간을 바꿔 다시 질문해 주세요)")
+    cond = {
+        **bands,
+        "available_bands": None,
+        "alternative": "대신 조건 없는 전국 출생아 수는 확인할 수 있습니다",
+    }
+    assert qa.summary(cond).endswith("확인할 수 있습니다.")
 
 
 @pytest.mark.parametrize(
@@ -260,7 +290,7 @@ def test_summary_causal_prefix() -> None:
         ),
         (
             {"status": "unknown_indicator", "indicator": "혼인율"},
-            "'혼인율'은(는) 아직 지원하지 않는 지표입니다. 아래 지원 지표로 다시 질문해 주세요.",
+            "'혼인율'은 아직 지원하지 않는 지표입니다. 아래 지원 지표로 다시 질문해 주세요.",
         ),
         (
             {"status": "parse_error", "reason": "질문을 이해하지 못했습니다."},
@@ -466,7 +496,7 @@ def test_compute_each_indicator(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "출생아 수는 41,605명" in text and "사망자 수는 47,000명" in text
     assert "더 높습니다" not in text  # 다른 지표끼리 견주지 않는다
     assert [s["tbl_id"] for s in qa.sources(r)] == ["T_출생아 수", "T_사망자 수"]
-    assert "혼인 건수은(는) 이 조건으로 답할 수 없어 뺐습니다" in qa.render(r)
+    assert "혼인 건수는 이 조건으로 답할 수 없어 뺐습니다" in qa.render(r)
 
 
 def test_compute_population_rank_passes_the_asked_region(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -495,3 +525,60 @@ def test_compute_population_rank_passes_the_asked_region(monkeypatch: pytest.Mon
     assert qa.summary(r) == (
         "2024년 부산광역시의 고령인구 비율은 24.5%로 시도 2곳 중 높은 순으로 2위입니다."
     )
+
+
+def test_lookup_band_mismatch_lists_nearby_bands(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 5세 단위 표에 62~67세를 물으면 근처 구간을 안내한다 (전에는 '범위 밖 주제'로 보였다)
+    labels = (
+        ("0", "계"),
+        ("060", "60~64세"),
+        ("065", "65~69세"),
+        ("070", "70~74세"),
+        ("020", "20~24세"),
+    )
+    monkeypatch.setattr(qa.lookup, "_dim_labels", lambda tbl, dim: labels)
+    spec = {"name": "사망자 수"}
+    src = {"table": "T", "age_dim": "c2", "age_total": "0", "age_min": 0}
+    r = qa.lookup._band_mismatch(spec, src, [[62, 67]])
+    assert r["status"] == "band_mismatch"
+    assert r["available_bands"] == ["60~64세", "65~69세", "70~74세"]
+    no_age = qa.lookup._band_mismatch(spec, {"table": "T"}, [[62, 67]])
+    assert no_age["status"] == "unknown_indicator"  # 연령으로 나눈 자료가 아예 없음
+
+
+def test_sigungu_future_year_is_prediction_with_sido_projection(monkeypatch) -> None:
+    # 2040년 해운대구: 장래추계는 시도까지만
+    # → 예측 질문으로 답하지 않고 부산 추계값을 대신 보여 준다
+    from app.services import indicators
+
+    monkeypatch.setattr(indicators, "_data_years", lambda: (2008, 2025))
+    monkeypatch.setattr(indicators, "_monthly", lambda *a: False)
+    proj = {"status": "ok", "region": "부산광역시", "year": 2040, "value": 2853768}
+    monkeypatch.setattr(indicators, "projection", lambda name, code, year: proj)
+    monkeypatch.setattr(  # 표 정보(DB)를 읽지 않게
+        indicators, "_base", lambda name, ind, status, **kw: {"status": status, **kw}
+    )
+    monkeypatch.setattr(indicators, "_out_of_range_reason", lambda lo, hi, ind=None: "자료 기간 밖")
+    reg = {
+        "kind": "시군구",
+        "region_code": "26350",
+        "region_name": "해운대구",
+        "sido_code": "26",
+        "sido_name": "부산광역시",
+    }
+    out = indicators._check("총인구", indicators.INDICATORS["총인구"], reg, 2040, 2040)
+    assert out["status"] == "prediction_question" and out["suggestion"] is proj
+    assert (
+        out["reason"].startswith("부산광역시 해운대구의 2040년 값은")
+        and "시도 단위까지만" in out["reason"]
+    )
+
+
+def test_lookup_trend_entirely_before_coverage_is_out_of_range(monkeypatch) -> None:
+    # 1970~1980년을 물었는데 자료가 1990년부터: "1990~1980년 자료가 부족합니다"가 아니라 기간 밖
+    monkeypatch.setattr(qa, "_lookup_span", lambda sp, region, sex: (1990, 2025))
+    sp = {"name": "이혼 건수"}
+    q = {"type": "trend", "start_year": 1970, "end_year": 1980}
+    r = qa._lookup_trend(q, sp, "서울", None, "계", None)
+    assert r["status"] == "out_of_range" and r["available_years"] == [1990, 2025]
+    assert r["asked_year"] == 1970 and r["reason"] == "이혼 건수 자료는 1990~2025년만 있습니다."
