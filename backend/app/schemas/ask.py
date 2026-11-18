@@ -80,7 +80,8 @@ class Summary(BaseModel):
 
 
 class QuestionClarification(BaseModel):
-    kind: Literal["local_region", "move_scope", "table_cell"]
+    # alternative: 조건을 모두 만족하는 값이 없어 가까운 연도 · 다른 표의 값을 제안 (alternative.py)
+    kind: Literal["local_region", "move_scope", "table_cell", "alternative"]
     prompt: str
     options: list[str] = Field(default_factory=list)
 

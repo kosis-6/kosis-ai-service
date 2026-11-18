@@ -9,9 +9,12 @@ from pipeline.load_raw import (
     BIG_ROWS,
     CELL_KEY,
     VALUE_COLUMNS,
+    UnitFixes,
     dim_count,
     duplicate_message,
     is_big,
+    load_unit_fixes,
+    row_unit,
     scan_csv,
     value_rows,
 )
@@ -89,3 +92,55 @@ def test_duplicate_message_shows_cell_and_count() -> None:
 
 def test_is_big_threshold() -> None:
     assert is_big(BIG_ROWS) and not is_big(BIG_ROWS - 1)
+
+
+# ---- 합쳐진 단위 나누기 (config/unit_fixes.toml) ------------------------------------------
+
+MERGED = "명 가임여자 1명당 명"
+FIXES = UnitFixes(
+    frozenset({MERGED, "명 건"}),
+    {"T": {"T2": "가임여자 1명당 명"}, "G": {"c1:12": "가임여자 1명당 명"}, "D": {"*": "기본"}},
+)
+
+
+def test_merged_unit_is_split_per_item_and_others_are_kept(tmp_path: Path) -> None:
+    path = write(
+        tmp_path,
+        f"T,101,2024,A,T1,출생아수(명),00,전국,1,전국,238317,,{MERGED},\n"
+        f"T,101,2024,A,T2,합계출산율,00,전국,1,전국,0.748,,{MERGED},\n"
+        "T,101,2024,A,T3,인구,00,전국,1,전국,5,,명,\n",
+    )
+    scan = scan_csv(path, FIXES)
+    assert scan.units == {"명", "가임여자 1명당 명"}  # 합쳐진 단위는 DB에 들어가지 않는다
+    assert (scan.fixed_units, scan.unsplit) == (2, set())
+    keys = {(0, "T1"): 1, (0, "T2"): 2, (0, "T3"): 3, (1, "00"): 9}
+    rows = list(value_rows(path, 3, keys, {"명": 10, "가임여자 1명당 명": 11}, FIXES))
+    assert [r[8] for r in rows] == [10, 11, 10]
+
+
+@pytest.mark.parametrize(
+    ("tbl", "item", "c1", "unit"),
+    [
+        ("G", "T1", ("10", "출생아수(명)"), "명"),  # 칸 이름 괄호의 단위
+        ("G", "T1", ("11", "조출생률(천명당)"), "천명당"),
+        ("G", "T1", ("12", "합계출산율"), "가임여자 1명당 명"),  # 표의 칸별 단위 (분류 칸)
+        ("G", "T1", ("23", "일반혼인율(남편)"), "명 건"),  # 괄호가 단위가 아님 → 못 나눔
+        ("D", "T5", ("00", "전국"), "기본"),  # 표의 기본값
+    ],
+)
+def test_row_unit_order(tbl: str, item: str, c1: tuple[str, str], unit: str) -> None:
+    r = {"unit": "명 건", "item_id": item, "item_nm": "항목", "c1_id": c1[0], "c1_nm": c1[1]}
+    got, ok = row_unit(r, 1, tbl, FIXES)
+    assert got == unit and ok is (unit != "명 건")
+
+
+def test_unsplit_merged_unit_is_reported(tmp_path: Path) -> None:
+    path = write(tmp_path, "T,101,2024,A,I1,무엇,00,전국,1,전국,1,,명 건,\n")
+    scan = scan_csv(path, FIXES)
+    assert scan.units == {"명 건"} and scan.unsplit == {("명 건", "무엇 / 전국")}
+
+
+def test_unit_fixes_file_covers_the_known_tables() -> None:
+    fixes = load_unit_fixes()
+    assert len(fixes.merged) == 4
+    assert set(fixes.tables) == {"DT_1B8000G", "DT_1B81A23", "DT_1B81A21", "DT_1B81A17"}

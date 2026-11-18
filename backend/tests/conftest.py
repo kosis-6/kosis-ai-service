@@ -30,6 +30,18 @@ def search_llm_is_hcx(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def no_cell_llm(monkeypatch: pytest.MonkeyPatch) -> None:
+    """칸을 못 고르는 표가 있는 테스트가 칸 고르기 LLM을 실제로 부르지 않게 한다
+    ('표에 없음'으로 답한 것처럼). 칸 고르기를 보는 테스트는 cell_pick.judge를 다시 바꿔 끼운다"""
+    from app.services import cell_pick
+
+    async def judge(question, understanding, tbl_nm, groups):
+        return {"fits": "아니오", "picks": {}, "reason": "테스트"}, "test"
+
+    monkeypatch.setattr(cell_pick, "judge", judge)
+
+
+@pytest.fixture(autouse=True)
 def request_logs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """API 테스트가 실제 data/requests/에 요청 기록을 남기지 않게 임시 폴더로 돌린다"""
     monkeypatch.setattr(qa, "REQUEST_LOG", tmp_path / "requests.jsonl")

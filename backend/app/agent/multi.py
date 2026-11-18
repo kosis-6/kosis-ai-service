@@ -17,7 +17,8 @@ graph.py의 노드를 그대로 쓰고, 새 질문일 때만 계획 가지를 �
 
 결과: 기존 결과(result)는 그대로 두고 result["multi"]를 덧붙인다 (되묻기 답 턴에는 없다).
     multi = {mode: "single" | "multi", n_planned, n_indicators, merged, plan, indicators, whole}
-지표가 1개 이하면 지표별 검색을 하지 않으므로 mode는 "single"이고 indicators·whole은 비어 있다.
+지표가 1개 이하면 지표별 검색을 하지 않으므로 mode는 "single"이고 indicators는 비어 있다.
+whole(질문 전체 검색의 표 묶음 상위 5개)은 지표 수와 관계없이 새 질문이면 채운다 (계약_초안 3-1).
 
 측정 (2026-11-12, 여러 표 질문 56문항의 필요한 표 125개):
   질문 전체 검색 상위 5개 77% → 지표별 상위 5개 91% → 지표별 5개 + 전체 5개 95%.
@@ -52,7 +53,8 @@ class State(base.State, total=False):
 
 
 def brief(families: list[dict[str, Any]], k: int = TOP_K) -> list[dict[str, Any]]:
-    """표 묶음 순위 → 넘겨줄 후보 목록"""
+    """표 묶음 순위 → 넘겨줄 후보 목록. 검색이 이미 계산한 조건 확인(✔/✘)도 함께 넘긴다
+    (뒤 단계가 조건을 못 맞춘 표를 거를 수 있게. 계약_초안 3-2)"""
     return [
         {
             "tbl_id": f["table"]["tbl_id"],
@@ -60,6 +62,7 @@ def brief(families: list[dict[str, Any]], k: int = TOP_K) -> list[dict[str, Any]
             "family_id": f["table"]["family_id"],
             "family_name": f["table"].get("family_name"),
             "score": round(f["score"], 3),
+            "checks": dict(f.get("checks") or {}),
         }
         for f in families[:k]
     ]
@@ -185,8 +188,10 @@ async def handoff(s: State, config: RunnableConfig) -> dict[str, Any]:
     inds, merged = merge_same(inds)
     is_multi = len(inds) >= 2
     whole: list[dict[str, Any]] = []
-    if is_multi and s.get("slots"):
-        # 지표를 잘못 나눴을 때를 대비해 질문 전체 검색의 상위 후보도 함께 넘긴다
+    if s.get("slots"):
+        # 질문 전체 검색의 표 묶음 상위 5개. 지표가 여럿이면 지표를 잘못 나눴을 때의 대비,
+        # 하나여도 뒤 단계가 상위 5개를 계산해 보는 재료다 (table_guide.build_handoff).
+        # 이미 구한 점수로 순위만 다시 매긴다 (LLM · 임베딩 호출 없음)
         tables = await search.load_tables()
         ranked = search.rank(tables, copy.deepcopy(s["slots"]), s.get("dense"))
         whole = brief(search.fold(ranked))
