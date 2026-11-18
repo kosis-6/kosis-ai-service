@@ -986,8 +986,8 @@ def cell_llm(computed, fake_table, monkeypatch):
     monkeypatch.setattr(cell_pick, "judge", judge)
     remembered = []
 
-    async def remember(parsed, tbl_id, forced, res):
-        remembered.append((tbl_id, forced))
+    async def remember(parsed, tbl_id, forced, res, words=()):
+        remembered.append((tbl_id, forced, list(words)))
 
     monkeypatch.setattr(d, "_remember", remember)
     state["remembered"] = remembered
@@ -1016,7 +1016,8 @@ def test_cell_llm_computes_a_table_the_rule_could_not(cell_llm) -> None:
         "질문의 '혼자 사는 집'을(를) 표의 '1인가구'(으)로 보고 계산했습니다"
         in (res["parsed"]["dynamic_spec"]["note"])
     )
-    assert cell_llm["remembered"] == [("A", {0: "T00"})]  # LLM이 고른 칸은 캐시에 함께
+    # LLM이 고른 칸은 그 칸을 고른 근거 낱말과 함께 캐시에 남긴다 (다시 쓸 때 새 질문에 있는지 본다)
+    assert cell_llm["remembered"] == [("A", {0: "T00"}, [["혼자 사는 집", "1인가구"]])]
 
 
 def test_cell_llm_says_the_table_does_not_fit(cell_llm) -> None:
