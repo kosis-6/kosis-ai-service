@@ -50,6 +50,9 @@ VERSUS = re.compile(r"^(?:의|에)?대비$")  # "대비", "의 대비", "에 대
 WITHIN = re.compile(r"^(?:중|가운데|중에서|에서)$")  # "중", "가운데"
 RATE_AFTER = re.compile(r"^(?:의)?(?:비율|비중|퍼센트|몇퍼센트|몇프로|%)")
 NUMBERS = {"천": 1000, "만": 10000, "백": 100, "십": 10}
+# '당·대비·중' 뒤 어딘가에 비율을 묻는 말
+# (detect_partial: "중 통근하는 사람 비율"의 비율은 끝에 온다)
+RATE_ANYWHERE = re.compile(r"비율|비중|퍼센트|몇프로|%")
 LEADING_NUMBER = re.compile(r"([\d,]+|천|만|백)$")
 # "세대당"의 "세대"는 세대수 지표의 이름·별칭이 아니라서, 찾을 때만 "세대 수"로 읽는다
 BARE_HOUSEHOLD = re.compile(r"세대(?!\s*수)(?=\s*(?:[\d,]+|천|만|백)?\s*(?:세대)?\s*당)")
@@ -189,7 +192,7 @@ def detect(question: str) -> Cross | None:
     질문에 사전 지표 이름이 정확히 두 개 있고, 그 사이 말이 '당·대비·중'일 때만 본다"""
     question = BARE_HOUSEHOLD.sub("세대 수", question)
     question = _bare_per_people(question)
-    spans = sorted(indicators.find_in_text(question))
+    spans = sorted(indicators.find_in_text(question) or [])
     names = list(dict.fromkeys(name for _, _, name in spans))
     text = indicators._norm(question)
     plus = None
@@ -269,7 +272,7 @@ def _side(phrase: str) -> tuple[str | None, str | None]:
     """(사전 지표 이름, 사전에 없는 말). 둘 다 None이면 쓸 수 없는 말"""
     if not phrase:
         return None, None
-    spans = indicators.find_in_text(phrase)
+    spans = indicators.find_in_text(phrase) or []
     if len(spans) > 1:
         return None, None
     if spans:
@@ -285,7 +288,7 @@ def _side(phrase: str) -> tuple[str | None, str | None]:
     return None, phrase
 
 
-def detect_partial(question: str) -> Cross | None:
+def detect_partial(question: str, both: bool = False) -> Cross | None:
     """'당 · 대비 · 중 비율'의 한쪽만 사전 지표인 질문 ("2020년 서울 인구 1,000명당 1인 가구 수").
     둘 다 사전 지표면 detect가, 둘 다 아니면 동적 지표(한 표 안의 계산)가 맡는다"""
     if detect(question) is not None:
@@ -303,11 +306,11 @@ def detect_partial(question: str) -> Cross | None:
         elif m := VERSUS_TOKEN.match(t):
             if m["stem"]:
                 left = [*left, m["stem"]]
-            rate = bool(RATE_AFTER.search(indicators._norm(" ".join(right))))
+            rate = bool(RATE_ANYWHERE.search(indicators._norm(" ".join(right))))
             form, scale = "versus", 100 if rate else 1
         elif t in WITHIN_TOKENS:
             text = indicators._norm(" ".join(right))
-            if not RATE_AFTER.search(text):
+            if not RATE_ANYWHERE.search(text):
                 continue
             form, scale = "within", 100
         else:
@@ -321,6 +324,10 @@ def detect_partial(question: str) -> Cross | None:
             return Cross(num=num_new, den=den_name, scale=scale, form=form, dynamic="num")
         if num_name and den_new:
             return Cross(num=num_name, den=den_new, scale=scale, form=form, dynamic="den")
+        if both and num_new and den_new:
+            # 두 값 모두 사전에 없다 ("1인 가구 중 통근하는 사람 비율"): 질문 전체로
+            # 한 표 안의 비율을 먼저 찾고, 안 되면 양쪽을 따로 찾아 나눈다 (ask_session에서만)
+            return Cross(num=num_new, den=den_new, scale=scale, form=form, dynamic="both")
         return None
     return None
 
@@ -392,6 +399,14 @@ def compute(q: dict, run) -> dict:
             out["reason"] = out["reason"].strip()
             return out
     *nums, den = parts
+    return combine_parts(c, nums, den, q)
+
+
+def combine_parts(c: Cross, nums: list[dict], den: dict, q: dict) -> dict:
+    """이미 계산한 분자(하나 또는 둘) · 분모 결과를 질문 종류(q["type"])대로 나누거나 뺀다.
+    값 · 추이 · 비교 · 순위. 사전 지표 결과(compute)와 동적 계산 결과(ask_session._cross_dynamic)가
+    같은 길을 쓴다"""
+    kind = q.get("type")
     if len(nums) > 1:
         # 분자 두 지표를 더한다 (먼저 둘끼리 지역 · 연도 · 성별이 맞는지 본다)
         if why := _mismatch(nums[0], nums[1], q):
@@ -405,7 +420,7 @@ def compute(q: dict, run) -> dict:
         num = nums[0]
     if kind == "value":
         return combine_value(c, num, den, q)
-    if why := _mismatch(num, den, q):
+    if why := _mismatch(num, den, q) or _part_of_whole(c, num, den):
         return _fail(
             c, f"{josa(c.num_label, '과와')} {josa(c.den, '을를')} {c.verb} 수 없습니다: {why}."
         )
@@ -445,7 +460,7 @@ def compute(q: dict, run) -> dict:
 
 def combine_value(c: Cross, num: dict, den: dict, q: dict) -> dict:
     """값 질문: 분자 · 분모 결과(한 지역 · 한 해)를 나눈 결과. 맞지 않으면 숫자 없이 이유"""
-    if why := _mismatch(num, den, {**q, "type": "value"}):
+    if why := _mismatch(num, den, {**q, "type": "value"}) or _part_of_whole(c, num, den):
         return _fail(
             c, f"{josa(c.num_label, '과와')} {josa(c.den, '을를')} {c.verb} 수 없습니다: {why}."
         )
@@ -482,6 +497,28 @@ def _change(series: list[dict], c: Cross) -> dict:
         if key == "rate":
             out["rate_unit"] = "%"
     return out
+
+
+def _part_of_whole(c: Cross, num: dict, den: dict) -> str | None:
+    """'A 중 B 비율'은 B가 A의 일부일 때만: 단위가 같고 B ≤ A (모든 지역 · 연도).
+    다른 통계를 따로 찾아 나눌 때 (통근 인구 ÷ 1인 가구 = 322%) 막는다"""
+    if c.form != "within":
+        return None
+    if num.get("unit") and den.get("unit") and num.get("unit") != den.get("unit"):
+        return f"단위가 달라({num.get('unit')}, {den.get('unit')}) 한쪽이 다른 쪽의 일부가 아닙니다"
+
+    def values(r: dict) -> list:
+        if "value" in r:
+            return [r.get("value")]
+        rows = r.get("series") or r.get("values") or r.get("ranking") or []
+        return [row.get("value") for row in rows]
+
+    if any(
+        a is not None and b is not None and a > b
+        for a, b in zip(values(num), values(den), strict=False)
+    ):
+        return f"{c.num_label}이(가) {c.den}보다 커서 그 일부가 아닙니다"
+    return None
 
 
 def _mismatch(num: dict, den: dict, q: dict) -> str | None:

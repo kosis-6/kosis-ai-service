@@ -1498,3 +1498,11 @@ def test_dynamic_picking_dictionary_table_keeps_dictionary_answer(monkeypatch) -
     assert s._same_dictionary_table(parsed, None, found) == "DT_1B8000H"
     other = {"sources": [{"tbl_id": "DT_1B83A35"}]}
     assert s._same_dictionary_table(parsed, other, None) is None
+
+
+def test_ungrounded_missing_region_goes_to_table_search() -> None:
+    # 근거 없는 지표로 "어느 지역인지"를 되묻기보다 통계표 찾기로 넘긴다
+    res = {"status": "missing_region", "request_type": s.NEW, "parsed": {"grounded": False}}
+    assert s.ungrounded(res) is True
+    res["parsed"]["grounded"] = True
+    assert s.ungrounded(res) is False
