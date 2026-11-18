@@ -51,6 +51,9 @@ NOT_REGION_WORDS = re.compile(r"국적")
 
 # 예전 시도 이름 → 현재 이름 (다른 표의 지역 경로를 맞출 때 사용)
 OLD_SIDO_NAMES = {"강원도": "강원특별자치도", "전라북도": "전북특별자치도", "제주도": "제주특별자치도"}
+# 옛 시도 이름 아래의 시군구는 잇지 않는다 (시도는 범위가 같지만 그 아래 시군구는 범위가 달랐음)
+# 제주도(2006년 전): 제주시·서귀포시는 북제주군·남제주군이 합쳐지기 전의 작은 범위
+OLD_SIDO_SIGUNGU_SKIP = {"제주도"}
 # 전국 합계를 뜻하는 지역 이름
 TOTAL_NAMES = {"전국", "계", "합계", "총계"}
 # 표마다 다르게 쓰는 지역 경로 (공백 제거한 '시도>시군구' 형태)
@@ -153,6 +156,9 @@ def match_region(idx: RegionIndex, org_id: str, src: Source) -> tuple[list[str],
     name = norm(src.name)
     if name in TOTAL_NAMES and str(src.level) == "1":
         return ["00"], "total"
+    raw = [p.strip() for p in (src.path or "").split(">") if p.strip()]
+    if len(raw) >= 2 and norm(raw[0]) in OLD_SIDO_SIGUNGU_SKIP:
+        return [], None
     if org_id == "101" and idx.name_by_code.get(src.code) == name:
         return [src.code], "code"
     parts = [norm(OLD_SIDO_NAMES.get(p.strip(), p.strip())) for p in (src.path or "").split(">")]
@@ -178,7 +184,10 @@ def match_region(idx: RegionIndex, org_id: str, src: Source) -> tuple[list[str],
     return [], None
 
 
-def unmatched_reason(name: str | None) -> str:
+def unmatched_reason(name: str | None, path: str | None = None) -> str:
+    parts = [norm(p) for p in (path or "").split(">") if p.strip()]
+    if len(parts) >= 2 and parts[0] in OLD_SIDO_SIGUNGU_SKIP:
+        return "변동전 지역 (현재 지역과 범위가 달라 연결하지 않음)"
     name = norm(name)
     if "변동전" in name:
         return "변동전 지역 (현재 지역과 범위가 달라 연결하지 않음)"
@@ -220,7 +229,7 @@ def map_rows(
                     **base,
                     "region_code": None,
                     "match_method": None,
-                    "unmatched_reason": unmatched_reason(src.name),
+                    "unmatched_reason": unmatched_reason(src.name, src.path),
                 }
             )
     return rows
