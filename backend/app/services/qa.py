@@ -42,26 +42,30 @@ from app.services.hcx_client import HcxClient
 from app.services.josa import josa, ro
 
 MODEL = "HCX-007"
+# 질문 해석 응답 최대 길이. HCX 한도(분당 6만 토큰)는 요청마다 이 값만큼을 미리 잡아서,
+# 5,120이면 이 호출만으로 분당 약 10질문에 한도가 찼다. 추론을 끄면 JSON만 나오고
+# 변형셋 v1에서 최대 130토큰(95%가 99토큰 이하)이었다 (11/18)
+UNDERSTAND_MAX_TOKENS = 1024
 
 
 async def _chat(prompt, system, temperature=0.1, trace=None):
-    """HCX-007 호출. 설정은 기존 pipeline/clova.py 기본값과 같다"""
+    """HCX-007 호출 (질문 해석). 짧은 JSON만 받으므로 추론을 끄고 응답 길이를 줄인다"""
     result = await HcxClient().chat(
         MODEL,
         [
             {"role": "system", "content": system},
             {"role": "user", "content": [{"type": "text", "text": prompt}]},
         ],
-        thinking={"effort": "low"},
+        thinking={"effort": "none"},
         topP=0.8,
         topK=0,
-        maxCompletionTokens=5120,
+        maxCompletionTokens=UNDERSTAND_MAX_TOKENS,
         temperature=temperature,
         repetitionPenalty=1.1,
     )
     if trace is not None:
         trace["understand_usage"] = dict(result.usage)
-        trace["understand_max_completion_tokens"] = 5120
+        trace["understand_max_completion_tokens"] = UNDERSTAND_MAX_TOKENS
     return result.content
 
 
@@ -222,6 +226,11 @@ PREV_YEAR = re.compile(r"(작년|전년|지난해)\s*(보다|대비|에 비해)"
 RATIO_ASK = re.compile(r"몇\s*배")
 LEVEL_CITY = re.compile(r"전국\s*(의\s*)?시\s*(중|가운데)|시\s*단위")
 ASCENDING = re.compile(r"꼴찌|최하위|가장\s*(낮|적)|제일\s*(낮|적)")
+# 높은 순으로 물음 ("초혼연령 높은 시도 3곳", "인구 많은 순서로", "상위 3곳"). 질문 해석이 추론 없이
+# "높은"을 낮은 순(ascending)으로 읽은 경우를 되돌린다 (변형셋 v1 P-081, 11/18)
+DESCENDING = re.compile(r"(높|많)(은|게|을)|상위|1등|1위|top", re.I)
+# 감소·유출 순위는 값이 음수라 "큰" 쪽이 낮은 순이다 ("감소 폭 큰 시도") → 고치지 않는다
+DECREASE = re.compile(r"낮|적은|적게|감소|줄|유출|빠져")
 TOP_N = re.compile(r"(상위|하위)\s*(\d+)|(\d+)\s*(곳|개|위까지)(?!\s*\S*\s*중)")
 # "최근 5년", "과거 10년간", "지난 3년 동안" (timeref와 같은 표현)
 RECENT = timeref.RECENT_N_YEARS
@@ -1158,6 +1167,12 @@ def _read_question(question, parsed, fix):
             fix("level", "시", "전국 시 중 순위")
         if ASCENDING.search(question) and not parsed.get("ascending"):
             fix("ascending", True, "가장 낮은 순위")
+        elif (
+            parsed.get("ascending")
+            and DESCENDING.search(question)
+            and not DECREASE.search(question)
+        ):
+            fix("ascending", False, "높은 순위")
         if parsed.get("indicator") == "순이동" and re.search(r"빠져나간|유출", question):
             if not parsed.get("ascending"):
                 fix("ascending", True, "순유출이 큰 순 = 순이동이 낮은 순")

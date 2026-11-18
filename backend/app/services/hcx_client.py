@@ -15,6 +15,23 @@ RETRY_WAITS = (1.0, 3.0, 6.0)
 # 연결 실패·HCX 서버 오류(5xx)는 잠깐의 끊김일 수 있어 짧게 한 번만 다시 시도한다
 TRANSIENT_WAITS = (1.0,)
 
+# 이벤트 루프마다 하나 (asyncio.Semaphore는 처음 쓴 루프에 묶인다. 테스트는 루프를 새로 만든다)
+_gates: dict[asyncio.AbstractEventLoop, tuple[int, asyncio.Semaphore]] = {}
+
+
+def _gate() -> asyncio.Semaphore | None:
+    """HCX 동시 요청 수 제한 (설정 hcx_max_concurrency, 0이면 None = 제한 없음)"""
+    limit = get_settings().hcx_max_concurrency
+    if limit <= 0:
+        return None
+    loop = asyncio.get_running_loop()
+    found = _gates.get(loop)
+    if found is None or found[0] != limit:
+        for old in [k for k in _gates if k.is_closed()]:
+            del _gates[old]
+        found = _gates[loop] = (limit, asyncio.Semaphore(limit))
+    return found[1]
+
 
 class HcxError(RuntimeError):
     """CLOVA Studio가 오류 상태 코드를 돌려주거나, 연결하지 못한 경우 (code "network")."""
@@ -66,11 +83,16 @@ class HcxClient:
 
         호출 제한(42901, HTTP 429)에 걸리면 retry_waits 간격으로 다시 시도한다.
         연결 실패·서버 오류는 TRANSIENT_WAITS만큼 다시 시도한다. 다 실패하면 HcxError
+        동시에 보내는 요청은 hcx_max_concurrency개까지 (기다리는 동안은 자리를 비운다)
         """
         limit_waits, transient_waits = list(self.retry_waits), list(TRANSIENT_WAITS)
+        gate = _gate()
         while True:
             try:
-                return await self._chat_once(model, messages, **options)
+                if gate is None:
+                    return await self._chat_once(model, messages, **options)
+                async with gate:
+                    return await self._chat_once(model, messages, **options)
             except HcxError as e:
                 waits = (
                     limit_waits if e.is_rate_limit else transient_waits if e.is_transient else []
