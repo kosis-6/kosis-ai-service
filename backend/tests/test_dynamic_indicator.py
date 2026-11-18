@@ -1121,3 +1121,19 @@ def test_condition_words_still_checked_without_cell_llm(computed) -> None:
     trace: dict = {}
     assert asyncio.run(d.compute_from_handoff(Q1, BASE, _found(cands, u), trace)) is None
     assert "홀로 사는 가구" in trace["dynamic"][0]["skip"]
+
+
+def test_no_year_question_skips_old_tables(computed, monkeypatch) -> None:
+    # 연도를 말하지 않은 질문은 최신 연도를 묻는 것: 최근 자료가 없는 옛 표(1970~1980)는 건너뛴다
+    monkeypatch.setattr(d, "_recent_floor", lambda: 2020)
+    u = _understanding()
+    u["conditions"]["year"] = None
+    cands = [
+        _cand("OLD", 1, picked=True, checks={"region_level": True}, years=(1970, 1980)),
+        _cand("NEW", 2, checks={"region_level": True}, years=(1990, 2025)),
+    ]
+    trace: dict = {}
+    parsed = {k: v for k, v in BASE.items() if k != "year"}
+    res = asyncio.run(d.compute_from_handoff("서울 1인 가구 수", parsed, _found(cands, u), trace))
+    assert res["status"] == "ok" and trace["handoff"]["used"]["tbl_id"] == "NEW"
+    assert "1980년까지인 표" in trace["dynamic"][0]["skip"]

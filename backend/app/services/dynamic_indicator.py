@@ -1063,6 +1063,17 @@ def attempt_list(target: dict, q: dict) -> list[dict]:
     return out[:MAX_ATTEMPTS]
 
 
+RECENT_YEARS = 5  # 연도를 말하지 않은 질문: 자료 마지막 해에서 이만큼 안의 자료가 있는 표만
+
+
+def _recent_floor() -> int | None:
+    """연도를 말하지 않은 질문에 쓸 수 있는 표의 마지막 해 하한 (주민등록인구 마지막 해 − 5)"""
+    try:
+        return indicators._data_years()[1] - RECENT_YEARS
+    except Exception:
+        return None
+
+
 def skip_reason(
     entry: dict, picked_exact: bool, parsed: dict | None = None, multi: bool = False
 ) -> str | None:
@@ -1252,10 +1263,19 @@ async def _compute_target(
         sub["dynamic"][-1]["read_as"] = [list(p) for p in picked.read_as]  # 캐시에 근거로 남긴다
         return res, ask
 
+    said_year = any(q.get(k) for k in ("year", "start_year", "end_year"))
+    recent = None if said_year else await run_in_threadpool(_recent_floor)
+
     async def attempt(entry: dict):
         sub: dict = {"dynamic": []}
         tbl_id = entry["tbl_id"]
         if why := skip_reason(entry, picked_exact, q, multi):
+            sub["dynamic"].append({"tbl_id": tbl_id, "kind": entry["kind"], "skip": why})
+            return None, None, sub
+        if recent and entry.get("end_year") and entry["end_year"] < recent:
+            # 연도를 말하지 않았는데 최근 자료가 없는 옛 표 ("이혼 몇 건이나 돼?" → 1980년 표의
+            # 마지막 해로 답했다). 연도를 말하지 않으면 최신 연도를 묻는 것이다
+            why = f"연도를 말하지 않았는데 {entry['end_year']}년까지인 표"
             sub["dynamic"].append({"tbl_id": tbl_id, "kind": entry["kind"], "skip": why})
             return None, None, sub
         if u.get("projection"):

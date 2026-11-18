@@ -165,6 +165,11 @@ REGION_GROUPS = {
         "강원", "충북", "충남", "전북", "전남", "경북", "경남", "제주",
     ],
     "수도권": ["서울", "인천", "경기"],
+    # 서울 강남권 구 묶음 (질문 글자에 구 이름이 없어 지역 확인에서 막혔다)
+    "강남3구": ["서울 강남구", "서울 서초구", "서울 송파구"],
+    "강남 3구": ["서울 강남구", "서울 서초구", "서울 송파구"],
+    "강남4구": ["서울 강남구", "서울 서초구", "서울 송파구", "서울 강동구"],
+    "강남 4구": ["서울 강남구", "서울 서초구", "서울 송파구", "서울 강동구"],
     "충청권": ["대전", "세종", "충북", "충남"],
     "호남권": ["광주광역시", "전북", "전남"],
     "영남권": ["부산", "대구", "울산", "경북", "경남"],
@@ -332,7 +337,7 @@ INDICATOR_PATTERNS = [
     (re.compile(r"(이사\s*온|들어온|전입)\S*.*(떠난|나간|전출)\S*.*(빼|뺀|차감)"), "순이동"),
     # "어르신 비율 · 노인 비중" → 고령인구 비율
     (
-        re.compile(r"(어르신|노인|고령자|노령)\S*\s*(인구\s*)?(비율|비중|%|퍼센트|몇\s*프로)"),
+        re.compile(r"(어르신|노인|고령자|노령)\S*\s*(인구\s*)?(몇\s*)?(비율|비중|%|퍼센트|프로)"),
         "고령인구 비율",
     ),
     # "사람 수", "사람이 많아", "제일 많이 사는", "주민 수" → 총인구 (다른 지표 이름이 없을 때만)
@@ -511,8 +516,10 @@ def correct(question, parsed, today=None):
     ages = extract_ages(question)
     if ages:
         parsed["ages"] = ages
-    # "노인"·"청년" 같은 이름은 정의 구간으로 (답변에 기준 고지)
-    elif group := agegroup.resolve(question):
+    # "노인"·"청년" 같은 이름은 정의 구간으로 (답변에 기준 고지).
+    # 단, 출생 지표의 "아기 · 아이"는 태어난 아이를 가리키는 말이지 0세 연령 조건이 아니다
+    # ("다문화 가정 아기 최근 5년" → 연령 조건을 붙여 '연령으로 나눈 자료 없음'으로 끝났다)
+    elif (group := agegroup.resolve(question)) and not (group.lo == 0 and _about_births(parsed)):
         parsed["age_group"] = {"expr": group.expr, "range": group.label(), "basis": group.basis}
         ages = [[group.lo, group.hi]]  # 이름 연령도 계산에 쓴다 (예: 청년 → 19~34세)
         parsed["ages"] = ages
@@ -685,6 +692,12 @@ def correct(question, parsed, today=None):
 CROSS_DYNAMIC = "cross_dynamic"  # 두 값 중 한쪽이 사전에 없음 (ask_session이 마저 계산)
 
 
+def _about_births(parsed):
+    """해석한 지표가 출생 지표인가 (출생아 수 · 다문화 출생아 수 · 셋째 이상 출생아 수 등)"""
+    name = indicators.canonical_name(parsed.get("indicator") or "") or ""
+    return "출생" in name
+
+
 def _cross(question, parsed, fix):
     """두 지표를 나눈 값 ("세대당 출생아 수", "인구 1,000명당 외국인근로자 수"). cross_indicator.py
     공식 지표가 있으면 그 지표로, 없으면 parsed["cross"]에 두 지표를 적어 compute가 나눠 계산한다.
@@ -725,6 +738,8 @@ PLAIN_POPULATION = {
     "나이", "연령", "연령대", "만",
     # 합치기 · 고르기 말 ("부산 울산 경남 합쳐서 인구", "경기도 시군 중 인구 많은 순서")
     "합쳐서", "합친", "합하면", "더한", "중", "모두", "전부", "다", "사는",
+    # 세는 말 ("도시 3개 인구로", "상위 5곳 인구")
+    "개", "곳", "군데",
 }  # fmt: skip
 POPULATION_NOUN = re.compile(r"([가-힣]+)\s*인구")
 

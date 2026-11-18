@@ -49,3 +49,8 @@ def test_non_capital_has_14_sido():
     members = qa.REGION_GROUPS["비수도권"]
     assert len(members) == 14
     assert not {"서울", "인천", "경기"} & set(members)
+
+
+@pytest.mark.parametrize("q", ["강남3구 인구 합치면 몇 명이야?", "강남 3구 인구"])
+def test_gangnam_three_districts(q):
+    assert qa.REGION_GROUPS[first_group(q)] == ["서울 강남구", "서울 서초구", "서울 송파구"]

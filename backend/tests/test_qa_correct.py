@@ -839,7 +839,8 @@ def test_babies_born_or_per_woman(question: str, llm, expected: str) -> None:
 
 @pytest.mark.parametrize("question", ["서울 2030세대 인구는?", "서울 2030 세대 인구는?"])
 def test_generation_population_is_total_population(question: str) -> None:
-    # "2030세대"는 연령 조건 (20~39세). '세대 인구'를 다른 통계로 보지 않고, 2030년으로도 읽지 않는다
+    # "2030세대"는 연령 조건 (20~39세).
+    # '세대 인구'를 다른 통계로 보지 않고, 2030년으로도 읽지 않는다
     p = qa.correct(question, parsed(indicator="총인구", regions=["서울"], year=2030), TODAY)
     assert p["indicator"] == "총인구" and p["grounded"] is not False
     assert p["ages"] == [[20, 39]] and p["year"] is None
@@ -934,3 +935,17 @@ def test_high_rank_overrides_ascending(question) -> None:
 def test_low_or_decrease_rank_keeps_ascending(question) -> None:
     p = qa.correct(question, parsed(type="rank", indicator="출생아 수", ascending=True), TODAY)
     assert p["ascending"] is True
+
+
+def test_baby_words_are_not_an_age_for_birth_indicators(monkeypatch) -> None:
+    # 출생 지표의 "아기 · 아이"는 태어난 아이: 0세 연령 조건을 붙이지 않는다
+    monkeypatch.setattr(indicators, "canonical_name", lambda n: n)
+    q0 = "다문화 가정 아기 최근 5년 동안 어떻게 변했어?"
+    p = qa.correct(q0, parsed(type="trend", indicator="다문화 출생아 수"), TODAY)
+    assert not p.get("ages") and not p.get("age_group")
+    q = qa.correct("서울 아이들 수 얼마나 돼?", parsed(indicator="총인구", regions=["서울"]), TODAY)
+    assert q["ages"] == [[0, 14]]  # 출생 지표가 아니면 지금처럼 연령 집단
+
+
+def test_counting_words_before_population_are_plain() -> None:
+    assert qa.population_modifier("경기도에서 제일 큰 도시 3개 인구로") is None

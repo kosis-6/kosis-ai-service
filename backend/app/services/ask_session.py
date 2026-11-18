@@ -1450,7 +1450,9 @@ def searchable_after(res: dict) -> bool:
     result = res.get("result") or {}
     return (
         res.get("status") in table_guide.SEARCH_AFTER
-        and res.get("request_type") == NEW
+        # 되묻기에 답한 턴(REPLY)도: 원래 질문과 받은 지역을 합친 질문이다 ("우리 시 결혼 건수" →
+        # "창원시" → 사전은 시도까지만이라 끝났다. 시군구 표가 따로 있다)
+        and res.get("request_type") in (NEW, REPLY)
         and not (result.get("suggestion") or {}).get("status") == "ok"
     )
 

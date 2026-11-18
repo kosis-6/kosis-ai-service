@@ -1512,3 +1512,10 @@ def test_ungrounded_missing_region_goes_to_table_search() -> None:
     assert s.ungrounded(res) is True
     res["parsed"]["grounded"] = True
     assert s.ungrounded(res) is False
+
+
+def test_reply_turn_can_search_other_tables() -> None:
+    # 되묻기에 답한 턴도 다른 통계표에서 찾는다 (사전은 시도까지만인데 시군구를 받은 경우)
+    res = {"status": "missing_data", "request_type": s.REPLY, "result": {}}
+    assert s.searchable_after(res) is True
+    assert s.searchable_after({**res, "request_type": s.CHART}) is False
