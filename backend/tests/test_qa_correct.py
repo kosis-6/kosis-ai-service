@@ -980,3 +980,19 @@ def test_rank_by_change(monkeypatch) -> None:
     assert [(x["region"], x["value"]) for x in r["ranking"]] == [("서울", -20), ("부산", -5)]
     assert r["order"] == "감소 폭이 큰 순" and "2024년 → 2025년" in r["notes"][0]
     assert "가장 많이 줄어든" in qa._rank_text(r)
+
+
+def test_causal_reading_without_causal_words_is_undone() -> None:
+    # HCX가 비율 질문을 원인 질문으로 읽어도 원인 말이 없으면 원인 질문이 아니다
+    p = qa.correct("작년 혼인 중에 남녀 모두 초혼인 비율 몇 %야?", parsed(type="causal"), TODAY)
+    assert p["type"] != "causal"
+    q = qa.correct("출산율이 낮은 이유가 뭐야?", parsed(type="causal"), TODAY)
+    assert q["type"] == "causal"
+
+
+def test_rank_by_other_axis_is_not_region_rank() -> None:
+    by_nation = "등록외국인 국적별로 많은 순서 세 나라만 알려줘"
+    p = qa.correct(by_nation, parsed(type="rank", top=3), TODAY)
+    assert p["rank_axis"] == "국적" and p["grounded"] is False
+    q = qa.correct("2024년 등록외국인이 가장 많은 시도 3곳", parsed(type="rank", top=3), TODAY)
+    assert "rank_axis" not in q

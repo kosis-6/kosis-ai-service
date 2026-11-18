@@ -298,7 +298,10 @@ SUM_WORDS = re.compile(r"합|합계|합친|더한|더하면|모두|전부|또는
 COMPARE_WORDS = re.compile(
     r"비교|차이|몇\s*배|보다|대비|vs|더\s*(많|적|높|낮)|어느\s*(게|쪽|것)|뭐가\s*더|뭘\s*더", re.I
 )
-RANK_PARTS = re.compile(r"top\s*\d|상위\s*\d|순위|(가장|제일)\s*(많|적|높|낮)|1위|몇\s*위", re.I)
+RANK_PARTS = re.compile(
+    r"top\s*\d|상위\s*\d|순위|(가장|제일)\s*(많|적|높|낮)|1위|몇\s*위|(많|높|적|낮)은\s*(순서|순)",
+    re.I,
+)
 REGION_RANK = re.compile(r"시도|시군구|지역|곳|어디|구별|도시|광역시")
 SUBTOTAL = re.compile(r"(계|합계|소계)$")
 
@@ -322,7 +325,8 @@ def _rank_dim(question: str, dims: list[Dim], region_dim: int | None, tbl_nm: st
         return None
     q = _norm(question)
     for d in dims:
-        stem = _norm(re.sub(r"(별|구분)$", "", d.name))
+        # "국적(지역)별"의 괄호는 떼고 본다 ("국적별로 많은 순서")
+        stem = _norm(re.sub(r"(별|구분)$", "", re.sub(r"\(.*?\)", "", d.name)))
         if d.no not in (0, region_dim) and len(stem) >= 2 and stem in q:
             return d
     # 표 이름의 "이용 교통수단별"처럼 분류 이름에 없는 '~별'이면 그 분류는 항목에 들어 있다
@@ -794,6 +798,9 @@ def build(
     if not spec.get("formula") and (cells := _cells(plan, dims)):
         spec["formula"] = f"KOSIS 공표 값 ({cells})"  # 칸이 하나뿐이면 lookup이 표 이름을 쓴다
     spec["cells"] = _cells(plan, dims)
+    if PAIRS_ASKED.search(question) and "쌍" not in (spec.get("unit") or "") + spec["cells"]:
+        # "쌍둥이 몇 쌍": 사람 수(쌍태아 14,963명)가 아니라 쌍 단위 값이어야 한다
+        return None, "질문은 '쌍' 단위인데 표의 칸은 다른 단위"
     return spec, None
 
 
@@ -1174,6 +1181,8 @@ def attempt_list(target: dict, q: dict) -> list[dict]:
     return out[:MAX_ATTEMPTS]
 
 
+# 쌍둥이를 몇 쌍인지 물음 ("이혼한 부부 몇 쌍"은 건수라 해당하지 않는다)
+PAIRS_ASKED = re.compile(r"(쌍둥이|쌍태아)\S*\s*(\S+\s*){0,2}몇\s*쌍")
 RECENT_YEARS = 5  # 연도를 말하지 않은 질문: 자료 마지막 해에서 이만큼 안의 자료가 있는 표만
 
 
@@ -1649,9 +1658,12 @@ def parts_answer(parsed: dict, spec: dict, question: str) -> dict:
         total_of_code = 0
         for y in years:
             r = lookup.value(_set_code(spec, op["col"], code), region, y, sex)
-            if r.get("status") != "ok" or r.get("value") is None:
+            if r.get("status") != "ok":
                 return {"status": r.get("status"), "answer": r.get("reason") or "", "result": r}
             first = first or r
+            if r.get("value") is None:  # 값이 없는 칸 (비공개 · 결측): 그 칸은 값 없음으로
+                total_of_code = None
+                break
             total_of_code += r["value"]
         rows.append({"label": label, "value": total_of_code})
     unit, name = first.get("unit") or "", spec["name"]

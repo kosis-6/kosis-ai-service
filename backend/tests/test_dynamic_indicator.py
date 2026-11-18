@@ -1203,3 +1203,16 @@ def test_subject_must_be_in_table() -> None:
     # "학교 다닌"은 통학, 둘 다 말했으면 그 분류의 합계
     plan, why = d.choose(q, {"sex": "계"}, [items, kind], None)
     assert why is None and plan.pick[2] == "0"
+
+
+def test_pairs_question_needs_pair_unit(monkeypatch) -> None:
+    # "쌍둥이 몇 쌍": 사람 수 칸("쌍태아 (명)")으로 답하지 않는다
+    assert d.PAIRS_ASKED.search("지난해 태어난 쌍둥이 몇 쌍이야?")
+    assert not d.PAIRS_ASKED.search("쌍둥이 몇 명")
+    assert not d.PAIRS_ASKED.search("1980년 서울에서 이혼한 부부 몇 쌍이야?")  # 이혼 건수
+
+
+def test_rank_dim_ignores_parentheses() -> None:
+    nat = d.Dim(3, "국적(지역)별", {"0": "계", "1": "베트남", "2": "중국"})
+    items = d.Dim(0, "항목", {"T": "등록외국인"})
+    assert d._rank_dim("등록외국인 국적별로 많은 순서 세 나라", [items, nat], None, "") is nat

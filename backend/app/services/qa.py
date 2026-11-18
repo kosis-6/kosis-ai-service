@@ -271,6 +271,7 @@ UNTIL = re.compile(r"((?:19|20)\d{2})\s*년\s*까지")
 NATIONWIDE = re.compile(
     r"전국|우리나라|대한민국|한국\s*(전체|의|은|는|인구|사람)|국내\s*(전체)?"
 )
+WHY_WORDS = re.compile(r"왜|이유|원인|때문|탓|효과|영향")
 CAUSAL = re.compile(r"효과가?\s*(있|없|컸)|효과적|원인|왜\s|영향을?\s*(줬|주|미쳤|끼쳤)")
 # 지표 사전이 나누지 않는 조건 (체중·기간 등). 버리고 전체 값으로 답하면 틀린 답이 된다
 # ("체중 3.2kg 출생아 수" → 전국 출생아 수, "결혼 1년 반 만에 이혼한 건수" → 전체 이혼 건수)
@@ -346,13 +347,20 @@ INDICATOR_PATTERNS = [
         "총인구",
     ),
 ]
-MORE_SPECIFIC = {"조출생률": {"출생아 수"}}
+MORE_SPECIFIC = {
+    "조출생률": {"출생아 수"},
+    "셋째 이상 출생아 수": {"출생아 수"},
+    "다문화 출생아 수": {"출생아 수"},
+}
 # 변화량 순위 ("작년에 인구 제일 많이 줄어든 시도 세 군데", "인구 증가 폭이 큰 구"):
 # 그해 값이 아니라 전년 대비 변화량으로 순위를 매긴다
 CHANGE_RANK = re.compile(
     r"(가장|제일)\s*많이\s*(줄어|줄었|감소|빠졌|늘어|늘었|증가)|(감소|증가)\s*폭이?\s*(가장|제일)?\s*(큰|많)"
 )
 DECREASE_WORDS = re.compile(r"줄어|줄었|감소|빠졌")
+# 지역이 아닌 순위 축 ("국적별로 많은 순서", "어느 나라가", "교통수단 중 가장 많이")
+OTHER_AXIS = re.compile(r"(국적|나라|국가|교통\s*수단|이동\s*사유|전입\s*사유)\s*(별|중|가|이|마다)?")
+AXIS_REGION = re.compile(r"시도|시군구|지역|도시|광역시|어느\s*(시|구|군|도)")
 YEAR_ASKED = re.compile(r"(해|연도|년도|때)\s*(는|가|를|은|가\s*언제|$|\?)|언제")
 # 연령 구간 · 연령 집단을 말하고 사람 수를 물었으면 그 연령의 인구 ("수성구에 이십대 얼마나 살아?",
 # "광주하고 전남 어르신 수 합쳐줘", "서울 사는 19살부터 34살까지 몇 명")
@@ -509,6 +517,10 @@ def correct(question, parsed, today=None):
         if bare != name and indicators.spec(bare) is not None:
             fix("indicator", bare, "지표 이름 뒤의 단위 표기")
 
+    if kind == "causal" and not (CAUSAL.search(question) or WHY_WORDS.search(question)):
+        # "작년 혼인 중에 남녀 모두 초혼인 비율" 같은 비율 질문을 HCX가 원인 질문으로 읽었다
+        kind = "composition" if PCT_ASK.search(question) else "value"
+        fix("type", kind, "원인을 묻는 말이 없음")
     if kind == "other" and CAUSAL.search(question):
         fix("type", "causal", "원인·효과를 묻는 질문")
         kind = "causal"
@@ -569,11 +581,11 @@ def correct(question, parsed, today=None):
                     and not OTHER_PEOPLE.search(question)
                 ):
                     names |= {"총인구"}
-            # 정의를 풀어 말한 지표가 그 재료 지표보다 구체적이다
-            # ("인구에 비해 아기 태어나는 정도"는 출생아 수가 아니라 조출생률)
-            for specific, general in MORE_SPECIFIC.items():
-                if specific in names:
-                    names -= general
+        # 더 구체적인 지표가 함께 걸렸으면 그쪽 ("인구에 비해 아기 태어나는 정도"는 조출생률,
+        # "셋째나 그 이후로 태어난 아기"는 셋째 이상 출생아 수)
+        for specific, general in MORE_SPECIFIC.items():
+            if specific in names:
+                names -= general
         name = _pick_indicator(question, names)
         current = indicators.canonical_name(parsed.get("indicator") or "")
         if name and current != name:
@@ -692,6 +704,12 @@ def correct(question, parsed, today=None):
 
     _cross(question, parsed, fix)
     _change_rank(question, parsed, fix)
+    other_axis = OTHER_AXIS.search(question) and not AXIS_REGION.search(question)
+    if parsed.get("type") == "rank" and other_axis:
+        # "등록외국인 국적별로 많은 순서 세 나라": 지역이 아닌 분류의 순위. 사전 지표는 지역 순위만
+        # 하므로 그 지표의 표에서 분류 순위를 계산한다 (ask_session._dynamic_instead)
+        parsed["rank_axis"] = OTHER_AXIS.search(question)[1]
+        parsed["grounded"] = False
     if fixes:
         parsed["corrections"] = fixes
     return parsed
@@ -746,7 +764,7 @@ def _cross(question, parsed, fix):
     parsed["indicators"] = None
     parsed["grounded"] = True
     parsed.pop("unsupported", None)
-    if found.plus and not parsed.get("group"):
+    if (found.plus or found.form == "sum") and not parsed.get("group"):
         # "혼인 건수와 이혼 건수 합"의 합은 분자 두 지표를 더하라는 말이다 (기간 · 지역 합계가 아니다)
         parsed.pop("aggregate", None)
 
@@ -1262,7 +1280,20 @@ MAX_INDICATORS = 3  # 한 질문에서 함께 답하는 지표 수
 
 
 def compute(q):
-    """2~4단계: 질문 분석 결과 → indicators.py(계산 지표)·lookup.py(조회 지표) 결과"""
+    """2~4단계: 질문 분석 결과 → indicators.py(계산 지표)·lookup.py(조회 지표) 결과.
+    연도를 말하지 않아 최신 달 값으로 계산했는데 기간 밖이면 연간 자료의 마지막 해로 다시 계산한다
+    (총인구는 최신 달이 다음 해라, 등록외국인처럼 연간 자료를 섞는 지표가 '기간 밖'으로 끝났다)"""
+    result = _compute(q)
+    asked = q.get("asked") or {}
+    if result.get("status") == "out_of_range" and asked.get("latest") and not q.get("year"):
+        retry = _compute({**q, "asked": {**asked, "latest": False}})
+        if retry.get("status") == "ok":
+            return retry
+    return result
+
+
+def _compute(q):
+    """compute의 본문 (최신 달 다시 계산 없이)"""
     lookup.refresh_if_reloaded()  # 적재 프로세스가 표를 새로 넣었으면 표 정보 캐시를 비운다
     kind = q.get("type")
     ind = q.get("indicator") or ""

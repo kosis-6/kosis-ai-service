@@ -1705,6 +1705,15 @@ async def _dynamic_instead(res: dict, state: dict | None, asked: str, user_id: i
     trace = res.get("trace") or {}
     parsed = res.get("parsed") or {}
     found = None
+    if parsed.get("rank_axis") and (axis := await _axis_rank(asked, parsed, trace)):
+        # 지역이 아닌 분류의 순위: 사전 지표의 표에서 그 분류로 순위를 매겼다
+        kind = res.get("request_type")
+        res.clear()
+        res.update(axis)
+        res["chart"] = charts.build(res.get("result"))
+        await _attach_cards(res, asked)
+        res["request_type"], res["question"], res["search_session"] = kind, asked, sid
+        return True
     try:
         computed = await dynamic_indicator.cached_answer(asked, parsed, trace)
         if computed is None:
@@ -1739,6 +1748,25 @@ async def _dynamic_instead(res: dict, state: dict | None, asked: str, user_id: i
         res["trace"] = trace
     res["request_type"], res["question"], res["search_session"] = kind, asked, sid
     return True
+
+
+async def _axis_rank(asked: str, parsed: dict, trace: dict) -> dict | None:
+    """사전 지표의 표로 지역이 아닌 분류의 순위를 계산한 답 (예: 등록외국인 표의 국적별 순위)"""
+    spec = indicators.spec(parsed.get("indicator") or "")
+    if not spec or spec.get("method") != "lookup":
+        return None
+    q = {**parsed, "regions": parsed.get("regions") or ["전국"], "dynamic_spec": None}
+    step: dict = {"dynamic": []}
+    for src in spec.get("sources") or []:
+        try:
+            part, _ = await dynamic_indicator._try(src["table"], None, asked, q, step, {})
+        except Exception:
+            logger.exception("분류 순위 계산 실패 (%s)", src.get("table"))
+            continue
+        if (part or {}).get("status") == "ok" and part.get("answer"):
+            trace["axis_rank"] = {"tbl_id": src["table"], "axis": parsed.get("rank_axis")}
+            return part
+    return None
 
 
 def _same_dictionary_table(parsed: dict, computed: dict | None, found: dict | None) -> str | None:

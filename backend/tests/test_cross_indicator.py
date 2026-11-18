@@ -596,3 +596,46 @@ def test_unknown_side_tried_in_known_tables_first(monkeypatch: pytest.MonkeyPatc
     q = {"regions": ["전국"], "year": 2025}
     got = asyncio.run(ask_session._same_table_side("베트남 사람", "등록외국인 수", q, "value", {}))
     assert got["value"] == 293907 and tried == [("DT_1B040A9C", "2025년 전국 베트남 사람")]
+
+
+# ---- 변형셋 1차 수치 실패 다시 확인 (세진 정리) — 일반 예문 ------------------------------------
+
+
+def test_sum_of_two_indicators() -> None:
+    # "A 인구, B도 포함해서 총 몇 명" → A + B
+    c = x.detect("서울 인구, 등록 외국인도 포함해서 총 몇 명이야?")
+    assert (c.num, c.den, c.form) == ("총인구", "등록외국인 수", "sum")
+    assert c.name == "총인구와 등록외국인 수의 합" and c.formula == "총인구 + 등록외국인 수"
+    res = x.compute(q_of("value", num="출생아 수", den="세대수", year=2024) | {"cross": {
+        "num": "출생아 수", "den": "세대수", "scale": 1, "form": "sum"}}, fake_run())  # fmt: skip
+    assert res["value"] == 41605 + 4482063 and res["op"] == "+"
+
+
+def test_people_word_is_total_population() -> None:
+    # "제주도 사람 중 외국인 주민 %": 분모 '사람'은 총인구, 공식 외국인주민 비율로 보내지 않는다
+    c = x.detect_partial("서울 사람 중 외국인 주민은 몇 퍼센트야?")
+    assert (c.num, c.den, c.scale, c.official) == ("외국인주민 수", "총인구", 100, None)
+
+
+def test_population_denominator_is_percent() -> None:
+    c = x.detect("인구 대비 등록외국인 많은 시도 세 군데")
+    assert c.scale == 100 and c.official == "등록외국인 비율"
+    assert x.detect("2024년 서울 출생아 수 대비 사망자 수").scale == 1
+
+
+def test_rank_without_year_aligns_years() -> None:
+    # 연도를 말하지 않은 순위: 한쪽이 최신 달 값이면 둘 다 연간 마지막 해로 다시 계산한다
+    asked = []
+
+    def run(q):
+        asked.append((q["indicator"], q.get("year"), (q.get("asked") or {}).get("latest")))
+        res = fake_run()(q)
+        if q["indicator"] == "세대수" and not q.get("year"):
+            return {**res, "year": 2026, "as_of": "2026년 10월 말"}
+        return res
+
+    q = q_of("rank", top=1)
+    q["asked"] = {"latest": True}
+    res = x.compute(q, run)
+    assert res["status"] == "ok"
+    assert ("출생아 수", 2024, False) in asked and ("세대수", 2024, False) in asked

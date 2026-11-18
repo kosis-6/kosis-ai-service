@@ -587,3 +587,19 @@ def test_lookup_trend_entirely_before_coverage_is_out_of_range(monkeypatch) -> N
 def test_subject_does_not_repeat_sex_in_name() -> None:
     assert qa._subject({"sex": "남", "indicator": "남편"}) == "남편"
     assert qa._subject({"sex": "여", "indicator": "고령인구 비율"}) == "여성 고령인구 비율"
+
+
+def test_latest_month_out_of_range_retries_with_annual(monkeypatch) -> None:
+    # 연도를 말하지 않아 최신 달로 계산했더니 기간 밖이면 연간 마지막 해로 다시 계산한다
+    seen = []
+
+    def fake(q):
+        seen.append((q.get("asked") or {}).get("latest"))
+        if (q.get("asked") or {}).get("latest"):
+            return {"status": "out_of_range"}
+        return {"status": "ok", "value": 1}
+
+    monkeypatch.setattr(qa, "_compute", fake)
+    assert qa.compute({"asked": {"latest": True}})["status"] == "ok" and seen == [True, False]
+    seen.clear()
+    assert qa.compute({"asked": {"latest": True}, "year": 2030})["status"] == "out_of_range"
