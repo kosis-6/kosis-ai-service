@@ -466,7 +466,10 @@ def uncovered(
     # 칸 고르기 LLM이 고른 칸의 말로 바꿔 읽은 질문 낱말
     # (예: 결혼 → 혼인). 칸 이름에 반영된 것으로 본다
     read = [_norm(a) for a, _ in slots.get("read_as") or [] if len(_norm(a)) >= 2]
-    for item in cond.get("items") or []:
+    # 칸 고르기 LLM이 고른 칸으로 계산할 때는 조건 낱말 검사를 하지 않는다. LLM이
+    # "질문과 뜻이 다르거나 더 넓은 칸으로 대신하지 않는다"는 지시로 조건까지 보고 칸을 골랐다
+    # (11/18, 대상 검사와 같은 원칙)
+    for item in [] if slots.get("cells_by_llm") else cond.get("items") or []:
         word = _norm(item)
         if not word:
             continue
@@ -1167,7 +1170,12 @@ async def compute_from_handoff(
         # 칸 고르기 LLM이 "이 표가 질문의 값(대상 포함)을
         # 담고 있다"고 답했으므로 대상 낱말 검사는 하지 않는다
         # (나, 11/18. 프롬프트: "질문이 묻는 대상이나 값이 표에 없으면 아니오")
-        slots_llm = {**slots, "read_as": picked.read_as, "check_target": False}
+        slots_llm = {
+            **slots,
+            "read_as": picked.read_as,
+            "check_target": False,
+            "cells_by_llm": True,
+        }
         lines = [n for n in (notice, picked.notice()) if n]
         res, ask = await _try(
             tbl_id,

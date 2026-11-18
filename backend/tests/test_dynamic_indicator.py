@@ -1038,14 +1038,11 @@ def test_cell_llm_unsure_asks_that_dimension(cell_llm) -> None:
     assert res["clarification"]["options"] == ["1인가구", "남자", "여자"]
 
 
-def test_cell_llm_reading_counts_for_the_condition_check(cell_llm) -> None:
-    # 조건 '홀로 사는 가구'는 칸 이름에 글자로 없지만, LLM이 그 말을 1인가구로 읽었으면 반영된 것
-    cell_llm["reply"] = {
-        "fits": "예",
-        "picks": {"항목": "1"},
-        "read_as": [{"질문": "홀로 사는 가구", "표": "1인가구"}],
-        "reason": "r",
-    }
+@pytest.mark.parametrize("read_as", [None, [{"질문": "홀로 사는 가구", "표": "1인가구"}]])
+def test_cell_llm_cells_count_for_the_condition_check(cell_llm, read_as) -> None:
+    # 조건 '홀로 사는 가구'는 칸 이름에 글자로 없지만, 칸 고르기 LLM이 고른 칸은 조건까지 보고
+    # 고른 것으로 본다 (11/18). LLM이 바꿔 읽은 말을 적지 않아도(read_as null) 마찬가지
+    cell_llm["reply"] = {"fits": "예", "reason": "r", "read_as": read_as, "picks": {"항목": "1"}}
     u = _understanding()
     u["conditions"]["items"] = ["홀로 사는 가구"]
     cands = [_cand("A", 1, picked=True, checks={"year": True}, review={"match": "exact"})]
@@ -1075,3 +1072,23 @@ def test_cell_llm_fit_skips_the_target_word_check(cell_llm) -> None:
     res = asyncio.run(d.compute_from_handoff(Q1, BASE, _found(cands, u), trace))
     assert res["status"] == "ok"
     assert trace["dynamic"][-1]["by"] == "cell_llm"
+
+
+def test_cut_cell_llm_reply_without_picks_asks_instead_of_failing(cell_llm) -> None:
+    # 칸 고르기 응답이 잘려 picks가 없으면 버리지 않고 그 분류를 되묻는다 (11/18)
+    cell_llm["reply"] = {"fits": "예", "reason": "r", "_salvaged": True}
+    cands = [_cand("A", 1, picked=True, checks={"year": True}, review={"match": "exact"})]
+    trace: dict = {}
+    res = asyncio.run(d.compute_from_handoff(Q1, BASE, _found(cands), trace))
+    assert res["clarification"]["kind"] == "table_cell"
+    assert trace["dynamic"][0]["cell_llm"]["result"] == "정할 수 없음 (응답 잘림)"
+
+
+def test_condition_words_still_checked_without_cell_llm(computed) -> None:
+    # 규칙으로 칸을 고른 표는 지금처럼 조건 낱말을 글자로 본다 (칸 고르기 LLM 때만 건너뜀)
+    u = _understanding()
+    u["conditions"]["items"] = ["홀로 사는 가구"]
+    cands = [_cand("A", 1, picked=True, checks={"year": True}, review={"match": "exact"})]
+    trace: dict = {}
+    assert asyncio.run(d.compute_from_handoff(Q1, BASE, _found(cands, u), trace)) is None
+    assert "홀로 사는 가구" in trace["dynamic"][0]["skip"]

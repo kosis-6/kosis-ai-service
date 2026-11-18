@@ -89,3 +89,13 @@ def test_choose_records_and_survives_llm_errors(monkeypatch) -> None:
     step: dict = {}
     assert asyncio.run(cell_pick.choose("q", {}, "t", GROUPS, step)) is None
     assert step["cell_llm"]["error"].startswith("RuntimeError")
+
+
+def test_schema_puts_picks_last_and_lets_read_as_be_null() -> None:
+    # Gemma 응답 잘림 방지 (11/18): 핵심 답(picks)이 맨 뒤이고 그 뒤에 칸이 없다.
+    # read_as는 바꿔 읽은 말이 없으면 null을 쓸 수 있다
+    shape = prompt.schema({"항목": 2})
+    assert list(shape["properties"]) == ["fits", "reason", "read_as", "picks"]
+    assert shape["required"] == ["fits", "reason", "read_as", "picks"]
+    assert {"type": "null"} in shape["properties"]["read_as"]["anyOf"]
+    assert "null로 둔다" in prompt.SYSTEM

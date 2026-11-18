@@ -39,7 +39,10 @@ GROUPS = [Group(0, "항목", [("T1", "혼인")], 1)]
         ({"fits": "예", "picks": {"항목": "정할 수 없음"}}, True, "정할 수 없음"),
         ({"fits": "아니오", "picks": {}}, False, "표에 없음"),
         (None, False, "응답 해석 실패"),
-        ({"fits": "예"}, False, "응답 해석 실패"),  # picks 전에 잘림
+        ({"fits": "예"}, False, "응답 해석 실패"),  # 잘린 응답이 아닌데 picks가 없음
+        # 잘려서 picks가 없으면 모두 "정할 수 없음"으로 채운다 (되묻기로 넘김)
+        ({"fits": "예", "reason": "r", "_salvaged": True}, True, "정할 수 없음 (응답 잘림)"),
+        ({"fits": "아니오", "_salvaged": True}, False, "표에 없음"),
     ],
 )
 def test_cell_result_labels(raw, picked, label) -> None:
