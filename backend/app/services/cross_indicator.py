@@ -241,7 +241,7 @@ def detect(question: str) -> Cross | None:
 
 MARKER = re.compile(r"^(?P<stem>.*?)(?P<n>[\d,]+|천|만|백)?(?P<unit>명|세대|가구|건)?당$")
 VERSUS_TOKEN = re.compile(r"^(?P<stem>.*?)(?:의|에)?대비$")
-WITHIN_TOKENS = {"중", "가운데", "중에서"}
+WITHIN_TOKENS = {"중", "중에", "가운데", "중에서"}
 # 질문 끝의 묻는 말 ("1인 가구 수는 몇이야?" → "1인 가구 수")
 ENDING = re.compile(
     r"(?:은|는|이|가|을|를|의)?\s*(?:몇|얼마|어떻게|어때|알려|인가요|이에요|예요|입니까|일까|\?).*$"

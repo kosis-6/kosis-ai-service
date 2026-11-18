@@ -1097,7 +1097,7 @@ def test_ratio_does_not_use_region_named_cell(monkeypatch) -> None:
 def test_top_region_of_with_one_target_is_not_answered(computed) -> None:
     # "A가 가장 많은 시도의 B"를 지표 하나로 읽으면 거르는 지표가 없어 전국 B가 나온다 → 표 안내
     cands = [_cand("A", 1, picked=True, checks={"year": True}, review={"match": "exact"})]
-    q = "2020년 1인 가구가 가장 많은 시도의 통근 인구는?"
+    q = "2020년 1인 가구가 가장 많은 시도의 여자 1인 가구 수는?"
     trace: dict = {}
     assert asyncio.run(d.compute_from_handoff(q, BASE, _found(cands), trace)) is None
     assert any("거르는 지표가 없음" in (s.get("skip") or "") for s in trace["dynamic"])
@@ -1189,3 +1189,17 @@ def test_husband_wife_are_sex_cells() -> None:
     items = d.Dim(0, "항목", {"1": "남편", "2": "아내"})
     plan, why = d.choose("이혼하는 남자 평균 나이", {"sex": "남"}, [items], None)
     assert why is None and plan.pick[0] == "1"
+
+
+def test_subject_must_be_in_table() -> None:
+    # "출퇴근하거나 학교 다닌 사람"을 통학 인구 표로 세지 않는다 (첫 항목 이름의 '통근'은 보지 않음)
+    items = d.Dim(0, "항목", {"0": "통근·통학 인구(12세 이상)", "1": "전철 지하철"})
+    school = d.Dim(2, "교육정도별", {"0": "계", "1": "초등학교"})
+    q = "지하철 타고 출퇴근하거나 학교 다닌 사람"
+    assert d._missing_subject(q, "각급 학교 및 이용 교통수단별 통학 인구", [items, school])
+    kind = d.Dim(2, "통근·통학여부별", {"0": "계", "1": "통근", "2": "통학"})
+    assert d._missing_subject(q, "이용 교통 수단별 통근 통학 인구", [items, kind]) is None
+    assert d._missing_subject("지하철로 학교 다닌 학생", "통학 인구", [items, school]) is None
+    # "학교 다닌"은 통학, 둘 다 말했으면 그 분류의 합계
+    plan, why = d.choose(q, {"sex": "계"}, [items, kind], None)
+    assert why is None and plan.pick[2] == "0"

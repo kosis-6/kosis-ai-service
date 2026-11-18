@@ -569,3 +569,30 @@ def test_value_without_region_is_nationwide() -> None:
     q["regions"] = []
     x.compute(q, run)
     assert set(seen) == {("전국",)}
+
+
+def test_within_with_jung_e() -> None:
+    # "등록 외국인 중에 베트남 사람 비율": '중에'도 '중'
+    c = x.detect_partial("등록 외국인 중에 베트남 사람 비율 얼마나 돼?")
+    assert (c.num, c.den, c.form, c.dynamic) == ("베트남 사람", "등록외국인 수", "within", "num")
+
+
+def test_unknown_side_tried_in_known_tables_first(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 사전 쪽 지표의 표 안에 사전에 없는 쪽 칸이 있으면 그 표로 (기준이 같다, 통계표 찾기 없음)
+    import asyncio
+
+    from app.services import ask_session, dynamic_indicator, indicators
+
+    tried = []
+
+    async def fake_try(tbl, org, question, parsed, trace, forced, *a, **k):
+        tried.append((tbl, question))
+        result = {"status": "ok", "value": 293907, "unit": "명", "year": 2025, "tbl_id": tbl}
+        return {"status": "ok", "result": result}, None
+
+    monkeypatch.setattr(dynamic_indicator, "_try", fake_try)
+    spec = {"method": "lookup", "sources": [{"table": "DT_1B040A9C"}]}
+    monkeypatch.setattr(indicators, "spec", lambda n: spec)
+    q = {"regions": ["전국"], "year": 2025}
+    got = asyncio.run(ask_session._same_table_side("베트남 사람", "등록외국인 수", q, "value", {}))
+    assert got["value"] == 293907 and tried == [("DT_1B040A9C", "2025년 전국 베트남 사람")]

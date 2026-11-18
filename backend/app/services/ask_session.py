@@ -1564,6 +1564,36 @@ async def _dynamic_side(
     return {**got, "indicator": phrase}
 
 
+async def _same_table_side(
+    phrase: str, known: str, parsed: dict, kind: str, trace: dict
+) -> dict | None:
+    """사전에 없는 쪽을 먼저 다른 쪽 사전 지표의 표 안에서 찾는다 ("등록 외국인 중에 베트남 사람":
+    등록외국인 표의 국적 칸). 같은 표라 기준이 같다. 통계표 찾기를 부르지 않는다. 못 하면 None"""
+    spec = indicators.spec(known)
+    if not spec or spec.get("method") != "lookup":
+        return None
+    sub_q = _side_question(parsed, phrase, kind)
+    sub_parsed = {**parsed, "type": kind, "indicator": phrase, "term": phrase, "dynamic_spec": None}
+    if kind == "rank":
+        sub_parsed["top"] = None
+    step: dict = {"dynamic": []}
+    for src in spec.get("sources") or []:
+        try:
+            part, _ = await dynamic_indicator._try(src["table"], None, sub_q, sub_parsed, step, {})
+        except Exception:
+            logger.exception("두 값 나누기: 같은 표에서 찾기 실패 (%s)", src.get("table"))
+            continue
+        got = (part or {}).get("result") or {}
+        if (part or {}).get("status") == "ok" and (got.get("unit") or "") in (
+            cross_indicator.COUNT_UNITS
+        ):
+            trace.setdefault("cross_sides", []).append(
+                {"phrase": phrase, "same_table": src["table"], "status": "ok"}
+            )
+            return {**got, "indicator": phrase}
+    return None
+
+
 async def _cross_dynamic(res: dict, state: dict | None, asked: str, user_id: int | None) -> bool:
     """두 값을 나누는데(빼는데) 한쪽 또는 양쪽이 사전에 없다. res를 바꿨으면 True
 
@@ -1577,12 +1607,18 @@ async def _cross_dynamic(res: dict, state: dict | None, asked: str, user_id: int
     if kind == "compare" and len(parsed.get("regions") or []) <= 1:
         kind = "value"
     q = {**parsed, "type": kind, "cross": None, "indicators": None}
+    if kind in ("value", "trend") and not q.get("regions"):
+        # 지역을 말하지 않은 비율은 전국 ("등록 외국인 중에 베트남 사람 비율")
+        q["regions"] = ["전국"]
     sid = (state or {}).get("search_session") or table_guide.new_search_session()
     sides = {"num": c.num, "den": c.den}
     unknown = ["num", "den"] if c.dynamic == "both" else [c.dynamic]
     got: dict = {}
     for side in unknown:
-        got[side] = await _dynamic_side(sides[side], q, kind, sid, user_id, trace)
+        other = sides["den" if side == "num" else "num"]
+        got[side] = await _same_table_side(sides[side], other, q, kind, trace)
+        if got[side] is None:
+            got[side] = await _dynamic_side(sides[side], q, kind, sid, user_id, trace)
         if got[side] is None:
             return False
         if kind == "value" and not q.get("year") and got[side].get("year"):
