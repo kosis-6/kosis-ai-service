@@ -31,6 +31,7 @@ from app.services import (
     agegroup,
     analysis,
     ask_followup,
+    cross_indicator,
     indicators,
     load_queue,
     lookup,
@@ -558,9 +559,34 @@ def correct(question, parsed, today=None):
     if len(names) > 1 and parsed.get("type") in ("value", "trend", "compare"):
         parsed["indicators"] = names  # 지표마다 따로 계산한다 (compute)
 
+    _cross(question, parsed, fix)
     if fixes:
         parsed["corrections"] = fixes
     return parsed
+
+
+def _cross(question, parsed, fix):
+    """두 지표를 나눈 값 ("세대당 출생아 수", "인구 1,000명당 외국인근로자 수"). cross_indicator.py
+    공식 지표가 있으면 그 지표로, 없으면 parsed["cross"]에 두 지표를 적어 compute가 나눠 계산한다.
+    HCX는 이런 질문을 재료 지표 하나(출생아 수)로 읽어 그 건수를 답하기 쉽다"""
+    found = cross_indicator.detect(question)
+    if found is None or parsed.get("type") in ("causal", "composition"):
+        return
+    if found.official:
+        if parsed.get("indicator") != found.official:
+            fix("indicator", found.official, f"{found.formula}의 공식 지표")
+    else:
+        fix("indicator", found.name, f"두 지표를 나눈 값 ({found.formula})")
+        parsed["cross"] = found.as_dict()
+    if parsed.get("type") in (None, "other", "parse_error"):
+        fix("type", "trend" if parsed.get("start_year") else "value", "두 지표를 나눈 값")
+    elif parsed.get("type") == "compare" and len(parsed.get("regions") or []) <= 1:
+        # "출생아 수 대비 사망자 수"의 '대비'를 지역 비교로 읽은 경우 (지역은 하나)
+        fix("type", "value", "'대비'는 두 지표를 나눈 것 (비교할 지역이 하나)")
+    parsed["term"] = found.official or found.name
+    parsed["indicators"] = None
+    parsed["grounded"] = True
+    parsed.pop("unsupported", None)
 
 
 # 지표 이름 사이에 이 말만 있으면 여러 지표를 함께 물은 것 ("출생아 수와 사망자 수")
@@ -1115,6 +1141,20 @@ def compute(q):
             "region": bad,
             "reason": "질문의 지역을 시도·시군구로 확인하지 못했습니다.",
         }
+    if q.get("cross"):  # 두 지표를 나눈 값 (cross_indicator.py): 두 지표를 각각 계산해 나눈다
+        if cond := q.get("unsupported_condition"):
+            return {
+                "status": "band_mismatch",
+                "indicator": ind,
+                "reason": f"'{cond}' 조건으로 나뉜 자료가 없어 그 값을 낼 수 없습니다.",
+            }
+        result = cross_indicator.compute(q, compute)
+        for r in _leaves(result):
+            if r.get("series"):
+                _add_yearly_change(r)
+                _add_trend_facts(r)
+            r["asked"] = {**(q.get("asked") or {}), "top": q.get("top")}
+        return result
     # 사전에 없는 지표를 통계표에서 바로 만든 정의 (dynamic_indicator.py). 조회 지표와 같이 계산한다
     dyn = q.get("dynamic_spec") if _dynamic_fits(q) else None
     sp = dyn or (None if q.get("unsupported") else indicators.spec(ind))
