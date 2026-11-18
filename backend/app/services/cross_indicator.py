@@ -119,10 +119,22 @@ def _countable(name: str) -> bool:
     return sp.get("unit") in COUNT_UNITS and sp.get("kind") != "composition"
 
 
+# 분모 없이 "1000명당 혼인 건수"라고만 하면 인구 1,000명당 (조혼인율 · 조출생률 등의 풀어 쓴 말)
+BARE_PER_PEOPLE = re.compile(r"(?<![가-힣\d,])((?:[\d,]+|천|만)\s*명\s*당)")
+
+
+def _bare_per_people(question: str) -> str:
+    m = BARE_PER_PEOPLE.search(question)
+    if not m or indicators.find_in_text(question[: m.start()]):
+        return question  # 앞에 분모 지표가 있다 ("인구 1,000명당", "외국인주민 1,000명당")
+    return f"{question[: m.start()]}인구 {question[m.start() :]}"
+
+
 def detect(question: str) -> Cross | None:
     """질문에서 두 지표를 나눈 표현을 찾는다. 없으면 None.
     질문에 사전 지표 이름이 정확히 두 개 있고, 그 사이 말이 '당·대비·중'일 때만 본다"""
     question = BARE_HOUSEHOLD.sub("세대 수", question)
+    question = _bare_per_people(question)
     spans = sorted(indicators.find_in_text(question))
     names = list(dict.fromkeys(name for _, _, name in spans))
     if len(spans) != 2 or len(names) != 2:

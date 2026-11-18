@@ -253,7 +253,10 @@ def _says_year(question):
 
 SINCE = re.compile(r"((?:19|20)\d{2})\s*년\s*(이후|이래|부터)(?!.*까지)")
 UNTIL = re.compile(r"((?:19|20)\d{2})\s*년\s*까지")
-NATIONWIDE = re.compile(r"전국|우리나라|대한민국|한국\s*(전체|의|은|는)|국내\s*(전체)?")
+# "한국 인구", "한국 사람"도 전국 ("한국 국적"은 아니다: 귀화자)
+NATIONWIDE = re.compile(
+    r"전국|우리나라|대한민국|한국\s*(전체|의|은|는|인구|사람)|국내\s*(전체)?"
+)
 CAUSAL = re.compile(r"효과가?\s*(있|없|컸)|효과적|원인|왜\s|영향을?\s*(줬|주|미쳤|끼쳤)")
 # 지표 사전이 나누지 않는 조건 (체중·기간 등). 버리고 전체 값으로 답하면 틀린 답이 된다
 # ("체중 3.2kg 출생아 수" → 전국 출생아 수, "결혼 1년 반 만에 이혼한 건수" → 전체 이혼 건수)
@@ -275,8 +278,11 @@ RANK_ASK = re.compile(
 # "아기 몇 명 낳"은 여자 한 명이 평균 몇 명 낳는지(합계출산율)를 물을 때와 그해 태어난 아이 수
 # (출생아 수)를 물을 때가 있다. '한 명당 · 한 명이 · 평균 · 평생'이 있으면 합계출산율
 BIRTHS_PER_WOMAN = re.compile(
-    r"(?:여자|여성|엄마|가임\s*여성)?\s*(?:한|1)\s*명\s*(?:당|이|이서|마다)|평균|평생|일생"
+    r"(?:여자|여성|엄마|가임\s*여성)?\s*(?:한|1)\s*명\s*(?:당|이|이서|마다)|평균|평생|일생|몇\s*명\s*씩"
 )
+# 몇 명을 묻지 않아도 낳는 · 출산하는 아이 수를 물은 것 ("여자 1명이 평생 낳는 아이 수",
+# "여자 한 명이 아이 가장 많이 낳는 동네") — 한 명당 · 평생과 함께일 때만 합계출산율
+PER_WOMAN_BIRTH = re.compile(r"(낳|출산)")
 BABIES_BORN = re.compile(r"(?:아이|아기|애|신생아)\S*\s*몇\s*명\S*\s*(?:\S+\s*){0,2}낳")
 INDICATOR_PATTERNS = [
     (re.compile(r"(아이|아기|신생아)\S*\s*(\S+\s*){0,3}태어"), "출생아 수"),
@@ -289,7 +295,54 @@ INDICATOR_PATTERNS = [
         ),
         "자연증가 건수",
     ),
+    # 지표 이름 없이 정의를 풀어 말한 질문 (변형셋 1차, 2026-11-18)
+    # "일할 나이 인구 100명당 노인 몇 명" → 노년부양비
+    (
+        re.compile(
+            r"(일할|일하는|생산\s*가능|생산\s*연령)\s*(나이\s*)?(인구|사람)\S*\s*"
+            r"(?:(?:100|백)\s*명\s*)?당\s*(노인|어르신|고령)"
+        ),
+        "노년부양비",
+    ),
+    # "어르신 수가 아이들 수의 몇 배" → 노령화지수 (노인이 주어일 때만. "노인 대비 유소년"은 아니다)
+    (
+        re.compile(
+            r"(노인|어르신|고령\S*)\s*(수|인구)?\s*(가|이)\s*(아이|어린이|유소년|애)\S*\s*"
+            r"(수|인구)?\s*의\s*몇\s*배"
+        ),
+        "노령화지수",
+    ),
+    # "나이 순으로 줄 세우면 가운데가 몇 살" → 중위연령
+    (
+        re.compile(r"(나이|연령)\s*순\S*\s*(줄|세우|정렬).*(가운데|중간)|(가운데|중간)\s*나이"),
+        "중위연령",
+    ),
+    # "인구에 비해 아기 태어나는 정도" → 조출생률
+    (re.compile(r"인구\s*(에\s*비해|대비|당)\S*\s*.*(태어|출생)"), "조출생률"),
+    # "이사 온 사람에서 떠난 사람 빼면" → 순이동
+    (re.compile(r"(이사\s*온|들어온|전입)\S*.*(떠난|나간|전출)\S*.*(빼|뺀|차감)"), "순이동"),
+    # "어르신 비율 · 노인 비중" → 고령인구 비율
+    (
+        re.compile(r"(어르신|노인|고령자|노령)\S*\s*(인구\s*)?(비율|비중|%|퍼센트|몇\s*프로)"),
+        "고령인구 비율",
+    ),
+    # "사람 수", "사람이 많아", "제일 많이 사는", "주민 수" → 총인구 (다른 지표 이름이 없을 때만)
+    (
+        re.compile(r"사람\s*(이|들)?\s*(수|몇|많|적)|많이\s*사는|사는\s*사람|주민\s*(수|이\s*몇)"),
+        "총인구",
+    ),
 ]
+MORE_SPECIFIC = {"조출생률": {"출생아 수"}}
+# 연령 구간 · 연령 집단을 말하고 사람 수를 물었으면 그 연령의 인구 ("수성구에 이십대 얼마나 살아?",
+# "광주하고 전남 어르신 수 합쳐줘", "서울 사는 19살부터 34살까지 몇 명")
+PEOPLE_COUNT = re.compile(
+    r"몇\s*(명|분)|얼마나\s*(살|계|있|돼|되|줄|늘)|(수|인구)\s*(는|가|를|합|얼마|좀)|사람|분\s*(이|들)"
+)
+# '사람 · 분'이 이 통계의 사람이면 총인구가 아니다 ("외국인 등록한 사람", "통근한 사람", "사망자 중")
+OTHER_PEOPLE = re.compile(
+    r"외국|등록|이사|전입|전출|이동|통근|통학|결혼|혼인|이혼|사망|돌아가|태어|출생|낳|가구|유학|귀화|"
+    r"근로|이민|입국|출국|취업|학생"
+)
 # 구성비 질문에서 콕 집어 물은 항목 (질문 표현 → 구성 항목 이름)
 FOCUS_WORDS = {
     "일자리": "직업",
@@ -316,9 +369,10 @@ STATS_WORDS = re.compile(
 
 
 def extract_ages(question):
-    """질문 속 연령 구간 → [[시작, 끝 또는 None], ...] (나온 순서, 중복 제거)"""
+    """질문 속 연령 구간 → [[시작, 끝 또는 None], ...] (나온 순서, 중복 제거)
+    고유어 · 한자어 나이도 숫자로 읽는다 ("이십대" → 20대, "일흔 살 이상" → 70세 이상)"""
     bands = []
-    for _, _, band in age_spans(question):
+    for _, _, band in age_spans(agegroup.native_to_digits(question)):
         if band not in bands:
             bands.append(band)
     # "20대(20~29세)"처럼 같은 구간을 두 번 쓰면 하나로
@@ -474,10 +528,29 @@ def correct(question, parsed, today=None):
     if kind not in ("other", "parse_error"):
         names = {name for *_, name in indicators.find_in_text(question)}
         if not names - {"총인구"}:
-            names |= {name for pattern, name in INDICATOR_PATTERNS if pattern.search(question)}
-            if BABIES_BORN.search(question):
+            names |= {
+                name
+                for pattern, name in INDICATOR_PATTERNS
+                if pattern.search(question)
+                and not (name == "총인구" and OTHER_PEOPLE.search(question))
+            }
+            if BABIES_BORN.search(question) or (
+                PER_WOMAN_BIRTH.search(question) and BIRTHS_PER_WOMAN.search(question)
+            ):
                 per_woman = BIRTHS_PER_WOMAN.search(question)
                 names |= {"합계출산율" if per_woman else "출생아 수"}
+            if not names - {"총인구"} and (ages or parsed.get("age_group")):
+                if (
+                    PEOPLE_COUNT.search(question)
+                    and not PCT_ASK.search(question)
+                    and not OTHER_PEOPLE.search(question)
+                ):
+                    names |= {"총인구"}
+            # 정의를 풀어 말한 지표가 그 재료 지표보다 구체적이다
+            # ("인구에 비해 아기 태어나는 정도"는 출생아 수가 아니라 조출생률)
+            for specific, general in MORE_SPECIFIC.items():
+                if specific in names:
+                    names -= general
         name = _pick_indicator(question, names)
         current = indicators.canonical_name(parsed.get("indicator") or "")
         if name and current != name:
@@ -638,6 +711,8 @@ PLAIN_POPULATION = {
     "유소년", "어린이", "아동", "생산연령", "중장년", "현재", "작년", "올해", "지난해", "의",
     "수도권", "비수도권", "광역시", "특별시", "시군구", "시도", "지역", "구", "군", "시", "도",
     "나이", "연령", "연령대", "만",
+    # 합치기 · 고르기 말 ("부산 울산 경남 합쳐서 인구", "경기도 시군 중 인구 많은 순서")
+    "합쳐서", "합친", "합하면", "더한", "중", "모두", "전부", "다", "사는",
 }  # fmt: skip
 POPULATION_NOUN = re.compile(r"([가-힣]+)\s*인구")
 

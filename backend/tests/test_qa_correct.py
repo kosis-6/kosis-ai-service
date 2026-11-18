@@ -843,3 +843,68 @@ def test_generation_population_is_total_population(question: str) -> None:
     p = qa.correct(question, parsed(indicator="총인구", regions=["서울"], year=2030), TODAY)
     assert p["indicator"] == "총인구" and p["grounded"] is not False
     assert p["ages"] == [[20, 39]] and p["year"] is None
+
+
+# ---- 변형셋 1차: 지표 이름 없이 풀어 말한 질문 (2026-11-18) ---------------------------------
+
+
+@pytest.mark.parametrize(
+    ("question", "llm", "expected"),
+    [
+        ("해운대구 일할 나이 인구 100명당 노인 몇 명이야?", "총인구", "노년부양비"),
+        ("의성군 어르신 수가 아이들 수의 몇 배야?", "고령인구 비율", "노령화지수"),
+        ("영도구 주민 나이 순으로 줄 세우면 가운데가 몇 살이야?", None, "중위연령"),
+        ("세종이랑 전남, 인구에 비해 아기 태어나는 정도 얼마나 차이 나?", "출생아 수", "조출생률"),
+        ("작년에 이사 온 사람에서 떠난 사람 빼면 제일 많이 남는 시도 3곳", "순이동", "순이동"),
+        ("어르신 비율이 가장 높은 지역 세 군데 알려줘", "고령인구 비율%", "고령인구 비율"),
+        ("대구랑 부산 중에 여자 1명이 평생 낳는 아이 수 많은 곳은?", "합계출산율", "합계출산율"),
+        ("요새 사람들 애 몇 명씩 낳아?", "출생아 수", "합계출산율"),
+        ("노원구가 강남구보다 사람이 많아 적어?", "총인구", "총인구"),
+        ("서울에서 사람 제일 많이 사는 구 다섯 곳", "총인구", "총인구"),
+        ("수성구에 이십대 얼마나 살아?", "총인구", "총인구"),
+        ("광주하고 전라남도 어르신 수 합쳐줘", "고령인구 수", "총인구"),
+    ],
+)
+def test_spelled_out_indicators(question: str, llm, expected: str) -> None:
+    p = qa.correct(question, parsed(indicator=llm, regions=["서울"]), TODAY)
+    assert p["indicator"] == expected
+    # 근거 없는 지표로 보고 통계표 찾기로 넘기지 않는다 (이 파일은 별칭을 줄여 둬서 None일 수 있다)
+    assert p["grounded"] is not False
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "제주도에 외국인 등록한 사람 몇 명 있어?",  # 등록외국인이지 총인구가 아니다
+        "2010년 기준으로 전철로 통근이나 통학한 사람 몇 명이었어?",
+        "작년 사망자 중에 일흔 살 이상인 분 몇 명이야?",
+    ],
+)
+def test_other_people_are_not_total_population(question: str) -> None:
+    p = qa.correct(question, parsed(indicator=None, regions=["서울"]), TODAY)
+    assert p["indicator"] != "총인구"
+
+
+@pytest.mark.parametrize(
+    ("question", "ages"),
+    [
+        ("수성구에 이십대 얼마나 살아?", [[20, 29]]),
+        ("울산에 백 살 이상 되신 분 얼마나 계세요?", [[100, None]]),
+        ("작년 사망자 중에 일흔 살 이상인 분", [[70, None]]),
+        ("오십 대 남자", [[50, 59]]),
+    ],
+)
+def test_korean_number_ages(question: str, ages) -> None:
+    assert qa.extract_ages(question) == ages
+
+
+def test_korea_population_is_nationwide() -> None:
+    p = qa.correct("한국 인구 중 어르신 비중 몇 %야?", parsed(indicator="고령인구 비율"), TODAY)
+    assert p["regions"] in ([], ["전국"]) and p["indicator"] == "고령인구 비율"
+
+
+def test_merging_words_before_population_are_plain() -> None:
+    # "합쳐서 인구", "시군 중 인구"의 앞말은 다른 통계가 아니다
+    assert qa.population_modifier("부산 울산 경남 합쳐서 인구 몇 명이야?") is None
+    assert qa.population_modifier("경기도 시군 중 인구 많은 순서로 세 곳") is None
+    assert qa.population_modifier("2020년 통학 인구") == "통학"

@@ -1617,6 +1617,12 @@ async def _dynamic_instead(res: dict, state: dict | None, asked: str, user_id: i
         return False
     if computed is None and found is None:
         return False
+    if res.get("status") == "ok" and (same := _same_dictionary_table(parsed, computed, found)):
+        # 바로 계산이 사전 지표가 쓰는 표를 골랐다 (예: 출생아 수 표 DT_1B8000H).
+        # 표 안내나 칸 되묻기, 같은 표의 다른 칸 대신 검증된 사전 계산을 쓴다
+        # (변형셋 1차: 사전 표를 고르고도 안내로 끝남)
+        trace["dynamic_kept"] = {"indicator": parsed.get("indicator"), "tbl_id": same}
+        return False
     # 바꾼 원래 답 (요청 기록·회귀 평가에서 사전 지표 답과 비교한다)
     trace["replaced"] = {
         "indicator": parsed.get("indicator"),
@@ -1635,6 +1641,22 @@ async def _dynamic_instead(res: dict, state: dict | None, asked: str, user_id: i
         res["trace"] = trace
     res["request_type"], res["question"], res["search_session"] = kind, asked, sid
     return True
+
+
+def _same_dictionary_table(parsed: dict, computed: dict | None, found: dict | None) -> str | None:
+    """바로 계산(또는 표 안내)이 고른 표가 사전 지표의 표이면 그 표 ID. 아니면 None"""
+    spec = indicators.spec(parsed.get("indicator") or "")
+    tables = {src.get("table") for src in (spec or {}).get("sources") or []}
+    if not tables:
+        return None
+    picked: list[str | None] = []
+    if computed:
+        picked += [s.get("tbl_id") for s in computed.get("sources") or []]
+        context = (computed.get("clarification") or {}).get("context") or {}
+        picked.append(context.get("tbl_id"))
+    elif found:
+        picked += [r.get("tbl_id") for r in (found.get("recommendations") or [])[:1]]
+    return next((t for t in picked if t and t in tables), None)
 
 
 def _summary(result: dict | None) -> dict | None:

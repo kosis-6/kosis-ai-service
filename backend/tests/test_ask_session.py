@@ -1481,3 +1481,20 @@ def test_projection_suggestion_and_follow_ups_are_not_searched(talk: Talk, monke
     assert not s.searchable_after({**res, "result": {}, "request_type": "change"})
     for status in ("missing_region", "unknown_region", "data_loading", "error", "ambiguous_region"):
         assert not s.searchable_after({**res, "result": {}, "status": status}), status
+
+
+def test_dynamic_picking_dictionary_table_keeps_dictionary_answer(monkeypatch) -> None:
+    # 바로 계산이 사전 지표의 표(출생아 수 → DT_1B8000H)를 골랐으면 사전 답을 쓴다
+    from app.services import ask_session as s
+
+    monkeypatch.setattr(indicators, "spec", lambda n: {"sources": [{"table": "DT_1B8000H"}]})
+
+    parsed = {"indicator": "출생아 수"}
+    computed = {"sources": [{"tbl_id": "DT_1B8000H"}]}
+    assert s._same_dictionary_table(parsed, computed, None) == "DT_1B8000H"
+    asked = {"clarification": {"context": {"tbl_id": "DT_1B8000H"}}}
+    assert s._same_dictionary_table(parsed, asked, None) == "DT_1B8000H"
+    found = {"recommendations": [{"tbl_id": "DT_1B8000H"}]}
+    assert s._same_dictionary_table(parsed, None, found) == "DT_1B8000H"
+    other = {"sources": [{"tbl_id": "DT_1B83A35"}]}
+    assert s._same_dictionary_table(parsed, other, None) is None

@@ -224,14 +224,23 @@ SINGLE_AGE = re.compile(
 )
 
 
+# 한자어 나이 ('이십대', '삼십 대', '백 살', '백세'). 앞이 다른 낱말이면 아니다 ('문십대')
+SINO_DIGIT = {"이": 2, "삼": 3, "사": 4, "오": 5, "육": 6, "칠": 7, "팔": 8, "구": 9}
+SINO_DECADE = re.compile(r"(?<![가-힣])([이삼사오육칠팔구])?십\s*대(?![가-힣]*(?:학|표|회))")
+SINO_HUNDRED = re.compile(r"(?<![가-힣])백\s*(?:살|세)")
+
+
 def native_to_digits(text: str) -> str:
-    """'서른 살' → '30세', '스물다섯 살' → '25세'. 고유어 수가 없으면('몇 살') 그대로"""
+    """'서른 살' → '30세', '스물다섯 살' → '25세', '이십대' → '20대', '백 살' → '100세'.
+    고유어 · 한자어 수가 없으면('몇 살') 그대로"""
 
     def repl(m: re.Match) -> str:
         if not (m[1] or m[2]):
             return m[0]
         return f"{NATIVE_TENS.get(m[1], 0) + NATIVE_UNITS.get(m[2], 0)}세"
 
+    text = SINO_HUNDRED.sub("100세", text)
+    text = SINO_DECADE.sub(lambda m: f"{SINO_DIGIT.get(m[1], 1)}0대", text)
     return NATIVE_AGE.sub(repl, text)
 
 
