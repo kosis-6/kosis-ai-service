@@ -126,3 +126,27 @@ def test_chat_server_error_retry_succeeds(monkeypatch: pytest.MonkeyPatch) -> No
 
     result = asyncio.run(make_client(handler).chat("HCX-007", [{"role": "user", "content": "x"}]))
     assert result.content == "안녕하세요"
+
+
+def test_chat_limits_concurrent_requests(monkeypatch: pytest.MonkeyPatch) -> None:
+    """동시에 보내는 요청은 hcx_max_concurrency개까지 (후보 동시 계산이 한도를 넘지 않게)"""
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "hcx_max_concurrency", 2)
+    running, peak = 0, 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal running, peak
+        running += 1
+        peak = max(peak, running)
+        await asyncio.sleep(0.01)
+        running -= 1
+        return httpx.Response(200, json=OK_BODY)
+
+    async def run() -> None:
+        client = make_client(handler)
+        messages = [{"role": "user", "content": "안녕"}]
+        await asyncio.gather(*(client.chat("HCX-007", messages) for _ in range(6)))
+
+    asyncio.run(run())
+    assert peak == 2

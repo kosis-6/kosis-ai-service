@@ -910,14 +910,20 @@ def test_table_pending_keeps_options_for_text_reply(talk: Talk, monkeypatch) -> 
 def test_question_interpretation_records_usage(monkeypatch) -> None:
     from types import SimpleNamespace
 
+    sent = {}
+
     async def chat(self, *args, **kwargs):
+        sent.update(kwargs)
         return SimpleNamespace(content="{}", usage={"completionTokens": 123})
 
     monkeypatch.setattr(qa.HcxClient, "chat", chat)
     trace = {}
     assert asyncio.run(qa._chat("질문", "시스템", trace=trace)) == "{}"
     assert trace["understand_usage"] == {"completionTokens": 123}
-    assert trace["understand_max_completion_tokens"] == 5120
+    # 짧은 JSON만 받으므로 추론을 끄고 응답 길이를 줄인다 (HCX 한도를 미리 덜 잡게)
+    assert trace["understand_max_completion_tokens"] == 1024
+    assert sent["maxCompletionTokens"] == 1024
+    assert sent["thinking"] == {"effort": "none"}
 
 
 @pytest.mark.parametrize("region", ["서울", "전국"])

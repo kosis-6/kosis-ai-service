@@ -908,3 +908,29 @@ def test_merging_words_before_population_are_plain() -> None:
     assert qa.population_modifier("부산 울산 경남 합쳐서 인구 몇 명이야?") is None
     assert qa.population_modifier("경기도 시군 중 인구 많은 순서로 세 곳") is None
     assert qa.population_modifier("2020년 통학 인구") == "통학"
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "여성 평균 초혼연령 높은 시도 3곳",
+        "경기도 시군 중 인구 많은 순서로 세 곳",
+        "작년 출생아 수 많은 시군구 상위 3곳",
+    ],
+)
+def test_high_rank_overrides_ascending(question) -> None:
+    # 추론을 끈 질문 해석이 "높은"을 낮은 순으로 읽은 경우 (변형셋 v1 P-081)
+    p = qa.correct(question, parsed(type="rank", indicator="출생아 수", ascending=True), TODAY)
+    assert p["ascending"] is False
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "작년 한 해 인구 감소 폭 큰 시도 top3",  # 감소 순위는 낮은 순이 맞다
+        "합계출산율 가장 낮은 시도 3곳",
+    ],
+)
+def test_low_or_decrease_rank_keeps_ascending(question) -> None:
+    p = qa.correct(question, parsed(type="rank", indicator="출생아 수", ascending=True), TODAY)
+    assert p["ascending"] is True
