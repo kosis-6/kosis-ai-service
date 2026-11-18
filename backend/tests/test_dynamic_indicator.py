@@ -475,3 +475,393 @@ def test_implied_age_word_kept_out_when_not_in_cell(fake_table: dict) -> None:
     implied = {"ages": [[65, None]], "age_group": {"expr": "노인"}}
     spec, why = d.build("DT_1PL1502", "서울 노인 1인 가구 수", {**BASE, **implied})
     assert spec is None and why == "질문의 연령 조건을 표의 칸에 반영할 수 없음"
+
+
+# ---- 넘기기 꾸러미로 계산 (compute_from_handoff, 2026-11-17) ---------------------------
+
+
+def _cand(tbl_id, rank, picked=False, checks=None, review=None, years=(2015, 2024), **over):
+    return {
+        "rank": rank,
+        "tbl_id": tbl_id,
+        "org_id": "101",
+        "tbl_nm": f"{tbl_id} 표",
+        "family_id": f"F{tbl_id}",
+        "start_year": years[0],
+        "end_year": years[1],
+        "target": None,
+        "sex": None,
+        "source": "whole",
+        "picked": picked,
+        "review": review,
+        "checks": checks if checks is not None else {},
+        "editions": [],
+        "members": [],
+        "notes": [],
+        **over,
+    }
+
+
+def _understanding(**over):
+    u = {
+        "conditions": {
+            "region": None,
+            "region_level": None,
+            "year": 2020,
+            "year_end": None,
+            "sex": None,
+            "items": [],
+            "classes": [],
+        },
+        "age": None,
+        "exclude": [],
+        "target": None,
+        "projection": False,
+        "time_ref": None,
+    }
+    return {**u, **over}
+
+
+def _found(cands, u=None, status="ok", combine=None, **over):
+    target = {"span": None, "candidates": cands, "together": [], "conditions": {}}
+    return {
+        "status": status,
+        "notice": None,
+        "handoff": {
+            "version": 1,
+            "status": status,
+            "understanding": u or _understanding(),
+            "targets": [target],
+            "combine": combine or {"op": "none", "note": None, "out_of_scope": []},
+        },
+        **over,
+    }
+
+
+@pytest.fixture
+def computed(monkeypatch):
+    """_build: FAIL에 든 표는 칸을 못 고름, 나머지는
+    실제 build (DT_1PL1502 칸으로). qa.answer는 값 1"""
+    state = {"fail": set(), "tried": []}
+
+    async def fake_build(
+        tbl_id, org_id, question, parsed, step, forced=None, slots=None, fetch_sem=None
+    ):
+        state["tried"].append(tbl_id)
+        if (
+            tbl_id in state["fail"] and not forced
+        ):  # 칸을 정해 주면(되묻기 · 칸 고르기 LLM) 계산된다
+            return None, "질문의 말과 맞는 칸이 없음"
+        return d.build("DT_1PL1502", question, parsed, forced, slots)
+
+    async def fake_answer(q, trace, question):
+        return {"status": "ok", "result": {"status": "ok", "value": 1}, "parsed": q}
+
+    async def no_offer(
+        question, failures, alts
+    ):  # 대안 판단 LLM은 부르지 않는다 (필요한 테스트가 바꾼다)
+        state["judged"] = [a["entry"]["tbl_id"] for a in alts]
+        return {"action": "tables", "offers": [], "reason": "테스트"}, "gemma"
+
+    from app.services import alternative
+
+    monkeypatch.setattr(d, "_build", fake_build)
+    monkeypatch.setattr(qa, "answer", fake_answer)
+    monkeypatch.setattr(alternative, "judge", no_offer)
+    return state
+
+
+Q1 = "2020년 서울 1인 가구 수"
+
+
+def test_handoff_tries_candidates_and_keeps_priority(computed) -> None:
+    computed["fail"] = {"A"}
+    cands = [
+        _cand("A", 1, picked=True, checks={"year": True}, review={"match": "partial"}),
+        _cand("B", 2, checks={"year": False}),  # ✘
+        _cand("C", 3, checks={}),  # 고른 표가 아닌데 확인한 조건이 없음
+        _cand("D", 4, checks={"year": True}),
+        _cand("E", 5, checks={"year": True}),
+    ]
+    trace: dict = {}
+    res = asyncio.run(d.compute_from_handoff(Q1, BASE, _found(cands), trace))
+    assert res["status"] == "ok"
+    # 동시에 계산해도 고르는 순서는 목록 순서: D와 E 모두 계산되지만 D
+    assert trace["handoff"]["used"] == {"tbl_id": "D", "kind": "other"}
+    assert sorted(computed["tried"]) == ["A", "D", "E"]
+    skips = {s["tbl_id"]: s.get("skip") for s in trace["dynamic"]}
+    assert skips["B"] == "통계표 찾기 조건 불충족 (year)"
+    assert skips["C"] == "고른 표가 아닌데 확인한 조건이 없음"
+    assert [s["tbl_id"] for s in trace["dynamic"]] == ["A", "B", "C", "D", "E"]  # 기록도 순서대로
+
+
+def test_handoff_does_not_use_other_tables_when_review_is_exact(computed) -> None:
+    computed["fail"] = {"A"}
+    cands = [
+        _cand("A", 1, picked=True, checks={"year": True}, review={"match": "exact"}),
+        _cand("D", 2, checks={"year": True}),
+    ]
+    trace: dict = {}
+    assert asyncio.run(d.compute_from_handoff(Q1, BASE, _found(cands), trace)) is None
+    assert trace["dynamic"][1]["skip"] == "검토가 고른 표를 '모두 충족'으로 봄"
+
+
+def test_handoff_falls_back_to_an_edition_with_the_asked_year(computed) -> None:
+    edition = {"tbl_id": "A2020", "period": "2020-2024", "start_year": 2020, "end_year": 2024}
+    cands = [
+        _cand(
+            "A",
+            1,
+            picked=True,
+            checks={"year": False, "sex": True},
+            years=(2010, 2019),
+            editions=[edition],
+        )
+    ]
+    trace: dict = {}
+    res = asyncio.run(
+        d.compute_from_handoff(Q1, BASE, _found(cands, status="partial_match"), trace)
+    )
+    assert res["status"] == "ok"
+    assert trace["handoff"]["used"] == {"tbl_id": "A2020", "kind": "edition"}
+    assert trace["dynamic"][0]["skip"] == "통계표 찾기 조건 불충족 (year)"
+
+
+def test_handoff_revives_exclude_and_target_checks(computed) -> None:
+    cands = [_cand("A", 1, picked=True, checks={"year": True})]
+    trace: dict = {}
+    u = _understanding(exclude=["귀화자"])
+    assert asyncio.run(d.compute_from_handoff(Q1, BASE, _found(cands, u), trace)) is None
+    assert "빼 달라는" in trace["dynamic"][0]["skip"]
+    trace = {}
+    u = _understanding(target="유학생")
+    assert asyncio.run(d.compute_from_handoff(Q1, BASE, _found(cands, u), trace)) is None
+    assert "대상 '유학생'" in trace["dynamic"][0]["skip"]
+    # 표 이름에 대상이 있으면 통과
+    named = [_cand("A", 1, picked=True, checks={"year": True}, tbl_nm="유학생 1인가구")]
+    res = asyncio.run(d.compute_from_handoff(Q1, BASE, _found(named, u), {}))
+    assert res["status"] == "ok"
+
+
+def test_target_word_check_trusts_an_exact_review(computed) -> None:
+    # 가 (11/18): 검토가 '모두 충족'으로 본 표는 대상 낱말이 글자로 없어도 계산한다
+    u = _understanding(target="해외 유학생")
+    exact = [_cand("A", 1, picked=True, checks={"year": True}, review={"match": "exact"})]
+    assert asyncio.run(d.compute_from_handoff(Q1, BASE, _found(exact, u), {}))["status"] == "ok"
+    partial = [_cand("A", 1, picked=True, checks={"year": True}, review={"match": "partial"})]
+    trace: dict = {}
+    assert asyncio.run(d.compute_from_handoff(Q1, BASE, _found(partial, u), trace)) is None
+    assert "대상 '해외 유학생'" in trace["dynamic"][0]["skip"]
+
+
+def test_handoff_computes_with_search_reading(computed, monkeypatch) -> None:
+    monkeypatch.setattr(
+        indicators,
+        "resolve_region",
+        lambda name, *a, **k: {"status": "ok", "display": "부산광역시"},
+    )
+    cond = {**_understanding()["conditions"], "region": "부산", "year": 2022, "sex": "여"}
+    age = {"expr": "노인", "lo": 65, "hi": None, "basis": "노인복지법"}
+    u = _understanding(conditions=cond, age=age)
+    parsed = {**BASE, "type": "other"}  # 수치 해석이 질문 종류를 못 정함
+    q, diff = d.to_parsed(u, parsed)
+    assert (q["regions"], q["year"], q["sex"], q["ages"]) == (
+        ["부산광역시"],
+        2022,
+        "여",
+        [[65, None]],
+    )
+    assert q["type"] == "value" and q["age_group"]["basis"] == "노인복지법"
+    assert diff == {
+        "regions": [["서울"], ["부산광역시"]],
+        "year": [2020, 2022],
+        "sex": ["계", "여"],
+    }
+    # 탐색 해석에 없는 칸은 수치 해석 그대로
+    q2, _ = d.to_parsed(_understanding(), {**BASE, "regions": ["서울", "부산"]})
+    assert q2["regions"] == ["서울", "부산"] and q2["sex"] == "계"
+
+
+def test_handoff_notice_has_notes_and_age_basis() -> None:
+    entry = {"kind": "picked", "notes": ["2020.11.1. 기준입니다."]}
+    age = {"expr": "노인", "lo": 65, "hi": None, "basis": "노인복지법"}
+    combine = {"out_of_scope": ["집값"]}
+    text = d.handoff_notice(entry, {"age": age}, combine, "2020년 판 기준")
+    assert text == (
+        "2020년 판 기준. 2020.11.1. 기준입니다. "
+        "'노인'은(는) 65세 이상으로 계산했습니다 (노인복지법). "
+        "집값은(는) 인구 통계가 아니라 답하지 못했습니다"
+    )
+
+
+def test_handoff_missing_or_multi_uses_old_answer(monkeypatch) -> None:
+    called = []
+
+    async def old(question, parsed, found, trace):
+        called.append(found.get("status"))
+        return None
+
+    monkeypatch.setattr(d, "answer", old)
+    asyncio.run(d.compute_from_handoff(Q1, BASE, {"status": "ok"}, {}))
+    two = _found([_cand("A", 1, picked=True)])
+    two["handoff"]["targets"].append({"candidates": []})
+    asyncio.run(d.compute_from_handoff(Q1, BASE, two, {}))
+    assert called == ["ok", "ok"]
+    # 되묻기 · 범위 밖은 계산하지 않는다
+    refused = _found([], status="clarify")
+    refused["handoff"]["targets"] = []
+    assert asyncio.run(d.compute_from_handoff(Q1, BASE, refused, {})) is None
+
+
+def test_handoff_exclude_ignores_region_names(computed, monkeypatch) -> None:
+    # "서울이랑 경기 말고 시도별 …": 지역은 지역 칸이 고른다. 제외 검사로 표를 막지 않는다
+    monkeypatch.setattr(
+        indicators, "find_regions", lambda text: ["서울특별시"] if "서울" in text else []
+    )
+    cands = [_cand("A", 1, picked=True, checks={"year": True})]
+    res = asyncio.run(
+        d.compute_from_handoff(Q1, BASE, _found(cands, _understanding(exclude=["서울"])), {})
+    )
+    assert res["status"] == "ok"
+    trace: dict = {}
+    u = _understanding(exclude=["서울", "귀화자"])  # 지역이 아닌 말은 그대로 막는다
+    assert asyncio.run(d.compute_from_handoff(Q1, BASE, _found(cands, u), trace)) is None
+    assert "귀화자" in trace["dynamic"][0]["skip"] and "서울" not in trace["dynamic"][0]["skip"]
+
+
+def test_handoff_offers_an_alternative_when_nothing_computes(computed, monkeypatch) -> None:
+    # 고른 표(모두 충족)에서 칸을 못 고르고, 다른 후보는
+    # 규칙으로 건너뜀 → 대안으로 계산해 LLM에 보임
+    from app.services import alternative
+
+    computed["fail"] = {"A"}
+    seen = {}
+
+    async def judge(question, failures, alts):
+        seen["alts"] = [a["entry"]["tbl_id"] for a in alts]
+        return {
+            "action": "offer",
+            "offers": [{"id": "A1", "label": "다른 표 기준"}],
+            "reason": "r",
+        }, "gemma"
+
+    monkeypatch.setattr(alternative, "judge", judge)
+    cands = [
+        _cand("A", 1, picked=True, checks={"year": True}, review={"match": "exact"}),
+        _cand("D", 2, checks={"year": True}),
+    ]
+    trace: dict = {}
+    res = asyncio.run(d.compute_from_handoff(Q1, BASE, _found(cands), trace))
+    assert seen["alts"] == ["D"]
+    assert res["status"] == "clarify_question" and res["clarification"]["kind"] == "alternative"
+    assert res["clarification"]["context"]["answers"][0]["status"] == "ok"
+    assert any(s.get("alternative") for s in trace["dynamic"])  # 대안 계산도 기록에 남는다
+
+
+# ---- 칸 고르기 LLM (cell_pick.py, 2026-11-18) ------------------------------------------
+
+
+@pytest.fixture
+def cell_llm(computed, fake_table, monkeypatch):
+    """A 표는 규칙으로 칸을 못 고른다. 칸 고르기 LLM의 답은 state["reply"]"""
+    from app.services import cell_pick
+
+    computed["fail"] = {"A"}
+    fake_table["tables"]["A"] = (ONE_PERSON, 1, "시군구")
+    state = {"reply": None, "groups": None}
+
+    async def judge(question, understanding, tbl_nm, groups):
+        state["groups"] = [(g.no, g.name, [n for _, n in g.cells]) for g in groups]
+        return state["reply"], "gemma"
+
+    monkeypatch.setattr(cell_pick, "judge", judge)
+    remembered = []
+
+    async def remember(parsed, tbl_id, forced, res):
+        remembered.append((tbl_id, forced))
+
+    monkeypatch.setattr(d, "_remember", remember)
+    state["remembered"] = remembered
+    return state
+
+
+def test_cell_llm_computes_a_table_the_rule_could_not(cell_llm) -> None:
+    cell_llm["reply"] = {
+        "fits": "예",
+        "picks": {"항목": "1"},
+        "read_as": [{"질문": "혼자 사는 집", "표": "1인가구"}],
+        "reason": "r",
+    }
+    cands = [_cand("A", 1, picked=True, checks={"year": True}, review={"match": "exact"})]
+    trace: dict = {}
+    q = "2020년 서울 혼자 사는 집 수"
+    res = asyncio.run(d.compute_from_handoff(q, BASE, _found(cands), trace))
+    assert res["status"] == "ok"
+    # 지역 · 연령 분류는 보내지 않는다. 항목은 성별 칸이 섞여 있어도 1인가구가 있어 보낸다
+    assert cell_llm["groups"] == [(0, "항목", ["1인가구", "남자", "여자"])]
+    steps = [s for s in trace["dynamic"] if s.get("tbl_id") == "A"]
+    assert steps[0]["skip"] == "질문의 말과 맞는 칸이 없음"
+    assert steps[0]["cell_llm"]["result"] == {"0": "T00"}
+    assert steps[-1]["by"] == "cell_llm" and steps[-1]["forced"] == {0: "T00"}
+    assert (
+        "질문의 '혼자 사는 집'을(를) 표의 '1인가구'(으)로 보고 계산했습니다"
+        in (res["parsed"]["dynamic_spec"]["note"])
+    )
+    assert cell_llm["remembered"] == [("A", {0: "T00"})]  # LLM이 고른 칸은 캐시에 함께
+
+
+def test_cell_llm_says_the_table_does_not_fit(cell_llm) -> None:
+    cell_llm["reply"] = {"fits": "아니오", "picks": {}, "reason": "r"}
+    cands = [_cand("A", 1, picked=True, checks={"year": True}, review={"match": "exact"})]
+    trace: dict = {}
+    assert asyncio.run(d.compute_from_handoff(Q1, BASE, _found(cands), trace)) is None
+    assert trace["dynamic"][0]["cell_llm"]["result"] == "표에 없음"
+    assert not any(s.get("by") == "cell_llm" for s in trace["dynamic"])
+
+
+def test_cell_llm_unsure_asks_that_dimension(cell_llm) -> None:
+    cell_llm["reply"] = {"fits": "예", "picks": {"항목": "정할 수 없음"}, "reason": "r"}
+    cands = [_cand("A", 1, picked=True, checks={"year": True}, review={"match": "exact"})]
+    res = asyncio.run(d.compute_from_handoff(Q1, BASE, _found(cands), {}))
+    assert res["status"] == "clarify_question"
+    assert res["clarification"]["kind"] == "table_cell"
+    assert res["clarification"]["options"] == ["1인가구", "남자", "여자"]
+
+
+def test_cell_llm_reading_counts_for_the_condition_check(cell_llm) -> None:
+    # 조건 '홀로 사는 가구'는 칸 이름에 글자로 없지만, LLM이 그 말을 1인가구로 읽었으면 반영된 것
+    cell_llm["reply"] = {
+        "fits": "예",
+        "picks": {"항목": "1"},
+        "read_as": [{"질문": "홀로 사는 가구", "표": "1인가구"}],
+        "reason": "r",
+    }
+    u = _understanding()
+    u["conditions"]["items"] = ["홀로 사는 가구"]
+    cands = [_cand("A", 1, picked=True, checks={"year": True}, review={"match": "exact"})]
+    res = asyncio.run(
+        d.compute_from_handoff("2020년 서울 홀로 사는 가구", BASE, _found(cands, u), {})
+    )
+    assert res["status"] == "ok"
+
+
+def test_cell_llm_off(cell_llm, monkeypatch) -> None:
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "handoff_cell_llm", False)
+    cell_llm["reply"] = {"fits": "예", "picks": {"항목": "1"}, "reason": "r"}
+    cands = [_cand("A", 1, picked=True, checks={"year": True}, review={"match": "exact"})]
+    assert asyncio.run(d.compute_from_handoff(Q1, BASE, _found(cands), {})) is None
+    assert cell_llm["groups"] is None
+
+
+def test_cell_llm_fit_skips_the_target_word_check(cell_llm) -> None:
+    # 나 (11/18): 칸 고르기 LLM이 "이 표가 질문의 값을
+    # 담고 있다"고 답했으면 대상 낱말 검사를 하지 않는다
+    cell_llm["reply"] = {"fits": "예", "reason": "r", "picks": {"항목": "1"}}
+    u = _understanding(target="해외 유학생")
+    cands = [_cand("A", 1, picked=True, checks={"year": True}, review={"match": "partial"})]
+    trace: dict = {}
+    res = asyncio.run(d.compute_from_handoff(Q1, BASE, _found(cands, u), trace))
+    assert res["status"] == "ok"
+    assert trace["dynamic"][-1]["by"] == "cell_llm"

@@ -706,3 +706,35 @@ def test_births_versus_deaths_is_natural_increase() -> None:
     p = qa.correct("작년에 태어난 사람이 많아 돌아가신 사람이 많아?", {"type": "other"}, TODAY)
     assert (p["type"], p["indicator"]) == ("value", "자연증가 건수")
     assert not p.get("unsupported")
+
+
+@pytest.fixture
+def registered_aliases(monkeypatch: pytest.MonkeyPatch) -> None:
+    aliases = {
+        **ALIASES,
+        "등록외국인 수": ["등록외국인", "등록된 외국인"],
+        "등록외국인 비율": ["등록된 외국인 비율"],
+    }
+    monkeypatch.setattr(indicators, "_alias_map", lambda: aliases)
+
+
+@pytest.mark.parametrize(
+    "question, expected",
+    [
+        # '비율' 없이 몇 프로를 물음 → 같은 이름의 비율 지표
+        ("마포구 주민 가운데 등록된 외국인은 몇 프로 정도야?", "등록외국인 비율"),
+        ("인천 등록외국인 몇 %야", "등록외국인 비율"),
+        # 몇 명을 물음 → 그대로
+        ("마포구 등록된 외국인 몇 명이야?", "등록외국인 수"),
+        # 증감률을 물음 → 그대로
+        ("마포구 등록외국인 작년보다 몇 퍼센트 늘었어?", "등록외국인 수"),
+        # 전국 중 비중은 share_of가 맡는다 → 그대로
+        ("전국 등록외국인 중 마포구는 몇 프로야?", "등록외국인 수"),
+    ],
+)
+def test_percent_question_uses_the_ratio_sibling(registered_aliases, question, expected) -> None:
+    for llm in ("등록외국인 수", "몇 프로"):  # HCX가 지표 칸에 '몇 프로'를 넣는 경우도
+        p = qa.correct(question, parsed(indicator=llm, term="몇 프로", regions=["마포구"]), TODAY)
+        assert p["indicator"] == expected
+        # 바꾼 비율 지표는 질문에 근거가 있는 지표다 (근거 없는 지표 검사가 되돌리지 않는다)
+        assert not p.get("unsupported")
