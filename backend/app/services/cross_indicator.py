@@ -5,8 +5,11 @@
   "출생아 수 대비 사망자 수"       사망자 수 ÷ 출생아 수 (배). "비율"이면 × 100 (%)
   "혼인 건수 중 다문화 혼인 비율"   다문화 혼인 건수 ÷ 혼인 건수 × 100
 
-- 재료는 지표 사전에 있는 건수·인원 지표만 쓴다 (비율·지수를 다시 나누지 않는다). 사전 지표라
-  통계표 찾기·HCX를 더 부르지 않는다. 숫자는 지금 계산 엔진(qa.compute)이 DB 값으로 낸다
+- 재료는 건수·인원만 쓴다 (비율·지수를 다시 나누지 않는다). 둘 다 지표 사전에 있으면 통계표
+  찾기·HCX를 더 부르지 않는다. 숫자는 지금 계산 엔진(qa.compute)이 DB 값으로 낸다
+- 한쪽만 사전에 있으면 (detect_partial, "인구 1,000명당 1인 가구 수") 사전에 없는 쪽은 동적 지표
+  경로(계산 방법 캐시 → 통계표 찾기 · 칸 고르기)로 값을 구한다 (ask_session._cross_dynamic).
+  통계표 찾기가 LLM을 부르므로 값 질문(한 지역 · 한 해)만 한다
 - 공식 지표가 있는 조합은 그 지표로 답한다 (예: 인구 1,000명당 혼인 건수 → 조혼인율. 분모가
   주민등록인구가 아니라 연앙인구라 직접 나누면 공표 값과 다르다)
 - 나누기 전에 확인한다: 두 값의 지역 · 연도 · 성별이 같은가, 추계 값이 아닌가.
@@ -20,7 +23,7 @@ from app.services import analysis, indicators
 from app.services.josa import josa, ro
 
 # 재료로 쓸 수 있는 지표의 단위 (건수·인원). 비율·지수·나이는 나누지 않는다
-COUNT_UNITS = {"명", "건", "세대"}
+COUNT_UNITS = {"명", "건", "세대", "가구"}
 # 공식 지표가 있는 조합: (분자, 분모, 배율) → 지표 사전의 이름
 OFFICIAL = {
     ("총인구", "세대수", 1): "세대당 인구",
@@ -33,6 +36,8 @@ OFFICIAL = {
     ("외국인주민 수", "총인구", 100): "외국인주민 비율",
     ("다문화 출생아 수", "출생아 수", 100): "다문화 출생 비중",
     ("다문화 혼인 건수", "혼인 건수", 100): "다문화 혼인 비중",
+    # 공식 미혼 비율의 분모는 15세 이상 인구라 총인구로 나누면 다르다
+    ("미혼 인구", "총인구", 100): "미혼 비율",
 }
 KINDS = ("value", "compare", "trend", "rank")
 DIGITS = 2
@@ -61,6 +66,11 @@ class Cross:
     scale: int  # 1: 그대로, 100: %, 1000: N명당
     form: str = "per"  # per: A당 B / versus: A 대비 B / within: A 중 B 비율
     official: str | None = None  # 공식 지표가 있으면 그 이름
+    dynamic: str | None = None  # 사전에 없는 쪽 ("num" · "den"). 그 쪽은 동적 지표로 구한다
+    units: dict | None = None  # 사전에 없는 쪽의 단위 (계산한 뒤 채운다)
+
+    def unit_of(self, name: str) -> str:
+        return (self.units or {}).get(name) or _unit(name)
 
     @property
     def name(self) -> str:
@@ -71,7 +81,7 @@ class Cross:
             return f"{self.den} 대비 {self.num}" + (" 비율" if self.scale == 100 else "")
         if self.scale == 1:
             return f"{den}당 {self.num}"
-        return f"{den} {self.scale:,}{_unit(self.den)}당 {self.num}"
+        return f"{den} {self.scale:,}{self.unit_of(self.den)}당 {self.num}"
 
     @property
     def unit(self) -> str:
@@ -79,7 +89,7 @@ class Cross:
             return "%"
         if self.form == "versus":
             return "배"
-        return _unit(self.num)  # 이름에 "인구 1,000명당"이 있어 단위는 분자의 단위만
+        return self.unit_of(self.num)  # 이름에 "인구 1,000명당"이 있어 단위는 분자의 단위만
 
     @property
     def formula(self) -> str:
@@ -87,7 +97,17 @@ class Cross:
         return f"{self.num} ÷ {self.den}{times}"
 
     def as_dict(self) -> dict:
-        return {"num": self.num, "den": self.den, "scale": self.scale, "form": self.form}
+        out = {"num": self.num, "den": self.den, "scale": self.scale, "form": self.form}
+        if self.dynamic:
+            out["dynamic"] = self.dynamic
+        if self.units:
+            out["units"] = self.units
+        return out
+
+    @property
+    def unknown(self) -> str | None:
+        """사전에 없는 쪽의 말 ("1인 가구 수")"""
+        return {"num": self.num, "den": self.den}.get(self.dynamic or "")
 
 
 def _unit(name: str) -> str:
@@ -127,6 +147,103 @@ def detect(question: str) -> Cross | None:
     else:
         return None
     return Cross(num=b, den=a, scale=scale, form=form, official=OFFICIAL.get((b, a, scale)))
+
+
+# ---- 한쪽만 사전에 있는 경우 ------------------------------------------------------------------
+
+MARKER = re.compile(r"^(?P<stem>.*?)(?P<n>[\d,]+|천|만|백)?(?P<unit>명|세대|가구|건)?당$")
+VERSUS_TOKEN = re.compile(r"^(?P<stem>.*?)(?:의|에)?대비$")
+WITHIN_TOKENS = {"중", "가운데", "중에서"}
+# 질문 끝의 묻는 말 ("1인 가구 수는 몇이야?" → "1인 가구 수")
+ENDING = re.compile(
+    r"(?:은|는|이|가|을|를|의)?\s*(?:몇|얼마|어떻게|어때|알려|인가요|이에요|예요|입니까|일까|\?).*$"
+)
+JOSA_END = re.compile(r"(?:은|는|이|가|을|를|의)$")
+YEAR_TOKEN = re.compile(r"^(?:\d{2,4}년(?:도)?|올해|작년|지난해|금년|최근|현재)(?:의|에|기준)?$")
+# 사전에 없는 쪽으로 볼 수 있는 말: 건수 · 인원 · 가구로 끝나야 한다 (값을 나눌 수 있는 것)
+PLAIN_WORDS = {"남자", "여자", "남성", "여성", "총", "전체", "주민등록"}
+COUNT_PHRASE = re.compile(r"(?:수|인구|가구|건수|건|사람|세대)$")
+
+
+def _number(n: str | None) -> int:
+    if not n:
+        return 1
+    return NUMBERS.get(n) or int(n.replace(",", ""))
+
+
+def _left_phrase(tokens: list[str]) -> str:
+    """'당·대비·중' 앞의 말: 앞쪽의 연도 · 지역 낱말은 뺀다 ("2020년 서울 인구" → "인구")"""
+    out: list[str] = []
+    for t in reversed(tokens):
+        bare = JOSA_END.sub("", t)
+        if YEAR_TOKEN.match(t) or (bare and indicators.find_regions(bare)):
+            break
+        out.insert(0, t)
+    return JOSA_END.sub("", " ".join(out)).strip()
+
+
+def _right_phrase(tokens: list[str]) -> str:
+    return JOSA_END.sub("", ENDING.sub("", " ".join(tokens)).strip()).strip()
+
+
+def _side(phrase: str) -> tuple[str | None, str | None]:
+    """(사전 지표 이름, 사전에 없는 말). 둘 다 None이면 쓸 수 없는 말"""
+    if not phrase:
+        return None, None
+    spans = indicators.find_in_text(phrase)
+    if len(spans) > 1:
+        return None, None
+    if spans:
+        start, end, name = spans[0]
+        # 말 전체가 그 지표 이름이면 사전 지표 (성별 · '전체' 같은 말만 붙은 것도).
+        # 다른 말이 붙었으면 다른 통계다 ("통근 인구"는 총인구가 아니다)
+        text = indicators._norm(phrase)
+        rest = re.sub(r"(수|의|명)", "", text[:start] + text[end:])
+        if not rest or rest in PLAIN_WORDS:
+            return (name, None) if _countable(name) else (None, None)
+    if not COUNT_PHRASE.search(phrase) or len(indicators._norm(phrase)) < 2:
+        return None, None
+    return None, phrase
+
+
+def detect_partial(question: str) -> Cross | None:
+    """'당 · 대비 · 중 비율'의 한쪽만 사전 지표인 질문 ("2020년 서울 인구 1,000명당 1인 가구 수").
+    둘 다 사전 지표면 detect가, 둘 다 아니면 동적 지표(한 표 안의 계산)가 맡는다"""
+    if detect(question) is not None:
+        return None
+    tokens = BARE_HOUSEHOLD.sub("세대 수", question).replace("?", " ").split()
+    for i, t in enumerate(tokens):
+        left, right = tokens[:i], tokens[i + 1 :]
+        if (m := MARKER.match(t)) and t != "당" or t == "당":
+            stem, n = (m["stem"], m["n"]) if m else ("", None)
+            if stem:
+                left = [*left, stem]
+            if not n and left and (left[-1] in NUMBERS or left[-1].replace(",", "").isdigit()):
+                n = left.pop()  # "천 명당"
+            form, scale = "per", _number(n)
+        elif m := VERSUS_TOKEN.match(t):
+            if m["stem"]:
+                left = [*left, m["stem"]]
+            rate = bool(RATE_AFTER.search(indicators._norm(" ".join(right))))
+            form, scale = "versus", 100 if rate else 1
+        elif t in WITHIN_TOKENS:
+            text = indicators._norm(" ".join(right))
+            if not RATE_AFTER.search(text):
+                continue
+            form, scale = "within", 100
+        else:
+            continue
+        right_phrase = _right_phrase(right)
+        if form != "per":
+            right_phrase = re.sub(r"\s*(?:의\s*)?(?:비율|비중)$", "", right_phrase).strip()
+        den_name, den_new = _side(_left_phrase(left))
+        num_name, num_new = _side(right_phrase)
+        if den_name and num_new:
+            return Cross(num=num_new, den=den_name, scale=scale, form=form, dynamic="num")
+        if num_name and den_new:
+            return Cross(num=num_name, den=den_new, scale=scale, form=form, dynamic="den")
+        return None
+    return None
 
 
 # ---- 계산 -----------------------------------------------------------------------------------
@@ -187,19 +304,12 @@ def compute(q: dict, run) -> dict:
             out["reason"] = out["reason"].strip()
             return out
     num, den = parts
+    if kind == "value":
+        return combine_value(c, num, den, q)
     if why := _mismatch(num, den, q):
         return _fail(c, f"{josa(c.num, '과와')} {josa(c.den, '을를')} 나눌 수 없습니다: {why}.")
     out = _shell(c, num, den)
-    if kind == "value":
-        out.update(region=num.get("region"), year=num.get("year"), sex=num.get("sex"))
-        out["value"] = _div(num.get("value"), den.get("value"), c.scale)
-        out["operands"] = [
-            {"label": c.num, "value": num.get("value"), "unit": _unit(c.num)},
-            {"label": c.den, "value": den.get("value"), "unit": _unit(c.den)},
-        ]
-        if c.scale != 100:
-            out["scale"] = c.scale
-    elif kind == "trend":
+    if kind == "trend":
         dv = {s["year"]: s.get("value") for s in den.get("series") or []}
         series = [
             {"year": s["year"], "value": _div(s.get("value"), dv[s["year"]], c.scale)}
@@ -229,6 +339,22 @@ def compute(q: dict, run) -> dict:
             out.update(_compare_facts(vals, out["unit"]))
         else:
             out.update(_rank_facts(vals, num, q))
+    return out
+
+
+def combine_value(c: Cross, num: dict, den: dict, q: dict) -> dict:
+    """값 질문: 분자 · 분모 결과(한 지역 · 한 해)를 나눈 결과. 맞지 않으면 숫자 없이 이유"""
+    if why := _mismatch(num, den, {**q, "type": "value"}):
+        return _fail(c, f"{josa(c.num, '과와')} {josa(c.den, '을를')} 나눌 수 없습니다: {why}.")
+    out = _shell(c, num, den)
+    out.update(region=num.get("region"), year=num.get("year"), sex=num.get("sex"))
+    out["value"] = _div(num.get("value"), den.get("value"), c.scale)
+    out["operands"] = [
+        {"label": c.num, "value": num.get("value"), "unit": c.unit_of(c.num)},
+        {"label": c.den, "value": den.get("value"), "unit": c.unit_of(c.den)},
+    ]
+    if c.scale != 100:
+        out["scale"] = c.scale
     return out
 
 

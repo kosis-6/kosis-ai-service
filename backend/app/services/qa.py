@@ -565,11 +565,14 @@ def correct(question, parsed, today=None):
     return parsed
 
 
+CROSS_DYNAMIC = "cross_dynamic"  # 두 값 중 한쪽이 사전에 없음 (ask_session이 마저 계산)
+
+
 def _cross(question, parsed, fix):
     """두 지표를 나눈 값 ("세대당 출생아 수", "인구 1,000명당 외국인근로자 수"). cross_indicator.py
     공식 지표가 있으면 그 지표로, 없으면 parsed["cross"]에 두 지표를 적어 compute가 나눠 계산한다.
     HCX는 이런 질문을 재료 지표 하나(출생아 수)로 읽어 그 건수를 답하기 쉽다"""
-    found = cross_indicator.detect(question)
+    found = cross_indicator.detect(question) or cross_indicator.detect_partial(question)
     if found is None or parsed.get("type") in ("causal", "composition"):
         return
     if found.official:
@@ -1147,6 +1150,15 @@ def compute(q):
                 "status": "band_mismatch",
                 "indicator": ind,
                 "reason": f"'{cond}' 조건으로 나뉜 자료가 없어 그 값을 낼 수 없습니다.",
+            }
+        if q["cross"].get("dynamic"):
+            # 한쪽이 사전에 없다: 그 쪽은 통계표 찾기 · 칸 고르기가 필요해 대화 처리(ask_session.
+            # _cross_dynamic)가 맡는다. 거기서도 못 하면 지금처럼 통계표 안내로 간다
+            return {
+                "status": CROSS_DYNAMIC,
+                "indicator": ind,
+                "reason": f"{josa(ind, '은는')} 지표 사전에 없는 값이 섞여 있어 "
+                "통계표에서 찾아 계산해야 합니다.",
             }
         result = cross_indicator.compute(q, compute)
         for r in _leaves(result):

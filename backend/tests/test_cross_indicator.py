@@ -226,3 +226,134 @@ def test_same_table_is_listed_once() -> None:
 
     res = x.compute(q_of("value", year=2024), run)
     assert res["extra_sources"] == []
+
+
+# ---- 한쪽만 사전에 있는 경우 (detect_partial · ask_session._cross_dynamic) -------------------
+
+
+@pytest.fixture
+def no_db(monkeypatch: pytest.MonkeyPatch) -> None:
+    """지역 이름 확인 · 자료 연도를 DB 없이"""
+    from app.services import indicators, lookup
+
+    regions = {"서울", "서울특별시", "부산"}
+    monkeypatch.setattr(indicators, "find_regions", lambda t: [t] if t in regions else [])
+    monkeypatch.setattr(indicators, "_data_years", lambda: (1993, 2025))
+    monkeypatch.setattr(lookup, "refresh_if_reloaded", lambda: None)
+
+
+@pytest.mark.parametrize(
+    ("question", "num", "den", "scale", "dynamic"),
+    [
+        ("2020년 서울 인구 1,000명당 1인 가구 수는?", "1인 가구 수", "총인구", 1000, "num"),
+        ("2020년 서울 세대당 1인 가구 수", "1인 가구 수", "세대수", 1, "num"),
+        ("2020년 서울 인구 천 명당 통근 인구는 몇 명이야?", "통근 인구", "총인구", 1000, "num"),
+        ("2020년 서울 1인 가구 대비 출생아 수", "출생아 수", "1인 가구", 1, "den"),
+    ],
+)
+def test_detect_partial(no_db, question, num, den, scale, dynamic) -> None:
+    c = x.detect_partial(question)
+    assert c is not None
+    assert (c.num, c.den, c.scale, c.dynamic) == (num, den, scale, dynamic)
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "2024년 서울 세대당 출생아 수",  # 둘 다 사전 지표 (detect가 맡는다)
+        "2020년 서울 1인 가구 중 여성 비율",  # 둘 다 사전에 없음 (한 표 안의 동적 지표)
+        "2020년 서울 1인 가구 수",  # 나누기 아님
+    ],
+)
+def test_detect_partial_none(no_db, question) -> None:
+    assert x.detect_partial(question) is None
+
+
+def test_plain_words_keep_dictionary_indicator() -> None:
+    # "여자 인구"는 총인구(성별은 조건), "통근 인구"는 다른 통계
+    assert x._side("여자 인구") == ("총인구", None)
+    assert x._side("통근 인구") == (None, "통근 인구")
+    assert x._side("1인 가구 수는") == (None, None)  # 조사는 _right_phrase가 뗀다
+    assert x._right_phrase(["1인", "가구", "수는"]) == "1인 가구 수"
+
+
+def test_official_unmarried_ratio(no_db) -> None:
+    # 공식 미혼 비율은 분모가 15세 이상 인구라 총인구로 나누지 않는다
+    assert x.detect("2020년 서울 인구 중 미혼 인구 비율은?").official == "미혼 비율"
+
+
+def test_combine_value_uses_unit_of_dynamic_side() -> None:
+    c = x.Cross("1인 가구 수", "총인구", 1000, dynamic="num", units={"1인 가구 수": "가구"})
+    num = {"status": "ok", "indicator": "1인 가구 수", "region": "서울", "year": 2020,
+           "sex": "계", "value": 1390701, "source": "1인가구 표", "basis": "인구총조사",
+           "tbl_id": "T1"}  # fmt: skip
+    den = {"status": "ok", "indicator": "총인구", "region": "서울", "year": 2020, "sex": "계",
+           "value": 9668465, "source": "주민등록", "basis": "주민등록", "tbl_id": "T2"}  # fmt: skip
+    res = x.combine_value(c, num, den, {"sex": "계"})
+    assert res["value"] == 143.84 and res["unit"] == "가구"
+    assert res["operands"][0]["unit"] == "가구"
+    other_year = x.combine_value(c, {**num, "year": 2015}, den, {"sex": "계"})
+    assert other_year["status"] == "missing_data" and "연도가 다릅니다" in other_year["reason"]
+
+
+def test_compute_hands_dynamic_side_to_ask_session(no_db) -> None:
+    cross = {"num": "1인 가구 수", "den": "총인구", "scale": 1000, "dynamic": "num"}
+    q = {"type": "value", "indicator": "인구 1,000명당 1인 가구 수", "regions": ["서울"]}
+    q["cross"] = cross
+    assert qa.compute(q)["status"] == qa.CROSS_DYNAMIC
+
+
+def test_cross_dynamic_divides(monkeypatch: pytest.MonkeyPatch) -> None:
+    import asyncio
+
+    from app.services import ask_session, dynamic_indicator, table_guide
+
+    asked = []
+
+    async def cached(question, parsed, trace):
+        asked.append(question)
+        return None
+
+    async def find(question, sid, selections, user_id):
+        return {"status": "ok"}
+
+    async def handoff(question, parsed, found, trace):
+        result = {"status": "ok", "indicator": "1인 가구 수", "unit": "가구", "value": 1390701,
+                  "region": "서울특별시", "year": 2020, "sex": "계", "source": "1인가구 표",
+                  "basis": "인구총조사", "tbl_id": "DT_1PR2007"}  # fmt: skip
+        return {"status": "ok", "result": result}
+
+    def compute(q):
+        assert q["indicator"] == "총인구" and q["year"] == 2020
+        return {"status": "ok", "indicator": "총인구", "unit": "명", "value": 9668465,
+                "region": "서울특별시", "year": 2020, "sex": "계", "source": "주민등록",
+                "basis": "주민등록", "tbl_id": "DT_1B04006"}  # fmt: skip
+
+    async def cards(res, asked):
+        return None
+
+    monkeypatch.setattr(dynamic_indicator, "cached_answer", cached)
+    monkeypatch.setattr(table_guide, "find_tables", find)
+    monkeypatch.setattr(dynamic_indicator, "compute_from_handoff", handoff)
+    monkeypatch.setattr(qa, "compute", compute)
+    monkeypatch.setattr(ask_session, "_attach_cards", cards)
+    parsed = {"type": "value", "regions": ["서울특별시"], "year": 2020, "sex": "계",
+              "cross": {"num": "1인 가구 수", "den": "총인구", "scale": 1000, "form": "per",
+                        "dynamic": "num"}}  # fmt: skip
+    res = {"status": qa.CROSS_DYNAMIC, "parsed": parsed, "request_type": "new"}
+    assert asyncio.run(ask_session._cross_dynamic(res, None, "질문", None)) is True
+    assert asked == ["2020년 서울특별시 1인 가구 수"]  # 사전에 없는 쪽만 따로 물은 것처럼
+    assert res["status"] == "ok" and res["result"]["value"] == 143.84
+    assert "1인 가구 수 1,390,701가구 ÷ 총인구 9,668,465명" in res["answer"]
+
+
+def test_cross_dynamic_only_for_one_region_value() -> None:
+    import asyncio
+
+    from app.services import ask_session
+
+    parsed = {"type": "trend", "regions": ["서울특별시"],
+              "cross": {"num": "1인 가구 수", "den": "총인구", "scale": 1000,
+                        "dynamic": "num"}}  # fmt: skip
+    res = {"status": qa.CROSS_DYNAMIC, "parsed": parsed}
+    assert asyncio.run(ask_session._cross_dynamic(res, None, "질문", None)) is False
