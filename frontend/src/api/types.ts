@@ -19,6 +19,12 @@ export type ChartRow = Schemas["ChartRow"];
 export type Source = Schemas["Source"];
 export type Applied = Schemas["Applied"];
 
+// 로그인 유저의 대화 기록 (/conversations)
+export type ConversationRead = Schemas["ConversationRead"];
+export type ConversationList = Schemas["ConversationList"];
+export type ConversationDetail = Schemas["ConversationDetail"];
+export type ConversationTurn = Schemas["ConversationTurn"];
+
 // 관리자 화면 (/admin/logs/*)
 export type LogSummary = Schemas["LogSummary"];
 export type PersonList = Schemas["PersonList"];

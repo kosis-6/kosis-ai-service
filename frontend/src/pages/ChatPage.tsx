@@ -2,16 +2,20 @@
 //   수치로 답할 수 있으면  답변 문장 + 차트 + 이 수치의 통계표 + 출처
 //   수치로 답할 수 없으면  통계표 찾기 결과 (표 카드, 대상·성별·판 선택지)
 // 대화 id 를 이어 보내 "서울도 같이", "막대그래프로"처럼 바뀐 것만 말해도 된다 (서버 ask_session.py)
-// 목업 모드(?mock=1)는 chat/mockAsk.ts 가 응답을 만들어 서버·HCX 를 부르지 않는다
+// 로그인 유저의 대화는 서버에 남는다 (chat/conversations.ts): 주소가 /chat/c/{대화 id} 로 바뀌어
+// 새로고침해도 그 대화를 다시 그리고, 사이드바의 지난 대화에서 다시 열어 이어 물을 수 있다
+// 목업 모드(?mock=1)는 chat/mockAsk.ts 가 응답을 만들어 서버·HCX 를 부르지 않는다 (기록도 남지 않는다)
 // 개발 도구(목업 전환)는 ?mock=1 로 켰을 때만 보인다
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
-import { Link } from "react-router-dom";
-import type { AskResponse, Parsed, Recommendation } from "../api/types";
+import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { Link, useNavigate, useParams } from "react-router-dom";
+import type { AskResponse, ConversationRead, Parsed, Recommendation } from "../api/types";
 import { logout } from "../auth/client";
 import { useUser } from "../auth/useUser";
 import { Answer } from "../chat/Answer";
 import { ask } from "../chat/api";
 import { EXAMPLE_CATEGORIES, EXAMPLES } from "../chat/examples";
+import { History } from "../chat/History";
+import { deleteConversation, getConversation, HistoryError, listConversations, replayed } from "../chat/conversations";
 import { AltCard } from "../chat/Reply";
 import { DevTools, Sheet } from "../chat/Sheet";
 import { Brand } from "../components/Brand";
@@ -29,6 +33,7 @@ type NewMessage = Message extends infer M ? (M extends Message ? Omit<M, "id"> :
 type SheetState =
   | { kind: "others"; recs: Recommendation[]; parsed: Parsed }
   | { kind: "examples" }
+  | { kind: "history" }
   | { kind: "dev" };
 
 // 보기 편의용 설정이라 저장에 실패해도 동작한다
@@ -67,21 +72,30 @@ export function ChatPage() {
   const text = TEXT;
   usePage("chat", text.title);
   const user = useUser();
+  const navigate = useNavigate();
+  const { sessionId: routeId = null } = useParams();
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [busy, setBusy] = useState(false);
+  const [opening, setOpening] = useState(false); // 지난 대화를 불러오는 중
   const [question, setQuestion] = useState("");
   const [sheet, setSheet] = useState<SheetState | null>(null);
   const [mock, setMock] = useState(() => initial("mock"));
   const [debug, setDebug] = useState(() => initial("debug"));
+  const [history, setHistory] = useState<ConversationRead[] | null>(null);
 
-  const sessionId = useRef<string | null>(null);
+  // 서버에 남는 대화인가: 로그인 유저의 실제 답만 남는다 (손님·목업은 남지 않는다)
+  const saved = user !== null && !mock;
+
+  const sessionId = useRef<string | null>(null); // 화면에 보이는 대화의 id
+  // 보이는 대화가 바뀔 때마다 1 올린다. 늦게 온 답·기록이 지금 대화에 붙지 않게 한다
+  const view = useRef(0);
   const nextId = useRef(1);
   const busyRef = useRef(false); // 같은 순간의 두 번 보내기를 막는다 (state 는 다음 그리기에야 바뀐다)
   const logRef = useRef<HTMLElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  const inChat = messages.length > 0;
+  const inChat = messages.length > 0 || opening;
 
   useEffect(() => save("chat.mock", mock), [mock]);
   useEffect(() => save("chat.debug", debug), [debug]);
@@ -108,34 +122,134 @@ export function ChatPage() {
     setMessages((prev) => [...prev, { ...message, id: nextId.current++ } as Message]);
   }
 
+  // 지난 대화 목록. 목록을 못 불러와도 대화는 된다
+  const refreshHistory = useCallback(async () => {
+    if (!saved) return;
+    try {
+      setHistory((await listConversations()).conversations);
+    } catch {
+      /* 목록만 비워 둔다 */
+    }
+  }, [saved]);
+  useEffect(() => {
+    if (saved) void refreshHistory();
+    else setHistory(null);
+  }, [saved, refreshHistory]);
+
+  // 화면의 대화를 비운다. 보내 둔 질문의 답이 늦게 와도 이 화면에는 붙이지 않는다 (서버 기록에는 남는다)
+  function clear(id: string | null = null) {
+    view.current += 1;
+    sessionId.current = id;
+    busyRef.current = false;
+    setBusy(false);
+    setOpening(false);
+    setMessages([]);
+  }
+
+  // 주소의 대화를 서버 기록으로 다시 그린다 (새로고침, 지난 대화 열기, 뒤로 가기)
+  async function open(id: string) {
+    clear(id);
+    const v = view.current;
+    setOpening(true);
+    try {
+      const found = await getConversation(id);
+      if (v !== view.current) return;
+      const restored: Message[] = [];
+      for (const turn of found.turns) {
+        restored.push({ id: nextId.current++, kind: "user", text: turn.question });
+        restored.push({ id: nextId.current++, kind: "answer", data: replayed(turn, found.session_id) });
+      }
+      setMessages(restored);
+    } catch (e) {
+      if (v !== view.current) return;
+      sessionId.current = null;
+      navigate("/", { replace: true });
+      // 로그인이 풀렸으면(401) 빈 새 대화로 둔다
+      if (!(e instanceof HistoryError && e.status === 401)) {
+        add({ kind: "error", text: e instanceof Error ? e.message : String(e) });
+      }
+    } finally {
+      if (v === view.current) setOpening(false);
+    }
+  }
+
+  useEffect(() => {
+    if (routeId === null) {
+      if (sessionId.current !== null && saved) clear(); // 뒤로 가기로 새 대화 주소에 왔다
+      return;
+    }
+    if (routeId === sessionId.current) return; // 방금 받은 답으로 주소만 바꿨다
+    void open(routeId);
+  }, [routeId]); // 주소가 바뀔 때만
+
+  // 로그아웃하면 그 계정의 대화를 화면에서 내린다
+  const signedIn = user !== null;
+  const wasSignedIn = useRef(signedIn);
+  useEffect(() => {
+    if (wasSignedIn.current && !signedIn) reset();
+    wasSignedIn.current = signedIn;
+  }, [signedIn]);
+
   async function send(text: string, selections?: Record<string, string>) {
     const q = text.trim();
-    if (!q || busyRef.current) return;
+    if (!q || busyRef.current || opening) return; // 불러오는 중에 보내면 불러온 기록이 그 질문을 덮는다
+    const v = view.current;
     busyRef.current = true;
     setBusy(true);
     add({ kind: "user", text: q });
     try {
-      // 대화 id 를 이어 보낸다. "새 대화"를 누르거나 화면을 새로 열면 조건이 초기화된다.
+      // 대화 id 를 이어 보낸다. "새 대화"를 누르면 조건이 초기화된다.
       // 통계표 선택지 버튼으로 고른 값은 selections 로 함께 보낸다
       const has = selections && Object.keys(selections).length > 0;
       const data = await ask(
         { question: q, session_id: sessionId.current, ...(has ? { selections } : {}) },
         mock,
       );
+      if (v !== view.current) {
+        // 기다리는 사이 다른 대화로 옮겼다: 답은 서버 기록에만 남는다
+        void refreshHistory();
+        return;
+      }
       sessionId.current = data.session_id ?? null;
       add({ kind: "answer", data });
+      if (saved && data.session_id) {
+        // 새로고침해도 이 대화가 다시 열리게 주소에 남긴다 (서버가 새 대화로 시작했으면 id 가 바뀐다)
+        if (data.session_id !== routeId) navigate(`/c/${data.session_id}`, { replace: true });
+        void refreshHistory();
+      }
     } catch (e) {
+      if (v !== view.current) return;
       add({ kind: "error", text: `답변을 가져오지 못했어요. ${e instanceof Error ? e.message : String(e)}` });
     } finally {
-      busyRef.current = false;
-      setBusy(false);
-      inputRef.current?.focus();
+      if (v === view.current) {
+        busyRef.current = false;
+        setBusy(false);
+        inputRef.current?.focus();
+      }
     }
   }
 
+  // 새 대화: 화면을 비우고 첫 화면 주소로. 지난 대화는 목록에 남아 있다
   function reset() {
-    sessionId.current = null;
-    setMessages([]);
+    clear();
+    if (routeId !== null) navigate("/");
+    inputRef.current?.focus();
+  }
+
+  function openFromList(id: string) {
+    setSheet(null);
+    if (id !== routeId) navigate(`/c/${id}`);
+  }
+
+  async function remove(id: string) {
+    try {
+      await deleteConversation(id);
+    } catch {
+      void refreshHistory(); // 지우지 못했다: 목록을 서버 기준으로 되돌린다
+      return;
+    }
+    setHistory((prev) => prev?.filter((c) => c.session_id !== id) ?? null);
+    if (id === sessionId.current) reset();
   }
 
   function submit(e: FormEvent) {
@@ -178,6 +292,14 @@ export function ChatPage() {
             )}
           </nav>
         </div>
+        {saved && (
+          <section className="history" aria-labelledby="history-title">
+            <h2 className="history-head" id="history-title">
+              지난 대화
+            </h2>
+            <History items={history} current={routeId} onOpen={openFromList} onDelete={(id) => void remove(id)} />
+          </section>
+        )}
         <div className="side-bottom">
           <div className="guide">
             <span className="guide-icon">
@@ -229,6 +351,19 @@ export function ChatPage() {
             <button type="button" className="btn quiet head-btn only-narrow in-chat-only" onClick={reset}>
               새 대화
             </button>
+            {saved && (
+              <button
+                type="button"
+                className="btn quiet head-btn only-narrow"
+                aria-label="지난 대화 보기"
+                onClick={() => {
+                  setSheet({ kind: "history" });
+                  void refreshHistory();
+                }}
+              >
+                기록
+              </button>
+            )}
             {user ? (
               <>
                 <p className="head-name only-wide">
@@ -317,14 +452,14 @@ export function ChatPage() {
             ),
           )}
 
-          {busy && (
+          {(busy || opening) && (
             <div className="msg bot typing">
               <span className="avatar" aria-hidden="true">
                 <span className="logo" />
               </span>
               <div className="reply">
                 <div className="bubble">
-                  {text.typing}
+                  {opening ? "지난 대화를 불러오고 있어요" : text.typing}
                   <span className="dots" />
                 </div>
               </div>
@@ -348,7 +483,7 @@ export function ChatPage() {
               }}
               onKeyDown={onKeyDown}
             />
-            <button type="submit" className="send" aria-label="보내기" disabled={busy}>
+            <button type="submit" className="send" aria-label="보내기" disabled={busy || opening}>
               <Icon name="arrowUp" size={20} stroke={1.75} />
             </button>
           </div>
@@ -383,6 +518,11 @@ export function ChatPage() {
               {q}
             </button>
           ))}
+        </Sheet>
+      )}
+      {sheet?.kind === "history" && (
+        <Sheet title="지난 대화" narrow onClose={() => setSheet(null)}>
+          <History items={history} current={routeId} onOpen={openFromList} onDelete={(id) => void remove(id)} />
         </Sheet>
       )}
       {sheet?.kind === "dev" && (

@@ -97,6 +97,58 @@ body[data-page="chat"] {
 .account-name { flex: 1; min-width: 0; font-size: 13px; font-weight: 500; line-height: 20px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .account .text-btn { font-size: 12px; line-height: 16px; }
 
+/* 지난 대화 (로그인 유저). 사이드바에서 남는 높이를 쓰고, 넘치면 목록만 내린다 */
+.history { flex: 1 1 auto; display: flex; flex-direction: column; gap: 8px; min-height: 120px; }
+.history-head { padding: 0 12px; color: var(--muted); font-size: 12px; font-weight: 500; line-height: 16px; }
+.history .history-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+.history-list { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; list-style: none; }
+.history-item {
+  display: flex;
+  align-items: center;
+  border-radius: 10px;
+  transition: background-color var(--fast) var(--ease);
+}
+.history-item:hover, .history-item:focus-within { background: var(--panel); }
+.history-item:has([aria-current="page"]) { background: var(--accent-soft); }
+.history-open {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 10px 4px 10px 12px;
+  border: 0;
+  background: none;
+  text-align: left;
+}
+.history-title { flex: 1; min-width: 0; font-size: 13px; line-height: 20px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.history-open[aria-current="page"] .history-title { font-weight: 500; }
+.history-when { flex: none; color: var(--muted); font-size: 11px; line-height: 16px; font-variant-numeric: tabular-nums; }
+/* 지우기 버튼은 그 줄에 마우스·초점이 있을 때만 (터치 기기는 늘) */
+.history-del {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  margin-right: 6px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--muted);
+  opacity: 0;
+  transition: opacity var(--fast) var(--ease), color var(--fast) var(--ease);
+}
+.history-item:hover .history-del, .history-item:focus-within .history-del { opacity: 1; }
+.history-del:hover { color: var(--bad); }
+@media (hover: none) { .history-del { opacity: 1; } }
+.history-item.asking { gap: 12px; padding: 10px 12px; background: var(--bad-soft); }
+.history-ask { flex: 1; min-width: 0; font-size: 12px; line-height: 20px; }
+.history-item.asking .text-btn { font-size: 12px; line-height: 20px; }
+.text-btn.danger { color: var(--bad); font-weight: 500; }
+.history-empty { padding: 0 12px; color: var(--muted); font-size: 12px; line-height: 18px; }
+
 /* ---- 서비스 메인 ---- */
 .main {
   flex: 1;
