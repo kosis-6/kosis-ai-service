@@ -1,6 +1,18 @@
 import { describe, expect, it } from "vitest";
 import { sinceDays } from "./api";
-import { changes, conditionLine, day, filled, person, requestLabel, seconds, statusLabel, when } from "./format";
+import {
+  changes,
+  conditionLine,
+  day,
+  filled,
+  flowLabel,
+  person,
+  requestLabel,
+  seconds,
+  statusLabel,
+  stuckStep,
+  when,
+} from "./format";
 
 describe("시각·숫자", () => {
   it("한국 시간으로 보여 준다", () => {
@@ -29,10 +41,10 @@ describe("이름 붙이기", () => {
     expect(requestLabel("change")).toBe("조건 변경");
     expect(requestLabel("later")).toBe("later");
   });
-  it("누가 남겼는지: 닉네임 → 이메일 → 손님", () => {
+  it("누가 남겼는지: 닉네임 → 이메일 → 비로그인 사용자", () => {
     expect(person({ user_id: 3, user_email: "a@b.co", user_nickname: "통계왕" })).toBe("통계왕");
     expect(person({ user_id: 3, user_email: "a@b.co" })).toBe("a@b.co");
-    expect(person({ user_id: null })).toBe("손님");
+    expect(person({ user_id: null })).toBe("비로그인 사용자");
     expect(person({ user_id: 9 })).toBe("사용자 9"); // 계정은 있는데 정보가 안 붙은 경우
   });
 });
@@ -70,5 +82,28 @@ describe("조건", () => {
       ["year", "2024"],
     ]);
     expect(filled(null)).toEqual([]);
+  });
+});
+
+describe("처리 흐름", () => {
+  const step = (stage: string, result: string) => ({ stage, result, detail: "" });
+  it("결과를 말로, 실패는 붉게", () => {
+    expect(flowLabel("ok")).toEqual({ text: "성공", tone: "good" });
+    expect(flowLabel("tables").text).toBe(statusLabel("tables").text); // /ask status 는 같은 이름
+    expect(flowLabel("못 함").tone).toBe("bad");
+    expect(flowLabel("HCX").tone).toBe("plain");
+    expect(flowLabel("not_count")).toEqual({ text: "건수가 아닌 값", tone: "bad" });
+  });
+  it("최종 답이 실패면 마지막으로 막힌 단계", () => {
+    const flow = [
+      step("질문 이해", "HCX"),
+      step("사전 계산", "unknown_indicator"),
+      step("통계표 찾기", "ok"),
+      step("표 칸으로 계산", "못 함"),
+      step("최종 답", "tables"),
+    ];
+    expect(stuckStep(flow)?.stage).toBe("표 칸으로 계산");
+    expect(stuckStep([step("사전 계산", "ok"), step("최종 답", "ok")])).toBeNull();
+    expect(stuckStep(null)).toBeNull();
   });
 });

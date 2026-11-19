@@ -21,7 +21,7 @@ from uuid import uuid4
 
 from app.agent import graph, multi
 from app.core.config import get_settings
-from app.services import search, search_answer, search_llm, search_log
+from app.services import flow, search, search_answer, search_llm, search_log
 from app.services import slots as slot_parser
 
 logger = logging.getLogger(__name__)
@@ -120,6 +120,9 @@ async def find_tables(
         except Exception:
             logger.exception("넘기기 꾸러미(handoff) 만들기 실패")
             response["handoff"] = None
+        recs = response.get("recommendations") or []
+        picked = " / ".join(f"{r.get('tbl_id')} {r.get('tbl_nm') or ''}".strip() for r in recs[:3])
+        flow.add("통계표 찾기", response.get("status"), picked or response.get("answer") or "")
         return response
     except Exception as e:
         error = f"{type(e).__name__}: {e}"

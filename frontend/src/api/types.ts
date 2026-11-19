@@ -21,10 +21,13 @@ export type Applied = Schemas["Applied"];
 
 // 관리자 화면 (/admin/logs/*)
 export type LogSummary = Schemas["LogSummary"];
+export type PersonList = Schemas["PersonList"];
+export type PersonRead = Schemas["PersonRead"];
 export type SessionList = Schemas["SessionList"];
 export type SessionRead = Schemas["SessionRead"];
 export type SessionDetail = Schemas["SessionDetail"];
 export type TurnDetail = Schemas["TurnDetail"];
+export type FlowStep = Schemas["FlowStep"];
 export type SearchLogList = Schemas["SearchLogList"];
 export type SearchLogRead = Schemas["SearchLogRead"];
 export type SearchLogDetail = Schemas["SearchLogDetail"];

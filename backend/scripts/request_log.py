@@ -8,6 +8,7 @@
 실행: python -m scripts.request_log                       (상태별 요약 + 최근 10건)
       python -m scripts.request_log --status parse_error  (이 status만)
       python -m scripts.request_log --last 3 --detail     (HCX 원문·해석·계산 결과까지)
+      python -m scripts.request_log --flow --find 출생아     (질문이 거친 단계와 순서)
 """
 
 import argparse
@@ -15,6 +16,7 @@ import json
 from collections import Counter
 from pathlib import Path
 
+from app.services import flow
 from app.services.qa import REQUEST_LOG
 
 
@@ -36,7 +38,7 @@ def summarize(records: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def show(record: dict, detail: bool = False) -> str:
+def show(record: dict, detail: bool = False, steps: bool = False) -> str:
     parsed = record.get("parsed") or {}
     head = f"[{record['at']}] {record['status'] or '실패'} {record.get('elapsed_ms')}ms"
     lines = [head, f"  질문: {record['question']}"]
@@ -44,6 +46,9 @@ def show(record: dict, detail: bool = False) -> str:
         lines.append(f"  오류: {record['error']}")
     for fix in parsed.get("corrections") or []:
         lines.append(f"  보정: {fix}")
+    if steps:
+        body = flow.text(record.get("flow")) or "(흐름 기록 없음: 기록을 남기기 전의 요청)"
+        lines += ["  처리 흐름:", *(f"    {line}" for line in body.splitlines())]
     if detail:
         result = record.get("result") or {}
         parsed_text = json.dumps(parsed, ensure_ascii=False)
@@ -61,6 +66,8 @@ def main() -> None:
     parser.add_argument("--status", help="이 status만 (실패한 요청은 '실패')")
     parser.add_argument("--last", type=int, default=10, help="최근 몇 건 (기본 10)")
     parser.add_argument("--detail", action="store_true", help="HCX 원문·해석·계산 결과까지")
+    parser.add_argument("--flow", action="store_true", help="질문이 거친 단계와 순서")
+    parser.add_argument("--find", help="질문에 이 말이 든 요청만")
     args = parser.parse_args()
 
     records = load()
@@ -70,8 +77,10 @@ def main() -> None:
     print(summarize(records) + "\n")
     if args.status:
         records = [r for r in records if (r["status"] or "실패") == args.status]
+    if args.find:
+        records = [r for r in records if args.find in (r.get("question") or "")]
     for r in records[-args.last :]:
-        print(show(r, args.detail) + "\n")
+        print(show(r, args.detail, args.flow) + "\n")
 
 
 if __name__ == "__main__":

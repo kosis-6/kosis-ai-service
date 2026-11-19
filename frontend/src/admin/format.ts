@@ -71,17 +71,49 @@ const REQUEST: Record<string, string> = {
   unclear: "되물음",
 };
 
+// 처리 흐름 한 단계의 결과 (app/services/flow.py). 계산 단계는 /ask status 를 그대로 쓴다
+const FLOW_RESULT: Record<string, Label> = {
+  ok: { text: "성공", tone: "good" },
+  HCX: { text: "HCX", tone: "plain" },
+  캐시: { text: "캐시", tone: "good" },
+  씀: { text: "캐시 씀", tone: "good" },
+  없음: { text: "캐시 없음", tone: "plain" },
+  건너뜀: { text: "건너뜀", tone: "plain" },
+  시작: { text: "시작", tone: "plain" },
+  되묻기: { text: "되묻기", tone: "plain" },
+  "못 함": { text: "못 함", tone: "bad" },
+  uncovered: { text: "남은 낱말", tone: "bad" },
+  no_cell: { text: "맞는 칸 없음", tone: "bad" },
+  not_count: { text: "건수가 아닌 값", tone: "bad" },
+  "-": { text: "결과 없음", tone: "plain" },
+  unknown_indicator: { text: "사전에 없는 지표", tone: "bad" },
+};
+
+export function flowLabel(result: string): Label {
+  return FLOW_RESULT[result] ?? STATUS[result] ?? { text: result, tone: "bad" };
+}
+
+type Step = { stage: string; result: string; detail?: string };
+
+/** 최종 답이 성공이 아니면 마지막으로 막힌 단계 (펼치기 전에 보여 준다). 성공했으면 null */
+export function stuckStep<T extends Step>(flow: T[] | null | undefined): T | null {
+  const steps = flow ?? [];
+  const final = steps.findLast((s) => s.stage === "최종 답");
+  if (!final || final.result === "ok") return null;
+  return steps.findLast((s) => s.stage !== "최종 답" && flowLabel(s.result).tone === "bad") ?? null;
+}
+
 export function requestLabel(type: string | null | undefined): string {
   return type ? (REQUEST[type] ?? type) : "";
 }
 
 type Person = { user_id?: number | null; user_email?: string | null; user_nickname?: string | null };
 
-/** 누가 남긴 기록인지. 손님이면 "손님", 지워진 계정이면 번호만 */
+/** 누가 남긴 기록인지. 로그인하지 않았으면 "비로그인 사용자", 지워진 계정이면 번호만 */
 export function person(p: Person): string {
   if (p.user_nickname) return p.user_nickname;
   if (p.user_email) return p.user_email;
-  return p.user_id == null ? "손님" : `사용자 ${p.user_id}`;
+  return p.user_id == null ? "비로그인 사용자" : `사용자 ${p.user_id}`;
 }
 
 // 조건 이름 (backend/app/services/ask_session.py 의 conditions). 여기 없는 칸은 화면에 내지 않는다

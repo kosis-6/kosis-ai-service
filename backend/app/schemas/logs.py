@@ -37,12 +37,27 @@ class TurnList(BaseModel):
     turns: list[TurnRead]
 
 
+class FlowStep(BaseModel):
+    """처리 흐름의 한 단계 (app/services/flow.py)"""
+
+    stage: str = Field(
+        description="범위 검사 / 질문 이해 / 사전 계산 / 계산 방법 캐시 / 통계표 찾기 / "
+        "표 칸으로 계산 / 같은 표에서 찾기 / 사전에 없는 쪽 계산 / 최종 답"
+    )
+    result: str = Field(description="ok, 실패 사유(status), HCX · 캐시 같은 짧은 결과")
+    detail: str = Field(default="", description="판단 근거 (고른 표 · 칸, 못 한 이유)")
+
+
 class TurnDetail(TurnRead):
-    """대화를 펼쳐 볼 때: 조건이 어떻게 바뀌었는지까지"""
+    """대화를 펼쳐 볼 때: 조건이 어떻게 바뀌었는지와 처리 흐름까지"""
 
     conditions_before: Any | None = None
     conditions_after: Any | None = None
     sources: Any | None = Field(default=None, description="조건마다 어디서 왔는지")
+    flow: list[FlowStep] | None = Field(
+        default=None,
+        description="이 턴이 거친 단계와 순서. 처리 흐름을 기록하기 전의 턴은 null",
+    )
 
 
 class SessionRead(LogUser):
@@ -54,6 +69,20 @@ class SessionRead(LogUser):
     turns: int
     first_message: str | None = None
     last_status: str | None = None
+
+
+class PersonRead(LogUser):
+    """대화를 사람별로 묶은 한 줄. user_id 가 null 이면 비로그인 사용자 전체"""
+
+    sessions: int = Field(description="대화 창 수 (창을 여러 개 열어 따로 물으면 창마다 하나)")
+    turns: int = Field(description="질문(턴) 수")
+    first_at: datetime
+    last_at: datetime
+
+
+class PersonList(BaseModel):
+    total: int
+    people: list[PersonRead]
 
 
 class SessionList(BaseModel):

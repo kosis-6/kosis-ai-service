@@ -1550,3 +1550,11 @@ def test_after_table_choice_computes_with_original_question(monkeypatch) -> None
     assert res["question"] == "원래 질문" and res["request_type"] == s.REPLY
     assert seen == ["원래 질문"]
     assert asyncio.run(s._after_table_choice({"missing": "table"}, {"status": "ok"})) is None
+
+
+def test_turn_records_flow_with_final_answer(talk: Talk) -> None:
+    # 처리 흐름의 마지막 줄은 최종 답 (status · 읽은 방식 · 답 첫 줄). 요청 기록과 평가 CSV에 남는다
+    res = talk.say("부산 출생아 최근 5년 보여 줘")
+    last = res["trace"]["flow"][-1]
+    assert last["stage"] == "최종 답" and last["result"] == res["status"]
+    assert last["detail"].startswith("new · ")

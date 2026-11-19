@@ -90,6 +90,28 @@ async def run_case(row: dict[str, str]) -> tuple[dict, dict | None, int]:
     return first, final, round((time.perf_counter() - start) * 1000)
 
 
+def flow_columns(g: dg.Grade, first: dict, final: dict | None) -> dict[str, str]:
+    """처리 흐름(질문이 거친 단계와 순서)과 오답 설명(틀린 이유 + 그 답을 정한 단계)
+    되묻기 뒤 답을 넣었으면 첫 질문과 답의 흐름을 이어 쓴다 (app/services/flow.py)"""
+    from app.services import flow
+
+    turns = [("첫 질문", first), ("되묻기 답", final)] if final else [("", first)]
+    texts = []
+    for title, res in turns:
+        steps = (res.get("trace") or {}).get("flow") or []
+        body = flow.text(steps) or "(흐름 기록 없음)"
+        texts.append(f"[{title}]\n{body}" if title else body)
+    explain = ""
+    if g.correct != "O":
+        steps = ((final or first).get("trace") or {}).get("flow") or []
+        if (s := flow.deciding(steps)) is not None:
+            where = f"{s['stage']} [{s['result']}] {s.get('detail') or ''}".strip()
+            explain = f"{g.reason} ← 답을 정한 단계: {where}"
+        else:
+            explain = g.reason
+    return {"처리 흐름": "\n".join(texts), "오답 설명": explain}
+
+
 def record(row: dict[str, str], g: dg.Grade, first: dict, final: dict | None, ms: int) -> dict:
     """채점 기록 양식 한 줄 + 원인 분석용 칸"""
     last = final or first
@@ -105,6 +127,7 @@ def record(row: dict[str, str], g: dg.Grade, first: dict, final: dict | None, ms
         "환각": g.hallucination,
         "정답": g.correct,
         "틀린 이유": g.reason,
+        **flow_columns(g, first, final),
         # 분석용
         "질문 종류": row.get("질문 종류", ""),
         "데이터 경로": row.get("데이터 경로", ""),

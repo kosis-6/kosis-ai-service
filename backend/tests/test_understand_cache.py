@@ -62,3 +62,23 @@ def test_parse_error_is_not_cached(hcx, monkeypatch) -> None:
     asyncio.run(qa.understand("이상한 말"))
     asyncio.run(qa.understand("이상한 말"))
     assert len(hcx) == 2
+
+
+def test_end_punctuation_is_same_question(hcx) -> None:
+    # 물음표 · 마침표 · 느낌표만 다른 질문은 같은 질문 (다시 묻을 때 흔히 바뀐다)
+    asyncio.run(qa.understand("서울 인구 몇 명이야?"))
+    asyncio.run(qa.understand("서울 인구 몇 명이야"))
+    asyncio.run(qa.understand("서울 인구 몇 명이야 ?!"))
+    assert len(hcx) == 1
+    asyncio.run(qa.understand("부산 인구 몇 명이야?"))
+    assert len(hcx) == 2
+
+
+def test_cache_use_is_logged(tmp_path) -> None:
+    import json
+
+    path = tmp_path / "requests.jsonl"
+    trace = {"understand_cached": True, "plan_cache": {"hit": 3, "tbl_id": "T"}}
+    qa.log_request("서울 인구", {"status": "ok", "trace": trace}, path=path)
+    record = json.loads(path.read_text())
+    assert record["understand_cached"] is True and record["plan_cache"]["hit"] == 3

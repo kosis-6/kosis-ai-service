@@ -45,6 +45,7 @@ from app.core.stats_db import rows as _rows
 from app.services import (
     alternative,
     cell_pick,
+    flow,
     indicators,
     load_queue,
     lookup,
@@ -573,17 +574,7 @@ def uncovered(
     # "질문과 뜻이 다르거나 더 넓은 칸으로 대신하지 않는다"는 지시로 조건까지 보고 칸을 골랐다
     # (11/18, 대상 검사와 같은 원칙)
     for item in [] if slots.get("cells_by_llm") else cond.get("items") or []:
-        word = _norm(item)
-        if not word:
-            continue
-        if any(word in n or n in word for n in names if len(n) >= 2):
-            continue
-        if any(word in r or r in word for r in read):
-            continue
-        is_age = lookup.parse_age(item) or qa.extract_ages(item)  # "62살 이상"·"67살 이하"도
-        if is_age and parsed.get("ages") and plan.age_dim is not None:
-            continue  # 연령 구간은 lookup이 연령 칸으로 고른다 (안 맞으면 band_mismatch)
-        if any(word in w for w in ("남자", "여자", "남성", "여성")) and plan.sex_dim is not None:
+        if not _item_left(item, names, read, plan, parsed):
             continue
         if miss := _band_miss([item], dims, region_dim):
             return miss
@@ -602,6 +593,48 @@ def uncovered(
     if classes and parsed.get("type") not in ("composition", "rank", "trend"):
         return f"나눠 보기({', '.join(classes)}별)는 값 하나로 답할 수 없음"
     return None
+
+
+def _item_left(item: str, names: list[str], read: list[str], plan: Plan, parsed: dict) -> bool:
+    """조건 낱말 하나가 고른 칸(이름 · 바꿔 읽은 말 · 연령 · 성별)으로 설명되지 않으면 True"""
+    word = _norm(item)
+    if not word:
+        return False
+    if any(word in n or n in word for n in names if len(n) >= 2):
+        return False
+    if any(word in r or r in word for r in read):
+        return False
+    is_age = lookup.parse_age(item) or qa.extract_ages(item)  # "62살 이상"·"67살 이하"도
+    if is_age and parsed.get("ages") and plan.age_dim is not None:
+        return False  # 연령 구간은 lookup이 연령 칸으로 고른다 (안 맞으면 band_mismatch)
+    return not (
+        any(word in w for w in ("남자", "여자", "남성", "여성")) and plan.sex_dim is not None
+    )
+
+
+def _report_cells(
+    slots: dict | None, plan: Plan | None, dims: list[Dim], parsed: dict, region_dim: int | None
+) -> None:
+    """slots["report"]가 있으면 고른 칸 이름과 칸으로 설명되지 않은 조건 낱말을 적는다
+    (같은 표 계산의 실패 기록: 에이전트가 이 기록을 보고 말을 표의 낱말로 다시 쓴다)"""
+    report = (slots or {}).get("report")
+    if report is None:
+        return
+    items = ((slots or {}).get("conditions") or {}).get("items") or []
+    if plan is None:
+        report.update(cells=[], leftover=list(items))
+        return
+    cells = [
+        d.codes[plan.matched[d.no]] for d in dims if d.no in plan.matched and d.no != region_dim
+    ]
+    names = [_norm(d.codes[c]) for d in dims for no, c in plan.pick.items() if no == d.no]
+    if plan.multi:
+        md = plan.multi_dim or next(d for d in dims if d.no == plan.multi[0])
+        names += [_norm(md.codes[c]) for c in plan.multi[1]]
+    read = [_norm(a) for a, _ in (slots or {}).get("read_as") or [] if len(_norm(a)) >= 2]
+    report.update(
+        cells=cells, leftover=[i for i in items if _item_left(i, names, read, plan, parsed)]
+    )
 
 
 def _has_age_dim(dims: list[Dim], region_dim: int | None) -> bool:
@@ -692,6 +725,7 @@ def build(
     if PER_AVERAGE.search(question) and (avg := _per_average(tbl_id, dims, region_dim, level)):
         return avg, None
     plan, why = choose(question, parsed, dims, region_dim, forced, tbl_nm)
+    _report_cells(slots, plan, dims, parsed, region_dim)
     if plan is None:
         # 칸을 고르지 못했어도 질문의 숫자 조건(체중 3.2kg 등)이 이 표의 구간 분류에 해당하면
         # 그 조건에 맞는 구간이 없다고 답한다 (표 안내보다 구체적)
@@ -1637,6 +1671,8 @@ async def cached_answer(question: str, parsed: dict, trace: dict) -> dict | None
         logger.exception("계산 방법 캐시 읽기 실패")
         return None
     trace["plan_cache"] = "miss" if found else "skip"
+    if not plans:
+        flow.add("계산 방법 캐시", "없음" if found else "건너뜀", (found or ["", ""])[1])
     trace.setdefault("dynamic", [])
     for plan in plans:
         saved = {int(k): v for k, v in (plan.get("forced") or {}).items()}
@@ -1662,6 +1698,8 @@ async def cached_answer(question: str, parsed: dict, trace: dict) -> dict | None
             res = ask_answer(question, parsed, plan["tbl_id"], plan["tbl_id"], ask, forced)
         if res is not None:
             trace["plan_cache"] = {"hit": plan["id"], "tbl_id": plan["tbl_id"]}
+            used = f"전에 계산한 표 {plan['tbl_id']} (통계표 찾기 건너뜀)"
+            flow.add("계산 방법 캐시", "씀", used)
             if res.get("status") == "ok":
                 try:
                     await plan_cache.used(plan["id"])
@@ -1719,6 +1757,25 @@ async def _remember(parsed: dict, tbl_id: str, forced: dict, res: dict, words=()
 
 
 async def _try(
+    tbl_id, org_id, question, parsed, trace, forced, slots=None, notice=None, fetch_sem=None
+):
+    """표 하나로 계산해 보고 처리 흐름에 남긴다 (_try_once)"""
+    res, ask = await _try_once(
+        tbl_id, org_id, question, parsed, trace, forced, slots, notice, fetch_sem
+    )
+    step = (trace.get("dynamic") or [{}])[-1]
+    if res is not None:
+        outcome = res.get("status")
+    else:
+        outcome = "되묻기" if ask is not None else "못 함"
+    how = "칸 고르기 LLM" if step.get("by") == "cell_llm" else "규칙"
+    parts = [tbl_id, f"칸={step['cells']} ({how})" if step.get("cells") else ""]
+    parts.append(step.get("skip") or "")
+    flow.add("표 칸으로 계산", outcome, " · ".join(p for p in parts if p))
+    return res, ask
+
+
+async def _try_once(
     tbl_id, org_id, question, parsed, trace, forced, slots=None, notice=None, fetch_sem=None
 ):
     """표 하나로 계산해 본다 → (답 또는 None, 되물을 것 또는 None)

@@ -11,6 +11,7 @@ from app.services.hcx_client import HcxError
 
 router = APIRouter(tags=["질문 답변"])
 logger = logging.getLogger(__name__)
+STATS_UNAVAILABLE = "통계 자료를 잠시 불러오지 못했습니다. 잠시 후 다시 질문해 주세요."
 
 
 @router.post("/ask", summary="질문에 답하기")
@@ -36,7 +37,8 @@ async def ask(body: AskRequest, user: OptionalUser) -> AskResponse:
         question = res.get("question") or question
     except StatsNotLoadedError as e:
         error = f"StatsNotLoadedError: {e}"
-        raise HTTPException(status_code=503, detail=str(e)) from e
+        # DB 연결 오류 원문(주소 · 드라이버 메시지)은 기록(error)에만 남기고 화면에는 안내만
+        raise HTTPException(status_code=503, detail=STATS_UNAVAILABLE) from e
     except HcxError as e:
         error = f"HcxError: {e}"
         if e.is_rate_limit:  # hcx_client가 다시 시도해도 계속 걸린 경우
