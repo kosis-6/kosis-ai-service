@@ -400,6 +400,7 @@ def test_side_question_by_kind() -> None:
     assert s._side_question(p, "1인 가구 수", "value") == "2020년 서울특별시 1인 가구 수"
 
 
+@pytest.mark.needs_data
 def test_detect_both_unknown_only_on_request() -> None:
     # 두 값 모두 사전에 없는 나누기: 질문 해석(qa)에서는 잡지 않고, 한 표 안의 비율을 먼저 찾은 뒤
     # 안 되면 ask_session이 both=True로 잡는다
@@ -407,7 +408,6 @@ def test_detect_both_unknown_only_on_request() -> None:
     assert x.detect_partial(q) is None
     c = x.detect_partial(q, both=True)
     assert (c.num, c.den, c.scale, c.dynamic) == ("통근하는 사람", "1인 가구", 100, "both")
-
 
 
 def test_bare_per_people_means_population() -> None:
@@ -571,6 +571,7 @@ def test_value_without_region_is_nationwide() -> None:
     assert set(seen) == {("전국",)}
 
 
+@pytest.mark.needs_data
 def test_within_with_jung_e() -> None:
     # "등록 외국인 중에 베트남 사람 비율": '중에'도 '중'
     c = x.detect_partial("등록 외국인 중에 베트남 사람 비율 얼마나 돼?")
@@ -611,6 +612,7 @@ def test_sum_of_two_indicators() -> None:
     assert res["value"] == 41605 + 4482063 and res["op"] == "+"
 
 
+@pytest.mark.needs_data
 def test_people_word_is_total_population() -> None:
     # "제주도 사람 중 외국인 주민 %": 분모 '사람'은 총인구, 공식 외국인주민 비율로 보내지 않는다
     c = x.detect_partial("서울 사람 중 외국인 주민은 몇 퍼센트야?")
@@ -623,6 +625,7 @@ def test_population_denominator_is_percent() -> None:
     assert x.detect("2024년 서울 출생아 수 대비 사망자 수").scale == 1
 
 
+@pytest.mark.needs_data
 def test_rank_without_year_aligns_years() -> None:
     # 연도를 말하지 않은 순위: 한쪽이 최신 달 값이면 둘 다 연간 마지막 해로 다시 계산한다
     asked = []

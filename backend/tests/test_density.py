@@ -100,6 +100,7 @@ def test_density_trend_compare_rank() -> None:
     assert all(x["region"].startswith("서울특별시") for x in top["ranking"])
 
 
+@pytest.mark.needs_data
 def test_density_without_area_table(monkeypatch: pytest.MonkeyPatch) -> None:
     real = indicators._rows
 
@@ -115,6 +116,7 @@ def test_density_without_area_table(monkeypatch: pytest.MonkeyPatch) -> None:
     assert indicators.value("고령인구 비율", "서울", 2025)["status"] == "ok"  # 다른 지표는 그대로
 
 
+@pytest.mark.needs_data
 def test_annual_year_has_no_monthly_note(monkeypatch: pytest.MonkeyPatch) -> None:
     """연간 자료가 있는 해에는 최신 달 기준 안내를 붙이지 않는다 (KOSIS에 묻지도 않는다)"""
     calls = []

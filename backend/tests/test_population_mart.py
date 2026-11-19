@@ -21,6 +21,7 @@ def test_other_tables_do_nothing(pg) -> None:
     assert population_mart.rebuild(pg, "DT_1B26001") is False
 
 
+@pytest.mark.needs_data
 def test_rebuild_matches_preprocess_rule(pg) -> None:
     # 같은 규칙: raw.stat_value에서 다시 만든 결과가 지금 표와 같아야 한다 (트랜잭션 안에서 비교)
     with pg.transaction():

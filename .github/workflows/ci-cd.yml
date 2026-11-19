@@ -1,0 +1,109 @@
+name: CI/CD
+
+on:
+  pull_request:
+    branches: [develop, main]
+  push:
+    branches: [develop, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# 같은 PR 에 새 커밋이 오면 이전 검사는 멈춘다 (push 는 커밋마다 따로 돈다)
+concurrency:
+  group: ci-${{ github.ref }}-${{ github.event_name == 'pull_request' && 'pr' || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: 서버 테스트
+    runs-on: ubuntu-latest
+    services:
+      db:
+        image: pgvector/pgvector:0.8.7-pg17
+        env:
+          POSTGRES_USER: kosis
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: kosis
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U kosis -d kosis"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      DATABASE_URL: postgresql+psycopg://kosis:ci@localhost:5432/kosis
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0  # PR 에서 바뀐 파일을 고르려고 base 브랜치까지 받는다
+      - uses: astral-sh/setup-uv@v10
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - run: uv sync --frozen
+      - name: 바뀐 파이썬 파일 린트 (PR 만. 기존 코드 전체는 아직 규칙에 다 맞지 않는다)
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          mapfile -t files < <(git diff --name-only --relative --diff-filter=ACMR "origin/$BASE_REF...HEAD" -- '*.py')
+          if [ ${#files[@]} -eq 0 ]; then echo "바뀐 파이썬 파일 없음"; exit 0; fi
+          printf '%s\n' "${files[@]}"
+          uv run ruff check "${files[@]}"
+          uv run ruff format --check "${files[@]}"
+      - name: DB 준비 (운영 DB 를 처음 만들 때와 같은 확장 + 마이그레이션)
+        run: |
+          docker exec -i ${{ job.services.db.id }} psql -U kosis -d kosis -v ON_ERROR_STOP=1 < docker/postgres/init.sql
+          uv run alembic upgrade head
+      - name: 테스트 (실제 통계 데이터가 필요한 테스트는 뺀다. 로컬에서는 모두 돈다)
+        run: uv run pytest -q -m "not needs_data"
+
+  frontend:
+    name: 화면 빌드
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run build  # 타입 검사 + 빌드
+      - run: npm test
+
+  deploy:
+    name: 운영 배포
+    needs: [backend, frontend]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://like-snake.kro.kr/chat/
+    # 배포는 하나씩. 진행 중인 배포는 멈추지 않고 다음 배포가 기다린다
+    concurrency:
+      group: deploy
+      cancel-in-progress: false
+    steps:
+      - name: SSH 키 준비
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy
+          chmod 600 ~/.ssh/deploy
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+      - name: 배포 (서버의 authorized_keys 에 정한 명령만 돈다)
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: ssh -i ~/.ssh/deploy -o BatchMode=yes -o StrictHostKeyChecking=yes "$DEPLOY_USER@$DEPLOY_HOST"
+      - name: 확인 (HTTPS 로 서버가 응답하는지)
+        run: curl -fsS --retry 30 --retry-all-errors --retry-delay 5 https://like-snake.kro.kr/health

@@ -4,6 +4,9 @@ import pytest
 
 from app.services import indicators, qa
 
+# 실제 통계 데이터(DB)가 있어야 돈다. CI는 데이터 없이 돌아서 뺀다 (pyproject.toml markers)
+pytestmark = pytest.mark.needs_data
+
 # config/catalog_notes.toml 지표 사전 일부 (DB 없이 테스트)
 ALIASES = {
     "총인구": ["인구", "인구수", "전체 인구", "주민등록인구"],
