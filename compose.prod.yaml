@@ -1,0 +1,124 @@
+# 운영 서버(EC2)용. 개발용 compose.yaml 과 따로 쓴다
+#   docker compose -f compose.prod.yaml up -d --build
+#
+# 개발용과 다른 점
+#   - 코드를 이미지에 넣어 실행한다 (폴더 연결·--reload 없음). 서버에서 빌드해 CPU 종류(ARM/x86) 차이가 없다
+#   - Caddy 가 80·443 을 받아 HTTPS 인증서를 자동으로 받고 api 로 넘긴다. api·DB 는 바깥에 열지 않는다
+#   - DB 구조 맞추기(alembic)는 migrate 가 한 번 하고 끝난다. api·worker 는 그 뒤에 뜬다
+#   - API 문서(/docs)는 닫혀 있다 (API_DOCS 를 넣지 않는다)
+#   - 컨테이너 로그는 파일 크기를 제한한다 (디스크가 로그로 차지 않게)
+name: kosis-ai-prod
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+# api · worker · migrate 가 함께 쓰는 설정
+x-app: &app
+  build:
+    context: .
+    dockerfile: backend/Dockerfile
+  image: kosis-ai-service:prod
+  env_file:
+    - path: .env
+      required: true
+  volumes:
+    # 요청 기록(data/requests), 받아 둔 표(data/tables), 갱신 기록(data/refresh)을 서버 폴더에 남긴다.
+    # api 와 worker 가 같은 폴더를 써야 같은 표를 동시에 받지 않는다 (load_worker.py LOCK_PREFIX)
+    - ./backend/data:/workspace/backend/data
+  logging: *logging
+
+services:
+  db:
+    image: pgvector/pgvector:0.8.7-pg17
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-kosis}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?.env에 POSTGRES_PASSWORD를 설정하세요}
+      POSTGRES_DB: ${POSTGRES_DB:-kosis}
+    # 큰 표를 여러 작업자로 읽을 때 공유 메모리가 모자라지 않게 (도커 기본 64MB)
+    shm_size: 512m
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./backend/docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      # 덤프 파일을 주고받는 곳 (데이터 옮기기·백업)
+      - ./backups:/backups
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+    logging: *logging
+
+  migrate:
+    <<: *app
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-kosis}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-kosis}
+    command: alembic upgrade head
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    <<: *app
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-kosis}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-kosis}
+      # api 는 바깥 포트가 없어 Caddy 를 거쳐야만 들어온다. 그래서 Caddy 가 붙인
+      # X-Forwarded-For·Proto(진짜 IP, https)를 믿는다 (로그인 시도 제한, 쿠키 Secure, HSTS)
+      FORWARDED_ALLOW_IPS: "*"
+    # 프로세스 하나로 띄운다: 로그인 시도 제한·대화 상태 사본·질문 이해 캐시가 프로세스 메모리에 있다
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    restart: unless-stopped
+
+  # 통계표 적재 대기열 처리, 매일 0시(한국 시간) KOSIS 갱신 확인 (끄려면 .env 에 REFRESH_NIGHTLY=0)
+  worker:
+    <<: *app
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-kosis}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-kosis}
+    command: python -m pipeline.load_worker
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2.10.2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    # 서비스 주소(SITE_ADDRESS)로 HTTPS 인증서를 받고, 80 으로 오면 443 으로 보낸다.
+    # 도메인이 없으면 공인 IP 로 만든 sslip.io 주소 (예: 3-85-10-20.sslip.io)
+    command:
+      - caddy
+      - reverse-proxy
+      - --from
+      - "${SITE_ADDRESS:?.env에 SITE_ADDRESS를 설정하세요 (예 3-85-10-20.sslip.io)}"
+      - --to
+      - api:8000
+    volumes:
+      # 받은 인증서. 지우면 다시 받는다 (Let's Encrypt 발급 횟수 제한이 있어 지우지 않는다)
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+    logging: *logging
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:
