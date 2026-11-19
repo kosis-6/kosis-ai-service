@@ -100,6 +100,20 @@ def test_compute_group_scope(monkeypatch: pytest.MonkeyPatch) -> None:
     assert qa.compute(q)["answer_note"] == "5대 광역시는 인천광역시, 부산광역시 기준입니다."
 
 
+def test_calc_error_hides_internal_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 계산 중 오류의 원문(표 · 저장소 이름, 코드의 칸 이름)은 답에 넣지 않는다
+    # (error_id로 서버 기록과 잇는다)
+    def broken(*a):
+        raise KeyError("raw.stat_value DT_TEST")
+
+    monkeypatch.setattr(qa.indicators, "_data_years", lambda: (2008, 2025))
+    monkeypatch.setattr(qa.indicators, "spec", lambda name: {"name": name, "method": "lookup"})
+    monkeypatch.setattr(qa, "_compute_lookup", broken)
+    r = qa.compute({"type": "value", "indicator": "혼인 건수", "regions": ["서울"], "year": 2024})
+    assert r["status"] == "error" and r["reason"] == qa.CALC_ERROR_TEXT
+    assert len(r["error_id"]) == 8 and "raw" not in str(r) and "DT_TEST" not in str(r)
+
+
 def test_summary_value_with_sex() -> None:
     assert qa.summary(VALUE) == "2025년 부산광역시의 여성 고령인구 비율은 27.66%입니다."
 

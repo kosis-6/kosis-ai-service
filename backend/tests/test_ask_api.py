@@ -46,7 +46,10 @@ def test_ask_errors(monkeypatch: pytest.MonkeyPatch, error: Exception, status_co
         raise error
 
     monkeypatch.setattr(qa, "ask", fail)
-    assert client.post("/ask", json={"question": "서울 인구"}).status_code == status_code
+    r = client.post("/ask", json={"question": "서울 인구"})
+    assert r.status_code == status_code
+    # 오류 원문(DB 주소 · HCX 메시지)은 화면에 보내지 않는다
+    assert "DB 없음" not in r.text and "Unauthorized" not in r.text
 
 
 def test_question_clarification_is_exposed_without_ai(monkeypatch):

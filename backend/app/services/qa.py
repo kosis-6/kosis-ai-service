@@ -18,10 +18,12 @@ API: POST /ask
 
 import copy
 import json
+import logging
 import re
 import time
 from datetime import UTC, date, datetime
 from pathlib import Path
+from uuid import uuid4
 
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.concurrency import run_in_threadpool
@@ -43,6 +45,8 @@ from app.services import (
 from app.services.hcx_client import HcxClient
 from app.services.josa import josa, ro
 from app.services.memory_cache import MISSING, MemoryCache
+
+logger = logging.getLogger(__name__)
 
 MODEL = "HCX-007"
 # 질문 해석 응답 최대 길이. HCX 한도(분당 60,000토큰)는 요청마다 '보낸 글 + 이 값'을 미리 잡는다.
@@ -81,8 +85,13 @@ async def _chat(prompt, system, temperature=0.1, trace=None):
 UNDERSTAND_CACHE = MemoryCache("understand", maxsize=1024, ttl=3600)
 
 
+# 열쇠에서 빼는 끝 문장부호 ("서울 인구 알려줘?" · "서울 인구 알려줘."는 같은 질문)
+CACHE_TAIL = re.compile(r"[\s?？!！.。~]+$")
+
+
 def _cache_key(question, latest):
-    return (re.sub(r"\s+", " ", question).strip(), date.today().isoformat(), latest)
+    text = CACHE_TAIL.sub("", re.sub(r"\s+", " ", question).strip())
+    return (text, date.today().isoformat(), latest)
 
 
 async def understand(question, trace=None):
@@ -1384,6 +1393,17 @@ def compute(q):
     return result
 
 
+CALC_ERROR_TEXT = "계산하는 중에 문제가 생겨 답하지 못했습니다. 잠시 후 다시 질문해 주세요."
+
+
+def _calc_error(e: Exception) -> dict:
+    """계산 중 오류의 답. 오류 원문(표 이름 · SQL · 코드의 칸 이름)은 사용자에게 보이지 않고
+    서버 기록에만 남긴다. error_id로 요청 기록(requests.jsonl)과 서버 기록을 이어 찾는다"""
+    error_id = uuid4().hex[:8]
+    logger.error("계산 중 오류 [%s]", error_id, exc_info=e)
+    return {"status": "error", "reason": CALC_ERROR_TEXT, "error_id": error_id}
+
+
 def _compute(q):
     """compute의 본문 (최신 달 다시 계산 없이)"""
     lookup.refresh_if_reloaded()  # 적재 프로세스가 표를 새로 넣었으면 표 정보 캐시를 비운다
@@ -1498,9 +1518,9 @@ def _compute(q):
         except StatsTableMissing as e:
             if e.tbl_id:  # 적재 안 된 표: ask가 바로 받거나 대기열에 넣는다
                 raise
-            return {"status": "error", "reason": f"계산 중 오류가 났습니다: {e}"}
+            return _calc_error(e)
         except Exception as e:
-            return {"status": "error", "reason": f"계산 중 오류가 났습니다: {e}"}
+            return _calc_error(e)
 
     if sp is None:  # 지역보다 지표를 먼저 확인
         term = q.get("term") or ind or None
@@ -1543,9 +1563,9 @@ def _compute(q):
     except StatsTableMissing as e:
         if e.tbl_id:  # 적재 안 된 표: ask가 바로 받거나 대기열에 넣는다 (_compute_fetching)
             raise
-        return {"status": "error", "reason": f"계산 중 오류가 났습니다: {e}"}
+        return _calc_error(e)
     except Exception as e:  # 계산 중 오류도 답변 단계에서 안내
-        return {"status": "error", "reason": f"계산 중 오류가 났습니다: {e}"}
+        return _calc_error(e)
 
     if dyn:  # 사전 지표가 아니라 통계표에서 바로 만든 정의로 계산했다 (다음 턴에서도 표시)
         result["method"] = "dynamic"
@@ -2739,6 +2759,11 @@ def log_request(question, res=None, error=None, elapsed_ms=None, path=None, user
     }
     if trace.get("fetched"):
         record["fetched"] = trace["fetched"]
+    # 캐시를 썼는지: 질문 이해(같은 질문이면 HCX 0회), 계산 방법(통계표 찾기 건너뜀)
+    if trace.get("understand_cached"):
+        record["understand_cached"] = True
+    if trace.get("plan_cache"):
+        record["plan_cache"] = trace["plan_cache"]
     if trace.get("refreshed"):  # 최근·최신 질문에서 KOSIS 새 연도를 확인한 결과
         record["refreshed"] = trace["refreshed"]
     if "understand_usage" in trace:
