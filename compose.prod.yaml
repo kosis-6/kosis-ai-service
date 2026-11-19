@@ -39,6 +39,10 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-kosis}
     # 큰 표를 여러 작업자로 읽을 때 공유 메모리가 모자라지 않게 (도커 기본 64MB)
     shm_size: 512m
+    # 서버 자신(127.0.0.1)에게만 연다. 인터넷에는 열리지 않고, 맥의 pgAdmin 은 SSH 터널로 들어온다.
+    # 보안 그룹에서 5432 를 열지 않는다
+    ports:
+      - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./backend/docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
