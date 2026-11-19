@@ -38,6 +38,7 @@ from app.services import (
     cross_indicator,
     flow,
     indicators,
+    llm_calls,
     load_queue,
     lookup,
     table_cache,
@@ -57,6 +58,7 @@ MODEL = "HCX-007"
 UNDERSTAND_MAX_TOKENS = 1024
 
 
+@llm_calls.staged("understand")
 async def _chat(prompt, system, temperature=0.1, trace=None):
     """HCX-007 호출 (질문 해석). 짧은 JSON만 받으므로 추론을 끄고 응답 길이를 줄인다
     (이어 묻는 말의 변경 추출 ask_session._chat과 같은 방식)"""
@@ -2787,6 +2789,8 @@ def log_request(question, res=None, error=None, elapsed_ms=None, path=None, user
         record["understand_cached"] = True
     if trace.get("flow"):  # 처리 흐름 (app/services/flow.py, scripts/show_flow.py로 본다)
         record["flow"] = trace["flow"]
+    if trace.get("llm_calls"):  # LLM 호출 (app/services/llm_calls.py): 단계 · 토큰 · 시간 · 다시 시도
+        record["llm_calls"] = trace["llm_calls"]
     if trace.get("plan_cache"):
         record["plan_cache"] = trace["plan_cache"]
     if trace.get("refreshed"):  # 최근·최신 질문에서 KOSIS 새 연도를 확인한 결과

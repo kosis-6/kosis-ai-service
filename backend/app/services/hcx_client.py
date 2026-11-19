@@ -1,4 +1,5 @@
 import asyncio
+import time
 from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
@@ -6,6 +7,7 @@ from uuid import uuid4
 import httpx
 
 from app.core.config import get_settings
+from app.services import llm_calls
 
 SUCCESS_CODE = "20000"
 RATE_LIMIT_CODE = "42901"
@@ -84,22 +86,45 @@ class HcxClient:
         호출 제한(42901, HTTP 429)에 걸리면 retry_waits 간격으로 다시 시도한다.
         연결 실패·서버 오류는 TRANSIENT_WAITS만큼 다시 시도한다. 다 실패하면 HcxError
         동시에 보내는 요청은 hcx_max_concurrency개까지 (기다리는 동안은 자리를 비운다)
+        끝나면(성공 · 실패) 호출 한 줄을 llm_calls에 남긴다 (다시 시도는 attempts로 센다)
         """
         limit_waits, transient_waits = list(self.retry_waits), list(TRANSIENT_WAITS)
         gate = _gate()
+        start, attempts, waited = time.perf_counter(), 0, 0.0
+
+        def log(usage: dict | None = None, error: Exception | None = None) -> None:
+            llm_calls.record(
+                llm="hcx",
+                model=model,
+                ms=(time.perf_counter() - start) * 1000,
+                options=options,
+                attempts=attempts,
+                waited_ms=waited * 1000,
+                usage=usage,
+                error=error,
+            )
+
         while True:
+            attempts += 1
             try:
                 if gate is None:
-                    return await self._chat_once(model, messages, **options)
-                async with gate:
-                    return await self._chat_once(model, messages, **options)
+                    result = await self._chat_once(model, messages, **options)
+                else:
+                    async with gate:
+                        result = await self._chat_once(model, messages, **options)
             except HcxError as e:
                 waits = (
                     limit_waits if e.is_rate_limit else transient_waits if e.is_transient else []
                 )
                 if not waits:
+                    log(error=e)
                     raise
-                await asyncio.sleep(waits.pop(0))
+                wait = waits.pop(0)
+                waited += wait
+                await asyncio.sleep(wait)
+            else:
+                log(usage=result.usage)
+                return result
 
     async def _chat_once(
         self, model: str, messages: list[dict[str, Any]], **options: Any

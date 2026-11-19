@@ -7,7 +7,7 @@
      원인·예측·정책 평가 문장은 표현 사전으로 "환각 문장 후보"만 뽑는다 (사람이 확인)
 
 결과: data/eval/devset_YYYYMMDD_HHMMSS.csv        채점 기록 양식 + 원인 분석용 칸 (엑셀용)
-      data/eval/devset_YYYYMMDD_HHMMSS.md         정답률·행동 정확도·환각·틀린 이유·응답 시간 요약
+      data/eval/devset_YYYYMMDD_HHMMSS.md         정답률·행동·환각·틀린 이유·응답 시간·LLM 호출 요약
       data/eval/devset_YYYYMMDD_HHMMSS.raw.jsonl  챗봇 원응답 (--regrade로 다시 채점할 때 씀)
 실행: python -m scripts.eval_devset --golden eval/devset_v1.csv
       python -m scripts.eval_devset --golden eval/devset_v1.csv --only D-001 D-002
@@ -112,6 +112,57 @@ def flow_columns(g: dg.Grade, first: dict, final: dict | None) -> dict[str, str]
     return {"처리 흐름": "\n".join(texts), "오답 설명": explain}
 
 
+STAGE_NAMES = {
+    "understand": "질문 이해",
+    "follow_up": "이어 묻는 말",
+    "slots": "조건 추출",
+    "plan": "계획",
+    "llm_pick": "후보 검토",
+    "together": "함께 볼 표",
+    "cell_pick": "칸 고르기",
+    "alternative": "대안 고르기",
+    "unknown": "(이름 없음)",
+}
+
+
+def llm_columns(first: dict, final: dict | None) -> dict[str, Any]:
+    """LLM 호출 칸 (app/services/llm_calls.py). 되묻기 뒤 답을 넣었으면 두 턴을 합친다.
+    기록이 없는 원응답(호출 기록을 넣기 전 회차를 --regrade)은 빈칸"""
+    from app.services import llm_calls
+
+    turns = [t for t in (first, final) if t]
+    if not any("llm_calls" in (t.get("trace") or {}) for t in turns):
+        return {k: "" for k in LLM_COLUMNS}
+    calls = [c for t in turns for c in (t.get("trace") or {}).get("llm_calls") or []]
+    t = llm_calls.totals(calls)
+    return {
+        "LLM 호출": t["calls"],
+        "HCX 호출": t["hcx"],
+        "Gemma 호출": t["gemma"],
+        "입력 토큰": t["prompt_tokens"],
+        "출력 토큰": t["completion_tokens"],
+        "예약 토큰": t["reserved_tokens"],
+        "다시 시도": t["retries"],
+        "LLM 대기(ms)": t["waited_ms"],
+        "LLM 실패": t["failed"],
+        "단계별 호출": json.dumps(t["by_stage"], ensure_ascii=False),
+    }
+
+
+LLM_COLUMNS = [
+    "LLM 호출",
+    "HCX 호출",
+    "Gemma 호출",
+    "입력 토큰",
+    "출력 토큰",
+    "예약 토큰",
+    "다시 시도",
+    "LLM 대기(ms)",
+    "LLM 실패",
+    "단계별 호출",
+]
+
+
 def record(row: dict[str, str], g: dg.Grade, first: dict, final: dict | None, ms: int) -> dict:
     """채점 기록 양식 한 줄 + 원인 분석용 칸"""
     last = final or first
@@ -137,6 +188,7 @@ def record(row: dict[str, str], g: dg.Grade, first: dict, final: dict | None, ms
         "쓴 표": ",".join(s.get("tbl_id") or "" for s in last.get("sources") or []),
         "거절 근거": (last.get("tables") or {}).get("reason") or "",
         "응답 시간(ms)": ms,
+        **llm_columns(first, final),
         "상세": json.dumps(g.details, ensure_ascii=False, default=str),
         "되묻기 문장": (first.get("answer") or "") if final else "",
         "답변": last.get("answer") or "",
@@ -243,6 +295,7 @@ def summarize(recs: list[dict]) -> str:
         label = path or "답변 불가 (경로 없음)"
         if ms:
             lines.append(f"| {label} | {sum(ms) / len(ms) / 1000:.1f}초 | {max(ms) / 1000:.1f}초 |")
+    lines += llm_summary(recs)
     unmapped = Counter(
         r["status"] for r in refuse if json.loads(r["상세"]).get("불가 유형", "").startswith("(")
     )
@@ -253,6 +306,51 @@ def summarize(recs: list[dict]) -> str:
             + ", ".join(f"{k} {v}건" for k, v in unmapped.items()),
         ]
     return "\n".join(lines)
+
+
+def llm_summary(recs: list[dict]) -> list[str]:
+    """LLM 호출 요약 (문항당, 되묻기 문항은 두 턴 합). 호출 기록이 있는 문항만 센다"""
+    rs = [r for r in recs if r.get("LLM 호출") not in ("", None)]
+    if not rs:
+        return []
+    n = len(rs)
+    total = lambda key: sum(int(r[key]) for r in rs)  # noqa: E731
+    calls = total("LLM 호출")
+    lines = [
+        "",
+        "## LLM 호출 (문항당, 되묻기 문항은 두 턴 합)",
+        "",
+        f"- 호출: {calls}회 (문항당 평균 {calls / n:.1f}회, HCX {total('HCX 호출')} · "
+        f"Gemma {total('Gemma 호출')})",
+        f"- 토큰: 입력 {total('입력 토큰'):,} · 출력 {total('출력 토큰'):,} · "
+        f"예약(응답 최대 길이 합) {total('예약 토큰'):,}",
+        f"- 다시 시도 {total('다시 시도')}회 · 기다린 시간 {total('LLM 대기(ms)') / 1000:.1f}초 · "
+        f"실패 {total('LLM 실패')}회",
+    ]
+    stages: dict[str, dict[str, int]] = {}
+    asked: Counter = Counter()  # 그 단계를 부른 문항 수
+    for r in rs:
+        for name, s in json.loads(r["단계별 호출"] or "{}").items():
+            acc = stages.setdefault(name, {"calls": 0, "ms": 0, "tokens": 0})
+            for k in acc:
+                acc[k] += s.get(k) or 0
+            asked[name] += 1
+    lines += [
+        "",
+        "| 단계 | 호출 | 부른 문항 | 문항당 | 평균 시간 | 토큰 합 |",
+        "|---|---|---|---|---|---|",
+    ]
+    for name, s in sorted(stages.items(), key=lambda kv: -kv[1]["calls"]):
+        lines.append(
+            f"| {STAGE_NAMES.get(name, name)} | {s['calls']} | {asked[name]} | "
+            f"{s['calls'] / n:.2f} | {s['ms'] / s['calls'] / 1000:.1f}초 | {s['tokens']:,} |"
+        )
+    top = sorted(rs, key=lambda r: -int(r["LLM 호출"]))[:5]
+    lines += [
+        "",
+        "호출이 가장 많은 문항: " + ", ".join(f"{r['문항']} {r['LLM 호출']}회" for r in top),
+    ]
+    return lines
 
 
 def main() -> None:
