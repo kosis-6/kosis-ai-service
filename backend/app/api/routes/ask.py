@@ -1,4 +1,5 @@
 import logging
+import math
 import time
 
 from fastapi import APIRouter, HTTPException
@@ -41,9 +42,14 @@ async def ask(body: AskRequest, user: OptionalUser) -> AskResponse:
         raise HTTPException(status_code=503, detail=STATS_UNAVAILABLE) from e
     except HcxError as e:
         error = f"HcxError: {e}"
-        if e.is_rate_limit:  # hcx_client가 다시 시도해도 계속 걸린 경우
+        if e.is_rate_limit:  # hcx_client가 기다릴 수 있는 만큼 기다려도 안 풀린 경우
+            # Retry-After: 호출 제한이 풀리기까지 남은 초 (화면이 "몇 초 뒤"를 안내할 수 있게)
+            after = math.ceil(e.retry_after) if e.retry_after else None
             raise HTTPException(
-                status_code=429, detail="요청이 많아 잠시 후 다시 질문해 주세요."
+                status_code=429,
+                detail="요청이 많아 잠시 후 다시 질문해 주세요."
+                + (f" (약 {after}초 뒤)" if after else ""),
+                headers={"Retry-After": str(after)} if after else None,
             ) from e
         # HCX 원문 오류는 기록(error)에만 남기고, 화면에는 다시 질문하라는 안내만
         detail = (
