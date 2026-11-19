@@ -639,3 +639,54 @@ def test_rank_without_year_aligns_years() -> None:
     res = x.compute(q, run)
     assert res["status"] == "ok"
     assert ("출생아 수", 2024, False) in asked and ("세대수", 2024, False) in asked
+
+
+def _surveys(monkeypatch, by_table: dict) -> None:
+    """표마다 조사 이름을 정해 둔다 (catalog.comparable이 DB 대신 쓴다)"""
+    from app.services import catalog
+
+    def surveys(ids):
+        return {t: by_table[t] for t in ids if t in by_table}
+
+    monkeypatch.setattr(catalog, "surveys", surveys)
+    monkeypatch.setattr(catalog, "_groups", lambda ids: {})
+
+
+def test_diff_of_different_surveys_is_side_by_side(monkeypatch) -> None:
+    # 답변 정책: 인구총조사와 주민등록인구현황의 총인구는 기준이 달라 직접 비교(빼기)하지 않는다.
+    # 실패로 돌려보내지 않고 두 값을 나란히 (실패면 통계표 찾기를 다시 돌린다)
+    _surveys(monkeypatch, {"REG": "주민등록인구현황", "CENSUS": "인구총조사"})
+    c = x.Cross("총인구", "인구총조사 인구", 1, "diff")
+    num = {"status": "ok", "indicator": "총인구", "kind": "count", "value": 51217221,
+           "unit": "명", "year": 2024, "region": "전국", "sex": "계", "tbl_id": "REG"}  # fmt: skip
+    den = {**num, "indicator": "인구총조사 인구", "value": 51774521, "tbl_id": "CENSUS"}
+    res = x.combine_value(c, num, den, {"sex": "계"})
+    assert res["status"] == "ok" and res["split_by"] == "indicator" and "value" not in res
+    assert [p["value"] for p in res["split"]] == [51217221, 51774521]
+    said = "총인구는 주민등록인구현황, 인구총조사 인구는 인구총조사 통계입니다"
+    assert said in res["basis_gap"] and "직접 비교하지 않습니다" in qa.render(res)
+    assert "557,300" not in qa.summary(res)
+    # 같은 조사끼리는 뺀다
+    same = x.combine_value(c, num, {**den, "tbl_id": "REG"}, {"sex": "계"})
+    assert same["status"] == "ok" and same["value"] == -557300
+
+
+def test_ratio_of_different_surveys_still_divides(monkeypatch) -> None:
+    # 다른 조사끼리 나누는 지표는 흔하다 (외국인주민 수 ÷ 주민등록인구)
+    _surveys(monkeypatch, {"REG": "주민등록인구현황", "FOREIGN": "지방자치단체외국인주민현황"})
+    c = x.Cross("외국인주민 수", "총인구", 100, "within")
+    num = {"value": 100, "unit": "명", "year": 2024, "region": "서울", "sex": "계",
+           "tbl_id": "FOREIGN"}  # fmt: skip
+    den = {**num, "value": 1000, "tbl_id": "REG"}
+    assert x.combine_value(c, num, den, {"sex": "계"})["value"] == 10.0
+
+
+def test_basis_gap_does_not_block_without_db(monkeypatch) -> None:
+    from app.core.stats_db import StatsNotLoadedError
+    from app.services import catalog
+
+    def down(ids):
+        raise StatsNotLoadedError("DB 없음")
+
+    monkeypatch.setattr(catalog, "surveys", down)
+    assert x.basis_gap({"tbl_id": "A"}, {"tbl_id": "B"}, "가", "나") is None

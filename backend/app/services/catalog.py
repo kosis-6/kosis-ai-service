@@ -5,6 +5,7 @@
   find_indicator(이름)     "고령화율" → 고령인구 비율, 어느 표에서 어떻게 구하는지
   table_info(표 ID)        조사 기준 설명
   comparable(표 A, 표 B)   두 표의 값을 직접 비교해도 되는지 (답변 불가 사례 3)
+                           (cross_indicator.basis_gap이 차이 · 비교 답에서 쓴다)
 """
 
 import json
@@ -71,45 +72,69 @@ def table_info(tbl_id):
     return rows[0] if rows else None
 
 
-def comparable(tbl_a, tbl_b):
-    """두 표의 값을 직접 비교해도 되는지 판단 (답변 불가 사례 3)"""
-    a, b = table_info(tbl_a), table_info(tbl_b)
-    if a is None or b is None:
-        return {"comparable": False, "reason": "알 수 없는 통계표가 포함되어 있습니다."}
-    if tbl_a == tbl_b or a["group_id"] == b["group_id"]:
-        return {"comparable": True, "reason": f"같은 기준의 통계({a['group_name']})입니다."}
-    compat = _rows(
+def surveys(tbl_ids):
+    """표 ID → 조사 이름 (table_meta.survey_name: 인구총조사, 주민등록인구현황 …).
+    카탈로그에 없는 표(국토교통부 면적 표 등)는 빠진다"""
+    ids = [t for t in dict.fromkeys(tbl_ids) if t]
+    if not ids:
+        return {}
+    found = _rows("select tbl_id, survey_name from table_meta where tbl_id = any(?)", [ids])
+    return {r["tbl_id"]: r["survey_name"] for r in found}
+
+
+def _groups(tbl_ids):
+    """표 설명서(config/catalog_notes.toml)에 적은 비교 그룹 {표 ID: (그룹 ID, 그룹 이름)}.
+    그룹을 적지 않은 표는 빠진다"""
+    found = _rows(
         """
-        select reason from compatible_groups
-        where (group_a = ? and group_b = ?) or (group_a = ? and group_b = ?)
+        select n.tbl_id, n.group_id, g.name from table_notes n join table_groups g using (group_id)
+        where n.tbl_id = any(?)
     """,
-        [a["group_id"], b["group_id"], b["group_id"], a["group_id"]],
+        [list(tbl_ids)],
     )
-    if compat:
-        return {"comparable": True, "reason": compat[0]["reason"]}
+    return {r["tbl_id"]: (r["group_id"], r["name"]) for r in found}
 
-    def desc(t):
-        return f"{t['survey']}({t['reference_date']}, {t['scope']})"
 
-    if a["measure"] != b["measure"]:
-        reason = (
-            f"{desc(a)}와 {desc(b)}는 종류가 다른 통계입니다 "
-            "(특정 시점의 인구 수 vs 1년간 발생한 건수). 값을 직접 비교하지 않습니다."
+def _compatible(group_a, group_b):
+    """그룹이 달라도 직접 비교해도 되는 조합인가 (compatible_groups)"""
+    return bool(
+        _rows(
+            """
+            select 1 from compatible_groups
+            where (group_a = ? and group_b = ?) or (group_a = ? and group_b = ?)
+        """,
+            [group_a, group_b, group_b, group_a],
         )
+    )
+
+
+def comparable(tbl_a, tbl_b):
+    """두 표의 값을 직접 비교(빼기 · 크기 견주기)해도 되는지 (답변 불가 사례 3: 단위·조사 기준 차이)
+
+    1. 같은 표면 된다
+    2. 두 표 모두 표 설명서에 비교 그룹이 있으면 그룹으로 본다: 같은 그룹이거나
+       compatible_groups에 적은 조합이면 된다 (출생 통계와 다문화 출생 통계)
+    3. 아니면 조사 이름이 같아야 한다. 비교 그룹은 표 20개에만 적어 두었고, 나머지
+       (인구총조사 표 1,800여 개 등)는 조사 이름으로 본다. 해마다 따로 있는 인구총조사 표끼리는 된다
+
+    결과 {"comparable": True | False | None, "reason": 문장, "surveys": [A의 조사, B의 조사]}.
+    None은 판단할 수 없음 (카탈로그에 없는 표): 부르는 쪽은 막지 않는다
+    """
+    if tbl_a == tbl_b:
+        return {"comparable": True, "reason": "같은 통계표입니다", "surveys": []}
+    names = surveys([tbl_a, tbl_b])
+    sa, sb = names.get(tbl_a), names.get(tbl_b)
+    if sa is None or sb is None:
+        return {"comparable": None, "reason": "조사를 알 수 없는 통계표입니다", "surveys": [sa, sb]}
+    groups = _groups([tbl_a, tbl_b])
+    if tbl_a in groups and tbl_b in groups:
+        (ga, sa), (gb, sb) = groups[tbl_a], groups[tbl_b]  # 그룹 이름은 그룹마다 다르다
+        same = ga == gb or _compatible(ga, gb)
     else:
-        reason = f"{desc(a)}와 {desc(b)}는 기준 시점·대상이 달라 값을 직접 비교하지 않습니다."
-    if a["is_projection_table"] or b["is_projection_table"]:
-        reason += " 장래인구추계는 실제 통계가 아닌 추계값입니다."
-    return {
-        "comparable": False,
-        "reason": reason,
-        "tables": [
-            {
-                "tbl_id": t["tbl_id"],
-                "survey": t["survey"],
-                "reference_date": t["reference_date"],
-                "scope": t["scope"],
-            }
-            for t in (a, b)
-        ],
-    }
+        same = sa == sb
+    if same:
+        return {"comparable": True, "reason": f"같은 기준의 통계({sa})입니다", "surveys": [sa, sb]}
+    reason = "두 조사는 기준 시점과 집계 대상이 달라 값을 직접 비교하지 않습니다"
+    if any(s.startswith("장래") for s in (sa, sb)):
+        reason += ". 장래 추계는 실제 통계가 아닌 추계값입니다"
+    return {"comparable": False, "reason": reason, "surveys": [sa, sb]}
