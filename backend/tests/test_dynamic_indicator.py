@@ -1320,3 +1320,85 @@ def test_per_average_divides_members_by_households() -> None:
 def test_now_asked_words() -> None:
     assert d.NOW_ASKED.search("2015년 대비 지금 얼마나 늘었어")
     assert not d.NOW_ASKED.search("2015년 대비 2020년")
+
+
+# ---- 같은 표에서 분자 찾기: 분자 말의 낱말이 모두 칸으로 설명될 때만 계산 ------------------------
+
+NATION = [
+    d.Dim(0, "항목", {"T1": "등록외국인"}),
+    d.Dim(1, "행정구역별", {"00": "전국", "11": "서울특별시"}),
+    d.Dim(2, "국적별", {"0": "계", "1": "베트남", "2": "중국", "3": "태국"}),
+]
+
+
+@pytest.fixture
+def nation(computed, fake_table, monkeypatch):
+    from app.services import ask_session
+
+    fake_table["tables"]["NAT"] = (NATION, 1, "시도")
+    fake_table["units"]["NAT"] = ("명", True)
+
+    async def build_nat(tbl_id, org_id, question, parsed, step, forced=None, slots=None, **k):
+        return d.build("NAT", question, parsed, forced, slots)
+
+    async def answer(q, trace, question):
+        result = {"status": "ok", "value": 7, "unit": "명", "year": 2024}
+        return {"status": "ok", "result": result, "parsed": q}
+
+    monkeypatch.setattr(d, "_build", build_nat)
+    monkeypatch.setattr(qa, "answer", answer)
+    spec = {"method": "lookup", "sources": [{"table": "NAT"}]}
+    monkeypatch.setattr(indicators, "spec", lambda n: spec)
+    q = {**BASE, "regions": ["전국"], "year": 2024, "indicator": None}
+
+    def run(phrase, **k):
+        trace: dict = {}
+        got = asyncio.run(
+            ask_session._same_table_side(phrase, "등록 외국인", q, "value", trace, **k)
+        )
+        return got, trace["cross_sides"][-1]
+
+    return run
+
+
+@pytest.mark.parametrize("phrase", ["베트남 사람", "태국 국적자", "중국인", "베트남 출신"])
+def test_same_table_counts_when_every_word_is_a_cell(nation, phrase) -> None:
+    got, rec = nation(phrase)
+    assert got and got["value"] == 7 and got["indicator"] == phrase
+    assert rec["status"] == "ok" and rec["leftover"] == [] and rec["same_table"] == "NAT"
+
+
+@pytest.mark.parametrize(
+    "phrase, left",
+    [("태국 출신 결혼이민자", "결혼이민자"), ("중국 유학생", "유학생"), ("태국 근로자", "근로자")],
+)
+def test_same_table_blocks_word_without_cell(nation, phrase, left) -> None:
+    # 국적 칸 하나만 맞고 대상을 좁히는 말이 남으면 그 나라 전체를 답하지 않는다 → 표 찾기로
+    got, rec = nation(phrase)
+    assert got is None
+    assert rec["status"] == "uncovered" and rec["leftover"] == [left]
+    assert rec["cells"] and rec["why"] == f"질문의 조건 '{left}'을 표의 칸에 반영할 수 없음"
+    assert rec["options"]["국적별"] == ["계", "베트남", "중국", "태국"]
+    assert "행정구역별" not in rec["options"]  # 지역 분류는 빼고
+    assert set(rec) == {"phrase", "same_table", "status", "leftover", "cells", "why", "options"}
+
+
+def test_same_table_blocks_target_alone(nation) -> None:
+    got, rec = nation("결혼이민자")
+    assert got is None and rec["status"] in ("uncovered", "no_cell") and rec["leftover"]
+
+
+def test_same_table_judges_only_given_phrase(nation) -> None:
+    # 다시 쓴 말로 같은 표만 다시 부를 수 있다 (원래 질문의 낱말을 보태지 않는다)
+    got, rec = nation("베트남", table="NAT")
+    assert got and rec["status"] == "ok"
+
+
+def test_leftover_words_drop_fillers_only() -> None:
+    from app.services import ask_session
+
+    assert ask_session._leftover_words("베트남 출신 결혼이민자") == ["베트남", "결혼이민자"]
+    assert ask_session._leftover_words("베트남 국적자 수") == ["베트남"]
+    # 이동 말이 있을 때만 '학교 가는'이 통학 (칸 고르기 공통의 table_words와 같다)
+    assert ask_session._leftover_words("버스 타고 학교 가는 사람") == ["버스", "타고", "통학"]
+    assert ask_session._leftover_words("고등학교 다니는 학생") == ["고등학교", "다니는", "학생"]

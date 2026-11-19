@@ -582,6 +582,7 @@ def alternative_by_words(reply: str, answers: list[dict]) -> str | None:
         return "0"
     words = [REPLY_TAIL.sub("", w) for w in re.findall(r"[가-힣]{2,}", reply)]
     words = [w for w in words if len(w) >= 2 and w not in {"포함", "포함해서", "기준"}]
+
     def text(a: dict) -> str:  # 답 글과 결과의 주석 (귀화자 · 자녀 포함 같은 기준)
         notes = " ".join(map(str, ((a.get("result") or {}).get("notes") or [])))
         return f"{a.get('answer') or ''} {notes}"
@@ -1603,33 +1604,88 @@ async def _dynamic_side(
     return {**got, "indicator": phrase}
 
 
+# 같은 표 계산에서 칸과 맞출 필요가 없는 꾸밈말 ("베트남 사람" · "베트남 국적자" · "베트남 출신").
+# 대상을 좁히는 말(결혼이민자 · 유학생 · 근로자)이나 애매한 말은 넣지 않는다
+# (넣으면 좁혀 물은 값 대신 넓은 값을 답한다)
+SAME_TABLE_FILLER = {"사람", "수", "명", "출신", "국적", "국적자", "온"}
+SAME_TABLE_OPTIONS_MAX = 50  # 실패 기록에 남기는 분류당 칸 이름 수
+
+
+def _leftover_words(phrase: str) -> list[str]:
+    """같은 표의 칸으로 모두 설명돼야 하는 분자 말의 낱말 (꾸밈말 · 1글자 낱말 뺌).
+    칸 고르기 공통의 바꾸기(table_words: 이동 말이 있을 때 '학교 가는' → 통학, 출근 → 통근)만
+    거치고, 이 경로만의 바꿔 말하기는 하지 않는다"""
+    if dynamic_indicator.MOVE_CONTEXT.search(phrase):  # table_words와 같은 조건 · 같은 바꾸기
+        phrase = dynamic_indicator.SCHOOL_GOING.sub("통학", phrase)
+    words = [w for w in phrase.split() if len(w) >= 2 and w not in SAME_TABLE_FILLER]
+    return [dynamic_indicator.table_words(w) for w in words]
+
+
+def _cell_options(tbl_id: str) -> dict[str, list[str]]:
+    """표가 가진 칸 이름 {분류 이름: [칸 이름, …]} (지역 분류 빼고, 분류당 최대 50개)"""
+    dims, region_dim, _ = dynamic_indicator.schema(tbl_id)
+    return {
+        d.name: list(d.codes.values())[:SAME_TABLE_OPTIONS_MAX] for d in dims if d.no != region_dim
+    }
+
+
 async def _same_table_side(
-    phrase: str, known: str, parsed: dict, kind: str, trace: dict
+    phrase: str, known: str, parsed: dict, kind: str, trace: dict, table: str | None = None
 ) -> dict | None:
     """사전에 없는 쪽을 먼저 다른 쪽 사전 지표의 표 안에서 찾는다 ("등록 외국인 중에 베트남 사람":
-    등록외국인 표의 국적 칸). 같은 표라 기준이 같다. 통계표 찾기를 부르지 않는다. 못 하면 None"""
-    spec = indicators.spec(known)
-    if not spec or spec.get("method") != "lookup":
-        return None
+    등록외국인 표의 국적 칸). 같은 표라 기준이 같다. 통계표 찾기를 부르지 않는다. 못 하면 None
+
+    분자 말의 낱말이 모두 고른 칸으로 설명될 때만 계산한다 ("베트남 출신 결혼이민자"에서 결혼이민자
+    칸이 없으면 베트남 전체를 답하지 않는다). 판단은 phrase 하나로만 한다 (에이전트가 말을 다시
+    써서 부를 수 있게). table: 이 표만 본다
+    성공 · 실패 모두 trace["cross_sides"]에 같은 모양으로 남긴다:
+      phrase · same_table · status(ok / uncovered / no_cell) · leftover · cells · why · options"""
+    if table:
+        tables = [table]
+    else:
+        spec = indicators.spec(known)
+        if not spec or spec.get("method") != "lookup":
+            return None
+        tables = [src["table"] for src in spec.get("sources") or []]
     sub_q = _side_question(parsed, phrase, kind)
     sub_parsed = {**parsed, "type": kind, "indicator": phrase, "term": phrase, "dynamic_spec": None}
     if kind == "rank":
         sub_parsed["top"] = None
-    step: dict = {"dynamic": []}
-    for src in spec.get("sources") or []:
+    items = _leftover_words(phrase)
+    for tbl_id in tables:
+        step: dict = {"dynamic": []}
+        report: dict = {}
+        # check_target · cells_by_llm은 넣지 않는다: 말 전체를 칸 이름과 맞추면 맞는 질문도 막고,
+        # cells_by_llm이 있으면 낱말 검사를 건너뛴다
+        slots = {"conditions": {"items": items}, "report": report}
+        record = {"phrase": phrase, "same_table": tbl_id}
         try:
-            part, _ = await dynamic_indicator._try(src["table"], None, sub_q, sub_parsed, step, {})
+            part, _ = await dynamic_indicator._try(tbl_id, None, sub_q, sub_parsed, step, {}, slots)
         except Exception:
-            logger.exception("두 값 나누기: 같은 표에서 찾기 실패 (%s)", src.get("table"))
+            logger.exception("두 값 나누기: 같은 표에서 찾기 실패 (%s)", tbl_id)
             continue
         got = (part or {}).get("result") or {}
-        if (part or {}).get("status") == "ok" and (got.get("unit") or "") in (
-            cross_indicator.COUNT_UNITS
-        ):
-            trace.setdefault("cross_sides", []).append(
-                {"phrase": phrase, "same_table": src["table"], "status": "ok"}
-            )
-            return {**got, "indicator": phrase}
+        tried = step["dynamic"][-1] if step["dynamic"] else {}
+        why = tried.get("skip")
+        if (part or {}).get("status") == "ok" and not why:
+            if (got.get("unit") or "") in cross_indicator.COUNT_UNITS:
+                trace.setdefault("cross_sides", []).append(
+                    {**record, "status": "ok", "leftover": [], "cells": report.get("cells") or [],
+                     "why": None, "options": {}}
+                )  # fmt: skip
+                return {**got, "indicator": phrase}
+            why = f"건수 · 인원이 아닌 값 ({got.get('unit')})"
+        leftover = report.get("leftover") or []
+        status = "uncovered" if leftover and report.get("cells") else "no_cell"
+        try:
+            options = await run_in_threadpool(_cell_options, tbl_id)
+        except Exception:
+            logger.exception("두 값 나누기: 표의 칸 이름 읽기 실패 (%s)", tbl_id)
+            options = {}
+        trace.setdefault("cross_sides", []).append(
+            {**record, "status": status, "leftover": leftover, "cells": report.get("cells") or [],
+             "why": why or "질문의 말과 맞는 칸이 없음", "options": options}
+        )  # fmt: skip
     return None
 
 
