@@ -92,6 +92,7 @@ describe("처리 흐름", () => {
     expect(flowLabel("tables").text).toBe(statusLabel("tables").text); // /ask status 는 같은 이름
     expect(flowLabel("못 함").tone).toBe("bad");
     expect(flowLabel("HCX").tone).toBe("plain");
+    expect(flowLabel("not_count")).toEqual({ text: "건수가 아닌 값", tone: "bad" });
   });
   it("최종 답이 실패면 마지막으로 막힌 단계", () => {
     const flow = [

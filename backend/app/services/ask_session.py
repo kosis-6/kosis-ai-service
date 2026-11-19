@@ -1612,6 +1612,8 @@ async def _dynamic_side(
 # (넣으면 좁혀 물은 값 대신 넓은 값을 답한다)
 SAME_TABLE_FILLER = {"사람", "수", "명", "출신", "국적", "국적자", "온"}
 SAME_TABLE_OPTIONS_MAX = 50  # 실패 기록에 남기는 분류당 칸 이름 수
+# 같은 표 계산 기록(trace["cross_sides"])의 status. 에이전트가 이 값으로 다음 행동을 고른다
+SAME_TABLE_STATUSES = ("ok", "uncovered", "no_cell", "not_count")
 
 
 def _leftover_words(phrase: str) -> list[str]:
@@ -1642,7 +1644,15 @@ async def _same_table_side(
     칸이 없으면 베트남 전체를 답하지 않는다). 판단은 phrase 하나로만 한다 (에이전트가 말을 다시
     써서 부를 수 있게). table: 이 표만 본다
     성공 · 실패 모두 trace["cross_sides"]에 같은 모양으로 남긴다:
-      phrase · same_table · status(ok / uncovered / no_cell) · leftover · cells · why · options"""
+      phrase · same_table · status · leftover · cells · why · unit · options
+    status (SAME_TABLE_STATUSES):
+      ok         계산했고 건수 · 인원이라 나누기에 쓴다
+      uncovered  칸은 골랐지만 칸으로 설명되지 않은 낱말이 남음 (leftover)
+                 → 말을 표의 낱말로 다시 쓰기
+      no_cell    질문의 말과 맞는 칸을 고르지 못함 → 말을 바꾸거나 다른 표
+      not_count  칸은 맞게 골라 계산했지만 값이 건수 · 인원이 아님 (%, 세, 명당 …).
+                 비율을 다시 나누면 엉뚱한 값이 된다 → 건수가 있는 다른 표, 또는 비율을 물었으면
+                 그 값을 그대로 답하기 (말을 다시 써도 같은 칸이라 같은 이유로 실패한다)"""
     if table:
         tables = [table]
     else:
@@ -1670,18 +1680,23 @@ async def _same_table_side(
         got = (part or {}).get("result") or {}
         tried = step["dynamic"][-1] if step["dynamic"] else {}
         why = tried.get("skip")
-        if (part or {}).get("status") == "ok" and not why:
-            if (got.get("unit") or "") in cross_indicator.COUNT_UNITS:
-                trace.setdefault("cross_sides", []).append(
-                    {**record, "status": "ok", "leftover": [], "cells": report.get("cells") or [],
-                     "why": None, "options": {}}
-                )  # fmt: skip
-                cells = report.get("cells")
-                flow.add("같은 표에서 찾기", "ok", f"'{phrase}' 표={tbl_id} 칸={cells}")
-                return {**got, "indicator": phrase}
-            why = f"건수 · 인원이 아닌 값 ({got.get('unit')})"
+        unit = got.get("unit") or None
+        computed = (part or {}).get("status") == "ok" and not why
+        if computed and (unit or "") in cross_indicator.COUNT_UNITS:
+            trace.setdefault("cross_sides", []).append(
+                {**record, "status": "ok", "leftover": [], "cells": report.get("cells") or [],
+                 "why": None, "unit": unit, "options": {}}
+            )  # fmt: skip
+            cells = report.get("cells")
+            flow.add("같은 표에서 찾기", "ok", f"'{phrase}' 표={tbl_id} 칸={cells}")
+            return {**got, "indicator": phrase}
         leftover = report.get("leftover") or []
-        status = "uncovered" if leftover and report.get("cells") else "no_cell"
+        if computed:  # 칸은 맞았고 계산도 됐지만 나누기에 쓸 수 없는 단위
+            status, why = "not_count", f"건수 · 인원이 아닌 값 ({unit})"
+        elif leftover and report.get("cells"):
+            status = "uncovered"
+        else:
+            status = "no_cell"
         try:
             options = await run_in_threadpool(_cell_options, tbl_id)
         except Exception:
@@ -1689,7 +1704,7 @@ async def _same_table_side(
             options = {}
         trace.setdefault("cross_sides", []).append(
             {**record, "status": status, "leftover": leftover, "cells": report.get("cells") or [],
-             "why": why or "질문의 말과 맞는 칸이 없음", "options": options}
+             "why": why or "질문의 말과 맞는 칸이 없음", "unit": unit, "options": options}
         )  # fmt: skip
         flow.add("같은 표에서 찾기", status, f"'{phrase}' 표={tbl_id} {why or ''}")
     return None

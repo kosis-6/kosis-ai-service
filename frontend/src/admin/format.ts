@@ -84,6 +84,7 @@ const FLOW_RESULT: Record<string, Label> = {
   "못 함": { text: "못 함", tone: "bad" },
   uncovered: { text: "남은 낱말", tone: "bad" },
   no_cell: { text: "맞는 칸 없음", tone: "bad" },
+  not_count: { text: "건수가 아닌 값", tone: "bad" },
   "-": { text: "결과 없음", tone: "plain" },
   unknown_indicator: { text: "사전에 없는 지표", tone: "bad" },
 };

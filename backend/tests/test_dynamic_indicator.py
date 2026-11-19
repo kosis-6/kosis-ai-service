@@ -1361,11 +1361,15 @@ def nation(computed, fake_table, monkeypatch):
     return run
 
 
+SAME_TABLE_KEYS = {"phrase", "same_table", "status", "leftover", "cells", "why", "unit", "options"}
+
+
 @pytest.mark.parametrize("phrase", ["베트남 사람", "태국 국적자", "중국인", "베트남 출신"])
 def test_same_table_counts_when_every_word_is_a_cell(nation, phrase) -> None:
     got, rec = nation(phrase)
     assert got and got["value"] == 7 and got["indicator"] == phrase
     assert rec["status"] == "ok" and rec["leftover"] == [] and rec["same_table"] == "NAT"
+    assert set(rec) == SAME_TABLE_KEYS and rec["unit"] == "명"
 
 
 @pytest.mark.parametrize(
@@ -1380,7 +1384,7 @@ def test_same_table_blocks_word_without_cell(nation, phrase, left) -> None:
     assert rec["cells"] and rec["why"] == f"질문의 조건 '{left}'을 표의 칸에 반영할 수 없음"
     assert rec["options"]["국적별"] == ["계", "베트남", "중국", "태국"]
     assert "행정구역별" not in rec["options"]  # 지역 분류는 빼고
-    assert set(rec) == {"phrase", "same_table", "status", "leftover", "cells", "why", "options"}
+    assert set(rec) == SAME_TABLE_KEYS
 
 
 def test_same_table_blocks_target_alone(nation) -> None:
@@ -1402,3 +1406,20 @@ def test_leftover_words_drop_fillers_only() -> None:
     # 이동 말이 있을 때만 '학교 가는'이 통학 (칸 고르기 공통의 table_words와 같다)
     assert ask_session._leftover_words("버스 타고 학교 가는 사람") == ["버스", "타고", "통학"]
     assert ask_session._leftover_words("고등학교 다니는 학생") == ["고등학교", "다니는", "학생"]
+
+
+def test_same_table_unit_not_count_is_its_own_status(nation, monkeypatch) -> None:
+    # 칸은 맞게 골라 계산했지만 값이 비율(%)이면 나누기에 쓸 수 없다. 칸 문제(no_cell)가 아니라
+    # 단위 문제라 따로 적는다 (말을 다시 써도 같은 칸이 골라져 같은 이유로 실패한다)
+    from app.services import ask_session
+
+    async def percent(q, trace, question):
+        result = {"status": "ok", "value": 12.5, "unit": "%", "year": 2024}
+        return {"status": "ok", "result": result, "parsed": q}
+
+    monkeypatch.setattr(qa, "answer", percent)
+    got, rec = nation("베트남 사람")
+    assert got is None
+    assert rec["status"] == "not_count" and rec["status"] in ask_session.SAME_TABLE_STATUSES
+    assert rec["cells"] == ["베트남"] and rec["leftover"] == [] and rec["unit"] == "%"
+    assert rec["why"] == "건수 · 인원이 아닌 값 (%)" and set(rec) == SAME_TABLE_KEYS
