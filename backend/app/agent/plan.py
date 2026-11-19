@@ -14,7 +14,7 @@ from datetime import date
 from typing import Any
 
 from app.prompts.plan import SCHEMA, SYSTEM, SYSTEM_GEMMA
-from app.services import search, search_llm, timeref
+from app.services import llm_calls, search, search_llm, timeref
 from app.services import slots as slot_parser
 
 MODEL = "HCX-007"
@@ -24,6 +24,7 @@ MAX_TOKENS = 512
 Plan = dict[str, Any]
 
 
+@llm_calls.staged("plan")
 async def call(question: str) -> Plan:
     """계획 LLM 호출 (보정 전). 실패하면 HcxError가 그대로 올라간다"""
 

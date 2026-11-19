@@ -23,7 +23,7 @@ from typing import Any
 
 from app.core.config import get_settings
 from app.prompts import alternative as prompt
-from app.services import llm_json, search_llm
+from app.services import llm_calls, llm_json, search_llm
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +124,7 @@ def parse(raw: str) -> dict | None:
     return llm_json.loads(raw)[0]
 
 
+@llm_calls.staged("alternative")
 async def judge(question: str, failures: list[str], alts: list[dict]) -> tuple[dict | None, str]:
     """LLM 1회 → (판단, 답한 LLM)"""
     ids = [a["id"] for a in alts]

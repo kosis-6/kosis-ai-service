@@ -32,6 +32,7 @@ from typing import Any
 import httpx
 
 from app.core.config import get_settings
+from app.services import llm_calls
 from app.services.hcx_client import ChatResult, HcxClient, HcxError
 
 logger = logging.getLogger(__name__)
@@ -159,15 +160,37 @@ class GemmaClient:
         if not self.base_url:
             raise HcxError("gemma_not_configured", "GEMMA_BASE_URL 이 없습니다")
         body = to_openai_body(self.model, messages, **options)
+        start, attempts, waited = time.perf_counter(), 0, 0.0
+
+        def log(usage: dict | None = None, error: Exception | None = None) -> None:
+            llm_calls.record(
+                llm="gemma",
+                model=self.model,
+                ms=(time.perf_counter() - start) * 1000,
+                options=options,
+                attempts=attempts,
+                waited_ms=waited * 1000,
+                usage=usage,
+                error=error,
+            )
+
         for wait in (*self.retry_waits, None):
+            attempts += 1
             try:
-                return await self._chat_once(body)
+                result = await self._chat_once(body)
             except HcxError as e:
                 if not _retryable(e) or wait is None:
+                    log(error=e)
                     raise
             except httpx.TransportError as e:  # 연결 실패 · 시간 초과
                 if wait is None:
-                    raise HcxError("gemma_unreachable", f"{type(e).__name__}: {e}") from e
+                    error = HcxError("gemma_unreachable", f"{type(e).__name__}: {e}")
+                    log(error=error)
+                    raise error from e
+            else:
+                log(usage=result.usage)
+                return result
+            waited += wait
             await asyncio.sleep(wait)
 
     async def _chat_once(self, body: dict[str, Any]) -> ChatResult:

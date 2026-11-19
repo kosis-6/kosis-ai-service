@@ -63,6 +63,7 @@ from app.services import (
     dynamic_indicator,
     flow,
     indicators,
+    llm_calls,
     qa,
     question_clarify,
     table_guide,
@@ -905,6 +906,7 @@ def indicator_names(conditions: dict) -> list[str]:
     return names
 
 
+@llm_calls.staged("follow_up")
 async def _chat(prompt: str, system: str) -> str:
     """변경 추출용 HCX 호출. 짧은 JSON만 받으므로 추론을 끄고 응답 길이를 줄인다.
     HCX 한도(분당 6만 토큰)는 요청마다 응답 최대 길이만큼을 미리 잡는다. 질문 해석과 같은 설정
@@ -1941,6 +1943,7 @@ async def handle(
     session_id, question, chart, request_type, applied(적용한 조건), notice(알림)"""
     sid = session_id or new_id()
     steps = flow.start()  # 이 턴의 처리 흐름 (요청 기록 · 평가 CSV에 남긴다)
+    calls = llm_calls.start()  # 이 턴의 LLM 호출 (단계 · 토큰 · 시간 · 다시 시도)
     async with _lock(sid):
         state, expired = await _load(sid)
         moved = state is not None and not same_owner(state, user_id)
@@ -1975,6 +1978,7 @@ async def handle(
         first_line = (res.get("answer") or "").strip().split("\n")[0][:80]
         flow.add("최종 답", res.get("status"), f"{res.get('request_type') or ''} · {first_line}")
         res.setdefault("trace", {})["flow"] = list(steps)  # 턴 기록 · 요청 기록 · 평가 CSV
+        res["trace"]["llm_calls"] = list(calls)
         await _save(sid, after, res, state, question, user_id)
     return res
 

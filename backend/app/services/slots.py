@@ -25,7 +25,7 @@ from datetime import date
 from typing import Any
 
 from app.prompts.search import SLOT_SYSTEM, SLOT_SYSTEM_GEMMA
-from app.services import agegroup, search_llm, synonyms, timeref
+from app.services import agegroup, llm_calls, search_llm, synonyms, timeref
 from app.services.hcx_client import HcxError
 
 MODEL = "HCX-007"
@@ -156,6 +156,7 @@ def empty_slots(question: str) -> dict[str, Any]:
     }
 
 
+@llm_calls.staged("slots")
 async def _chat(question: str) -> str:
 
     def request(llm: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
