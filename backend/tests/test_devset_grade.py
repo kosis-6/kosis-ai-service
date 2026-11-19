@@ -287,3 +287,26 @@ def test_number_position_after_link_is_kept():
     text = "링크 https://kosis.kr/statHtml/statHtml.do?orgId=101 차이 8.0%p"
     nums = dg.numbers(text)
     assert dg.find_number(dg.Expect("차이", nums[-1], True), nums, text)
+
+
+def test_golden_refusal_type_reads_code():
+    assert dg.golden_refusal_type("그해에 없던 지역 (region_not_in_year)") == "그해에 없던 지역"
+    label = "원인·예측·평가 질문 (prediction_question)"
+    assert dg.golden_refusal_type(label) == "원인·예측·평가 질문"
+    assert dg.golden_refusal_type("원인·예측 질문") == "원인·예측·평가 질문"  # 옛 표기
+    assert dg.golden_refusal_type("없는 연도") == "없는 연도"
+
+
+def test_refusal_type_matches_by_definition_group():
+    alt = {"result": {"available_years": [2012, 2025]}, "answer": "2012년부터 볼 수 있습니다."}
+    want = "그해에 없던 지역 (region_not_in_year)"
+    r = row(**{"기대 행동": "답변 불가", "답변 불가 유형": want})
+    assert dg.grade(r, {"status": "region_not_in_year", **alt}).correct == "O"
+    assert dg.grade(r, {"status": "out_of_range", **alt}).reason == "행동 (불가 유형 오류)"
+    # 같은 유형의 다른 코드는 맞음
+    want = "원인·예측·평가 질문 (prediction_question)"
+    r = row(**{"기대 행동": "답변 불가", "답변 불가 유형": want})
+    assert dg.grade(r, {"status": "causal_question", **alt}).correct == "O"
+    r = row(**{"기대 행동": "답변 불가", "답변 불가 유형": "통계 질문이 아님 (chat)"})
+    chat = {"status": "chat", "answer": "안녕하세요. 이런 질문을 해 주세요: …"}
+    assert dg.grade(r, chat).correct == "O"
