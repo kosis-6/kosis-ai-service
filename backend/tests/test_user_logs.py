@@ -349,3 +349,21 @@ def test_values_the_database_cannot_take_are_refused(admin: TestClient, calls: d
     ):
         assert admin.get(path, params=params).status_code == 422, (path, params)
     assert calls == {}
+
+
+def test_session_detail_shows_flow(admin: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    # 턴마다 처리 흐름(거친 단계와 순서). 흐름을 기록하기 전의 턴은 null
+    steps = [
+        {"stage": "질문 이해", "result": "HCX", "detail": "지표=총인구 지역=서울"},
+        {"stage": "사전 계산", "result": "ok", "detail": "총인구 값=1명 표=DT_1B040A3"},
+        {"stage": "최종 답", "result": "ok", "detail": "new · 2024년 총인구는 …"},
+    ]
+
+    async def session_turns(session, session_id):
+        old = {**TURN, "id": 6, "turn_no": 1, "flow": None}
+        return [old, {**TURN, "flow": steps}]
+
+    monkeypatch.setattr(user_logs, "session_turns", session_turns)
+    turns = admin.get("/admin/logs/sessions/A_1").json()["turns"]
+    assert turns[0]["flow"] is None
+    assert [s["stage"] for s in turns[1]["flow"]] == ["질문 이해", "사전 계산", "최종 답"]

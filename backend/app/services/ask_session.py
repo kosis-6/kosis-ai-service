@@ -1957,10 +1957,10 @@ async def handle(
         res["session_id"] = sid
         res["applied"] = applied(after.get("conditions") or {}, after.get("sources") or {})
         res["notice"] = notice
+        first_line = (res.get("answer") or "").strip().split("\n")[0][:80]
+        flow.add("최종 답", res.get("status"), f"{res.get('request_type') or ''} · {first_line}")
+        res.setdefault("trace", {})["flow"] = list(steps)  # 턴 기록 · 요청 기록 · 평가 CSV
         await _save(sid, after, res, state, question, user_id)
-    first_line = (res.get("answer") or "").strip().split("\n")[0][:80]
-    flow.add("최종 답", res.get("status"), f"{res.get('request_type') or ''} · {first_line}")
-    res.setdefault("trace", {})["flow"] = list(steps)
     return res
 
 
@@ -2073,10 +2073,10 @@ async def log_turn(
             text(
                 "insert into app.chat_turns (session_id, user_id, turn_no, message, request_type,"
                 " status, conditions_before, conditions_after, sources, tbl_id, recomputed, answer,"
-                " response)"
+                " response, flow)"
                 " values (:session_id, :user_id, :turn_no, :message, :request_type, :status,"
                 " cast(:before as jsonb), cast(:after as jsonb), cast(:sources as jsonb),"
-                " :tbl_id, :recomputed, :answer, cast(:response as jsonb))"
+                " :tbl_id, :recomputed, :answer, cast(:response as jsonb), cast(:flow as jsonb))"
             ),
             {
                 "session_id": session_id,
@@ -2097,6 +2097,10 @@ async def log_turn(
                 "answer": mask(lead(res.get("answer") or "")),
                 "response": json.dumps(
                     redact(conversations.replay(res)), ensure_ascii=False, default=str
+                ),
+                # 처리 흐름 (관리자 화면의 대화 기록에서 턴마다 본다). 질문 · 답 글처럼 가린다
+                "flow": json.dumps(
+                    redact((res.get("trace") or {}).get("flow")), ensure_ascii=False, default=str
                 ),
             },
         )

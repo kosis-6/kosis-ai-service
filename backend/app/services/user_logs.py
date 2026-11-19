@@ -190,7 +190,8 @@ async def session_turns(session: AsyncSession, session_id: str) -> list[dict[str
     return redact(
         await _rows(
             session,
-            f"{TURN_SELECT}, t.conditions_before, t.conditions_after, t.sources{TURN_FROM}"
+            f"{TURN_SELECT}, t.conditions_before, t.conditions_after, t.sources, t.flow"
+            f"{TURN_FROM}"
             " where t.session_id = :session_id order by t.created_at, t.id",
             {"session_id": session_id},
         )

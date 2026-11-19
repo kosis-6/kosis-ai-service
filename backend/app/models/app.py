@@ -123,6 +123,8 @@ class ChatTurn(Base):
     answer: Mapped[str | None]
     # 화면에 보여 준 답 전체 (예전 대화를 다시 열 때 그대로 보여 준다, 마이그레이션 0019)
     response: Mapped[dict | None] = mapped_column(JSONB)
+    # 이 턴의 처리 흐름: 거친 단계와 순서 (app/services/flow.py, 마이그레이션 0021)
+    flow: Mapped[list | None] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
