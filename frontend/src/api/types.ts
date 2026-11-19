@@ -6,7 +6,6 @@ type Schemas = components["schemas"];
 export type Token = Schemas["Token"];
 export type UserRead = Schemas["UserRead"];
 export type EmailCodeSent = Schemas["EmailCodeSent"];
-export type SearchRequest = Schemas["SearchRequest"];
 export type AskRequest = Schemas["AskRequest"];
 // tables 는 서버 스키마가 자유 형식(dict)이라 화면이 읽는 모양을 적는다
 //   수치로 답함        { status: "ok", recommendations }      (답에 쓴 표)

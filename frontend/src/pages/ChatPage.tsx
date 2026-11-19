@@ -4,8 +4,6 @@
 // 대화 id 를 이어 보내 "서울도 같이", "막대그래프로"처럼 바뀐 것만 말해도 된다 (서버 ask_session.py)
 // 로그인 유저의 대화는 서버에 남는다 (chat/conversations.ts): 주소가 /chat/c/{대화 id} 로 바뀌어
 // 새로고침해도 그 대화를 다시 그리고, 사이드바의 지난 대화에서 다시 열어 이어 물을 수 있다
-// 목업 모드(?mock=1)는 chat/mockAsk.ts 가 응답을 만들어 서버·HCX 를 부르지 않는다 (기록도 남지 않는다)
-// 개발 도구(목업 전환)는 ?mock=1 로 켰을 때만 보인다
 import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import type { AskResponse, ConversationRead, Parsed, Recommendation } from "../api/types";
@@ -17,7 +15,7 @@ import { EXAMPLE_CATEGORIES, EXAMPLES } from "../chat/examples";
 import { History } from "../chat/History";
 import { deleteConversation, getConversation, HistoryError, listConversations, replayed } from "../chat/conversations";
 import { AltCard } from "../chat/Reply";
-import { DevTools, Sheet } from "../chat/Sheet";
+import { Sheet } from "../chat/Sheet";
 import { Brand } from "../components/Brand";
 import { Icon } from "../components/Icon";
 import { usePage } from "../components/usePage";
@@ -33,28 +31,7 @@ type NewMessage = Message extends infer M ? (M extends Message ? Omit<M, "id"> :
 type SheetState =
   | { kind: "others"; recs: Recommendation[]; parsed: Parsed }
   | { kind: "examples" }
-  | { kind: "history" }
-  | { kind: "dev" };
-
-// 보기 편의용 설정이라 저장에 실패해도 동작한다
-function load(key: string): string | null {
-  try {
-    return localStorage.getItem(key);
-  } catch {
-    return null;
-  }
-}
-function save(key: string, on: boolean): void {
-  try {
-    localStorage.setItem(key, on ? "1" : "0");
-  } catch {
-    /* 저장 못 해도 화면은 동작 */
-  }
-}
-function initial(name: "mock"): boolean {
-  const params = new URLSearchParams(location.search);
-  return params.has(name) ? params.get(name) !== "0" : load(`chat.${name}`) === "1";
-}
+  | { kind: "history" };
 
 const TEXT = {
   title: "인구 통계 안내",
@@ -80,11 +57,10 @@ export function ChatPage() {
   const [opening, setOpening] = useState(false); // 지난 대화를 불러오는 중
   const [question, setQuestion] = useState("");
   const [sheet, setSheet] = useState<SheetState | null>(null);
-  const [mock, setMock] = useState(() => initial("mock"));
   const [history, setHistory] = useState<ConversationRead[] | null>(null);
 
-  // 서버에 남는 대화인가: 로그인 유저의 실제 답만 남는다 (손님·목업은 남지 않는다)
-  const saved = user !== null && !mock;
+  // 서버에 남는 대화인가: 로그인 유저의 대화만 남는다 (손님 대화는 남지 않는다)
+  const saved = user !== null;
 
   const sessionId = useRef<string | null>(null); // 화면에 보이는 대화의 id
   // 보이는 대화가 바뀔 때마다 1 올린다. 늦게 온 답·기록이 지금 대화에 붙지 않게 한다
@@ -96,7 +72,6 @@ export function ChatPage() {
 
   const inChat = messages.length > 0 || opening;
 
-  useEffect(() => save("chat.mock", mock), [mock]);
   // 대화 중에만 보이는 버튼(모바일의 "새 대화")을 CSS 가 body.in-chat 으로 가린다
   useEffect(() => {
     document.body.classList.toggle("in-chat", inChat);
@@ -199,10 +174,7 @@ export function ChatPage() {
       // 대화 id 를 이어 보낸다. "새 대화"를 누르면 조건이 초기화된다.
       // 통계표 선택지 버튼으로 고른 값은 selections 로 함께 보낸다
       const has = selections && Object.keys(selections).length > 0;
-      const data = await ask(
-        { question: q, session_id: sessionId.current, ...(has ? { selections } : {}) },
-        mock,
-      );
+      const data = await ask({ question: q, session_id: sessionId.current, ...(has ? { selections } : {}) });
       if (v !== view.current) {
         // 기다리는 사이 다른 대화로 옮겼다: 답은 서버 기록에만 남는다
         void refreshHistory();
@@ -340,11 +312,6 @@ export function ChatPage() {
           </div>
           <Brand className="only-narrow" />
           <div className="head-actions">
-            {mock && (
-              <button type="button" className="dev-badge" onClick={() => setSheet({ kind: "dev" })}>
-                목업 모드
-              </button>
-            )}
             <p className="source only-wide">KOSIS 데이터 기반</p>
             <button type="button" className="btn quiet head-btn only-narrow in-chat-only" onClick={reset}>
               새 대화
@@ -521,19 +488,6 @@ export function ChatPage() {
       {sheet?.kind === "history" && (
         <Sheet title="지난 대화" narrow onClose={() => setSheet(null)}>
           <History items={history} current={routeId} onOpen={openFromList} onDelete={(id) => void remove(id)} />
-        </Sheet>
-      )}
-      {sheet?.kind === "dev" && (
-        <Sheet title="개발 도구" onClose={() => setSheet(null)}>
-          <DevTools
-            mock={mock}
-            onMock={() => {
-              // 목업과 실제 답이 한 대화에 섞이지 않게 새 대화로 시작한다
-              setMock((on) => !on);
-              setSheet(null);
-              reset();
-            }}
-          />
         </Sheet>
       )}
     </>

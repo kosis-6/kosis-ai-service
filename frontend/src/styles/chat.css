@@ -175,16 +175,6 @@ body[data-page="chat"] {
 .head-btn { height: 40px; }
 .source { color: var(--muted); font-size: 12px; line-height: 16px; white-space: pre; }
 .head-name { font-size: 13px; font-weight: 500; line-height: 20px; white-space: nowrap; }
-.dev-badge {
-  padding: 2px 8px;
-  border: 1px solid var(--accent-mid);
-  border-radius: 6px;
-  background: var(--accent-soft);
-  font-size: 12px;
-  font-weight: 500;
-  line-height: 16px;
-  white-space: nowrap;
-}
 
 /* ---- 대화 영역 ---- */
 .log {
@@ -615,7 +605,7 @@ button.pill:active { transform: scale(0.97); }
 .send:disabled { background: var(--accent-mid); cursor: default; }
 .composer-note { display: flex; flex-wrap: wrap; gap: 0 48px; color: var(--muted); font-size: 12px; line-height: 16px; }
 
-/* ---- 추가 상태 패널 (다른 후보·다른 질문 예시·개발 도구) ---- */
+/* ---- 추가 상태 패널 (다른 후보·다른 질문 예시·지난 대화) ---- */
 .sheet {
   width: min(800px, calc(100vw - 32px));
   max-height: min(85dvh, 760px);
@@ -647,17 +637,6 @@ button.pill:active { transform: scale(0.97); }
 .alt-card h3 { font-size: 16px; font-weight: 600; line-height: 24px; }
 .alt-card .btn { height: 40px; }
 .sheet-body > .btn.secondary { height: 52px; white-space: normal; }
-
-.dev-options {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 16px;
-  padding: 12px;
-  border-radius: 8px;
-  background: var(--accent-soft);
-}
-.dev-toggle { padding: 0; border: 0; background: none; font-size: 12px; font-weight: 500; line-height: 18px; white-space: pre; }
-.dev-note { color: var(--muted); font-size: 12px; line-height: 18px; }
 
 /* ---- 높이가 낮은 노트북: 첫 화면이 입력창 아래로 잘리지 않게 줄인다 ---- */
 @media (min-width: 861px) and (max-height: 860px) {
@@ -691,7 +670,6 @@ button.pill:active { transform: scale(0.97); }
   .head .logo { height: 36px; }
   /* 버튼이 늘어나면 서비스 이름을 줄여 겹치지 않게 한다 */
   .head .brand { flex: 0 1 auto; overflow: hidden; }
-  .head:has(.dev-badge:not([hidden])) .brand-text { display: none; }
   .head-actions { flex: none; gap: 4px; }
   .head-btn { height: 36px; padding: 0 12px; white-space: nowrap; }
   .log { padding: 20px; gap: 20px; }
