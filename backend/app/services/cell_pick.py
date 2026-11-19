@@ -20,7 +20,7 @@ from typing import Any
 
 from app.core.config import get_settings
 from app.prompts import cell_pick as prompt
-from app.services import llm_json, search_llm
+from app.services import llm_calls, llm_json, search_llm
 
 logger = logging.getLogger(__name__)
 
@@ -143,6 +143,7 @@ def decide(raw: dict | None, groups: list[Group]) -> Picked | None:
     return out
 
 
+@llm_calls.staged("cell_pick")
 async def judge(
     question: str, understanding: dict, tbl_nm: str | None, groups: list[Group]
 ) -> tuple[dict | None, str]:

@@ -23,7 +23,7 @@ from typing import Any
 
 from app.core.config import get_settings
 from app.prompts.llm_pick import SYSTEM, SYSTEM_GEMMA, TOGETHER_SYSTEM
-from app.services import search_llm
+from app.services import llm_calls, search_llm
 
 
 def se_norm(value: str) -> str:
@@ -108,6 +108,7 @@ def pick_mode(answered: str | None = None) -> str:
     return get_settings().llm_pick_mode or ("pick_decided" if llm == "gemma" else "filter")
 
 
+@llm_calls.staged("llm_pick")
 async def _ask(question: str, cands: list[dict[str, Any]]) -> dict[str, Any] | None:
     user = f"질문: {question}\n\n후보:\n" + "\n".join(
         cand_text(t, i + 1) for i, t in enumerate(cands)
@@ -224,6 +225,7 @@ def siblings(picked: dict[str, Any], cands: list[dict[str, Any]]) -> list[dict[s
     ]
 
 
+@llm_calls.staged("together")
 async def _ask_together(
     question: str, picked: dict[str, Any], others: list[dict[str, Any]]
 ) -> list[str]:

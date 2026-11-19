@@ -13,13 +13,15 @@
 - 공식 지표가 있는 조합은 그 지표로 답한다 (예: 인구 1,000명당 혼인 건수 → 조혼인율. 분모가
   주민등록인구가 아니라 연앙인구라 직접 나누면 공표 값과 다르다)
 - 나누기 전에 확인한다: 두 값의 지역 · 연도 · 성별이 같은가, 추계 값이 아닌가.
-  하나라도 맞지 않으면 숫자를 내지 않는다
+  하나라도 맞지 않으면 숫자를 내지 않는다.
+  빼기(차이)는 두 값이 같은 기준의 조사인가도 본다: 다르면 빼지 않고 두 값을 나란히 (basis_gap)
 """
 
 import re
 from dataclasses import dataclass
 
-from app.services import analysis, indicators
+from app.core.stats_db import StatsNotLoadedError
+from app.services import analysis, catalog, indicators
 from app.services.josa import josa, ro
 
 # 재료로 쓸 수 있는 지표의 단위 (건수·인원). 비율·지수·나이는 나누지 않는다
@@ -456,6 +458,8 @@ def combine_parts(c: Cross, nums: list[dict], den: dict, q: dict) -> dict:
         return _fail(
             c, f"{josa(c.num_label, '과와')} {josa(c.den, '을를')} {c.verb} 수 없습니다: {why}."
         )
+    if gap := _diff_basis(c, num, den):
+        return _side_by_side(num, den, gap)
     out = _shell(c, num, den)
     if kind == "trend":
         dv = {s["year"]: s.get("value") for s in den.get("series") or []}
@@ -496,6 +500,8 @@ def combine_value(c: Cross, num: dict, den: dict, q: dict) -> dict:
         return _fail(
             c, f"{josa(c.num_label, '과와')} {josa(c.den, '을를')} {c.verb} 수 없습니다: {why}."
         )
+    if gap := _diff_basis(c, num, den):
+        return _side_by_side(num, den, gap)
     out = _shell(c, num, den)
     out.update(region=num.get("region"), year=num.get("year"), sex=num.get("sex"))
     out["value"] = _calc(c, num.get("value"), den.get("value"))
@@ -551,6 +557,41 @@ def _part_of_whole(c: Cross, num: dict, den: dict) -> str | None:
     ):
         return f"{c.num_label}이(가) {c.den}보다 커서 그 일부가 아닙니다"
     return None
+
+
+def basis_gap(a: dict, b: dict, label_a: str, label_b: str) -> str | None:
+    """두 결과의 값을 빼거나 크기를 견줘도 되는가 (답변 정책 '단위·조사 기준 차이': 기준이 다른
+    조사의 값은 직접 비교하지 않는다. 인구총조사 인구와 주민등록인구, 인구총조사 가구와 주민등록
+    세대). 안 되면 이유. 결과의 표(tbl_id)로 catalog.comparable을 본다.
+    나누기에는 쓰지 않는다: 다른 조사끼리 나누는 지표가 흔하다 (외국인주민 수 ÷ 주민등록인구).
+    조사를 알 수 없는 표거나 DB를 못 읽으면 막지 않는다"""
+    try:
+        got = catalog.comparable(a.get("tbl_id"), b.get("tbl_id"))
+    except StatsNotLoadedError:
+        return None
+    if got["comparable"] is not False:
+        return None
+    sa, sb = got["surveys"]
+    return f"{josa(label_a, '은는')} {sa}, {josa(label_b, '은는')} {sb} 통계입니다. {got['reason']}"
+
+
+def _diff_basis(c: Cross, num: dict, den: dict) -> str | None:
+    """차이(A − B)는 같은 기준의 조사끼리만 뺀다 (basis_gap). 나누기 · 더하기는 보지 않는다"""
+    return basis_gap(num, den, c.num_label, c.den) if c.form == "diff" else None
+
+
+def _side_by_side(num: dict, den: dict, gap: str) -> dict:
+    """조사 기준이 달라 빼지 않은 두 값: 숫자는 그대로 나란히 (multi_indicator와 같은 split 모양).
+    실패로 돌려보내면 '자료 없음'으로 보고 통계표 찾기를 다시 돌린다 (ask_session._search_after).
+    이유는 뒤 값의 주의사항으로 붙인다 (qa.render는 나뉜 결과의 주의사항을 조각에서 모은다)"""
+    last = {**den, "notes": [*(den.get("notes") or []), gap]}
+    return {
+        **{k: num.get(k) for k in ("source", "basis", "tbl_id", "url")},
+        "status": "ok",
+        "split": [num, last],
+        "split_by": "indicator",
+        "basis_gap": gap,  # 요청 기록(result)에 남는다
+    }
 
 
 def _mismatch(num: dict, den: dict, q: dict) -> str | None:
