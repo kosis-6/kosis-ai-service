@@ -99,15 +99,10 @@ services:
       - "80:80"
       - "443:443"
       - "443:443/udp"
-    # 서비스 주소(SITE_ADDRESS)로 HTTPS 인증서를 받고, 80 으로 오면 443 으로 보낸다.
-    # 도메인이 없으면 공인 IP 로 만든 sslip.io 주소 (예: 3-85-10-20.sslip.io)
-    command:
-      - caddy
-      - reverse-proxy
-      - --from
-      - "${SITE_ADDRESS:?.env에 SITE_ADDRESS를 설정하세요 (예 3-85-10-20.sslip.io)}"
-      - --to
-      - api:8000
+    # 설정은 아래 configs.caddyfile (서비스 주소로 HTTPS 인증서를 받고, 80 으로 오면 443 으로 보낸다)
+    configs:
+      - source: caddyfile
+        target: /etc/caddy/Caddyfile
     volumes:
       # 받은 인증서. 지우면 다시 받는다 (Let's Encrypt 발급 횟수 제한이 있어 지우지 않는다)
       - caddy_data:/data
@@ -122,3 +117,19 @@ volumes:
   pgdata:
   caddy_data:
   caddy_config:
+
+configs:
+  # Caddy 설정. 값은 .env 에서 채운다 (빠지면 compose 가 멈추고 알려 준다)
+  #   SITE_ADDRESS  서비스 주소 (예: like-snake.kro.kr)
+  #   ACME_EMAIL    인증서 기관에 등록할 이메일. 있어야 Let's Encrypt 가 막혔을 때 ZeroSSL 로 넘어간다
+  #                 (kro.kr 은 사용자 전체가 Let's Encrypt 주당 발급 한도를 나눠 써서 막힐 수 있다)
+  caddyfile:
+    content: |
+      {
+      	email ${ACME_EMAIL:?.env에 ACME_EMAIL을 설정하세요}
+      }
+
+      ${SITE_ADDRESS:?.env에 SITE_ADDRESS를 설정하세요} {
+      	encode zstd gzip
+      	reverse_proxy api:8000
+      }
