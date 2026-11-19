@@ -278,3 +278,58 @@ def test_top_region_of_question_is_filter_then_lookup(world) -> None:
     assert trace["multi"]["op"] == "filter_then_lookup"
     assert ("통근 인구", "value", ("경기도",)) in world["asked"]
     assert "1인 가구가 가장 높은 지역은 경기도입니다" in res["answer"]
+
+
+@pytest.fixture
+def surveys(monkeypatch):
+    """표마다 조사 이름 (catalog.comparable이 DB 대신 쓴다). _value의 표 ID는 T_<지표>"""
+    from app.services import catalog
+
+    by_table: dict = {}
+
+    def surveys(ids):
+        return {t: by_table[t] for t in ids if t in by_table}
+
+    monkeypatch.setattr(catalog, "surveys", surveys)
+    monkeypatch.setattr(catalog, "_groups", lambda ids: {})
+    return by_table
+
+
+def test_compare_of_different_surveys_has_no_gap_line(world, surveys) -> None:
+    # 답변 정책: 기준이 다른 조사의 값은 나란히 보여 주되 크기를 견주지 않는다
+    surveys.update({"T_주민등록 인구": "주민등록인구현황", "T_인구총조사 인구": "인구총조사"})
+    world["values"] = {
+        "주민등록 인구": _value("주민등록 인구", 9_386_034, "명"),
+        "인구총조사 인구": _value("인구총조사 인구", 9_411_000, "명"),
+    }
+    found = _found([_target("주민등록 인구"), _target("인구총조사 인구")], "compare")
+    res, _ = run("2020년 서울 인구총조사와 주민등록 인구 비교", found)
+    assert res["result"]["split_by"] == "indicator"
+    assert "많습니다" not in res["answer"]
+    said = "주민등록 인구는 주민등록인구현황, 인구총조사 인구는 인구총조사 통계입니다"
+    assert said in res["answer"]
+    assert "직접 비교하지 않습니다" in res["result"]["basis_gap"]
+
+
+def test_diff_of_different_surveys_is_side_by_side(world, surveys) -> None:
+    surveys.update({"T_가구": "인구총조사", "T_세대": "주민등록인구현황"})
+    world["values"] = {"가구": _value("가구", 300), "세대": _value("세대", 120)}
+    res, _ = run("2020년 서울 가구와 세대 차이", _found([_target("가구"), _target("세대")], "diff"))
+    assert res["result"]["split_by"] == "indicator" and "value" not in res["result"]
+    assert "직접 비교하지 않습니다" in res["answer"]
+    assert "직접 계산하지 않고 나란히" not in res["answer"]  # 이유를 따로 적었다
+
+
+def test_compare_of_same_survey_keeps_gap_line(world, surveys) -> None:
+    surveys.update({"T_가": "인구동향조사", "T_나": "인구동향조사"})
+    world["values"] = {"가": _value("가", 300, "명"), "나": _value("나", 120, "명")}
+    res, _ = run("질문", _found([_target("가"), _target("나")], "compare"))
+    assert "가가 나보다 180명 많습니다" in res["answer"] and "basis_gap" not in res["result"]
+
+
+def test_ratio_of_different_surveys_still_divides(world, surveys) -> None:
+    surveys.update({"T_외국인": "지방자치단체외국인주민현황", "T_인구": "주민등록인구현황"})
+    world["values"] = {"외국인": _value("외국인", 50, "명"), "인구": _value("인구", 1000, "명")}
+    found = _found([_target("인구"), _target("외국인")], "ratio")
+    res, _ = run("2020년 서울 인구 중 외국인 비율", found)
+    assert res["result"]["value"] == 5.0

@@ -8,6 +8,9 @@ combine.op대로 합친다.
                       compare는 단위가 같은 값 둘이면 차이 한 줄
   diff · ratio        두 값이 다 나오고 단위가 맞으면 빼거나 나눈다 (cross_indicator.combine_value).
                       안 되면 나란히 + 직접 계산하지 않았다는 안내
+                      compare · diff에서 두 지표의 조사 기준이 다르면 (인구총조사 인구와
+                      주민등록인구) 빼거나 견주지 않고 나란히 + 직접 비교하지 않는다는 안내
+                      (cross_indicator.basis_gap). ratio는 다른 조사끼리도 나눈다
   rank                지표마다 순위를 나란히
   filter_then_lookup  거르는 지표(role filter)의 1위 지역을 구한 뒤 그 지역으로 다른 지표를 계산
   intersect           지역을 거르는 질문("인구도 많고 출생아도 많은 시")이면 두 순위 상위 지역의
@@ -149,6 +152,16 @@ def _value(res: dict) -> dict | None:
     """값 질문의 결과 (한 지역 · 한 해 값이 있을 때만)"""
     r = (res or {}).get("result") or {}
     return r if "value" in r and r.get("value") is not None else None
+
+
+def _basis_gap(ok) -> str | None:
+    """차이 · 비교: 조사 기준이 다른 두 지표가 있으면 그 이유 (cross_indicator.basis_gap)"""
+    for i, (ta, ra) in enumerate(ok):
+        for tb, rb in ok[i + 1 :]:
+            gap = cross_indicator.basis_gap(ra["result"], rb["result"], _span(ta), _span(tb))
+            if gap:
+                return gap
+    return None
 
 
 def _compare_line(ok) -> str | None:
@@ -333,12 +346,21 @@ async def answer(question: str, parsed: dict, found: dict, trace: dict) -> dict 
     if not ok:
         return None
     notes = []
-    if op in ("diff", "ratio") and len(ok) == 2 and not failed:
+    gap = None
+    if op in ("compare", "diff"):
+        # 조사 기준이 다른 통계(인구총조사 인구와 주민등록인구)는 빼거나 크기를 견주지 않고
+        # 값과 출처(기준)만 나란히 보여 준다 (답변 정책: 단위·조사 기준 차이)
+        if gap := await run_in_threadpool(_basis_gap, ok):
+            notes.append(gap)
+    if op in ("diff", "ratio") and len(ok) == 2 and not failed and not gap:
         if combined := await run_in_threadpool(
             _two, op, question, parsed, ok, trace, h.get("combine")
         ):
             return combined
         notes.append("두 값의 단위나 기준이 달라 직접 계산하지 않고 나란히 보여 드립니다")
-    if op == "compare" and (line := _compare_line(ok)):
+    if op == "compare" and not gap and (line := _compare_line(ok)):
         notes.append(line)
-    return _side_by_side(question, parsed, ok, failed, trace, notes)
+    out = _side_by_side(question, parsed, ok, failed, trace, notes)
+    if gap:
+        out["result"]["basis_gap"] = gap  # 요청 기록(result)에 남는다 (cross_indicator와 같은 칸)
+    return out
