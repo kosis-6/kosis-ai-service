@@ -1,5 +1,12 @@
 // 관리자 API(/admin/logs/*) 호출. 로그인 토큰을 붙여 부르고, 권한이 없으면 무엇이 문제인지 알려 준다
-import type { LogSummary, SearchLogDetail, SearchLogList, SessionDetail, SessionList } from "../api/types";
+import type {
+  LogSummary,
+  PersonList,
+  SearchLogDetail,
+  SearchLogList,
+  SessionDetail,
+  SessionList,
+} from "../api/types";
 import { authFetch } from "../auth/client";
 
 /** status: 401 로그인 필요, 403 관리자 아님, 0 서버에 닿지 못함 */
@@ -53,10 +60,26 @@ export function summary(days: number): Promise<LogSummary> {
   return get("/admin/logs/summary", { days });
 }
 
-export function sessions(filter: { since: string; who: Who; q: string }, offset: number): Promise<SessionList> {
-  return get("/admin/logs/sessions", {
+/** 대화를 사람별로 묶은 목록. 로그인 사용자는 한 사람이 한 줄, 비로그인 사용자는 한 줄로 모인다 */
+export function people(filter: { since: string; who: Who; q: string }, offset: number): Promise<PersonList> {
+  return get("/admin/logs/people", {
     since: filter.since,
     guest: guestOf(filter.who),
+    q: filter.q,
+    limit: PAGE,
+    offset,
+  });
+}
+
+/** 한 사람의 대화 창들. owner 가 null 이면 비로그인 사용자의 대화 */
+export function sessions(
+  filter: { since: string; q: string; owner: number | null },
+  offset: number,
+): Promise<SessionList> {
+  return get("/admin/logs/sessions", {
+    since: filter.since,
+    user_id: filter.owner ?? undefined,
+    guest: filter.owner === null ? true : undefined,
     q: filter.q,
     limit: PAGE,
     offset,

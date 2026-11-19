@@ -367,3 +367,26 @@ def test_session_detail_shows_flow(admin: TestClient, monkeypatch: pytest.Monkey
     turns = admin.get("/admin/logs/sessions/A_1").json()["turns"]
     assert turns[0]["flow"] is None
     assert [s["stage"] for s in turns[1]["flow"]] == ["질문 이해", "사전 계산", "최종 답"]
+
+
+def test_people_groups_conversations_by_user(admin: TestClient, monkeypatch) -> None:
+    # 로그인 사용자는 한 사람이 한 줄 (창 여러 개), 비로그인 사용자는 user_id 가 빈 한 줄
+    seen: dict = {}
+
+    async def people(session, limit, offset, guest, q, since, until):
+        seen.update(guest=guest, q=q)
+        me = {**TURN, "sessions": 3, "turns": 9, "first_at": AT, "last_at": AT}
+        guests = {"user_id": None, "user_email": None, "user_nickname": None}
+        return [me, {**guests, "sessions": 40, "turns": 61, "first_at": AT, "last_at": AT}], 2
+
+    monkeypatch.setattr(user_logs, "people", people)
+    r = admin.get("/admin/logs/people", params={"guest": "false", "q": "부산"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["total"] == 2 and body["people"][0]["sessions"] == 3
+    assert body["people"][1]["user_id"] is None and body["people"][1]["turns"] == 61
+    assert seen == {"guest": False, "q": "부산"}
+
+
+def test_people_needs_admin(client: TestClient) -> None:
+    assert client.get("/admin/logs/people").status_code in (401, 403)

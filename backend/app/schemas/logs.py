@@ -71,6 +71,20 @@ class SessionRead(LogUser):
     last_status: str | None = None
 
 
+class PersonRead(LogUser):
+    """대화를 사람별로 묶은 한 줄. user_id 가 null 이면 비로그인 사용자 전체"""
+
+    sessions: int = Field(description="대화 창 수 (창을 여러 개 열어 따로 물으면 창마다 하나)")
+    turns: int = Field(description="질문(턴) 수")
+    first_at: datetime
+    last_at: datetime
+
+
+class PersonList(BaseModel):
+    total: int
+    people: list[PersonRead]
+
+
 class SessionList(BaseModel):
     total: int
     sessions: list[SessionRead]
