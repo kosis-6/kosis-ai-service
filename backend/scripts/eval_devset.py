@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from scripts import devset_grade as dg
+from scripts import refusal_reasons as rr
 
 OUT_DIR = Path("data/eval")
 CALL_INTERVAL = 3  # 호출 제한(42901) 대응 (초)
@@ -112,6 +113,29 @@ def flow_columns(g: dg.Grade, first: dict, final: dict | None) -> dict[str, str]
     return {"처리 흐름": "\n".join(texts), "오답 설명": explain}
 
 
+def refusal_columns(last: dict) -> dict[str, str]:
+    """통계표 안내(status = tables)로 끝났으면 바로 계산이 표를 건너뛴 이유
+    (scripts/refusal_reasons.py)"""
+    r = rr.reason_of(last)
+    if r is None:
+        return {"거절 원인": "", "거절 원인 문구": ""}
+    return {"거절 원인": rr.label_text(r), "거절 원인 문구": f"{r['tbl_id']} {r['skip']}".strip()}
+
+
+def refusal_summary(recs: list[dict]) -> list[str]:
+    """'표 찾고도 거절' 원인 표. * = 답해야 하는 문항"""
+    by: dict[str, list[str]] = {}
+    for r in recs:
+        if r.get("거절 원인"):
+            by.setdefault(r["거절 원인"], []).append(r["문항"])
+    if not by:
+        return []
+    answers = {r["문항"] for r in recs if r["기대 행동"] == dg.ANSWER}
+    total = sum(len(ids) for ids in by.values())
+    head = ["", "## 표 찾고도 거절한 원인 (통계표 안내로 끝난 문항)", ""]
+    return head + rr.table(by, total, answers)
+
+
 def record(row: dict[str, str], g: dg.Grade, first: dict, final: dict | None, ms: int) -> dict:
     """채점 기록 양식 한 줄 + 원인 분석용 칸"""
     last = final or first
@@ -136,6 +160,7 @@ def record(row: dict[str, str], g: dg.Grade, first: dict, final: dict | None, ms
         "request_type": last.get("request_type"),
         "쓴 표": ",".join(s.get("tbl_id") or "" for s in last.get("sources") or []),
         "거절 근거": (last.get("tables") or {}).get("reason") or "",
+        **refusal_columns(last),
         "응답 시간(ms)": ms,
         "상세": json.dumps(g.details, ensure_ascii=False, default=str),
         "되묻기 문장": (first.get("answer") or "") if final else "",
@@ -230,6 +255,7 @@ def summarize(recs: list[dict]) -> str:
     reasons = Counter(r["틀린 이유"].split(" ")[0] for r in recs if r["틀린 이유"])
     lines += ["", "## 틀린 이유 (처음 어긋난 단계)", "", "| 단계 | 건수 |", "|---|---|"]
     lines += [f"| {k} | {reasons.get(k, 0)} |" for k in ("행동", "표", "조건", "계산", "요약")]
+    lines += refusal_summary(recs)
 
     lines += [
         "",
