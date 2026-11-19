@@ -30,20 +30,43 @@ ANSWER, CLARIFY, REFUSE = "답변", "되묻기", "답변 불가"
 # 되묻기로 보는 status (지역·연도를 되물음)
 CLARIFY_STATUSES = {"unclear", "ambiguous_region", "missing_region", "missing_year"}
 
-# 답변 불가 status → 골든셋의 답변 불가 유형. 여기 없는 status는 유형을 정하지 못한 것(유형 오류)
-REFUSAL_TYPES = {
+# 답변불가 유형정의서: 코드 → 유형 이름. 골든셋은 "유형 이름 (코드)"로 적는다.
+# 코드가 둘인 유형(원인·예측·평가, 통계 질문이 아님)은 같은 유형이면 맞음
+REFUSAL_GROUPS = {
     "out_of_range": "없는 연도",
-    "region_not_in_year": "없는 연도",
+    "region_not_in_year": "그해에 없던 지역",
+    "no_region_level": "없는 지역 단위",
+    "band_mismatch": "맞는 구간 없음",  # 표의 구간과 맞지 않음 (연령 구간, 체중·기간 같은 조건)
+    "missing_data": "값이 비어 있음",
+    "no_joint_table": "함께 집계한 통계 없음",
+    "partial_match": "조건을 모두 만족하는 표 없음",
+    "out_of_scope": "범위 밖 주제",
+    "causal_question": "원인·예측·평가 질문",
+    "prediction_question": "원인·예측·평가 질문",
+    "not_statistics": "통계 질문이 아님",
+    "chat": "통계 질문이 아님",
+}
+# 챗봇 status → 유형. 정의서에 없는 status는 가까운 유형으로.
+# 여기 없는 status는 유형을 정하지 못한 것(유형 오류)
+# 통계표 찾기의 거절(응답의 tables.status)도 같은 코드를 쓴다. 근거는 tables.reason
+REFUSAL_TYPES = REFUSAL_GROUPS | {
     "unknown_indicator": "범위 밖 주제",
     "not_supported_question": "범위 밖 주제",
-    "missing_data": "값이 비어 있음",
-    "band_mismatch": "맞는 구간 없음",  # 표의 구간과 맞지 않음 (연령 구간, 체중·기간 같은 조건)
-    "causal_question": "원인·예측 질문",
-    "prediction_question": "원인·예측 질문",
-    # 통계표 찾기의 거절 (응답의 tables.status). 근거는 tables.reason
-    "out_of_scope": "범위 밖 주제",
-    "not_statistics": "범위 밖 주제",
 }
+# 코드 없이 적은 옛 표기
+OLD_REFUSAL_NAMES = {"원인·예측 질문": "원인·예측·평가 질문"}
+
+
+def golden_refusal_type(label: str) -> str:
+    """골든셋 답변 불가 유형 칸 → 유형 이름.
+    "그해에 없던 지역 (region_not_in_year)" → 그해에 없던 지역. 코드 없는 옛 표기는 이름 그대로"""
+    m = re.search(r"\(([a-z_]+)\)\s*$", label or "")
+    if m and m[1] in REFUSAL_GROUPS:
+        return REFUSAL_GROUPS[m[1]]
+    name = (label or "").strip()
+    return OLD_REFUSAL_NAMES.get(name, name)
+
+
 SEARCH_REFUSALS = ("out_of_scope", "not_statistics")
 
 
@@ -535,7 +558,7 @@ def _grade_refusal(g: Grade, row: dict[str, str], res: dict) -> Grade:
         status = tables["status"]
         g.details["거절 근거"] = tables.get("reason") or "(기록 없음)"
     g.details["안내 틀 ID"] = status
-    want = row.get("답변 불가 유형", "")
+    want = golden_refusal_type(row.get("답변 불가 유형", ""))
     got = REFUSAL_TYPES.get(status or "", "")
     g.details["불가 유형"] = got or f"(정하지 못함: {status})"
     result = res.get("result") or {}
