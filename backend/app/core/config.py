@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     # 한꺼번에 몰려 질문 하나가 한도를 넘었다 (11/18 변형셋 평가). 0이면 제한하지 않는다.
     # 3 (11/18 세진): 칸 고르기 LLM 상한(질문당 3회)과 맞춤
     hcx_max_concurrency: int = 3
+    # HCX 호출 하나가 호출 제한이 풀리기를 기다리는 시간의 합 상한 (초, hcx_client.py).
+    # 사용자 질문은 짧게 기다리고 넘으면 429 + Retry-After로 알린다.
+    # 평가 스크립트(scripts/eval_devset.py)는 길게(90초) 바꾼다
+    hcx_retry_budget_seconds: float = 15.0
     # 질문 이해 결과를 서버 메모리에 1시간 남겨, 글자까지 같은 질문이면 HCX를 다시 부르지 않는다
     # (app/services/qa.py UNDERSTAND_CACHE). 평가로 질문 이해 효과를 잴 때는 QUESTION_CACHE=false
     question_cache: bool = True

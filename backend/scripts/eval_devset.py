@@ -34,7 +34,7 @@ from scripts import devset_grade as dg
 
 OUT_DIR = Path("data/eval")
 CALL_INTERVAL = 3  # 호출 제한(42901) 대응 (초)
-RATE_LIMIT_WAITS = (60, 120, 180)  # HcxClient 재시도까지 실패하면 질문 단위로 쉬고 다시 (초)
+RETRY_BUDGET = 90  # HCX 호출 하나가 호출 제한이 풀리기를 기다리는 시간 상한 (초, 서비스는 15초)
 KINDS = ["단순 수치", "집계", "추이", "비교", "순위", "구성비", "인구 통계 지표"]
 
 
@@ -65,19 +65,15 @@ def _memory_sessions() -> None:
 
 
 async def _turn(session_id: str | None, question: str) -> dict[str, Any]:
-    """한 턴. 호출 제한이 짧은 재시도로 안 풀리면 몇 분 쉬고 다시 보낸다"""
+    """한 턴. 호출 제한은 HcxClient가 그 호출만 다시 보내며 기다린다 (--retry-budget까지).
+    질문 전체를 처음부터 다시 하지 않는다: 이미 성공한 질문 이해 · 검색 호출까지 다시 불러
+    한도를 더 쓰게 된다. 그래도 실패하면 그 문항은 error로 남기고 다음 문항으로"""
     from app.services import ask_session
-    from app.services.hcx_client import RATE_LIMIT_CODE
 
-    for wait in (*RATE_LIMIT_WAITS, None):
-        try:
-            return await ask_session.handle(session_id, question)
-        except Exception as e:  # 한 문항이 실패해도 나머지는 계속
-            if wait is None or RATE_LIMIT_CODE not in str(e):
-                return {"status": "error", "answer": "", "error": f"{type(e).__name__}: {e}"}
-            print(f"  호출 제한, {wait}초 쉬고 다시 시도")
-            await asyncio.sleep(wait)
-    raise AssertionError("unreachable")
+    try:
+        return await ask_session.handle(session_id, question)
+    except Exception as e:  # 한 문항이 실패해도 나머지는 계속
+        return {"status": "error", "answer": "", "error": f"{type(e).__name__}: {e}"}
 
 
 async def run_case(row: dict[str, str]) -> tuple[dict, dict | None, int]:
@@ -371,10 +367,17 @@ def main() -> None:
         action="store_true",
         help="질문 이해 캐시를 켠 채로 돌린다 (기본은 꺼서 문항마다 질문 이해를 새로 한다)",
     )
+    parser.add_argument(
+        "--retry-budget",
+        type=float,
+        default=RETRY_BUDGET,
+        help="HCX 호출 하나가 호출 제한이 풀리기를 기다리는 시간 상한 (초)",
+    )
     args = parser.parse_args()
-    if not args.question_cache:
-        from app.core.config import get_settings
+    from app.core.config import get_settings
 
+    get_settings().hcx_retry_budget_seconds = args.retry_budget
+    if not args.question_cache:
         get_settings().question_cache = False
 
     rows = load_golden(args.golden)
