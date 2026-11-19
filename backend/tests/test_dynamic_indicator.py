@@ -1222,3 +1222,101 @@ def test_condition_words_still_checked_without_cell_llm(computed) -> None:
     trace: dict = {}
     assert asyncio.run(d.compute_from_handoff(Q1, BASE, _found(cands, u), trace)) is None
     assert "홀로 사는 가구" in trace["dynamic"][0]["skip"]
+
+
+def test_no_year_question_skips_old_tables(computed, monkeypatch) -> None:
+    # 연도를 말하지 않은 질문은 최신 연도를 묻는 것: 최근 자료가 없는 옛 표(1970~1980)는 건너뛴다
+    monkeypatch.setattr(d, "_recent_floor", lambda: 2020)
+    u = _understanding()
+    u["conditions"]["year"] = None
+    cands = [
+        _cand("OLD", 1, picked=True, checks={"region_level": True}, years=(1970, 1980)),
+        _cand("NEW", 2, checks={"region_level": True}, years=(1990, 2025)),
+    ]
+    trace: dict = {}
+    parsed = {k: v for k, v in BASE.items() if k != "year"}
+    res = asyncio.run(d.compute_from_handoff("서울 1인 가구 수", parsed, _found(cands, u), trace))
+    assert res["status"] == "ok" and trace["handoff"]["used"]["tbl_id"] == "NEW"
+    assert "1980년까지인 표" in trace["dynamic"][0]["skip"]
+
+
+# ---- 개발셋 2차: 표를 찾고도 계산하지 못하던 질문 ------------------------------------------------
+
+
+def test_word_inside_cell_name() -> None:
+    # 칸 이름이 질문에 그대로 없어도 질문 낱말이 칸 이름 안에 들면 그 칸
+    names = {"T": "통근·통학 인구(12세 이상)", "A": "시내·좌석·마을 버스", "B": "전철 지하철",
+             "C": "고속 시외 버스", "D": "통근·통학버스"}  # fmt: skip
+    items = d.Dim(0, "항목", names)
+    hits = d._text_hits("지하철이랑 시내버스 중에 뭘 더 많이 탔어", [items], set())
+    assert sorted(hits[0]) == ["A", "B"]
+    kids = d.Dim(0, "항목", {"0": "이혼건수-계", "1": "미성년자녀-없음", "2": "1명"})
+    assert d._text_hits("이혼 부부 중 미성년 자녀 없는 경우", [kids], set()) == {0: ["1"]}
+    # 낱말 하나가 칸 여럿에 걸리면 맞춘 것으로 보지 않는다 ("버스" → 버스 칸 셋)
+    assert d._word_hits("버스 몇 명", items) == []
+
+
+def test_more_is_a_comparison() -> None:
+    assert d._multi_op("지하철이랑 시내버스 중에 뭘 더 많이 탔어") == "compare"
+    assert d._multi_op("남자애가 더 많이 태어났어 여자애가 더 많이 태어났어?") == "compare"
+
+
+def test_sexes_compared_within_item() -> None:
+    items = d.Dim(0, "항목", {"0": "계", "1": "남자", "2": "여자"})
+    plan, why = d.choose("작년에 남자애가 더 많이 태어났어 여자애가 더 많이 태어났어?",
+                         {"sex": "계"}, [items], None)  # fmt: skip
+    assert why is None and plan.multi == (0, ["1", "2"], "compare")
+
+
+def test_husband_wife_dimension_defaults_to_husband() -> None:
+    items = d.Dim(0, "항목", {"0": "이혼건수-계", "1": "미성년자녀-없음"})
+    couple = d.Dim(1, "성별", {"1": "남편", "2": "아내"})
+    plan, why = d.choose("이혼 부부 중 미성년 자녀 없는 경우", {"sex": "계"}, [items, couple], None)
+    assert why is None and plan.pick[1] == "1"
+    assert "부부 건수라 아내 기준과 같음" in plan.defaults[0]
+    # 칸 이름 끝의 '-계'는 항목 전체 (비율의 분모)
+    assert d._item_whole(items, "연령/미성년자녀수별 이혼") == "0"
+
+
+def test_item_check_is_left_to_cell_check() -> None:
+    # 통계표 찾기가 찾는 값을 ✘로 봐도 건너뛰지 않는다 (칸 반영 검사가 다시 본다)
+    entry = {"kind": "picked", "checks": {"item:미성년 자녀 없는 경우": False, "year": True}}
+    assert d.skip_reason(entry, False) is None
+    assert d.skip_reason({**entry, "checks": {"year": False}}, False)
+
+
+def test_husband_wife_are_sex_cells() -> None:
+    # 혼인 · 이혼 표의 남편 · 아내는 성별 칸 ("이혼하는 남자 평균 나이" → 남편)
+    items = d.Dim(0, "항목", {"1": "남편", "2": "아내"})
+    plan, why = d.choose("이혼하는 남자 평균 나이", {"sex": "남"}, [items], None)
+    assert why is None and plan.pick[0] == "1"
+
+
+def test_pairs_question_needs_pair_unit(monkeypatch) -> None:
+    # "쌍둥이 몇 쌍": 사람 수 칸("쌍태아 (명)")으로 답하지 않는다
+    assert d.PAIRS_ASKED.search("지난해 태어난 쌍둥이 몇 쌍이야?")
+    assert not d.PAIRS_ASKED.search("쌍둥이 몇 명")
+    assert not d.PAIRS_ASKED.search("1980년 서울에서 이혼한 부부 몇 쌍이야?")  # 이혼 건수
+
+
+def test_rank_dim_ignores_parentheses() -> None:
+    nat = d.Dim(3, "국적(지역)별", {"0": "계", "1": "베트남", "2": "중국"})
+    items = d.Dim(0, "항목", {"T": "등록외국인"})
+    assert d._rank_dim("등록외국인 국적별로 많은 순서 세 나라", [items, nat], None, "") is nat
+
+
+def test_per_average_divides_members_by_households() -> None:
+    # "가구당 평균 가구원 수": 같은 묶음(일반가구)의 가구원 ÷ 가구, 비율이 아니라 평균
+    assert d.PER_AVERAGE.search("가구당 평균 가구원 수 알려줘")
+    items = d.Dim(0, "항목", {"a": "총가구_가구", "b": "총가구_가구원_계", "c": "일반가구_가구",
+                              "e": "일반가구_가구원_계"})  # fmt: skip
+    spec = d._per_average("T", [items, d.Dim(1, "행정구역별", {"00": "전국"})], 1, "시도")
+    src = spec["sources"][0]
+    assert (src["item_id"], src["den_item_id"], src["den_scale"]) == ("e", "c", 1)
+    assert spec["name"] == "가구당 평균 가구원 수" and spec["unit"] == "명"
+    assert d._per_average("T", [d.Dim(0, "항목", {"a": "가구"})], None, "시도") is None
+
+
+def test_now_asked_words() -> None:
+    assert d.NOW_ASKED.search("2015년 대비 지금 얼마나 늘었어")
+    assert not d.NOW_ASKED.search("2015년 대비 2020년")

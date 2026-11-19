@@ -582,3 +582,46 @@ def test_lookup_trend_entirely_before_coverage_is_out_of_range(monkeypatch) -> N
     r = qa._lookup_trend(q, sp, "서울", None, "계", None)
     assert r["status"] == "out_of_range" and r["available_years"] == [1990, 2025]
     assert r["asked_year"] == 1970 and r["reason"] == "이혼 건수 자료는 1990~2025년만 있습니다."
+
+
+def test_subject_does_not_repeat_sex_in_name() -> None:
+    assert qa._subject({"sex": "남", "indicator": "남편"}) == "남편"
+    assert qa._subject({"sex": "여", "indicator": "고령인구 비율"}) == "여성 고령인구 비율"
+
+
+def test_latest_month_out_of_range_retries_with_annual(monkeypatch) -> None:
+    # 연도를 말하지 않아 최신 달로 계산했더니 기간 밖이면 연간 마지막 해로 다시 계산한다
+    seen = []
+
+    def fake(q):
+        seen.append((q.get("asked") or {}).get("latest"))
+        if (q.get("asked") or {}).get("latest"):
+            return {"status": "out_of_range"}
+        return {"status": "ok", "value": 1}
+
+    monkeypatch.setattr(qa, "_compute", fake)
+    assert qa.compute({"asked": {"latest": True}})["status"] == "ok" and seen == [True, False]
+    seen.clear()
+    assert qa.compute({"asked": {"latest": True}, "year": 2030})["status"] == "out_of_range"
+
+
+def test_mean_of_regions_averages_ranking(monkeypatch) -> None:
+    rows = [{"region": "가", "value": 10, "rank": 1}, {"region": "나", "value": 20, "rank": 2},
+            {"region": "다", "value": None, "rank": 3}]  # fmt: skip
+
+    def fake(q):
+        assert not q["region_mean"] and q["top"] is None
+        return {"status": "ok", "kind": "count", "unit": "명", "ranking": rows, "level": "시도"}
+
+    monkeypatch.setattr(qa, "_compute", fake)
+    r = qa._mean_of_regions({"region_mean": True, "level": "시도", "top": 3})
+    assert r["value"] == 15 and r["region"] == "2개 시도 평균" and "ranking" not in r
+
+
+def test_unknown_ratio_indicator_is_not_population_composition(monkeypatch) -> None:
+    # 사전에 없는 '○○ 비율' 구성비 질문을 인구 성별 구성으로 읽지 않는다 (지역 없음으로 끝났다)
+    monkeypatch.setattr(qa.lookup, "refresh_if_reloaded", lambda: None)
+    monkeypatch.setattr(qa.lookup, "data_gap", lambda term: {})
+    monkeypatch.setattr(qa.indicators, "_data_years", lambda: (2008, 2025))
+    r = qa.compute({"type": "composition", "indicator": "재혼 비율", "regions": [], "year": 2024})
+    assert r["status"] == "unknown_indicator"

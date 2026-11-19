@@ -568,6 +568,28 @@ def pending_of(result: dict, question: str) -> dict | None:
     return None
 
 
+ALTERNATIVE_REPLY_MAX = 40  # 대안을 말로 고른 답 ("귀화자랑 자녀까지 다 포함한 주민으로요")
+AGREE = re.compile(r"^\s*(응|네|예|그래|좋아|그걸로|그거로|그것으로|그거)\b")
+REPLY_TAIL = re.compile(r"(이랑|랑|하고|까지|으로요|로요|으로|로|이요|요|도|만|을|를|은|는|이|가)$")
+
+
+def alternative_by_words(reply: str, answers: list[dict]) -> str | None:
+    """대안 되묻기의 답을 말로 고른 경우 → 고른 대안의 번호(문자열). 못 고르면 None.
+    대안이 하나면 "응 · 그걸로"도 그 대안이다. 아니면 답의 낱말이 한 대안의 답 글에만 있을 때"""
+    if len(reply.strip()) > ALTERNATIVE_REPLY_MAX or not answers:
+        return None
+    if len(answers) == 1 and AGREE.match(reply):
+        return "0"
+    words = [REPLY_TAIL.sub("", w) for w in re.findall(r"[가-힣]{2,}", reply)]
+    words = [w for w in words if len(w) >= 2 and w not in {"포함", "포함해서", "기준"}]
+    def text(a: dict) -> str:  # 답 글과 결과의 주석 (귀화자 · 자녀 포함 같은 기준)
+        notes = " ".join(map(str, ((a.get("result") or {}).get("notes") or [])))
+        return f"{a.get('answer') or ''} {notes}"
+
+    hits = [i for i, a in enumerate(answers) if words and any(w in text(a) for w in words)]
+    return str(hits[0]) if len(hits) == 1 else None
+
+
 def pick_region(reply: str, options: list[str]) -> str | None:
     """지역 되묻기의 답 → 고른 후보. "광주광역시", "경기도 광주시요", "2번". 못 고르면 None"""
     reply = reply.strip()
@@ -1154,8 +1176,13 @@ async def _turn(
         elif kind == "alternative":
             # 조건을 모두 만족하는 값이 없어 제안한 대안
             # (alternative.py): 고른 대안의 답은 미리 계산해 두었다
-            if code := dynamic_indicator.pick_option(choice, pending["clarification"]):
-                answers = (pending["clarification"].get("context") or {}).get("answers") or []
+            answers = (pending["clarification"].get("context") or {}).get("answers") or []
+            code = dynamic_indicator.pick_option(choice, pending["clarification"])
+            if code is None:
+                # "귀화자랑 자녀까지 포함으로요"처럼 대안의 내용을 말로 고른 답 (번호 · 이름 아님):
+                # 새 질문으로 보내면 원래 질문의 지역을 잃었다
+                code = alternative_by_words(choice, answers)
+            if code is not None:
                 if 0 <= int(code) < len(answers):
                     res = copy.deepcopy(answers[int(code)])
                     res["chart"] = charts.build(res.get("result"))
@@ -1195,6 +1222,8 @@ async def _turn(
         found = await table_guide.find_tables(
             question, state["search_session"], selections, user_id
         )
+        if computed := await _after_table_choice(pending, found):
+            return computed, {}, None
         res = table_guide.tables_answer(found)
         res["request_type"] = REPLY
         return res, {}, None
@@ -1346,7 +1375,13 @@ def next_state(state: dict | None, question: str, res: dict, sources: dict) -> d
                 "sources": [],
                 "chart": None,
             },
-            "pending": {"missing": "table", "options": table_choice_options(found)}
+            "pending": {
+                "missing": "table",
+                "options": table_choice_options(found),
+                # 표를 고른 뒤 그 표로 바로 계산해 보려고 원래 질문과 해석을 둔다
+                "original_question": res.get("question"),
+                "parsed": res.get("parsed") or {},
+            }
             if table_guide.waiting_choice(found)
             else None,
             "search_session": (found or {}).get("session_id")
@@ -1454,7 +1489,9 @@ def searchable_after(res: dict) -> bool:
     result = res.get("result") or {}
     return (
         res.get("status") in table_guide.SEARCH_AFTER
-        and res.get("request_type") == NEW
+        # 되묻기에 답한 턴(REPLY)도: 원래 질문과 받은 지역을 합친 질문이다 ("우리 시 결혼 건수" →
+        # "창원시" → 사전은 시도까지만이라 끝났다. 시군구 표가 따로 있다)
+        and res.get("request_type") in (NEW, REPLY)
         and not (result.get("suggestion") or {}).get("status") == "ok"
     )
 
@@ -1566,6 +1603,36 @@ async def _dynamic_side(
     return {**got, "indicator": phrase}
 
 
+async def _same_table_side(
+    phrase: str, known: str, parsed: dict, kind: str, trace: dict
+) -> dict | None:
+    """사전에 없는 쪽을 먼저 다른 쪽 사전 지표의 표 안에서 찾는다 ("등록 외국인 중에 베트남 사람":
+    등록외국인 표의 국적 칸). 같은 표라 기준이 같다. 통계표 찾기를 부르지 않는다. 못 하면 None"""
+    spec = indicators.spec(known)
+    if not spec or spec.get("method") != "lookup":
+        return None
+    sub_q = _side_question(parsed, phrase, kind)
+    sub_parsed = {**parsed, "type": kind, "indicator": phrase, "term": phrase, "dynamic_spec": None}
+    if kind == "rank":
+        sub_parsed["top"] = None
+    step: dict = {"dynamic": []}
+    for src in spec.get("sources") or []:
+        try:
+            part, _ = await dynamic_indicator._try(src["table"], None, sub_q, sub_parsed, step, {})
+        except Exception:
+            logger.exception("두 값 나누기: 같은 표에서 찾기 실패 (%s)", src.get("table"))
+            continue
+        got = (part or {}).get("result") or {}
+        if (part or {}).get("status") == "ok" and (got.get("unit") or "") in (
+            cross_indicator.COUNT_UNITS
+        ):
+            trace.setdefault("cross_sides", []).append(
+                {"phrase": phrase, "same_table": src["table"], "status": "ok"}
+            )
+            return {**got, "indicator": phrase}
+    return None
+
+
 async def _cross_dynamic(res: dict, state: dict | None, asked: str, user_id: int | None) -> bool:
     """두 값을 나누는데(빼는데) 한쪽 또는 양쪽이 사전에 없다. res를 바꿨으면 True
 
@@ -1579,12 +1646,18 @@ async def _cross_dynamic(res: dict, state: dict | None, asked: str, user_id: int
     if kind == "compare" and len(parsed.get("regions") or []) <= 1:
         kind = "value"
     q = {**parsed, "type": kind, "cross": None, "indicators": None}
+    if kind in ("value", "trend") and not q.get("regions"):
+        # 지역을 말하지 않은 비율은 전국 ("등록 외국인 중에 베트남 사람 비율")
+        q["regions"] = ["전국"]
     sid = (state or {}).get("search_session") or table_guide.new_search_session()
     sides = {"num": c.num, "den": c.den}
     unknown = ["num", "den"] if c.dynamic == "both" else [c.dynamic]
     got: dict = {}
     for side in unknown:
-        got[side] = await _dynamic_side(sides[side], q, kind, sid, user_id, trace)
+        other = sides["den" if side == "num" else "num"]
+        got[side] = await _same_table_side(sides[side], other, q, kind, trace)
+        if got[side] is None:
+            got[side] = await _dynamic_side(sides[side], q, kind, sid, user_id, trace)
         if got[side] is None:
             return False
         if kind == "value" and not q.get("year") and got[side].get("year"):
@@ -1671,6 +1744,15 @@ async def _dynamic_instead(res: dict, state: dict | None, asked: str, user_id: i
     trace = res.get("trace") or {}
     parsed = res.get("parsed") or {}
     found = None
+    if parsed.get("rank_axis") and (axis := await _axis_rank(asked, parsed, trace)):
+        # 지역이 아닌 분류의 순위: 사전 지표의 표에서 그 분류로 순위를 매겼다
+        kind = res.get("request_type")
+        res.clear()
+        res.update(axis)
+        res["chart"] = charts.build(res.get("result"))
+        await _attach_cards(res, asked)
+        res["request_type"], res["question"], res["search_session"] = kind, asked, sid
+        return True
     try:
         computed = await dynamic_indicator.cached_answer(asked, parsed, trace)
         if computed is None:
@@ -1705,6 +1787,46 @@ async def _dynamic_instead(res: dict, state: dict | None, asked: str, user_id: i
         res["trace"] = trace
     res["request_type"], res["question"], res["search_session"] = kind, asked, sid
     return True
+
+
+async def _after_table_choice(pending: dict | None, found: dict) -> dict | None:
+    """표 선택지에 답한 뒤 고른 표로 원래 질문을 바로 계산한 답. 못 하면 None (지금처럼 표 안내)"""
+    original = (pending or {}).get("original_question")
+    parsed = (pending or {}).get("parsed")
+    if not original or not parsed or table_guide.waiting_choice(found):
+        return None
+    trace: dict = {}
+    try:
+        computed = await dynamic_indicator.compute_from_handoff(original, parsed, found, trace)
+    except Exception:
+        logger.exception("표를 고른 뒤 바로 계산 실패")
+        return None
+    if not computed or computed.get("status") != "ok":
+        return None
+    res = dict(computed)
+    res["chart"] = charts.build(res.get("result"))
+    await _attach_cards(res, original)
+    res.update(request_type=REPLY, question=original, trace=trace)
+    return res
+
+
+async def _axis_rank(asked: str, parsed: dict, trace: dict) -> dict | None:
+    """사전 지표의 표로 지역이 아닌 분류의 순위를 계산한 답 (예: 등록외국인 표의 국적별 순위)"""
+    spec = indicators.spec(parsed.get("indicator") or "")
+    if not spec or spec.get("method") != "lookup":
+        return None
+    q = {**parsed, "regions": parsed.get("regions") or ["전국"], "dynamic_spec": None}
+    step: dict = {"dynamic": []}
+    for src in spec.get("sources") or []:
+        try:
+            part, _ = await dynamic_indicator._try(src["table"], None, asked, q, step, {})
+        except Exception:
+            logger.exception("분류 순위 계산 실패 (%s)", src.get("table"))
+            continue
+        if (part or {}).get("status") == "ok" and part.get("answer"):
+            trace["axis_rank"] = {"tbl_id": src["table"], "axis": parsed.get("rank_axis")}
+            return part
+    return None
 
 
 def _same_dictionary_table(parsed: dict, computed: dict | None, found: dict | None) -> str | None:

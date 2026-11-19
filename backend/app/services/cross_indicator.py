@@ -33,7 +33,8 @@ OFFICIAL = {
     ("이혼 건수", "총인구", 1000): "조이혼율",
     ("이혼 건수", "혼인 건수", 100): "혼인 대비 이혼 건수 비율",
     ("등록외국인 수", "총인구", 100): "등록외국인 비율",
-    ("외국인주민 수", "총인구", 100): "외국인주민 비율",
+    # 외국인주민 수 ÷ 총인구는 공식 외국인주민 비율로 보내지 않는다: 그 지표의 분모는 주민등록인구가
+    # 아니다 ("제주 사람 중 외국인주민 %"는 외국인주민 ÷ 주민등록인구)
     ("다문화 출생아 수", "출생아 수", 100): "다문화 출생 비중",
     ("다문화 혼인 건수", "혼인 건수", 100): "다문화 혼인 비중",
     # 공식 미혼 비율의 분모는 15세 이상 인구라 총인구로 나누면 다르다
@@ -58,6 +59,7 @@ LEADING_NUMBER = re.compile(r"([\d,]+|천|만|백)$")
 BARE_HOUSEHOLD = re.compile(r"세대(?!\s*수)(?=\s*(?:[\d,]+|천|만|백)?\s*(?:세대)?\s*당)")
 
 
+AFTER_VERSUS = re.compile(r"^(?:에|의)?대비")
 # 분자 두 지표 사이의 말 ("혼인 건수와 이혼 건수"), 그 뒤의 합 표현 ("합", "합친", "더한")
 AND_BETWEEN = re.compile(r"^(?:와|과|하고|랑|이랑|및|,|그리고)$")
 SUM_TAIL = re.compile(r"^(?:의|을|를)?(?:합계|합친것|합친|합해서|합하면|합|더한것|더한|더하면)")
@@ -79,7 +81,7 @@ class Cross:
     @property
     def verb(self) -> str:
         """계산할 수 없을 때의 말 ("뺄 수 없습니다" · "나눌 수 없습니다")"""
-        return "뺄" if self.form == "diff" else "나눌"
+        return {"diff": "뺄", "sum": "더할"}.get(self.form, "나눌")
 
     @property
     def num_names(self) -> list[str]:
@@ -99,6 +101,8 @@ class Cross:
         den, num = DEN_LABEL.get(self.den, self.den), self.num_label
         if self.form == "diff":
             return f"{josa(num, '과와')} {self.den}의 차이"
+        if self.form == "sum":
+            return f"{josa(num, '과와')} {self.den}의 합"
         if self.form == "within":
             return f"{self.den} 중 {num} 비율"
         if self.form == "versus":
@@ -109,7 +113,7 @@ class Cross:
 
     @property
     def unit(self) -> str:
-        if self.form == "diff":
+        if self.form in ("diff", "sum"):
             return self.unit_of(self.num)
         if self.scale == 100:
             return "%"
@@ -123,6 +127,8 @@ class Cross:
         num = f"({self.num} + {self.plus})" if self.plus else self.num
         if self.form == "diff":
             return f"{num} − {self.den}"
+        if self.form == "sum":
+            return f"{num} + {self.den}"
         return f"{num} ÷ {self.den}{times}"
 
     def as_dict(self) -> dict:
@@ -168,6 +174,7 @@ DIFF_AFTER = re.compile(r"^(?:의)?(?:차이|격차)")
 MORE_AFTER = re.compile(r"^보다\S*?몇\S*?(?:많|적|높|낮|더)")
 MINUS = (re.compile(r"^에서$"), re.compile(r"^(?:을|를)?(?:빼|뺀)"))
 TIMES_AFTER = re.compile(r"^의?몇배")
+INCLUDE_AFTER = re.compile(r"^(?:도|까지|을|를|와|과)?(?:포함|합쳐|합친|합하면|더해|더하면)")
 # 차이의 공식 지표 (A − B → 지표 사전 이름)
 OFFICIAL_DIFF = {("출생아 수", "사망자 수"): "자연증가 건수"}
 
@@ -177,6 +184,9 @@ def _diff_or_times(a: str, b: str, between: str, after: str, plus) -> "Cross | N
         return None
     if SUBJECT.match(between) and TIMES_AFTER.match(after):
         return Cross(num=a, den=b, scale=1, form="versus")  # A는 B의 몇 배 = A ÷ B
+    if INCLUDE_AFTER.match(after) and _unit(a) == _unit(b):
+        # "화성시 인구, 등록 외국인도 포함해서 총 몇 명": A + B
+        return Cross(num=a, den=b, scale=1, form="sum")
     diff = (
         (AND_BETWEEN.match(between) and DIFF_AFTER.match(after))
         or (SUBJECT.match(between) and MORE_AFTER.match(after))
@@ -212,6 +222,11 @@ def detect(question: str) -> Cross | None:
     between, after = text[a_end:b_start], text[b_end:]
     if found := _diff_or_times(a, b, between, after, plus):
         return found
+    if not between and not plus and (m := AFTER_VERSUS.match(after)):
+        # "이사한 사람 인구 대비 몇 퍼센트": A가 B 바로 앞에 붙고 B 뒤에 '대비' → A ÷ B
+        scale = 100 if RATE_ANYWHERE.search(after[m.end() :]) else 1
+        official = OFFICIAL.get((a, b, scale))
+        return Cross(num=a, den=b, scale=scale, form="versus", official=official)
     form = "per"
     if m := PER.match(between):
         n = m.group("n")
@@ -221,7 +236,9 @@ def detect(question: str) -> Cross | None:
         if scale <= 0:
             return None
     elif VERSUS.match(between):
-        scale, form = (100 if RATE_AFTER.match(after) else 1), "versus"
+        # 분모가 인구면 %로 ("인구 대비 등록외국인"), 그 밖은 배 ("출생아 수 대비 사망자 수")
+        rate = RATE_AFTER.match(after) or a == "총인구"
+        scale, form = (100 if rate else 1), "versus"
     elif WITHIN.match(between) and RATE_AFTER.match(after):
         scale, form = 100, "within"
     else:
@@ -235,7 +252,7 @@ def detect(question: str) -> Cross | None:
 
 MARKER = re.compile(r"^(?P<stem>.*?)(?P<n>[\d,]+|천|만|백)?(?P<unit>명|세대|가구|건)?당$")
 VERSUS_TOKEN = re.compile(r"^(?P<stem>.*?)(?:의|에)?대비$")
-WITHIN_TOKENS = {"중", "가운데", "중에서"}
+WITHIN_TOKENS = {"중", "중에", "가운데", "중에서"}
 # 질문 끝의 묻는 말 ("1인 가구 수는 몇이야?" → "1인 가구 수")
 ENDING = re.compile(
     r"(?:은|는|이|가|을|를|의)?\s*(?:몇|얼마|어떻게|어때|알려|인가요|이에요|예요|입니까|일까|\?).*$"
@@ -244,6 +261,7 @@ JOSA_END = re.compile(r"(?:은|는|이|가|을|를|의)$")
 YEAR_TOKEN = re.compile(r"^(?:\d{2,4}년(?:도)?|올해|작년|지난해|금년|최근|현재)(?:의|에|기준)?$")
 # 사전에 없는 쪽으로 볼 수 있는 말: 건수 · 인원 · 가구로 끝나야 한다 (값을 나눌 수 있는 것)
 PLAIN_WORDS = {"남자", "여자", "남성", "여성", "총", "전체", "주민등록"}
+PEOPLE_WORDS = {"사람", "사람들", "주민", "주민들", "인구"}
 COUNT_PHRASE = re.compile(r"(?:수|인구|가구|건수|건|사람|세대)$")
 
 
@@ -272,6 +290,8 @@ def _side(phrase: str) -> tuple[str | None, str | None]:
     """(사전 지표 이름, 사전에 없는 말). 둘 다 None이면 쓸 수 없는 말"""
     if not phrase:
         return None, None
+    if indicators._norm(phrase) in PEOPLE_WORDS:
+        return "총인구", None  # "제주도 사람 중": 사람 · 주민만 쓴 말은 총인구
     spans = indicators.find_in_text(phrase) or []
     if len(spans) > 1:
         return None, None
@@ -324,6 +344,9 @@ def detect_partial(question: str, both: bool = False) -> Cross | None:
             return Cross(num=num_new, den=den_name, scale=scale, form=form, dynamic="num")
         if num_name and den_new:
             return Cross(num=num_name, den=den_new, scale=scale, form=form, dynamic="den")
+        if num_name and den_name and num_name != den_name:
+            official = OFFICIAL.get((num_name, den_name, scale))
+            return Cross(num=num_name, den=den_name, scale=scale, form=form, official=official)
         if both and num_new and den_new:
             # 두 값 모두 사전에 없다 ("1인 가구 중 통근하는 사람 비율"): 질문 전체로
             # 한 표 안의 비율을 먼저 찾고, 안 되면 양쪽을 따로 찾아 나눈다 (ask_session에서만)
@@ -357,6 +380,8 @@ def _calc(c: Cross, a, b):
     """두 값으로 계산: 차이면 A − B, 그 밖은 A ÷ B × 배율"""
     if c.form == "diff":
         return None if a is None or b is None else _round(a - b)
+    if c.form == "sum":
+        return None if a is None or b is None else _round(a + b)
     return _div(a, b, c.scale)
 
 
@@ -369,6 +394,9 @@ def compute(q: dict, run) -> dict:
     if q.get("ages"):
         return _fail(c, "두 지표를 나눈 값은 연령 구간을 나눠 계산하지 않습니다.")
     base = {**q, "cross": None, "indicators": None}
+    if kind in ("value", "trend") and not q.get("regions"):
+        # 지역을 말하지 않은 비율 · 차이는 전국 ("이사한 사람 인구 대비 %")
+        base["regions"] = ["전국"]
     if kind == "rank":
         base["top"] = None  # 나눈 값으로 다시 순위를 매기므로 모든 지역을 받는다
 
@@ -379,7 +407,9 @@ def compute(q: dict, run) -> dict:
         return [run({**base, **extra, "indicator": name, "term": name}) for name in names]
 
     parts = both()
-    if kind == "value" and all(p.get("status") == "ok" for p in parts) and not q.get("year"):
+    if kind in ("value", "rank", "compare") and all(p.get("status") == "ok" for p in parts) and (
+        not q.get("year")
+    ):
         years = {p.get("year") for p in parts}
         if len(years) > 1 or any(p.get("as_of") for p in parts):
             # 연도를 말하지 않아 두 지표가 각자 최신 연도로 답했다: 둘 다 있는 해로 맞춘다
@@ -387,7 +417,9 @@ def compute(q: dict, run) -> dict:
             year = min(y for y in years if y is not None)
             if any(p.get("as_of") for p in parts):
                 year = min(year, indicators._data_years()[1])
-            parts = both({"year": year})
+            # 맞춘 해의 연간 값으로 (질문의 "총 · 지금"을 최신 달로 읽은 asked.latest는 끈다)
+            asked = {**(q.get("asked") or {}), "latest": False}
+            parts = both({"year": year, "asked": asked})
     for name, p in zip(names, parts, strict=True):
         if p.get("status") != "ok":
             # 재료 하나를 계산하지 못했다 (예: 시군구 자료 없음). 그 안내를 그대로 준다
@@ -471,8 +503,8 @@ def combine_value(c: Cross, num: dict, den: dict, q: dict) -> dict:
         {"label": c.num_label, "value": num.get("value"), "unit": c.unit_of(c.num)},
         {"label": c.den, "value": den.get("value"), "unit": c.unit_of(c.den)},
     ]
-    if c.form == "diff":
-        out["op"] = "−"
+    if c.form in ("diff", "sum"):
+        out["op"] = "−" if c.form == "diff" else "+"
     elif c.scale != 100:
         out["scale"] = c.scale
     return out
