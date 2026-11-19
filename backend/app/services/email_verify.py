@@ -22,6 +22,7 @@ import hmac
 import math
 import secrets
 from datetime import UTC, datetime, timedelta
+from html import escape
 
 from sqlalchemy import delete as sql_delete
 from sqlalchemy import update
@@ -89,6 +90,44 @@ def can_register(row: EmailVerification | None, at: datetime) -> bool:
         and row.verified_at is not None
         and at < row.verified_at + timedelta(minutes=VERIFIED_MINUTES)
     )
+
+
+def code_mail(code: str, service: str) -> tuple[str, str, str]:
+    """인증번호 메일 → (제목, 글자 본문, HTML 본문).
+    메일 앱은 HTML을 보여 주고, 못 하면 글자 본문을 보여 준다.
+    HTML은 메일 앱마다 지원하는 CSS가 달라 표와 인라인 스타일만 쓴다"""
+    name = escape(service)
+    subject = f"[{service}] 회원가입 인증번호 {code}"
+    text = (
+        f"{service} 회원가입 인증번호: {code}\n\n"
+        f"{CODE_MINUTES}분 안에 가입 화면에 입력해 주세요.\n"
+        "직접 요청하지 않았다면 이 메일은 무시하셔도 됩니다."
+    )
+    html = f"""<!doctype html>
+<html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#f4f7ef;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f7ef;">
+<tr><td align="center" style="padding:32px 16px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0"
+ style="max-width:480px;background:#ffffff;border-radius:16px;
+ font-family:'Apple SD Gothic Neo','Malgun Gothic',sans-serif;color:#173b2e;">
+<tr><td style="padding:32px 32px 8px;font-size:14px;font-weight:600;">{name}</td></tr>
+<tr><td style="padding:0 32px;font-size:20px;font-weight:600;line-height:30px;">
+회원가입 인증번호</td></tr>
+<tr><td style="padding:24px 32px;">
+<div style="padding:20px 0;border-radius:12px;background:#e7f1e5;text-align:center;
+ font-family:Menlo,Consolas,monospace;font-size:32px;font-weight:700;letter-spacing:8px;">{code}</div>
+</td></tr>
+<tr><td style="padding:0 32px 32px;font-size:14px;line-height:22px;color:#5f7265;">
+{CODE_MINUTES}분 안에 가입 화면에 입력해 주세요.<br>
+직접 요청하지 않았다면 이 메일은 무시하셔도 됩니다.
+</td></tr>
+</table>
+</td></tr>
+</table>
+</body></html>"""
+    return subject, text, html
 
 
 async def get(session: AsyncSession, email: str) -> EmailVerification | None:

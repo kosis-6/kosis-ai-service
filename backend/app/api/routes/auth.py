@@ -11,6 +11,7 @@ app.user_sessions에 Refresh Token 해시와 지금 쓸 수 있는 Access Token 
 비밀번호를 바꾸거나 관리자가 계정을 정지하면 그 사용자의 로그인이 모두 끊긴다.
 """
 
+import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Cookie, Depends, Form, HTTPException, Request, Response, status
@@ -34,6 +35,8 @@ from app.schemas.auth import (
     UserRead,
 )
 from app.services import auth_sessions, email_verify, mailer, users
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["로그인·회원가입"])
 
@@ -131,17 +134,18 @@ async def send_email_code(
     row, code = email_verify.issue(row, body.email, at)
     await email_verify.save(session, row)
     code_sends.fail(ip)  # 보낸 횟수로 센다
+    subject, text, html = email_verify.code_mail(
+        code, get_settings().mail_from_name or "LIKE SNAKE"
+    )
     try:
-        await mailer.send(
-            body.email,
-            "[KOSIS 통계 서비스] 회원가입 인증번호",
-            f"인증번호: {code}\n\n{email_verify.CODE_MINUTES}분 안에 입력해 주세요.\n"
-            "직접 요청하지 않았다면 이 메일은 무시하셔도 됩니다.",
-        )
+        await mailer.send(body.email, subject, text, html)
     except mailer.MailNotConfigured:
         await email_verify.delete(session, body.email)
         raise
     except Exception as e:  # SMTP 연결·인증 실패
+        # 원인(계정·앱 비밀번호 오류, 연결 실패 등)은 서버 로그로만 남긴다.
+        # SMTP 오류 문구에는 비밀번호가 들어 있지 않다
+        logger.warning("인증 메일을 보내지 못함: %s: %s", type(e).__name__, e)
         await email_verify.delete(session, body.email)  # 바로 다시 요청할 수 있게
         raise HTTPException(
             status_code=502, detail="인증 메일을 보내지 못했습니다. 잠시 뒤에 다시 시도해 주세요."

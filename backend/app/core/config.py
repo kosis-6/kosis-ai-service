@@ -65,14 +65,20 @@ class Settings(BaseSettings):
     cookie_secure: bool | None = None
 
     # 회원가입 이메일 인증번호 메일 (app/services/mailer.py)
-    # smtp: 실제로 보낸다 (Gmail은 앱 비밀번호, 배포는 AWS SES SMTP 등)
+    # smtp: 실제로 보낸다
     # console: 보내지 않고 서버 로그에 인증번호를 찍는다 (개발용. 배포에서는 쓰지 않는다)
+    # Gmail: SMTP_HOST=smtp.gmail.com, SMTP_PORT=587, SMTP_USER=보내는 Gmail 주소,
+    #        SMTP_PASSWORD=그 계정의 앱 비밀번호 16자리(2단계 인증을 켜야 만들 수 있다, 공백 없이)
+    # 설정 확인: python -m scripts.send_test_mail 받을주소 (시험 메일 한 통)
     mail_backend: Literal["smtp", "console"] = "console"
     smtp_host: str = ""
     smtp_port: int = 587  # 587: STARTTLS, 465: SSL
     smtp_user: str = ""
     smtp_password: str = ""
-    mail_from: str = ""  # 비우면 smtp_user
+    # 보내는 주소. 비우면 SMTP_USER.
+    # Gmail은 로그인한 주소(또는 Gmail에 등록한 보낼 주소)만 쓸 수 있다
+    mail_from: str = ""
+    mail_from_name: str = "LIKE SNAKE"  # 받은 편지함에 보이는 보낸 사람 이름, 메일 제목 앞머리
 
     # 통계표 검색의 질문 임베딩 (app/services/vector_search.py)
     # clova: CLOVA Studio v2 / local: bge-m3 직접 실행 / off: 키워드 검색만
