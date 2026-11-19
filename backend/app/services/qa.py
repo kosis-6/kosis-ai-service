@@ -2793,6 +2793,8 @@ def log_request(question, res=None, error=None, elapsed_ms=None, path=None, user
         record["llm_calls"] = trace["llm_calls"]
     if trace.get("plan_cache"):
         record["plan_cache"] = trace["plan_cache"]
+    if trace.get("dynamic"):  # 바로 계산이 본 표와 건너뛴 이유 (scripts/refusal_reasons.py로 센다)
+        record["dynamic"] = trace["dynamic"]
     if trace.get("refreshed"):  # 최근·최신 질문에서 KOSIS 새 연도를 확인한 결과
         record["refreshed"] = trace["refreshed"]
     if "understand_usage" in trace:
