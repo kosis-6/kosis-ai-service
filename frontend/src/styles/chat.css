@@ -562,7 +562,6 @@ button.pill:active { transform: scale(0.97); }
 .family-btn small { display: block; margin-top: 2px; color: var(--muted); font-size: 12px; font-weight: 400; }
 .choices .family-list { display: flex; flex-direction: column; gap: 8px; }
 
-.debug-link { font-size: 12px; line-height: 16px; }
 .reply .ask-again { height: 48px; min-width: 220px; }
 
 /* ---- 질문 입력 ---- */
@@ -659,18 +658,6 @@ button.pill:active { transform: scale(0.97); }
 }
 .dev-toggle { padding: 0; border: 0; background: none; font-size: 12px; font-weight: 500; line-height: 18px; white-space: pre; }
 .dev-note { color: var(--muted); font-size: 12px; line-height: 18px; }
-.dev-summary { padding: 20px; border-radius: 16px; background: var(--panel); line-height: 22px; white-space: pre-line; }
-.dev-heading { font-size: 13px; font-weight: 500; line-height: 20px; }
-.dev-cand { color: var(--muted); font-size: 12px; line-height: 18px; }
-.dev-raw summary { color: var(--muted); font-size: 12px; cursor: pointer; }
-.dev-raw pre {
-  margin: 8px 0 0;
-  padding: 12px;
-  border-radius: 8px;
-  background: var(--accent-soft);
-  font: 12px/1.5 var(--font-mono);
-  overflow-x: auto;
-}
 
 /* ---- 높이가 낮은 노트북: 첫 화면이 입력창 아래로 잘리지 않게 줄인다 ---- */
 @media (min-width: 861px) and (max-height: 860px) {
@@ -745,13 +732,13 @@ button.pill:active { transform: scale(0.97); }
 
 /* 터치 기기: 시안의 크기는 두고 눌리는 범위만 44px 로 넓힌다 */
 @media (pointer: coarse) {
-  .pill, .head-btn, .send, .more-examples, .debug-link { position: relative; }
-  .pill::after, .head-btn::after, .send::after, .more-examples::after, .debug-link::after {
+  .pill, .head-btn, .send, .more-examples { position: relative; }
+  .pill::after, .head-btn::after, .send::after, .more-examples::after {
     content: "";
     position: absolute;
     inset: -6px 0;
     min-height: 44px;
   }
   .send::after { inset: -2px; }
-  .more-examples::after, .debug-link::after { inset: -14px 0; }
+  .more-examples::after { inset: -14px 0; }
 }

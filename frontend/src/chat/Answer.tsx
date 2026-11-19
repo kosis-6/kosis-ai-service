@@ -114,7 +114,6 @@ export function Answer({ data, busy, onSend, onOthers, onAskAgain }: Props) {
           busy={busy}
           onSend={onSend}
           onOthers={onOthers}
-          onDebug={() => undefined}
           onAskAgain={onAskAgain}
         />
       </>

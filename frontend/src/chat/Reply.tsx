@@ -201,11 +201,10 @@ type Props = {
   busy: boolean;
   onSend: Send;
   onOthers: (recs: Recommendation[], parsed: Parsed) => void;
-  onDebug: (data: SearchResponse) => void;
   onAskAgain: () => void;
 };
 
-export function Reply({ data, busy, onSend, onOthers, onDebug, onAskAgain }: Props) {
+export function Reply({ data, busy, onSend, onOthers, onAskAgain }: Props) {
   const recs = data.recommendations ?? [];
   const title = NO_RESULT_TITLES[data.status];
   return (
@@ -237,12 +236,6 @@ export function Reply({ data, busy, onSend, onOthers, onDebug, onAskAgain }: Pro
       {title && (
         <button type="button" className="btn primary ask-again" onClick={onAskAgain}>
           다른 통계 질문하기
-        </button>
-      )}
-      {data.debug && (
-        <button type="button" className="text-btn debug-link" onClick={() => onDebug(data)}>
-          디버그 · 검색 과정 보기
-          <Icon name="chevronRight" size={14} />
         </button>
       )}
     </>

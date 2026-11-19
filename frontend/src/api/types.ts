@@ -77,9 +77,6 @@ export type Clarify =
   | { level: "member"; axes: Axis[] }
   | { level: "family"; families: FamilyChoice[] };
 
-export type DebugCandidate = { tbl_id: string; table_name: string; score?: number | null };
-export type Debug = { retrieval?: string; candidates?: DebugCandidate[] } & Record<string, unknown>;
-
 export type SearchResponse = {
   session_id: string;
   status: string; // ok / partial_match / clarify / ambiguous / out_of_scope / not_statistics / parse_error
@@ -89,5 +86,4 @@ export type SearchResponse = {
   recommendations: Recommendation[];
   together?: Recommendation[];
   notice: string | null;
-  debug?: Debug | null;
 };

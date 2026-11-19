@@ -51,7 +51,7 @@ function save(key: string, on: boolean): void {
     /* 저장 못 해도 화면은 동작 */
   }
 }
-function initial(name: "mock" | "debug"): boolean {
+function initial(name: "mock"): boolean {
   const params = new URLSearchParams(location.search);
   return params.has(name) ? params.get(name) !== "0" : load(`chat.${name}`) === "1";
 }
@@ -81,7 +81,6 @@ export function ChatPage() {
   const [question, setQuestion] = useState("");
   const [sheet, setSheet] = useState<SheetState | null>(null);
   const [mock, setMock] = useState(() => initial("mock"));
-  const [debug, setDebug] = useState(() => initial("debug"));
   const [history, setHistory] = useState<ConversationRead[] | null>(null);
 
   // 서버에 남는 대화인가: 로그인 유저의 실제 답만 남는다 (손님·목업은 남지 않는다)
@@ -98,7 +97,6 @@ export function ChatPage() {
   const inChat = messages.length > 0 || opening;
 
   useEffect(() => save("chat.mock", mock), [mock]);
-  useEffect(() => save("chat.debug", debug), [debug]);
   // 대화 중에만 보이는 버튼(모바일의 "새 대화")을 CSS 가 body.in-chat 으로 가린다
   useEffect(() => {
     document.body.classList.toggle("in-chat", inChat);
@@ -342,9 +340,9 @@ export function ChatPage() {
           </div>
           <Brand className="only-narrow" />
           <div className="head-actions">
-            {(mock || debug) && (
+            {mock && (
               <button type="button" className="dev-badge" onClick={() => setSheet({ kind: "dev" })}>
-                {mock ? "목업 모드" : "개발 도구"}
+                목업 모드
               </button>
             )}
             <p className="source only-wide">KOSIS 데이터 기반</p>
@@ -528,16 +526,13 @@ export function ChatPage() {
       {sheet?.kind === "dev" && (
         <Sheet title="개발 도구" onClose={() => setSheet(null)}>
           <DevTools
-            data={null}
             mock={mock}
-            debug={debug}
             onMock={() => {
               // 목업과 실제 답이 한 대화에 섞이지 않게 새 대화로 시작한다
               setMock((on) => !on);
               setSheet(null);
               reset();
             }}
-            onDebug={() => setDebug((on) => !on)}
           />
         </Sheet>
       )}
