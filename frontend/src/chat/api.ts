@@ -1,4 +1,4 @@
-import type { AskRequest, AskResponse, SearchRequest, SearchResponse } from "../api/types";
+import type { AskRequest, AskResponse } from "../api/types";
 import { authFetch } from "../auth/client";
 
 // 로그인했으면 토큰을 붙여 보낸다 (기록이 사용자와 이어진다). 만료되면 새로 받아 다시 보낸다
@@ -22,20 +22,7 @@ async function postJson<T>(url: string, body: unknown): Promise<T> {
   return (await res.json()) as T;
 }
 
-/** POST /search (통계표 찾기). 목업 모드면 서버·HCX 를 부르지 않고 mock.js 가 응답을 만든다 */
-export async function search(body: SearchRequest, mock: boolean): Promise<SearchResponse> {
-  if (mock) {
-    const { MockApi } = await import("./mock.js"); // 목업을 켰을 때만 내려받는다
-    return MockApi.search(body);
-  }
-  return postJson<SearchResponse>("/search", body);
-}
-
-/** POST /ask (수치 질문). 목업 모드면 mockAsk.ts 의 저장된 답을 돌려준다 */
-export async function ask(body: AskRequest, mock: boolean): Promise<AskResponse> {
-  if (mock) {
-    const { MockAsk } = await import("./mockAsk");
-    return MockAsk.ask(body);
-  }
+/** POST /ask: 질문 하나에 수치 답 또는 통계표 안내 */
+export function ask(body: AskRequest): Promise<AskResponse> {
   return postJson<AskResponse>("/ask", body);
 }

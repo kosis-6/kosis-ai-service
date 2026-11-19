@@ -6,7 +6,6 @@ type Schemas = components["schemas"];
 export type Token = Schemas["Token"];
 export type UserRead = Schemas["UserRead"];
 export type EmailCodeSent = Schemas["EmailCodeSent"];
-export type SearchRequest = Schemas["SearchRequest"];
 export type AskRequest = Schemas["AskRequest"];
 // tables 는 서버 스키마가 자유 형식(dict)이라 화면이 읽는 모양을 적는다
 //   수치로 답함        { status: "ok", recommendations }      (답에 쓴 표)
@@ -18,6 +17,12 @@ export type Chart = Schemas["Chart"];
 export type ChartRow = Schemas["ChartRow"];
 export type Source = Schemas["Source"];
 export type Applied = Schemas["Applied"];
+
+// 로그인 유저의 대화 기록 (/conversations)
+export type ConversationRead = Schemas["ConversationRead"];
+export type ConversationList = Schemas["ConversationList"];
+export type ConversationDetail = Schemas["ConversationDetail"];
+export type ConversationTurn = Schemas["ConversationTurn"];
 
 // 관리자 화면 (/admin/logs/*)
 export type LogSummary = Schemas["LogSummary"];
@@ -71,9 +76,6 @@ export type Clarify =
   | { level: "member"; axes: Axis[] }
   | { level: "family"; families: FamilyChoice[] };
 
-export type DebugCandidate = { tbl_id: string; table_name: string; score?: number | null };
-export type Debug = { retrieval?: string; candidates?: DebugCandidate[] } & Record<string, unknown>;
-
 export type SearchResponse = {
   session_id: string;
   status: string; // ok / partial_match / clarify / ambiguous / out_of_scope / not_statistics / parse_error
@@ -83,5 +85,4 @@ export type SearchResponse = {
   recommendations: Recommendation[];
   together?: Recommendation[];
   notice: string | null;
-  debug?: Debug | null;
 };

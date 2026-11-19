@@ -32,6 +32,9 @@ htmlcov/
 *.log
 logs/
 
+# 운영 서버의 DB 덤프 (compose.prod.yaml 의 db 가 /backups 로 쓴다)
+backups/
+
 # macOS
 .DS_Store
 

@@ -11,13 +11,20 @@ app.user_sessions에 Refresh Token 해시와 지금 쓸 수 있는 Access Token 
 비밀번호를 바꾸거나 관리자가 계정을 정지하면 그 사용자의 로그인이 모두 끊긴다.
 """
 
+import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Cookie, Depends, Form, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
 from fastapi.security import OAuth2PasswordRequestForm
 
-from app.api.deps import CurrentUser, Session, oauth2_scheme, optional_scheme
+from app.api.deps import (
+    CurrentUser,
+    Session,
+    admin_ip_allowed,
+    oauth2_scheme,
+    optional_scheme,
+)
 from app.core import login_limit
 from app.core.config import get_settings
 from app.core.security import create_access_token, decode_access_token, verify_password
@@ -34,6 +41,8 @@ from app.schemas.auth import (
     UserRead,
 )
 from app.services import auth_sessions, email_verify, mailer, users
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["로그인·회원가입"])
 
@@ -131,17 +140,18 @@ async def send_email_code(
     row, code = email_verify.issue(row, body.email, at)
     await email_verify.save(session, row)
     code_sends.fail(ip)  # 보낸 횟수로 센다
+    subject, text, html = email_verify.code_mail(
+        code, get_settings().mail_from_name or "LIKE SNAKE"
+    )
     try:
-        await mailer.send(
-            body.email,
-            "[KOSIS 통계 서비스] 회원가입 인증번호",
-            f"인증번호: {code}\n\n{email_verify.CODE_MINUTES}분 안에 입력해 주세요.\n"
-            "직접 요청하지 않았다면 이 메일은 무시하셔도 됩니다.",
-        )
+        await mailer.send(body.email, subject, text, html)
     except mailer.MailNotConfigured:
         await email_verify.delete(session, body.email)
         raise
     except Exception as e:  # SMTP 연결·인증 실패
+        # 원인(계정·앱 비밀번호 오류, 연결 실패 등)은 서버 로그로만 남긴다.
+        # SMTP 오류 문구에는 비밀번호가 들어 있지 않다
+        logger.warning("인증 메일을 보내지 못함: %s: %s", type(e).__name__, e)
         await email_verify.delete(session, body.email)  # 바로 다시 요청할 수 있게
         raise HTTPException(
             status_code=502, detail="인증 메일을 보내지 못했습니다. 잠시 뒤에 다시 시도해 주세요."
@@ -298,16 +308,27 @@ async def logout(
     _forget_cookie(response, request)
 
 
+def _me(user: User, request: Request) -> UserRead:
+    """내 정보. 관리자를 허용하지 않은 곳에서는 is_admin을 false로 알려 화면이 관리자 메뉴를 숨긴다
+    (관리자 API는 require_admin이 따로 막는다)"""
+    out = UserRead.model_validate(user)
+    if out.is_admin and not admin_ip_allowed(request):
+        out.is_admin = False
+    return out
+
+
 @router.get("/me", summary="내 정보")
-async def me(user: CurrentUser) -> UserRead:
-    return UserRead.model_validate(user)
+async def me(user: CurrentUser, request: Request) -> UserRead:
+    return _me(user, request)
 
 
 @router.patch("/me", summary="닉네임 바꾸기")
-async def update_me(body: ProfileUpdate, user: CurrentUser, session: Session) -> UserRead:
+async def update_me(
+    body: ProfileUpdate, user: CurrentUser, session: Session, request: Request
+) -> UserRead:
     """내 닉네임을 바꾼다"""
     user = await users.set_nickname(session, user, body.nickname)
-    return UserRead.model_validate(user)
+    return _me(user, request)
 
 
 @router.post("/password", summary="비밀번호 바꾸기")

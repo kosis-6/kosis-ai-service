@@ -1,7 +1,8 @@
 """질문 해석 보정 (qa.correct·_ground_regions) 회귀 테스트
 
 - 연도: 질문에 연도를 말했으면 HCX가 읽은 연도를 지우지 않는다
-- 지역: 짧게 부른 이름("강남")은 허용, 다른 시도·흔한 낱말·지표 이름 속 글자는 막고, 여러 곳이면 되묻는다
+- 지역: 짧게 부른 이름("강남")은 허용, 다른 시도·흔한 낱말·지표 이름 속 글자는 막고,
+  여러 곳이면 되묻는다
 """
 
 import pytest
@@ -20,7 +21,7 @@ SAYS_YEAR = [
     "서울 인구 2022",
     "서울 인구(2022)",
     "22년 서울 인구",
-    "\'22년 서울 인구",
+    "'22년 서울 인구",
     "2022학년도 서울 인구",
     "2022.12 서울 인구",
     "2022-12 서울 인구",
@@ -80,5 +81,6 @@ def _ground(question, region):
         ("이천 명이 넘는 출생아 수", "경기도 이천시", "막음"),
     ],
 )
+@pytest.mark.needs_data
 def test_ground_regions(question, region, expected):
     assert _ground(question, region) == expected

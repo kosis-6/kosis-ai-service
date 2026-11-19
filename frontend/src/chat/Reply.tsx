@@ -1,6 +1,7 @@
 // 답변 한 건: 말풍선 + 알림 + 추천 표 카드 + 되묻기 선택지 (POST /search 응답의 status 별)
 import { useState } from "react";
 import type { Axis, FamilyChoice, Parsed, Recommendation, SearchResponse } from "../api/types";
+import { Icon } from "../components/Icon";
 import {
   AXIS_LABELS,
   NO_RESULT_TITLES,
@@ -21,7 +22,8 @@ export type Send = (question: string, selections?: Record<string, string>) => vo
 function KosisLink({ url, className = "" }: { url: string; className?: string }) {
   return (
     <a className={`btn primary ${className}`.trim()} href={safeUrl(url)} target="_blank" rel="noopener">
-      {"KOSIS에서 보기  ↗"}
+      KOSIS에서 보기
+      <Icon name="external" />
     </a>
   );
 }
@@ -45,7 +47,10 @@ export function TopCard({ r, parsed, badge = "추천 통계표" }: TopCardProps)
   const others = otherVersions(r.family);
   return (
     <article className="card">
-      <span className="card-badge">{badge}</span>
+      <div className="card-top">
+        <span className="card-badge">{badge}</span>
+        <code className="tbl-id">{r.tbl_id}</code>
+      </div>
       <h3>{r.tbl_nm}</h3>
       <p className="card-meta">{metaLine(r)}</p>
       {path && <p className="card-path">{path}</p>}
@@ -196,11 +201,10 @@ type Props = {
   busy: boolean;
   onSend: Send;
   onOthers: (recs: Recommendation[], parsed: Parsed) => void;
-  onDebug: (data: SearchResponse) => void;
   onAskAgain: () => void;
 };
 
-export function Reply({ data, busy, onSend, onOthers, onDebug, onAskAgain }: Props) {
+export function Reply({ data, busy, onSend, onOthers, onAskAgain }: Props) {
   const recs = data.recommendations ?? [];
   const title = NO_RESULT_TITLES[data.status];
   return (
@@ -232,11 +236,6 @@ export function Reply({ data, busy, onSend, onOthers, onDebug, onAskAgain }: Pro
       {title && (
         <button type="button" className="btn primary ask-again" onClick={onAskAgain}>
           다른 통계 질문하기
-        </button>
-      )}
-      {data.debug && (
-        <button type="button" className="text-btn debug-link" onClick={() => onDebug(data)}>
-          {"디버그 · 검색 과정 보기  ›"}
         </button>
       )}
     </>

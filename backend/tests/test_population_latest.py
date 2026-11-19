@@ -4,6 +4,9 @@ import pytest
 
 from app.services import charts, indicators, population_latest, qa
 
+# 실제 통계 데이터(DB)가 있어야 돈다. CI는 데이터 없이 돌아서 뺀다 (pyproject.toml markers)
+pytestmark = pytest.mark.needs_data
+
 ROWS = [
     {"PRD_DE": "202610", "C2_NM": "계", "DT": "9274392"},
     {"PRD_DE": "202610", "C2_NM": "0세", "DT": "49818"},

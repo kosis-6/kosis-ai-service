@@ -1,4 +1,9 @@
+import pytest
+
 from scripts import eval_replay as rp
+
+# 실제 통계 데이터(DB)가 있어야 돈다. CI는 데이터 없이 돌아서 뺀다 (pyproject.toml markers)
+pytestmark = pytest.mark.needs_data
 
 
 def test_replay_and_check() -> None:

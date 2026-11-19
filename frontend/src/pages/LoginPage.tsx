@@ -29,9 +29,8 @@ export function LoginPage() {
   return (
     <form className="view" onSubmit={submit}>
       <div className="form-head">
-        <p className="eyebrow">WELCOME BACK</p>
-        <h1>다시 만나 반가워요</h1>
-        <p className="lead">로그인하고 TEAM SIX와 통계 탐색을 시작해 보세요.</p>
+        <h1>로그인</h1>
+        <p className="lead">로그인하고 LIKE SNAKE와 통계 탐색을 시작해 보세요.</p>
       </div>
       <div className="fields">
         <Field

@@ -46,17 +46,20 @@ def parsed(**kw) -> dict:
         "2024년 부산 울산 경남 통틀어 출생아 수",
     ],
 )
+@pytest.mark.needs_data
 def test_sum_words_for_regions(question: str) -> None:
     p = qa.correct(question, parsed(regions=["부산", "울산", "경남"], year=2024), TODAY)
     assert (p["type"], p.get("aggregate")) == ("value", "sum")
 
 
+@pytest.mark.needs_data
 def test_value_with_several_regions_and_no_sum_is_a_comparison() -> None:
     """합계를 묻지 않았는데 HCX가 value로 읽으면 첫 지역만 답했다 → 지역별 비교로"""
     p = qa.correct("2024년 부산 울산 출생아 수", parsed(regions=["부산", "울산"], year=2024), TODAY)
     assert (p["type"], p["regions"]) == ("compare", ["부산", "울산"])
 
 
+@pytest.mark.needs_data
 def test_compare_with_sum_words_is_summed() -> None:
     """HCX가 '합쳐서'를 compare로 읽어도 합계로 (compare에서는 더하지 않았다)"""
     q = "2024년 부산 울산 경남 출생아 수 합쳐서"
@@ -64,6 +67,7 @@ def test_compare_with_sum_words_is_summed() -> None:
     assert (p["type"], p.get("aggregate")) == ("value", "sum")
 
 
+@pytest.mark.needs_data
 def test_one_region_value_is_left_alone() -> None:
     p = qa.correct("2024년 부산 출생아 수", parsed(regions=["부산"], year=2024), TODAY)
     assert (p["type"], p.get("aggregate")) == ("value", None)
@@ -87,6 +91,7 @@ def test_not_a_sum(question: str) -> None:
     assert not qa.SUM_WORDS.search(question)
 
 
+@pytest.mark.needs_data
 def test_comparison_with_boda_stays_a_comparison() -> None:
     """'서울보다 합계출산율이 높은 곳'은 세 지역 비교.
     합계로 읽으면 합계출산율을 더한 무의미한 값을 답한다"""
@@ -108,6 +113,7 @@ def test_comparison_with_boda_stays_a_comparison() -> None:
         "최근 5년 동안 전국에서 태어난 아이 다 합치면",
     ],
 )
+@pytest.mark.needs_data
 def test_sum_words_for_periods(question: str) -> None:
     p = qa.correct(question, parsed(type="trend", regions=["전국"]), TODAY)
     assert (p["type"], p.get("aggregate")) == ("trend", "sum")

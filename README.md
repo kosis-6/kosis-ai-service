@@ -69,7 +69,7 @@
 kosis-ai-service/
 ├── frontend/                # 화면 (React + TypeScript + Vite). 빌드한 dist/를 FastAPI가 /chat으로 서빙
 │   ├── src/pages/           # 화면: 통계표 찾기(채팅), 로그인, 회원가입
-│   ├── src/chat/            # 답변 그리기, /search 호출, 목업 응답
+│   ├── src/chat/            # 답변 그리기, /ask 호출, 지난 대화
 │   ├── src/auth/            # 로그인 상태, /auth API 호출
 │   ├── src/api/             # API 타입 (schema.d.ts는 npm run gen:api로 생성)
 │   └── src/styles/          # Figma 토큰과 화면 스타일
@@ -112,4 +112,3 @@ kosis-ai-service/
 | `npm test` | 단위 테스트 (Vitest) |
 | `npm run gen:api` | 서버의 OpenAPI에서 API 타입(`src/api/schema.d.ts`) 다시 생성. 서버 API를 바꾼 뒤 실행 |
 
-목업 응답으로 화면만 볼 때는 주소 뒤에 `?mock=1`을 붙인다 (서버·HCX를 부르지 않는다).
