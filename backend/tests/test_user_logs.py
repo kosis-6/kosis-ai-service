@@ -349,3 +349,44 @@ def test_values_the_database_cannot_take_are_refused(admin: TestClient, calls: d
     ):
         assert admin.get(path, params=params).status_code == 422, (path, params)
     assert calls == {}
+
+
+def test_session_detail_shows_flow(admin: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    # 턴마다 처리 흐름(거친 단계와 순서). 흐름을 기록하기 전의 턴은 null
+    steps = [
+        {"stage": "질문 이해", "result": "HCX", "detail": "지표=총인구 지역=서울"},
+        {"stage": "사전 계산", "result": "ok", "detail": "총인구 값=1명 표=DT_1B040A3"},
+        {"stage": "최종 답", "result": "ok", "detail": "new · 2024년 총인구는 …"},
+    ]
+
+    async def session_turns(session, session_id):
+        old = {**TURN, "id": 6, "turn_no": 1, "flow": None}
+        return [old, {**TURN, "flow": steps}]
+
+    monkeypatch.setattr(user_logs, "session_turns", session_turns)
+    turns = admin.get("/admin/logs/sessions/A_1").json()["turns"]
+    assert turns[0]["flow"] is None
+    assert [s["stage"] for s in turns[1]["flow"]] == ["질문 이해", "사전 계산", "최종 답"]
+
+
+def test_people_groups_conversations_by_user(admin: TestClient, monkeypatch) -> None:
+    # 로그인 사용자는 한 사람이 한 줄 (창 여러 개), 비로그인 사용자는 user_id 가 빈 한 줄
+    seen: dict = {}
+
+    async def people(session, limit, offset, guest, q, since, until):
+        seen.update(guest=guest, q=q)
+        me = {**TURN, "sessions": 3, "turns": 9, "first_at": AT, "last_at": AT}
+        guests = {"user_id": None, "user_email": None, "user_nickname": None}
+        return [me, {**guests, "sessions": 40, "turns": 61, "first_at": AT, "last_at": AT}], 2
+
+    monkeypatch.setattr(user_logs, "people", people)
+    r = admin.get("/admin/logs/people", params={"guest": "false", "q": "부산"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["total"] == 2 and body["people"][0]["sessions"] == 3
+    assert body["people"][1]["user_id"] is None and body["people"][1]["turns"] == 61
+    assert seen == {"guest": False, "q": "부산"}
+
+
+def test_people_needs_admin(client: TestClient) -> None:
+    assert client.get("/admin/logs/people").status_code in (401, 403)

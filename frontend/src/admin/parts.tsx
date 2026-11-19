@@ -115,8 +115,8 @@ export const DAYS: Option<number>[] = [
 ];
 export const WHO: Option<Who>[] = [
   { value: "all", label: "전체" },
-  { value: "user", label: "로그인" },
-  { value: "guest", label: "손님" },
+  { value: "user", label: "로그인 사용자" },
+  { value: "guest", label: "비로그인 사용자" },
 ];
 
 /** 불러오지 못했을 때: 무엇이 문제이고 어떻게 하면 되는지. 권한이 없으면 화면을 떠난다 */

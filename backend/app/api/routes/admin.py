@@ -16,6 +16,7 @@ from app.schemas.logs import (
     AuditList,
     AuditRead,
     LogSummary,
+    PersonList,
     SearchLogDetail,
     SearchLogList,
     SessionDetail,
@@ -130,6 +131,28 @@ async def log_summary(
     since = datetime.now(UTC) - timedelta(days=days)
     found = await user_logs.summary(session, since)
     return LogSummary(days=days, since=since, **found)
+
+
+@router.get("/logs/people", summary="사람별 대화 묶음")
+async def log_people(
+    user: AdminUser,
+    session: Session,
+    limit: Limit = 50,
+    offset: Offset = 0,
+    guest: Guest = None,
+    q: Word = None,
+    since: Since = None,
+    until: Until = None,
+) -> PersonList:
+    """대화를 사람별로 묶어 마지막 대화가 최근인 사람부터.
+    사람마다 대화 창 수, 질문 수, 처음·마지막 시각.
+    로그인 사용자는 한 사람이 한 줄이고(창을 여러 개 열어도 모인다), 비로그인 사용자는
+    user_id 가 null 인 한 줄로 모인다.
+    그 사람의 대화는 /logs/sessions?user_id= (비로그인은 guest=true)"""
+    rows, total = await user_logs.people(
+        session, limit, offset, guest, q, _aware(since), _aware(until)
+    )
+    return PersonList(total=total, people=rows)
 
 
 @router.get("/logs/sessions", summary="대화 목록")

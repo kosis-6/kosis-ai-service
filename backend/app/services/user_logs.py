@@ -142,18 +142,14 @@ SESSIONS_INNER = (
 )
 
 
-async def sessions(
-    session: AsyncSession,
-    limit: int,
-    offset: int,
-    user_id: int | None = None,
-    guest: bool | None = None,
-    q: str | None = None,
-    since: datetime | None = None,
-    until: datetime | None = None,
-) -> tuple[list[dict[str, Any]], int]:
-    """대화 목록을 마지막 턴이 최근인 것부터. (줄, 전체 수)
-    q 는 그 대화의 어느 턴에든 들어 있으면 맞고, since·until 은 마지막 턴 시각으로 거른다"""
+def _session_filters(
+    user_id: int | None,
+    guest: bool | None,
+    q: str | None,
+    since: datetime | None,
+    until: datetime | None,
+) -> tuple[str, dict[str, Any]]:
+    """대화(SESSIONS_INNER 의 c) 를 거르는 where 절과 값"""
     parts: list[str] = []
     params: dict[str, Any] = {}
     if user_id is not None:
@@ -173,7 +169,53 @@ async def sessions(
     if until is not None:
         parts.append("c.last_at < :until")
         params["until"] = until
-    where = " where " + " and ".join(parts) if parts else ""
+    return (" where " + " and ".join(parts) if parts else ""), params
+
+
+async def people(
+    session: AsyncSession,
+    limit: int,
+    offset: int,
+    guest: bool | None = None,
+    q: str | None = None,
+    since: datetime | None = None,
+    until: datetime | None = None,
+) -> tuple[list[dict[str, Any]], int]:
+    """대화를 사람별로 묶은 목록 (마지막 대화가 최근인 사람부터). (줄, 전체 수)
+    로그인 사용자는 한 사람이 한 줄 (창을 여러 개 열어 따로 물어도 그 사람 아래로 모인다).
+    비로그인 사용자는 누구인지 알 수 없어 user_id 가 빈 한 줄로 모은다.
+    q · since · until 은 대화 목록(sessions)과 같은 뜻:
+    맞는 대화만 세고, 맞는 대화가 없는 사람은 뺀다"""
+    where, params = _session_filters(None, guest, q, since, until)
+    grouped = (
+        "select c.user_id, count(*) as sessions, sum(c.turns) as turns,"
+        " min(c.started_at) as first_at, max(c.last_at) as last_at"
+        f" from ({SESSIONS_INNER}) c{where} group by c.user_id"
+    )
+    total = await _count(session, f"select count(*) from ({grouped}) g", params)
+    rows = await _rows(
+        session,
+        "select g.*, u.email as user_email, u.nickname as user_nickname"
+        f" from ({grouped}) g left join app.users u on u.id = g.user_id"
+        " order by g.last_at desc, g.user_id nulls last limit :limit offset :offset",
+        {**params, "limit": limit, "offset": offset},
+    )
+    return redact(rows), total
+
+
+async def sessions(
+    session: AsyncSession,
+    limit: int,
+    offset: int,
+    user_id: int | None = None,
+    guest: bool | None = None,
+    q: str | None = None,
+    since: datetime | None = None,
+    until: datetime | None = None,
+) -> tuple[list[dict[str, Any]], int]:
+    """대화 목록을 마지막 턴이 최근인 것부터. (줄, 전체 수)
+    q 는 그 대화의 어느 턴에든 들어 있으면 맞고, since·until 은 마지막 턴 시각으로 거른다"""
+    where, params = _session_filters(user_id, guest, q, since, until)
     total = await _count(session, f"select count(*) from ({SESSIONS_INNER}) c{where}", params)
     rows = await _rows(
         session,
@@ -190,7 +232,8 @@ async def session_turns(session: AsyncSession, session_id: str) -> list[dict[str
     return redact(
         await _rows(
             session,
-            f"{TURN_SELECT}, t.conditions_before, t.conditions_after, t.sources{TURN_FROM}"
+            f"{TURN_SELECT}, t.conditions_before, t.conditions_after, t.sources, t.flow"
+            f"{TURN_FROM}"
             " where t.session_id = :session_id order by t.created_at, t.id",
             {"session_id": session_id},
         )

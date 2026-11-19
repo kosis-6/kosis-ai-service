@@ -1,32 +1,34 @@
-// 대화 기록: 기간의 사용량 → 대화 목록 → 고른 대화의 턴 (말한 순서대로)
+// 대화 기록: 기간의 사용량 → 사람 → 그 사람의 대화 창 → 고른 창의 턴 (말한 순서대로)
+// 로그인 사용자는 창을 여러 개 열어 따로 물어도 그 사람 아래로 모인다. 비로그인 사용자는 누구인지
+// 알 수 없어 한 묶음으로 모은다
 import { useEffect, useMemo, useState } from "react";
-import type { SessionRead, TurnDetail } from "../api/types";
+import type { FlowStep, PersonRead, SessionRead, TurnDetail } from "../api/types";
 import * as api from "./api";
-import { changes, conditionLine, count, day, person, requestLabel, when } from "./format";
+import { changes, conditionLine, count, day, flowLabel, person, requestLabel, stuckStep, when } from "./format";
 import { Choice, DAYS, Empty, More, Problem, SkeletonRows, Status, useLoad, usePaged, useSettled, WHO } from "./parts";
+
+/** 고른 사람. id 가 null 이면 비로그인 사용자 묶음 */
+type Owner = { id: number | null; name: string };
 
 export function SessionsView() {
   const [days, setDays] = useState(7);
   const [who, setWho] = useState<api.Who>("all");
   const [word, setWord] = useState("");
   const q = useSettled(word);
+  const [owner, setOwner] = useState<Owner | null>(null);
   const [picked, setPicked] = useState<string | null>(null);
 
   const key = `${days}|${who}|${q}`;
   const since = useMemo(() => api.sinceDays(days), [key]);
-  const list = usePaged(
-    async (offset) => {
-      const found = await api.sessions({ since, who, q }, offset);
-      return { rows: found.sessions, total: found.total };
-    },
-    key,
-  );
-  // 거르는 조건을 바꾸면 고른 대화를 닫는다 (목록에 없는 대화가 열려 있지 않게)
-  useEffect(() => setPicked(null), [key]);
+  // 거르는 조건을 바꾸면 사람 목록으로 돌아간다 (목록에 없는 사람·대화가 열려 있지 않게)
+  useEffect(() => {
+    setOwner(null);
+    setPicked(null);
+  }, [key]);
 
-  // 권한 문제는 화면 전체의 문제라 목록 자리 대신 한 번만 보여 준다
-  if (list.error && (list.error.status === 401 || list.error.status === 403)) {
-    return <Problem error={list.error} />;
+  function back() {
+    setOwner(null);
+    setPicked(null);
   }
 
   return (
@@ -49,33 +51,133 @@ export function SessionsView() {
       <Usage days={days} />
 
       <div className={`split${picked ? " has-detail" : ""}`}>
-        <section className="list" aria-label="대화 목록">
-          <div className="list-head">
-            <h2 className="list-title">대화</h2>
-            {!list.loading && !list.error && <p className="list-count">{count(list.total)}개</p>}
-          </div>
-          {list.loading ? (
-            <SkeletonRows />
-          ) : list.error ? (
-            <Problem error={list.error} onRetry={list.reload} />
-          ) : list.rows.length === 0 ? (
-            <Empty title="이 조건에 맞는 대화가 없어요">
-              기간을 넓히거나 찾는 말을 지워 보세요. 대화 기록은 30일 동안 보관돼요.
-            </Empty>
+        <section className="list" aria-label={owner ? `${owner.name}의 대화 창` : "사람 목록"}>
+          {owner ? (
+            <OwnerSessions
+              key={`${key}|${owner.id}`}
+              owner={owner}
+              filter={{ since, q, owner: owner.id }}
+              picked={picked}
+              onPick={setPicked}
+              onBack={back}
+            />
           ) : (
-            <>
-              <ul className="rows">
-                {list.rows.map((s) => (
-                  <SessionRow key={s.session_id} row={s} open={s.session_id === picked} onOpen={setPicked} />
-                ))}
-              </ul>
-              <More shown={list.rows.length} total={list.total} busy={list.busy} error={list.moreError} onMore={list.more} />
-            </>
+            <People key={key} filter={{ since, who, q }} onOpen={setOwner} />
           )}
         </section>
 
         {picked && <Conversation id={picked} onClose={() => setPicked(null)} />}
       </div>
+    </>
+  );
+}
+
+/** 사람 목록: 마지막 대화가 최근인 사람부터. 사람마다 대화 창 수 · 질문 수 */
+function People({
+  filter,
+  onOpen,
+}: {
+  filter: { since: string; who: api.Who; q: string };
+  onOpen: (owner: Owner) => void;
+}) {
+  const list = usePaged(async (offset) => {
+    const found = await api.people(filter, offset);
+    return { rows: found.people, total: found.total };
+  }, `${filter.since}|${filter.who}|${filter.q}`);
+
+  // 권한 문제는 화면 전체의 문제라 목록 자리 대신 한 번만 보여 준다
+  if (list.error && (list.error.status === 401 || list.error.status === 403)) {
+    return <Problem error={list.error} />;
+  }
+  return (
+    <>
+      <div className="list-head">
+        <h2 className="list-title">사람</h2>
+        {!list.loading && !list.error && <p className="list-count">{count(list.total)}명</p>}
+      </div>
+      {list.loading ? (
+        <SkeletonRows />
+      ) : list.error ? (
+        <Problem error={list.error} onRetry={list.reload} />
+      ) : list.rows.length === 0 ? (
+        <Empty title="이 조건에 맞는 대화가 없어요">
+          기간을 넓히거나 찾는 말을 지워 보세요. 대화 기록은 30일 동안 보관돼요.
+        </Empty>
+      ) : (
+        <>
+          <ul className="rows">
+            {list.rows.map((p) => (
+              <PersonRow key={p.user_id ?? "guest"} row={p} onOpen={onOpen} />
+            ))}
+          </ul>
+          <More shown={list.rows.length} total={list.total} busy={list.busy} error={list.moreError} onMore={list.more} />
+        </>
+      )}
+    </>
+  );
+}
+
+function PersonRow({ row, onOpen }: { row: PersonRead; onOpen: (owner: Owner) => void }) {
+  const name = person(row);
+  const guest = row.user_id == null;
+  return (
+    <li>
+      <button type="button" className="row person-row" onClick={() => onOpen({ id: row.user_id ?? null, name })}>
+        <span className="row-main">{name}</span>
+        <span className="row-meta">
+          <span>{when(row.last_at)}</span>
+          <span>대화 창 {count(row.sessions)}개</span>
+          <span>질문 {count(row.turns)}개</span>
+        </span>
+        <span className="chip plain">{guest ? "비로그인" : "로그인"}</span>
+      </button>
+    </li>
+  );
+}
+
+/** 한 사람의 대화 창들 (마지막 턴이 최근인 것부터) */
+function OwnerSessions({
+  owner,
+  filter,
+  picked,
+  onPick,
+  onBack,
+}: {
+  owner: Owner;
+  filter: { since: string; q: string; owner: number | null };
+  picked: string | null;
+  onPick: (id: string) => void;
+  onBack: () => void;
+}) {
+  const list = usePaged(async (offset) => {
+    const found = await api.sessions(filter, offset);
+    return { rows: found.sessions, total: found.total };
+  }, `${filter.since}|${filter.q}|${filter.owner}`);
+  return (
+    <>
+      <button type="button" className="btn quiet back-btn" onClick={onBack}>
+        사람 목록
+      </button>
+      <div className="list-head">
+        <h2 className="list-title">{owner.name}</h2>
+        {!list.loading && !list.error && <p className="list-count">대화 창 {count(list.total)}개</p>}
+      </div>
+      {list.loading ? (
+        <SkeletonRows />
+      ) : list.error ? (
+        <Problem error={list.error} onRetry={list.reload} />
+      ) : list.rows.length === 0 ? (
+        <Empty title="이 기간에 대화가 없어요">기간을 넓히거나 찾는 말을 지워 보세요.</Empty>
+      ) : (
+        <>
+          <ul className="rows">
+            {list.rows.map((s) => (
+              <SessionRow key={s.session_id} row={s} open={s.session_id === picked} onOpen={onPick} />
+            ))}
+          </ul>
+          <More shown={list.rows.length} total={list.total} busy={list.busy} error={list.moreError} onMore={list.more} />
+        </>
+      )}
     </>
   );
 }
@@ -87,8 +189,7 @@ function SessionRow({ row, open, onOpen }: { row: SessionRead; open: boolean; on
         <span className="row-main">{row.first_message}</span>
         <span className="row-meta">
           <span>{when(row.last_at)}</span>
-          <span>{person(row)}</span>
-          <span>{row.turns}턴</span>
+          <span>질문 {row.turns}개</span>
         </span>
         <Status value={row.last_status} />
       </button>
@@ -102,9 +203,9 @@ function Usage({ days }: { days: number }) {
   if (error) return null; // 목록이 같은 문제를 알려 준다
   const facts: [string, number | null][] = [
     ["질문", data?.turns ?? null],
-    ["대화", data?.sessions ?? null],
+    ["대화 창", data?.sessions ?? null],
     ["로그인 사용자", data?.users ?? null],
-    ["손님 질문", data?.guest_turns ?? null],
+    ["비로그인 질문", data?.guest_turns ?? null],
     ["통계표 찾기", data?.searches ?? null],
     ["찾기 오류", data?.search_errors ?? null],
   ];
@@ -126,7 +227,7 @@ function Usage({ days }: { days: number }) {
               <tr>
                 <th scope="col">날짜</th>
                 <th scope="col">질문</th>
-                <th scope="col">대화</th>
+                <th scope="col">대화 창</th>
               </tr>
             </thead>
             <tbody>
@@ -226,6 +327,39 @@ function Turn({ turn }: { turn: TurnDetail }) {
           {turn.tbl_id && <span className="code">{turn.tbl_id}</span>}
         </p>
       )}
+      {turn.flow && turn.flow.length > 0 && <Flow steps={turn.flow} />}
     </li>
+  );
+}
+
+/** 처리 흐름: 이 턴이 거친 단계와 순서. 접어 두고, 막힌 단계는 접힌 채로도 보여 준다 */
+function Flow({ steps }: { steps: FlowStep[] }) {
+  const stuck = stuckStep(steps);
+  return (
+    <details className="turn-flow">
+      <summary>
+        <span className="flow-title">처리 흐름</span>
+        <span className="flow-count">{steps.length}단계</span>
+        {stuck && <span className="flow-stuck">멈춘 곳: {stuck.stage}</span>}
+      </summary>
+      <ol className="flow-steps">
+        {steps.map((s, i) => {
+          const label = flowLabel(s.result);
+          const final = s.stage === "최종 답";
+          return (
+            <li key={i} className={`flow-step${final ? " final" : ""}${s === stuck ? " stuck" : ""}`}>
+              <span className="flow-no" aria-hidden="true">
+                {i + 1}
+              </span>
+              <span className="flow-stage">{s.stage}</span>
+              <span className={`chip ${label.tone}`} title={s.result}>
+                {label.text}
+              </span>
+              {s.detail && <p className="flow-detail">{s.detail}</p>}
+            </li>
+          );
+        })}
+      </ol>
+    </details>
   );
 }

@@ -314,6 +314,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/admin/logs/people": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 사람별 대화 묶음
+         * @description 대화를 사람별로 묶어 마지막 대화가 최근인 사람부터.
+         *     사람마다 대화 창 수, 질문 수, 처음·마지막 시각.
+         *     로그인 사용자는 한 사람이 한 줄이고(창을 여러 개 열어도 모인다), 비로그인 사용자는
+         *     user_id 가 null 인 한 줄로 모인다.
+         *     그 사람의 대화는 /logs/sessions?user_id= (비로그인은 guest=true)
+         */
+        get: operations["log_people_admin_logs_people_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/admin/logs/sessions": {
         parameters: {
             query?: never;
@@ -437,6 +461,47 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/admin/dynamic-plans": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 동적 지표 계산 방법 (캐시)
+         * @description 사전에 없는 지표를 통계표에서 바로 계산한 방법들 (많이 쓴 것부터) + 서버 메모리 캐시 상태.
+         *     자주 쓰인 것은 정의를 확인해 지표 사전(config/catalog_notes.toml)에 올린다
+         */
+        get: operations["dynamic_plans_admin_dynamic_plans_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/dynamic-plans/{plan_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * 동적 지표 계산 방법 지우기
+         * @description 틀린 표·칸으로 계산하던 방법을 지운다. 다음 질문부터 통계표를 다시 찾는다
+         */
+        delete: operations["drop_dynamic_plan_admin_dynamic_plans__plan_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/ask": {
         parameters: {
             query?: never;
@@ -465,6 +530,51 @@ export interface paths {
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/conversations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 내 대화 목록
+         * @description 최근에 대화한 것부터
+         */
+        get: operations["list_conversations_conversations_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/conversations/{session_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 대화 하나 다시 열기
+         * @description 질문과 그때 보여 준 답을 턴 순서대로. 다시 계산하지 않는다
+         */
+        get: operations["get_conversation_conversations__session_id__get"];
+        put?: never;
+        post?: never;
+        /**
+         * 대화 지우기
+         * @description 목록, 턴 기록, 이어 갈 조건을 함께 지운다
+         */
+        delete: operations["delete_conversation_conversations__session_id__delete"];
+        options?: never;
+        head?: never;
+        /** 대화 제목 바꾸기 */
+        patch: operations["rename_conversation_conversations__session_id__patch"];
         trace?: never;
     };
     "/search": {
@@ -533,11 +643,11 @@ export interface components {
         };
         /** AskResponse */
         AskResponse: {
-            /** @description 지역·이사 집계 범위를 확인하는 질문과 선택지 */
+            /** @description 지역·이사 집계 범위, 표의 칸(table_cell)을 확인하는 질문과 선택지 */
             clarification?: components["schemas"]["QuestionClarification"] | null;
             /**
              * Status
-             * @description ok / tables(수치 없이 통계표만 안내) / chat(인사에 대한 답) / 답변 불가 사유 (out_of_range 등)
+             * @description ok / tables(수치 없이 통계표만 안내) / chat(인사에 대한 답) / out_of_scope(제공 범위 밖) / not_statistics(통계 질문이 아님) / 답변 불가 사유 (out_of_range 등)
              */
             status: string | null;
             /**
@@ -738,6 +848,88 @@ export interface components {
              */
             values?: (number | null)[] | null;
         };
+        /** ConversationDetail */
+        ConversationDetail: {
+            /** Session Id */
+            session_id: string;
+            /** Title */
+            title: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /** Turns */
+            turns: components["schemas"]["ConversationTurn"][];
+        };
+        /** ConversationList */
+        ConversationList: {
+            /** Total */
+            total: number;
+            /** Conversations */
+            conversations: components["schemas"]["ConversationRead"][];
+        };
+        /** ConversationRead */
+        ConversationRead: {
+            /**
+             * Session Id
+             * @description /ask에 이 값을 session_id로 보내면 이 대화를 이어 간다
+             */
+            session_id: string;
+            /**
+             * Title
+             * @description 첫 질문 (바꿀 수 있다)
+             */
+            title: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             * @description 마지막으로 대화한 시각
+             */
+            updated_at: string;
+            /**
+             * Turns
+             * @description 턴 수
+             */
+            turns: number;
+        };
+        /** ConversationRename */
+        ConversationRename: {
+            /** Title */
+            title: string;
+        };
+        /** ConversationTurn */
+        ConversationTurn: {
+            /** Turn No */
+            turn_no: number;
+            /**
+             * Question
+             * @description 사용자가 한 말
+             */
+            question: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Response
+             * @description 그때 보여 준 답 (/ask 응답의 status·answer·chart·tables·notice·applied 등)
+             */
+            response: {
+                [key: string]: unknown;
+            };
+        };
         /** DayCount */
         DayCount: {
             /**
@@ -792,6 +984,28 @@ export interface components {
              * @description 이 시간(초) 안에 가입을 마쳐야 한다
              */
             expires_in: number;
+        };
+        /**
+         * FlowStep
+         * @description 처리 흐름의 한 단계 (app/services/flow.py)
+         */
+        FlowStep: {
+            /**
+             * Stage
+             * @description 범위 검사 / 질문 이해 / 사전 계산 / 계산 방법 캐시 / 통계표 찾기 / 표 칸으로 계산 / 같은 표에서 찾기 / 사전에 없는 쪽 계산 / 최종 답
+             */
+            stage: string;
+            /**
+             * Result
+             * @description ok, 실패 사유(status), HCX · 캐시 같은 짧은 결과
+             */
+            result: string;
+            /**
+             * Detail
+             * @description 판단 근거 (고른 표 · 칸, 못 한 이유)
+             * @default
+             */
+            detail: string;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -864,6 +1078,48 @@ export interface components {
              */
             new_password: string;
         };
+        /** PersonList */
+        PersonList: {
+            /** Total */
+            total: number;
+            /** People */
+            people: components["schemas"]["PersonRead"][];
+        };
+        /**
+         * PersonRead
+         * @description 대화를 사람별로 묶은 한 줄. user_id 가 null 이면 비로그인 사용자 전체
+         */
+        PersonRead: {
+            /**
+             * User Id
+             * @description 손님이거나 지워진 사용자면 null
+             */
+            user_id?: number | null;
+            /** User Email */
+            user_email?: string | null;
+            /** User Nickname */
+            user_nickname?: string | null;
+            /**
+             * Sessions
+             * @description 대화 창 수 (창을 여러 개 열어 따로 물으면 창마다 하나)
+             */
+            sessions: number;
+            /**
+             * Turns
+             * @description 질문(턴) 수
+             */
+            turns: number;
+            /**
+             * First At
+             * Format: date-time
+             */
+            first_at: string;
+            /**
+             * Last At
+             * Format: date-time
+             */
+            last_at: string;
+        };
         /**
          * ProfileUpdate
          * @description 내 정보 바꾸기. 지금은 닉네임만
@@ -882,7 +1138,7 @@ export interface components {
              * Kind
              * @enum {string}
              */
-            kind: "local_region" | "move_scope";
+            kind: "local_region" | "move_scope" | "table_cell" | "alternative";
             /** Prompt */
             prompt: string;
             /** Options */
@@ -1051,10 +1307,22 @@ export interface components {
                 [key: string]: unknown;
             }[];
             /**
+             * Together
+             * @description 1순위 표와 함께 봐야 하는 표. 한 통계가 여러 표로 나뉜 경우에만 있다 (예: 외국인 아내 표 + 외국인 남편 표)
+             */
+            together?: {
+                [key: string]: unknown;
+            }[];
+            /**
              * Notice
              * @description 불충족 조건 등 고지
              */
             notice: string | null;
+            /**
+             * Reason
+             * @description 거절(out_of_scope 등)한 경우 판정 근거 (범위 밖 단어·LLM 검토·점수)
+             */
+            reason?: string | null;
             /** Debug */
             debug?: {
                 [key: string]: unknown;
@@ -1177,7 +1445,7 @@ export interface components {
         };
         /**
          * TurnDetail
-         * @description 대화를 펼쳐 볼 때: 조건이 어떻게 바뀌었는지까지
+         * @description 대화를 펼쳐 볼 때: 조건이 어떻게 바뀌었는지와 처리 흐름까지
          */
         TurnDetail: {
             /**
@@ -1239,6 +1507,11 @@ export interface components {
              * @description 조건마다 어디서 왔는지
              */
             sources?: unknown | null;
+            /**
+             * Flow
+             * @description 이 턴이 거친 단계와 순서. 처리 흐름을 기록하기 전의 턴은 null
+             */
+            flow?: components["schemas"]["FlowStep"][] | null;
         };
         /** TurnList */
         TurnList: {
@@ -1885,6 +2158,46 @@ export interface operations {
             };
         };
     };
+    log_people_admin_logs_people_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+                /** @description true: 손님(로그인 안 함)만, false: 로그인한 사용자만 */
+                guest?: boolean | null;
+                /** @description 질문에 들어 있는 말 */
+                q?: string | null;
+                /** @description 이 시각부터 (ISO 8601) */
+                since?: string | null;
+                /** @description 이 시각 전까지 (ISO 8601) */
+                until?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 성공 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PersonList"];
+                };
+            };
+            /** @description 입력값이 규칙에 맞지 않음 */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     log_sessions_admin_logs_sessions_get: {
         parameters: {
             query?: {
@@ -2117,6 +2430,69 @@ export interface operations {
             };
         };
     };
+    dynamic_plans_admin_dynamic_plans_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 성공 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description 입력값이 규칙에 맞지 않음 */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    drop_dynamic_plan_admin_dynamic_plans__plan_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                plan_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 성공 */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 입력값이 규칙에 맞지 않음 */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     ask_ask_post: {
         parameters: {
             query?: never;
@@ -2138,6 +2514,131 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["AskResponse"];
                 };
+            };
+            /** @description 입력값이 규칙에 맞지 않음 */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_conversations_conversations_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 성공 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversationList"];
+                };
+            };
+            /** @description 입력값이 규칙에 맞지 않음 */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_conversation_conversations__session_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 성공 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversationDetail"];
+                };
+            };
+            /** @description 입력값이 규칙에 맞지 않음 */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_conversation_conversations__session_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 성공 */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 입력값이 규칙에 맞지 않음 */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    rename_conversation_conversations__session_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConversationRename"];
+            };
+        };
+        responses: {
+            /** @description 성공 */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description 입력값이 규칙에 맞지 않음 */
             422: {
