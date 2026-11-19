@@ -322,8 +322,10 @@ def _fetch(src, codes, y0, y1, age_codes=None):
         return num
     den_filters = src.get("den_filters") or src.get("filters", {})
     den = _sum(src, codes, y0, y1, "den_item_id", den_filters, age_codes)
+    # den_scale 1: 비율이 아니라 평균 (가구원 ÷ 가구 = 가구당 평균 가구원 수)
+    scale = src.get("den_scale", 100)
     return {
-        k: (analysis.share(v, den[k]) if v is not None and den.get(k) else None)
+        k: (analysis.share(v, den[k]) * scale / 100 if v is not None and den.get(k) else None)
         for k, v in num.items()
     }
 

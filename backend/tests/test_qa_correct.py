@@ -839,7 +839,8 @@ def test_babies_born_or_per_woman(question: str, llm, expected: str) -> None:
 
 @pytest.mark.parametrize("question", ["서울 2030세대 인구는?", "서울 2030 세대 인구는?"])
 def test_generation_population_is_total_population(question: str) -> None:
-    # "2030세대"는 연령 조건 (20~39세). '세대 인구'를 다른 통계로 보지 않고, 2030년으로도 읽지 않는다
+    # "2030세대"는 연령 조건 (20~39세).
+    # '세대 인구'를 다른 통계로 보지 않고, 2030년으로도 읽지 않는다
     p = qa.correct(question, parsed(indicator="총인구", regions=["서울"], year=2030), TODAY)
     assert p["indicator"] == "총인구" and p["grounded"] is not False
     assert p["ages"] == [[20, 39]] and p["year"] is None
@@ -934,3 +935,75 @@ def test_high_rank_overrides_ascending(question) -> None:
 def test_low_or_decrease_rank_keeps_ascending(question) -> None:
     p = qa.correct(question, parsed(type="rank", indicator="출생아 수", ascending=True), TODAY)
     assert p["ascending"] is True
+
+
+def test_baby_words_are_not_an_age_for_birth_indicators(monkeypatch) -> None:
+    # 출생 지표의 "아기 · 아이"는 태어난 아이: 0세 연령 조건을 붙이지 않는다
+    monkeypatch.setattr(indicators, "canonical_name", lambda n: n)
+    q0 = "다문화 가정 아기 최근 5년 동안 어떻게 변했어?"
+    p = qa.correct(q0, parsed(type="trend", indicator="다문화 출생아 수"), TODAY)
+    assert not p.get("ages") and not p.get("age_group")
+    q = qa.correct("서울 아이들 수 얼마나 돼?", parsed(indicator="총인구", regions=["서울"]), TODAY)
+    assert q["ages"] == [[0, 14]]  # 출생 지표가 아니면 지금처럼 연령 집단
+
+
+def test_counting_words_before_population_are_plain() -> None:
+    assert qa.population_modifier("경기도에서 제일 큰 도시 3개 인구로") is None
+
+
+def test_change_rank_question(monkeypatch) -> None:
+    # "인구 제일 많이 줄어든 시도": 그해 값이 아니라 전년 대비 변화량 순위
+    # (HCX가 고른 자연증가 건수를 총인구로 고친다)
+    p = qa.correct("작년에 인구 제일 많이 줄어든 시도 세 군데",
+                   parsed(type="rank", indicator="자연증가 건수"), TODAY)  # fmt: skip
+    assert p["rank_by"] == "decrease" and p["indicator"] == "총인구" and p["type"] == "rank"
+    q = qa.correct("인구 증가 폭이 가장 큰 구는?", parsed(type="rank", indicator="총인구"), TODAY)
+    assert q["rank_by"] == "increase"
+    # 해를 묻는 질문은 아니다
+    asked_year = "출생아가 가장 많이 늘어난 해는?"
+    y = qa.correct(asked_year, parsed(type="trend", indicator="출생아 수"), TODAY)
+    assert "rank_by" not in y
+
+
+def test_rank_by_change(monkeypatch) -> None:
+    def fake(q):
+        if q.get("rank_by"):
+            return qa._rank_by_change(q, 2025)
+        base = {"서울": 100, "부산": 50, "경기": 200} if q["year"] == 2024 else {
+            "서울": 80, "부산": 45, "경기": 230}  # fmt: skip
+        rows = [{"region": k, "value": v, "rank": 0} for k, v in base.items()]
+        return {"status": "ok", "indicator": "총인구", "unit": "명", "ranking": rows,
+                "level": "시도", "order": "높은 순", "year": q["year"]}  # fmt: skip
+
+    monkeypatch.setattr(qa, "compute", fake)
+    r = qa._rank_by_change({"type": "rank", "rank_by": "decrease", "year": 2025, "top": 2}, 2025)
+    assert [(x["region"], x["value"]) for x in r["ranking"]] == [("서울", -20), ("부산", -5)]
+    assert r["order"] == "감소 폭이 큰 순" and "2024년 → 2025년" in r["notes"][0]
+    assert "가장 많이 줄어든" in qa._rank_text(r)
+
+
+def test_causal_reading_without_causal_words_is_undone() -> None:
+    # HCX가 비율 질문을 원인 질문으로 읽어도 원인 말이 없으면 원인 질문이 아니다
+    p = qa.correct("작년 혼인 중에 남녀 모두 초혼인 비율 몇 %야?", parsed(type="causal"), TODAY)
+    assert p["type"] != "causal"
+    q = qa.correct("출산율이 낮은 이유가 뭐야?", parsed(type="causal"), TODAY)
+    assert q["type"] == "causal"
+
+
+def test_rank_by_other_axis_is_not_region_rank() -> None:
+    by_nation = "등록외국인 국적별로 많은 순서 세 나라만 알려줘"
+    p = qa.correct(by_nation, parsed(type="rank", top=3), TODAY)
+    assert p["rank_axis"] == "국적" and p["grounded"] is False
+    q = qa.correct("2024년 등록외국인이 가장 많은 시도 3곳", parsed(type="rank", top=3), TODAY)
+    assert "rank_axis" not in q
+
+
+def test_region_mean_is_mean_of_regions() -> None:
+    p = qa.correct("2024년 시도 평균 출생아 수 알려줘", parsed(regions=[]), TODAY)
+    assert p["region_mean"] and p["type"] == "rank" and p["level"] == "시도"
+    q = qa.correct("2024년 부산 구별 평균 출생아 수", parsed(regions=["부산"]), TODAY)
+    assert q["region_mean"] and q["level"] == "시군구" and q["sido"] == "부산"
+    assert q["regions"] == []
+    # 전국 평균과의 비교는 지역 평균이 아니다
+    c = qa.correct("부산 출생아 수 지역 평균보다 많아?", parsed(regions=["부산"]), TODAY)
+    assert not c.get("region_mean")
