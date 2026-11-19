@@ -16,6 +16,7 @@ API: POST /ask
       python -m scripts.ask --question "..." --debug   (중간 결과 JSON도 출력)
 """
 
+import copy
 import json
 import re
 import time
@@ -25,6 +26,7 @@ from pathlib import Path
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.concurrency import run_in_threadpool
 
+from app.core.config import get_settings
 from app.core.stats_db import StatsTableMissing
 from app.prompts.qa import PARSE_SYSTEM
 from app.services import (
@@ -40,16 +42,19 @@ from app.services import (
 )
 from app.services.hcx_client import HcxClient
 from app.services.josa import josa, ro
+from app.services.memory_cache import MISSING, MemoryCache
 
 MODEL = "HCX-007"
-# 질문 해석 응답 최대 길이. HCX 한도(분당 6만 토큰)는 요청마다 이 값만큼을 미리 잡아서,
-# 5,120이면 이 호출만으로 분당 약 10질문에 한도가 찼다. 추론을 끄면 JSON만 나오고
-# 변형셋 v1에서 최대 130토큰(95%가 99토큰 이하)이었다 (11/18)
+# 질문 해석 응답 최대 길이. HCX 한도(분당 60,000토큰)는 요청마다 '보낸 글 + 이 값'을 미리 잡는다.
+# 예전 값 5,120(+ 추론 low)은 이전 프로젝트의 범용 chat() 기본값이 그대로 따라온 것으로,
+# 질문마다 약 7,000토큰을 잡아 분당 약 8질문이면 한도가 찼다. 추론까지 넣은 실제 응답도
+# 평균 약 600 · 최대 약 1,100토큰이었고 (개발셋, 11/18), 추론을 끄면 짧은 JSON만 나온다
 UNDERSTAND_MAX_TOKENS = 1024
 
 
 async def _chat(prompt, system, temperature=0.1, trace=None):
-    """HCX-007 호출 (질문 해석). 짧은 JSON만 받으므로 추론을 끄고 응답 길이를 줄인다"""
+    """HCX-007 호출 (질문 해석). 짧은 JSON만 받으므로 추론을 끄고 응답 길이를 줄인다
+    (이어 묻는 말의 변경 추출 ask_session._chat과 같은 방식)"""
     result = await HcxClient().chat(
         MODEL,
         [
@@ -69,22 +74,43 @@ async def _chat(prompt, system, temperature=0.1, trace=None):
     return result.content
 
 
+# 질문 단위 캐시 (11/18): 글자까지 같은 질문이면 질문 이해(HCX)를 다시 부르지 않는다.
+# '작년' · '최근 5년'은 오늘 날짜와 자료의 마지막 연도로 풀리므로 열쇠에 둘 다 넣는다.
+# 서버 메모리라 재시작하면 비고, 1시간 지나면 지운다. 평가처럼 질문 이해를 고친 효과를 잴 때는
+# QUESTION_CACHE=false (scripts.eval_devset은 기본으로 끈다)
+UNDERSTAND_CACHE = MemoryCache("understand", maxsize=1024, ttl=3600)
+
+
+def _cache_key(question, latest):
+    return (re.sub(r"\s+", " ", question).strip(), date.today().isoformat(), latest)
+
+
 async def understand(question, trace=None):
     """1단계: 질문 → dict. JSON을 못 읽으면 type이 parse_error
     trace(dict)를 주면 HCX 원본 출력을 담는다 (요청 로그용)"""
     lo, hi = await run_in_threadpool(indicators._data_years)
+    use_cache = get_settings().question_cache
+    key = _cache_key(question, hi)
+    if use_cache and (hit := UNDERSTAND_CACHE.get(key)) is not MISSING:
+        if trace is not None:
+            trace["hcx_raw"], trace["understand_cached"] = hit["raw"], True
+        return copy.deepcopy(hit["parsed"])
     system = PARSE_SYSTEM.replace("{INDICATORS}", _indicator_list()).replace("{LATEST}", str(hi))
     text = await _chat(question, system, trace=trace)
     if trace is not None:
         trace["hcx_raw"] = text
     objects = _json_objects(text)
     if not objects:
-        return {"type": "parse_error", "raw": text}
+        return {"type": "parse_error", "raw": text}  # 해석 실패는 남기지 않는다
     parsed = objects[0]
     # 남녀를 나눠 JSON을 두 번 쓴 경우 → 성별 구분 없이 (남녀를 함께 보여준다)
     if len({json.dumps(o.get("sex"), ensure_ascii=False) for o in objects}) > 1:
         parsed["sex"] = "계"
-    return await run_in_threadpool(correct, question, parsed)
+    result = await run_in_threadpool(correct, question, parsed)
+    if use_cache:
+        # 대화 이어받기(ask_session의 adjust)는 꺼낸 뒤에 적용되므로 이어받기 전 결과를 남긴다
+        UNDERSTAND_CACHE.set(key, {"raw": text, "parsed": copy.deepcopy(result)})
+    return result
 
 
 def _json_objects(text):
@@ -165,6 +191,11 @@ REGION_GROUPS = {
         "강원", "충북", "충남", "전북", "전남", "경북", "경남", "제주",
     ],
     "수도권": ["서울", "인천", "경기"],
+    # 서울 강남권 구 묶음 (질문 글자에 구 이름이 없어 지역 확인에서 막혔다)
+    "강남3구": ["서울 강남구", "서울 서초구", "서울 송파구"],
+    "강남 3구": ["서울 강남구", "서울 서초구", "서울 송파구"],
+    "강남4구": ["서울 강남구", "서울 서초구", "서울 송파구", "서울 강동구"],
+    "강남 4구": ["서울 강남구", "서울 서초구", "서울 송파구", "서울 강동구"],
     "충청권": ["대전", "세종", "충북", "충남"],
     "호남권": ["광주광역시", "전북", "전남"],
     "영남권": ["부산", "대구", "울산", "경북", "경남"],
@@ -266,6 +297,7 @@ UNTIL = re.compile(r"((?:19|20)\d{2})\s*년\s*까지")
 NATIONWIDE = re.compile(
     r"전국|우리나라|대한민국|한국\s*(전체|의|은|는|인구|사람)|국내\s*(전체)?"
 )
+WHY_WORDS = re.compile(r"왜|이유|원인|때문|탓|효과|영향")
 CAUSAL = re.compile(r"효과가?\s*(있|없|컸)|효과적|원인|왜\s|영향을?\s*(줬|주|미쳤|끼쳤)")
 # 지표 사전이 나누지 않는 조건 (체중·기간 등). 버리고 전체 값으로 답하면 틀린 답이 된다
 # ("체중 3.2kg 출생아 수" → 전국 출생아 수, "결혼 1년 반 만에 이혼한 건수" → 전체 이혼 건수)
@@ -273,7 +305,7 @@ UNSUPPORTED_MEASURE = re.compile(
     r"\d+(?:\.\d+)?\s*(?:kg|킬로그램|킬로|키로|그램)|\d+(?:\.\d+)?\s*(?:cm|센티)|"
     r"\d+\s*년\s*반|\d+\s*개월|(?:결혼|혼인|동거|거주|근속|재직)\s*기간|체중|몸무게|키가"
 )
-# 앞으로를 묻는 질문 ("앞으로 출산율 다시 오를까?").
+# 앞으로를 묻는 질문 ("출산율이 앞으로 오를까?").
 # 미래 연도를 말했으면 장래추계로 답하므로 따로 본다
 PREDICT = re.compile(
     r"앞으로|향후|미래에?|전망|예측|예상(?!보다)|"
@@ -332,17 +364,29 @@ INDICATOR_PATTERNS = [
     (re.compile(r"(이사\s*온|들어온|전입)\S*.*(떠난|나간|전출)\S*.*(빼|뺀|차감)"), "순이동"),
     # "어르신 비율 · 노인 비중" → 고령인구 비율
     (
-        re.compile(r"(어르신|노인|고령자|노령)\S*\s*(인구\s*)?(비율|비중|%|퍼센트|몇\s*프로)"),
+        re.compile(r"(어르신|노인|고령자|노령)\S*\s*(인구\s*)?(몇\s*)?(비율|비중|%|퍼센트|프로)"),
         "고령인구 비율",
     ),
-    # "사람 수", "사람이 많아", "제일 많이 사는", "주민 수" → 총인구 (다른 지표 이름이 없을 때만)
-    (
-        re.compile(r"사람\s*(이|들)?\s*(수|몇|많|적)|많이\s*사는|사는\s*사람|주민\s*(수|이\s*몇)"),
-        "총인구",
-    ),
+    # "사람 수 · 사람 몇 · 사는 사람 → 총인구" 패턴은 뺐다 (11/19 세진). "지하철 타고 출근하거나
+    # 학교 다니는 사람 몇 명이야"처럼 다른 통계의 사람을 총인구로 끌어가 표 찾기를 막았고,
+    # OTHER_PEOPLE 낱말 목록으로는 일상어를 다 막을 수 없다
 ]
-MORE_SPECIFIC = {"조출생률": {"출생아 수"}}
-# 연령 구간 · 연령 집단을 말하고 사람 수를 물었으면 그 연령의 인구 ("수성구에 이십대 얼마나 살아?",
+MORE_SPECIFIC = {
+    "조출생률": {"출생아 수"},
+    "셋째 이상 출생아 수": {"출생아 수"},
+    "다문화 출생아 수": {"출생아 수"},
+}
+# 변화량 순위 ("작년에 인구 제일 많이 줄어든 시도 세 군데", "인구 증가 폭이 큰 구"):
+# 그해 값이 아니라 전년 대비 변화량으로 순위를 매긴다
+CHANGE_RANK = re.compile(
+    r"(가장|제일)\s*많이\s*(줄어|줄었|감소|빠졌|늘어|늘었|증가)|(감소|증가)\s*폭이?\s*(가장|제일)?\s*(큰|많)"
+)
+DECREASE_WORDS = re.compile(r"줄어|줄었|감소|빠졌")
+# 지역이 아닌 순위 축 ("국적별로 많은 순서", "어느 나라가", "교통수단 중 가장 많이")
+OTHER_AXIS = re.compile(r"(국적|나라|국가|교통\s*수단|이동\s*사유|전입\s*사유)\s*(별|중|가|이|마다)?")
+AXIS_REGION = re.compile(r"시도|시군구|지역|도시|광역시|어느\s*(시|구|군|도)")
+YEAR_ASKED = re.compile(r"(해|연도|년도|때)\s*(는|가|를|은|가\s*언제|$|\?)|언제")
+# 연령 구간 · 연령 집단을 말하고 사람 수를 물었으면 그 연령의 인구 ("달서구 이십대는 몇 명 살아?",
 # "광주하고 전남 어르신 수 합쳐줘", "서울 사는 19살부터 34살까지 몇 명")
 PEOPLE_COUNT = re.compile(
     r"몇\s*(명|분)|얼마나\s*(살|계|있|돼|되|줄|늘)|(수|인구)\s*(는|가|를|합|얼마|좀)|사람|분\s*(이|들)"
@@ -350,7 +394,11 @@ PEOPLE_COUNT = re.compile(
 # '사람 · 분'이 이 통계의 사람이면 총인구가 아니다 ("외국인 등록한 사람", "통근한 사람", "사망자 중")
 OTHER_PEOPLE = re.compile(
     r"외국|등록|이사|전입|전출|이동|통근|통학|결혼|혼인|이혼|사망|돌아가|태어|출생|낳|가구|유학|귀화|"
-    r"근로|이민|입국|출국|취업|학생"
+    r"근로|이민|입국|출국|취업|학생|"
+    # 사는 방식 · 집 · 장애는 다른 통계다 ("혼자 사는 사람" → 1인 가구,
+    # "아파트에 사는 사람" → 거처별, "장애가 있는 사람" → 장애인).
+    # 총인구로 답하면 전체 인구 숫자가 틀린 답으로 나간다 (11/18)
+    r"혼자|홀로|독거|장애|아파트|주택|단독|연립|다세대|오피스텔|거처|셋방|기숙사"
 )
 # 구성비 질문에서 콕 집어 물은 항목 (질문 표현 → 구성 항목 이름)
 FOCUS_WORDS = {
@@ -497,6 +545,12 @@ def correct(question, parsed, today=None):
         if bare != name and indicators.spec(bare) is not None:
             fix("indicator", bare, "지표 이름 뒤의 단위 표기")
 
+    undone_pct = False
+    if kind == "causal" and not (CAUSAL.search(question) or WHY_WORDS.search(question)):
+        # "작년 혼인 중에 남녀 모두 초혼인 비율" 같은 비율 질문을 HCX가 원인 질문으로 읽었다
+        kind = "value"
+        fix("type", kind, "원인을 묻는 말이 없음")
+        undone_pct = bool(PCT_ASK.search(question))
     if kind == "other" and CAUSAL.search(question):
         fix("type", "causal", "원인·효과를 묻는 질문")
         kind = "causal"
@@ -511,8 +565,10 @@ def correct(question, parsed, today=None):
     ages = extract_ages(question)
     if ages:
         parsed["ages"] = ages
-    # "노인"·"청년" 같은 이름은 정의 구간으로 (답변에 기준 고지)
-    elif group := agegroup.resolve(question):
+    # "노인"·"청년" 같은 이름은 정의 구간으로 (답변에 기준 고지).
+    # 단, 출생 지표의 "아기 · 아이"는 태어난 아이를 가리키는 말이지 0세 연령 조건이 아니다
+    # ("다문화 가정 아기 최근 5년" → 연령 조건을 붙여 '연령으로 나눈 자료 없음'으로 끝났다)
+    elif (group := agegroup.resolve(question)) and not (group.lo == 0 and _about_births(parsed)):
         parsed["age_group"] = {"expr": group.expr, "range": group.label(), "basis": group.basis}
         ages = [[group.lo, group.hi]]  # 이름 연령도 계산에 쓴다 (예: 청년 → 19~34세)
         parsed["ages"] = ages
@@ -555,11 +611,11 @@ def correct(question, parsed, today=None):
                     and not OTHER_PEOPLE.search(question)
                 ):
                     names |= {"총인구"}
-            # 정의를 풀어 말한 지표가 그 재료 지표보다 구체적이다
-            # ("인구에 비해 아기 태어나는 정도"는 출생아 수가 아니라 조출생률)
-            for specific, general in MORE_SPECIFIC.items():
-                if specific in names:
-                    names -= general
+        # 더 구체적인 지표가 함께 걸렸으면 그쪽 ("인구에 비해 아기 태어나는 정도"는 조출생률,
+        # "셋째나 그 이후로 태어난 아기"는 셋째 이상 출생아 수)
+        for specific, general in MORE_SPECIFIC.items():
+            if specific in names:
+                names -= general
         name = _pick_indicator(question, names)
         current = indicators.canonical_name(parsed.get("indicator") or "")
         if name and current != name:
@@ -591,6 +647,11 @@ def correct(question, parsed, today=None):
         if chosen == "총인구" and population_modifier(question):
             # "통학 인구"·"외국인 인구"처럼 '인구' 앞에 다른 통계를 가리키는 말이 있으면
             # 별칭 '인구'만으로 총인구라고 볼 수 없다 → 바로 계산을 시도한다
+            parsed["grounded"] = False
+        chosen_spec = indicators.spec(chosen) if chosen else None
+        if undone_pct and chosen_spec and lookup.kind_of(chosen_spec) == "count":
+            # 원인 질문으로 잘못 읽은 비율 질문인데 고른 지표가 건수다 ("혼인 중 초혼 비율" → 혼인
+            # 건수): 건수로 답하지 않고 통계표에서 비율을 계산해 본다
             parsed["grounded"] = False
 
     sp = indicators.spec(parsed.get("indicator"))
@@ -677,12 +738,100 @@ def correct(question, parsed, today=None):
         parsed["indicators"] = names  # 지표마다 따로 계산한다 (compute)
 
     _cross(question, parsed, fix)
+    _change_rank(question, parsed, fix)
+    _region_mean(question, parsed, fix)
+    other_axis = OTHER_AXIS.search(question) and not AXIS_REGION.search(question)
+    if parsed.get("type") == "rank" and other_axis:
+        # "등록외국인 국적별로 많은 순서 세 나라": 지역이 아닌 분류의 순위. 사전 지표는 지역 순위만
+        # 하므로 그 지표의 표에서 분류 순위를 계산한다 (ask_session._dynamic_instead)
+        parsed["rank_axis"] = OTHER_AXIS.search(question)[1]
+        parsed["grounded"] = False
     if fixes:
         parsed["corrections"] = fixes
     return parsed
 
 
+def _change_rank(question, parsed, fix):
+    """변화량 순위: rank_by에 감소(decrease) · 증가(increase)를 적는다. "인구"만 말했으면 총인구
+    (HCX가 "인구가 줄어든"을 자연증가 건수로 읽었다)"""
+    if parsed.get("cross") or not (m := CHANGE_RANK.search(question)):
+        return
+    if YEAR_ASKED.search(question):
+        return  # "출생아가 가장 많이 늘어난 해는?": 지역이 아니라 해를 묻는다 (추이의 극값 연도)
+    if parsed.get("type") not in ("rank", "compare", "value", None):
+        return
+    parsed["rank_by"] = "decrease" if DECREASE_WORDS.search(m[0]) else "increase"
+    if parsed.get("type") != "rank":
+        fix("type", "rank", "변화량이 큰 지역을 물음")
+    names = {name for *_, name in indicators.find_in_text(question)}
+    if names == {"총인구"} and parsed.get("indicator") != "총인구":
+        fix("indicator", "총인구", "'인구'의 변화량")
+        parsed["grounded"] = True
+
+
+# "시도 평균 출생아 수", "서울 구별 평균": 여러 지역 값의 단순 평균 ("전국 평균과 비교"는 아니다)
+REGION_MEAN = re.compile(
+    r"(시도|광역|시군구|구|군|지역|도시)\s*(별|들|마다)?\s*(의\s*)?평균(?!\s*(과|보다|이랑|대비))"
+)
+
+
+def _region_mean(question, parsed, fix):
+    """지역 평균: 순위(모든 지역 값)를 구해 평균한다 (compute의 region_mean)"""
+    if parsed.get("cross") or parsed.get("rank_by") or not (m := REGION_MEAN.search(question)):
+        return
+    if parsed.get("type") not in ("value", "rank", "compare", None):
+        return
+    regions = [r for r in parsed.get("regions") or [] if r != "전국"]
+    sido = parsed.get("sido")  # "서울 구별"은 지역별 목록이 이미 시도 안의 시군구로 읽었다
+    level = "시도" if m[1] in ("시도", "광역") or not (regions or sido) else "시군구"
+    parsed["region_mean"] = True
+    if parsed.get("type") != "rank":
+        fix("type", "rank", "여러 지역 값의 평균")
+    if parsed.get("level") != level:
+        fix("level", level, "평균할 지역 수준")
+    parsed["top"] = None
+    # 시군구 평균은 그 시도 안의 순위 (regions에 시도 하나: 순위가 그 범위로 계산한다)
+    # 시군구 평균은 그 시도 안의 시군구 순위로 (지역별 목록과 같이 sido에 범위)
+    if level == "시군구" and not sido and regions:
+        fix("sido", regions[0], "평균할 범위")
+    if level == "시도" and sido:
+        fix("sido", None, "시도 평균")
+    if parsed.get("regions"):
+        fix("regions", [], "지역 평균")
+
+
+def _mean_of_regions(q):
+    """지역 평균 = 순위의 모든 지역 값의 단순 평균 (값이 없는 지역은 뺀다)"""
+    r = _compute({**q, "region_mean": False, "top": None, "target": None})
+    rows = [x for x in r.get("ranking") or [] if x.get("value") is not None]
+    if r.get("status") != "ok" or not rows:
+        return r
+    mean = sum(x["value"] for x in rows) / len(rows)
+    within = (q.get("regions") or [None])[0] or q.get("sido")
+    if within:
+        within = (indicators.resolve_region(within) or {}).get("display") or within
+    scope = f"{within} " if within else ""
+    unit_name = {"시도": "시도", "시": "시"}.get(q.get("level") or "시도", "시군구")
+    out = {
+        k: v for k, v in r.items() if k not in ("ranking", "order", "level", "total_regions")
+    }
+    out.update(
+        value=round(mean, 1 if r.get("kind") == "count" else 2),
+        kind="value" if r.get("kind") == "count" else r.get("kind"),
+        region=f"{scope}{len(rows)}개 {unit_name} 평균",
+        formula=f"{len(rows)}개 {unit_name} 값의 합 ÷ {len(rows)} (단순 평균)",
+    )
+    return out
+
+
+PEOPLE_INDICATOR = re.compile(r"인구|사람|주민|남녀|성별|연령|나이")
 CROSS_DYNAMIC = "cross_dynamic"  # 두 값 중 한쪽이 사전에 없음 (ask_session이 마저 계산)
+
+
+def _about_births(parsed):
+    """해석한 지표가 출생 지표인가 (출생아 수 · 다문화 출생아 수 · 셋째 이상 출생아 수 등)"""
+    name = indicators.canonical_name(parsed.get("indicator") or "") or ""
+    return "출생" in name
 
 
 def _cross(question, parsed, fix):
@@ -707,7 +856,7 @@ def _cross(question, parsed, fix):
     parsed["indicators"] = None
     parsed["grounded"] = True
     parsed.pop("unsupported", None)
-    if found.plus and not parsed.get("group"):
+    if (found.plus or found.form == "sum") and not parsed.get("group"):
         # "혼인 건수와 이혼 건수 합"의 합은 분자 두 지표를 더하라는 말이다 (기간 · 지역 합계가 아니다)
         parsed.pop("aggregate", None)
 
@@ -725,6 +874,8 @@ PLAIN_POPULATION = {
     "나이", "연령", "연령대", "만",
     # 합치기 · 고르기 말 ("부산 울산 경남 합쳐서 인구", "경기도 시군 중 인구 많은 순서")
     "합쳐서", "합친", "합하면", "더한", "중", "모두", "전부", "다", "사는",
+    # 세는 말 ("도시 3개 인구로", "상위 5곳 인구")
+    "개", "곳", "군데",
 }  # fmt: skip
 POPULATION_NOUN = re.compile(r"([가-힣]+)\s*인구")
 
@@ -1221,7 +1372,20 @@ MAX_INDICATORS = 3  # 한 질문에서 함께 답하는 지표 수
 
 
 def compute(q):
-    """2~4단계: 질문 분석 결과 → indicators.py(계산 지표)·lookup.py(조회 지표) 결과"""
+    """2~4단계: 질문 분석 결과 → indicators.py(계산 지표)·lookup.py(조회 지표) 결과.
+    연도를 말하지 않아 최신 달 값으로 계산했는데 기간 밖이면 연간 자료의 마지막 해로 다시 계산한다
+    (총인구는 최신 달이 다음 해라, 등록외국인처럼 연간 자료를 섞는 지표가 '기간 밖'으로 끝났다)"""
+    result = _compute(q)
+    asked = q.get("asked") or {}
+    if result.get("status") == "out_of_range" and asked.get("latest") and not q.get("year"):
+        retry = _compute({**q, "asked": {**asked, "latest": False}})
+        if retry.get("status") == "ok":
+            return retry
+    return result
+
+
+def _compute(q):
+    """compute의 본문 (최신 달 다시 계산 없이)"""
     lookup.refresh_if_reloaded()  # 적재 프로세스가 표를 새로 넣었으면 표 정보 캐시를 비운다
     kind = q.get("type")
     ind = q.get("indicator") or ""
@@ -1287,6 +1451,10 @@ def compute(q):
             "region": bad,
             "reason": "질문의 지역을 시도·시군구로 확인하지 못했습니다.",
         }
+    if kind == "rank" and q.get("rank_by") in ("decrease", "increase"):
+        return _rank_by_change(q, hi)
+    if kind == "rank" and q.get("region_mean"):
+        return _mean_of_regions(q)
     if q.get("cross"):  # 두 지표를 나눈 값 (cross_indicator.py): 두 지표를 각각 계산해 나눈다
         if cond := q.get("unsupported_condition"):
             return {
@@ -1315,7 +1483,9 @@ def compute(q):
     sp = dyn or (None if q.get("unsupported") else indicators.spec(ind))
     if dyn and (dyn.get("ages_in_filters") or dyn.get("ignore_ages")):
         ages = None  # 비율의 분자에 연령이 이미 들어 있거나, 말에서 짐작한 연령을 쓰지 않는 정의
-    population = sp is None or sp["name"] == "총인구"
+    # 사전에 없는 지표는 인구를 가리킬 때만 인구 구성비로 본다 ("초혼 비율"을 인구 성별 구성으로
+    # 읽어 '지역이 없음'으로 끝났다 → 지원하지 않는 지표로 보내 통계표에서 계산하게 한다)
+    population = sp["name"] == "총인구" if sp else not ind or bool(PEOPLE_INDICATOR.search(ind))
     if kind == "composition" and population and not q.get("unsupported"):
         # 구성비는 지표가 아니라 총인구를 나눠 보므로 지표 확인을 건너뜀
         if not regions:
@@ -1403,6 +1573,37 @@ def compute(q):
     if refusal:
         return _limit_result(refusal, result)
     return result
+
+
+def _rank_by_change(q, hi):
+    """전년 대비 변화량 순위: 그해와 전년 순위(모든 지역)를 각각 계산해 지역마다 뺀다"""
+    year = q.get("year") or hi
+    base = {**q, "rank_by": None, "top": None}
+    now, before = compute({**base, "year": year}), compute({**base, "year": year - 1})
+    for part in (now, before):
+        if part.get("status") != "ok":
+            return part
+    prev = {r["region"]: r.get("value") for r in before.get("ranking") or []}
+    rows = [
+        {"region": r["region"], "value": r["value"] - prev[r["region"]]}
+        for r in now.get("ranking") or []
+        if r.get("value") is not None and prev.get(r["region"]) is not None
+    ]
+    decrease = q["rank_by"] == "decrease"
+    rows.sort(key=lambda r: r["value"], reverse=not decrease)
+    top = q.get("top") or 3
+    out = {k: v for k, v in now.items() if k not in ("ranking", "notes")}
+    out.update(
+        ranking=[{**r, "rank": i} for i, r in enumerate(rows[:top], start=1)],
+        total_regions=len(rows),
+        rank_by=q["rank_by"],
+        order="감소 폭이 큰 순" if decrease else "증가 폭이 큰 순",
+        base_indicator=now.get("indicator"),
+        indicator=f"{now.get('indicator')} 변화량",
+        notes=[f"{year - 1}년 → {year}년 변화량으로 순위를 매겼습니다", *(now.get("notes") or [])],
+        kind="value",
+    )
+    return out
 
 
 LIMIT_REASONS = {
@@ -1825,9 +2026,16 @@ def _meaning(name, v):
     return f" {meaning.format(value=_val(v, ''))}이라는 뜻입니다."
 
 
+SEX_IN_NAME = re.compile(r"남편|아내|남자|여자|남성|여성")
+
+
 def _subject(r):
-    """성별을 붙인 지표 이름 (예: 여성 고령인구 비율)"""
-    return SEX_WORDS.get(r.get("sex"), "") + r.get("indicator", "")
+    """성별을 붙인 지표 이름 (예: 여성 고령인구 비율).
+    이름에 이미 성별이 있으면 붙이지 않는다 (표의 칸 '남편' → "남성 남편"이 되지 않게)"""
+    name = r.get("indicator", "")
+    if SEX_IN_NAME.search(name):
+        return name
+    return SEX_WORDS.get(r.get("sex"), "") + name
 
 
 # 값이 음수일 때 뜻 (지표 이름 → 문장)
@@ -2003,6 +2211,10 @@ def _rank_text(r):
     if unit in ("명", "건"):
         order = {"낮은": "적은", "높은": "많은"}[order]
     head = f"{_when(r)} {_josa(name, '이가')} 가장 {order} {r['level']}"
+    if r.get("rank_by") in ("decrease", "increase"):
+        moved = "줄어든" if r["rank_by"] == "decrease" else "늘어난"
+        who = _josa(r.get("base_indicator") or name, "이가")
+        head = f"{_when(r)} {who} 가장 많이 {moved} {r['level']}"
     if r.get("indicator") == "순이동" and r["order"] == "낮은 순":  # 순유출이 큰 순
         head = f"{_when(r)} 인구가 가장 많이 빠져나간(순유출이 가장 큰) {r['level']}"
     listed = ", ".join(f"{x['region']}({_val(x['value'], unit)})" for x in items)

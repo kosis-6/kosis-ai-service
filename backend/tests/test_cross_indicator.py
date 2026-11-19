@@ -412,7 +412,7 @@ def test_detect_both_unknown_only_on_request() -> None:
 
 def test_bare_per_people_means_population() -> None:
     # "1000명당 혼인 건수"처럼 분모를 말하지 않으면 인구 1,000명당 → 공식 조혼인율
-    assert x.detect("1000명당 혼인 건수 얼마나 돼?").official == "조혼인율"
+    assert x.detect("인구 1000명당 혼인 건수는?").official == "조혼인율"
     c = x.detect("2024년 서울 1000명당 외국인근로자 수")
     assert (c.num, c.den, c.scale) == ("외국인근로자 수", "총인구", 1000)
 
@@ -550,3 +550,92 @@ def test_within_ratio_needs_part_of_whole() -> None:
     assert bigger["status"] == "missing_data" and "일부가 아닙니다" in bigger["reason"]
     part = x.combine_value(c, {**num, "unit": "가구", "value": 139070}, den, {"sex": "계"})
     assert part["status"] == "ok" and part["value"] == 10.0
+
+
+def test_numerator_right_before_denominator_versus() -> None:
+    # "이사한 사람 인구 대비 몇 퍼센트" → 이동자 수 ÷ 총인구 × 100
+    c = x.detect("작년에 이사한 사람 인구 대비 몇 퍼센트야?")
+    assert (c.num, c.den, c.scale, c.form) == ("이동자 수", "총인구", 100, "versus")
+
+
+def test_value_without_region_is_nationwide() -> None:
+    seen = []
+
+    def run(q):
+        seen.append(tuple(q.get("regions") or []))
+        return fake_run()(q)
+
+    q = q_of("value", year=2024)
+    q["regions"] = []
+    x.compute(q, run)
+    assert set(seen) == {("전국",)}
+
+
+def test_within_with_jung_e() -> None:
+    # "등록 외국인 중에 베트남 사람 비율": '중에'도 '중'
+    c = x.detect_partial("등록 외국인 중에 베트남 사람 비율 얼마나 돼?")
+    assert (c.num, c.den, c.form, c.dynamic) == ("베트남 사람", "등록외국인 수", "within", "num")
+
+
+def test_unknown_side_tried_in_known_tables_first(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 사전 쪽 지표의 표 안에 사전에 없는 쪽 칸이 있으면 그 표로 (기준이 같다, 통계표 찾기 없음)
+    import asyncio
+
+    from app.services import ask_session, dynamic_indicator, indicators
+
+    tried = []
+
+    async def fake_try(tbl, org, question, parsed, trace, forced, *a, **k):
+        tried.append((tbl, question))
+        result = {"status": "ok", "value": 293907, "unit": "명", "year": 2025, "tbl_id": tbl}
+        return {"status": "ok", "result": result}, None
+
+    monkeypatch.setattr(dynamic_indicator, "_try", fake_try)
+    spec = {"method": "lookup", "sources": [{"table": "DT_1B040A9C"}]}
+    monkeypatch.setattr(indicators, "spec", lambda n: spec)
+    q = {"regions": ["전국"], "year": 2025}
+    got = asyncio.run(ask_session._same_table_side("베트남 사람", "등록외국인 수", q, "value", {}))
+    assert got["value"] == 293907 and tried == [("DT_1B040A9C", "2025년 전국 베트남 사람")]
+
+
+# ---- 변형셋 1차 수치 실패 다시 확인 (세진 정리) — 일반 예문 ------------------------------------
+
+
+def test_sum_of_two_indicators() -> None:
+    # "A 인구, B도 포함해서 총 몇 명" → A + B
+    c = x.detect("서울 인구, 등록 외국인도 포함해서 총 몇 명이야?")
+    assert (c.num, c.den, c.form) == ("총인구", "등록외국인 수", "sum")
+    assert c.name == "총인구와 등록외국인 수의 합" and c.formula == "총인구 + 등록외국인 수"
+    res = x.compute(q_of("value", num="출생아 수", den="세대수", year=2024) | {"cross": {
+        "num": "출생아 수", "den": "세대수", "scale": 1, "form": "sum"}}, fake_run())  # fmt: skip
+    assert res["value"] == 41605 + 4482063 and res["op"] == "+"
+
+
+def test_people_word_is_total_population() -> None:
+    # "제주도 사람 중 외국인 주민 %": 분모 '사람'은 총인구, 공식 외국인주민 비율로 보내지 않는다
+    c = x.detect_partial("서울 사람 중 외국인 주민은 몇 퍼센트야?")
+    assert (c.num, c.den, c.scale, c.official) == ("외국인주민 수", "총인구", 100, None)
+
+
+def test_population_denominator_is_percent() -> None:
+    c = x.detect("인구 대비 등록외국인 많은 시도 세 군데")
+    assert c.scale == 100 and c.official == "등록외국인 비율"
+    assert x.detect("2024년 서울 출생아 수 대비 사망자 수").scale == 1
+
+
+def test_rank_without_year_aligns_years() -> None:
+    # 연도를 말하지 않은 순위: 한쪽이 최신 달 값이면 둘 다 연간 마지막 해로 다시 계산한다
+    asked = []
+
+    def run(q):
+        asked.append((q["indicator"], q.get("year"), (q.get("asked") or {}).get("latest")))
+        res = fake_run()(q)
+        if q["indicator"] == "세대수" and not q.get("year"):
+            return {**res, "year": 2026, "as_of": "2026년 10월 말"}
+        return res
+
+    q = q_of("rank", top=1)
+    q["asked"] = {"latest": True}
+    res = x.compute(q, run)
+    assert res["status"] == "ok"
+    assert ("출생아 수", 2024, False) in asked and ("세대수", 2024, False) in asked

@@ -137,8 +137,54 @@ def test_ratio_later_indicator_is_numerator(world) -> None:
         "노인 1인 가구": _value("노인 1인 가구", 100),
     }
     found = _found([_target("1인 가구"), _target("노인 1인 가구")], "ratio")
-    res, _ = run("2020년 서울 1인 가구 중 노인 1인 가구 비율", found)
+    res, trace = run("2020년 서울 1인 가구 중 노인 1인 가구 비율", found)
     assert res["result"]["value"] == 25.0 and res["result"]["unit"] == "%"
+    assert trace["multi"]["ratio_by"] == "rule"
+
+
+def _ratio_found(num=None, den=None):
+    found = _found([_target("1인 가구 수"), _target("통근 인구")], "ratio")
+    found["handoff"]["combine"].update(num=num, den=den)
+    return found
+
+
+@pytest.fixture
+def two_counts(world):
+    world["values"] = {
+        "1인 가구 수": _value("1인 가구 수", 800),
+        "통근 인구": _value("통근 인구", 200, "명"),
+    }
+
+
+@pytest.mark.usefixtures("two_counts")
+def test_ratio_times_is_first_over_second() -> None:
+    # "A는 B의 몇 배" = A ÷ B (11/18 전에는 늘 뒤 ÷ 앞이라 0.25배가 나왔다)
+    res, trace = run("2020년 서울 1인 가구 수는 통근 인구의 몇 배야", _ratio_found())
+    assert res["result"]["value"] == 4.0 and trace["multi"]["ratio_by"] == "rule"
+
+
+@pytest.mark.usefixtures("two_counts")
+def test_rule_wins_over_the_plan() -> None:
+    # 계획(LLM)이 분자 · 분모를 거꾸로 적어도 문형 규칙이 확실하면 규칙대로
+    found = _ratio_found(num="통근 인구", den="1인 가구 수")
+    res, trace = run("2020년 서울 1인 가구 수는 통근 인구의 몇 배야", found)
+    assert res["result"]["value"] == 4.0 and trace["multi"]["ratio_by"] == "rule"
+
+
+@pytest.mark.usefixtures("two_counts")
+def test_plan_decides_when_no_rule_matches() -> None:
+    # 규칙이 모르는 말투 ("B에 비해 A는"): 계획의 분자 · 분모를 쓴다
+    found = _ratio_found(num="1인 가구 수", den="통근 인구")
+    res, trace = run("2020년 서울 통근 인구에 비해 1인 가구 수는 얼마나 되나", found)
+    assert res["result"]["value"] == 4.0 and trace["multi"]["ratio_by"] == "plan"
+
+
+@pytest.mark.usefixtures("two_counts")
+def test_default_is_later_over_earlier() -> None:
+    # 규칙도 계획도 없으면 예전처럼 뒤 ÷ 앞. 계획이 지표에 없는 말을 적었으면 쓰지 않는다
+    found = _ratio_found(num="외국인", den="통근 인구")
+    res, trace = run("2020년 서울 통근 인구에 비해 1인 가구 수는 얼마나 되나", found)
+    assert res["result"]["value"] == 0.25 and trace["multi"]["ratio_by"] == "default"
 
 
 def test_compare_same_unit_adds_gap_line(world) -> None:
@@ -157,6 +203,17 @@ def test_filter_then_lookup_uses_top_region(world) -> None:
     assert ("인구", "rank", ()) in world["asked"]
     assert ("출생아", "value", ("경기도",)) in world["asked"]  # 1위 지역으로 다시 계산
     assert "인구가 가장 높은 지역은 경기도입니다" in res["answer"]
+
+
+def test_filter_then_lookup_lowest_region_says_lowest(world) -> None:
+    # "가장 적은 시도의 B": 안내문도 '가장 낮은' (11/18 전에는 늘 '가장 높은'이었다)
+    world["values"] = {
+        "인구": lambda p: _rank("인구", ["세종특별자치시", "제주특별자치도"]),
+        "출생아": lambda p: _value("출생아", 3, "명", region=p["regions"][0]),
+    }
+    found = _found([_target("인구", role="filter"), _target("출생아")], "filter_then_lookup")
+    res, _ = run("인구가 가장 적은 시도의 출생아 수", found)
+    assert "인구가 가장 낮은 지역은 세종특별자치시입니다" in res["answer"]
 
 
 def test_intersect_of_regions(world) -> None:

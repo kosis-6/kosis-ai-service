@@ -245,7 +245,16 @@ def main() -> None:
         type=Path,
         help="챗봇을 부르지 않고 저장해 둔 원응답(.raw.jsonl)을 다시 채점",
     )
+    parser.add_argument(
+        "--question-cache",
+        action="store_true",
+        help="질문 이해 캐시를 켠 채로 돌린다 (기본은 꺼서 문항마다 질문 이해를 새로 한다)",
+    )
     args = parser.parse_args()
+    if not args.question_cache:
+        from app.core.config import get_settings
+
+        get_settings().question_cache = False
 
     rows = load_golden(args.golden)
     if args.only:
