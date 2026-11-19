@@ -1,6 +1,7 @@
 // 추가 상태 패널 (다른 후보, 다른 질문 예시, 개발 도구). <dialog> 로 띄운다
 import { useEffect, useRef, type ReactNode } from "react";
 import type { SearchResponse } from "../api/types";
+import { Icon } from "../components/Icon";
 
 type Props = { title: string; narrow?: boolean; onClose: () => void; children: ReactNode };
 
@@ -24,7 +25,8 @@ export function Sheet({ title, narrow, onClose, children }: Props) {
       <div className="sheet-head">
         <h2 id="sheet-title">{title}</h2>
         <button type="button" className="text-btn" onClick={() => ref.current?.close()}>
-          {"닫기  ×"}
+          닫기
+          <Icon name="x" size={14} />
         </button>
       </div>
       <div className="sheet-body">{children}</div>

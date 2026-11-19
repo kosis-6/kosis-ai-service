@@ -7,10 +7,6 @@
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { Link } from "react-router-dom";
 import type { AskResponse, Parsed, Recommendation } from "../api/types";
-import iconArrow from "../assets/icon-arrow.svg";
-import iconChart from "../assets/icon-chart.svg";
-import iconSearch from "../assets/icon-search.svg";
-import iconSpark from "../assets/icon-spark.svg";
 import { logout } from "../auth/client";
 import { useUser } from "../auth/useUser";
 import { Answer } from "../chat/Answer";
@@ -19,6 +15,7 @@ import { EXAMPLE_CATEGORIES, EXAMPLES } from "../chat/examples";
 import { AltCard } from "../chat/Reply";
 import { DevTools, Sheet } from "../chat/Sheet";
 import { Brand } from "../components/Brand";
+import { Icon } from "../components/Icon";
 import { usePage } from "../components/usePage";
 import "../styles/chat.css";
 
@@ -166,17 +163,16 @@ export function ChatPage() {
         <div className="side-top">
           <Brand />
           <button type="button" className="btn primary block side-new" onClick={reset}>
-            {"＋  새 대화 시작하기"}
+            <Icon name="plus" />새 대화
           </button>
-          <p className="side-label">WORKSPACE</p>
           <nav className="menu" aria-label="메뉴">
             <div className="menu-item" aria-current="page">
-              <img src={iconSearch} width="18" height="18" alt="" />
+              <Icon name="search" size={18} />
               통계 찾기
             </div>
             {user?.admin && (
               <Link className="menu-item" to="/admin">
-                <img src={iconChart} width="18" height="18" alt="" />
+                <Icon name="chart" size={18} />
                 사용 기록
               </Link>
             )}
@@ -185,26 +181,26 @@ export function ChatPage() {
         <div className="side-bottom">
           <div className="guide">
             <span className="guide-icon">
-              <img src={iconChart} width="18" height="18" alt="" />
+              <Icon name="chart" size={18} />
             </span>
             <p className="guide-title">
               궁금한 통계,
               <br />
-              시작은 질문 하나로.
+              시작은 질문 하나로
             </p>
             <p className="guide-text">
-              주제와 기간, 대상을 함께 알려주면
-              <br />더 알맞은 통계표를 찾을 수 있어요.
+              주제와 기간, 대상을 함께 알려주면 더 알맞은 통계표를 찾을 수 있어요.
             </p>
             <hr />
             <a className="guide-link" href="https://kosis.kr" target="_blank" rel="noopener">
               KOSIS 국가통계포털
+              <Icon name="external" size={14} />
             </a>
           </div>
           {user ? (
             <div className="account">
               <span className="account-mark" aria-hidden="true">
-                S
+                {Array.from(user.name)[0]}
               </span>
               <span className="account-name">{user.name}</span>
               <button type="button" className="text-btn" onClick={() => void logout()}>
@@ -212,7 +208,7 @@ export function ChatPage() {
               </button>
             </div>
           ) : (
-            <p className="made-by">MADE BY TEAM SIX</p>
+            <p className="made-by">LIKE SNAKE 팀이 만들었어요</p>
           )}
         </div>
       </aside>
@@ -220,7 +216,6 @@ export function ChatPage() {
       <div className="main">
         <header className="head">
           <div className="service only-wide">
-            <p className="service-tag">통계와 일상을 잇다</p>
             <h1 className="service-name">{text.title}</h1>
           </div>
           <Brand className="only-narrow" />
@@ -230,10 +225,7 @@ export function ChatPage() {
                 {mock ? "목업 모드" : "개발 도구"}
               </button>
             )}
-            <p className="source only-wide">
-              <span aria-hidden="true">●</span>
-              {"  KOSIS 데이터 기반"}
-            </p>
+            <p className="source only-wide">KOSIS 데이터 기반</p>
             <button type="button" className="btn quiet head-btn only-narrow in-chat-only" onClick={reset}>
               새 대화
             </button>
@@ -263,9 +255,8 @@ export function ChatPage() {
           {!inChat && (
             <section className="welcome">
               <span className="emblem">
-                <span className="logo" role="img" aria-label="TEAM SIX 로고" />
+                <span className="logo" role="img" aria-label="LIKE SNAKE 로고" />
               </span>
-              <p className="welcome-tag">일상 속 궁금증, 통계에서 답을 찾다</p>
               <h2 className="welcome-title">
                 어떤 통계가
                 <br />
@@ -286,14 +277,15 @@ export function ChatPage() {
                 <div className="examples-grid">
                   {MAIN_EXAMPLES.map((q, i) => (
                     <button type="button" className="example" key={q} onClick={() => void send(q)}>
-                      <span className="example-cat">{`${EXAMPLE_CATEGORIES[i]}  ↗`}</span>
+                      <span className="example-cat">{EXAMPLE_CATEGORIES[i]}</span>
                       <span className="example-q">{q}</span>
                     </button>
                   ))}
                 </div>
               </div>
               <button type="button" className="text-btn more-examples" onClick={() => setSheet({ kind: "examples" })}>
-                {`다른 질문 예시  ${MORE_EXAMPLES.length}  ⌄`}
+                {`다른 질문 예시 ${MORE_EXAMPLES.length}개`}
+                <Icon name="chevronDown" size={14} />
               </button>
             </section>
           )}
@@ -306,7 +298,7 @@ export function ChatPage() {
             ) : (
               <div className={m.kind === "error" ? "msg bot error" : "msg bot"} key={m.id}>
                 <span className="avatar" aria-hidden="true">
-                  6
+                  <span className="logo" />
                 </span>
                 <div className="reply">
                   {m.kind === "error" ? (
@@ -328,7 +320,7 @@ export function ChatPage() {
           {busy && (
             <div className="msg bot typing">
               <span className="avatar" aria-hidden="true">
-                6
+                <span className="logo" />
               </span>
               <div className="reply">
                 <div className="bubble">
@@ -342,7 +334,6 @@ export function ChatPage() {
 
         <form className="composer" onSubmit={submit}>
           <div className="composer-box">
-            <img src={iconSpark} width="20" height="20" alt="" />
             <textarea
               ref={inputRef}
               rows={1}
@@ -358,7 +349,7 @@ export function ChatPage() {
               onKeyDown={onKeyDown}
             />
             <button type="submit" className="send" aria-label="보내기" disabled={busy}>
-              <img src={iconArrow} width="21" height="21" alt="" />
+              <Icon name="arrowUp" size={20} stroke={1.75} />
             </button>
           </div>
           <p className="composer-note">

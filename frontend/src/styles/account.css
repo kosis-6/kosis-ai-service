@@ -18,36 +18,41 @@ body[data-page="account"] {
   gap: 20px;
   width: min(520px, 38%);
   padding: 40px;
-  border-radius: 32px;
+  border-radius: 24px;
   background: var(--accent);
   color: var(--panel);
 }
 .brand.on-dark { color: var(--panel); }
 .brand.on-dark .brand-tag { color: var(--accent-mid); }
 .story-body { display: flex; flex-direction: column; gap: 24px; }
+/* 브랜드 패널: 로고 → 문구 → 주제가 차례로 떠오른다 */
+.story-body > * { animation: rise var(--slow) var(--ease) both; }
+.story-body > :nth-child(2) { animation-delay: 60ms; }
+.story-body > :nth-child(3) { animation-delay: 120ms; }
+.story-body > :nth-child(4) { animation-delay: 180ms; }
 .story-art {
   display: grid;
   place-items: center;
   width: 240px;
   height: 240px;
-  border-radius: 32px;
+  border-radius: 24px;
   background: var(--logo-paper);
 }
-.story-art .logo { height: 186px; border-radius: 0; background-image: url("../assets/team-six-symbol.png"); }
-.story-title { font-size: 34px; font-weight: 700; line-height: 51px; }
-.story-text { color: var(--accent-mid); line-height: 21px; }
-.story-topics { display: flex; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.story-art .logo { height: 186px; border-radius: 0; background-image: url("../assets/like-snake-symbol.png"); }
+.story-title { font-size: 32px; font-weight: 600; line-height: 44px; letter-spacing: -0.02em; }
+.story-text { color: var(--accent-mid); line-height: 22px; }
+.story-topics { display: flex; gap: 8px; margin: 0; padding: 0; list-style: none; }
 .story-topics li {
   display: grid;
   place-items: center;
-  width: 78px;
-  height: 34px;
-  border-radius: 12px;
+  height: 32px;
+  padding: 0 16px;
+  border-radius: 8px;
   background: var(--accent-hover);
   font-size: 12px;
   font-weight: 500;
 }
-.story-foot { color: var(--accent-mid); font-size: 12px; line-height: 18px; white-space: pre; }
+.story-foot { color: var(--accent-mid); font-size: 12px; line-height: 16px; white-space: pre; }
 
 /* ---- 계정 패널 ---- */
 .panel {
@@ -58,27 +63,30 @@ body[data-page="account"] {
   align-items: center;
   gap: 24px;
   padding: 40px;
-  border-radius: 32px;
+  border-radius: 24px;
   background: var(--workspace);
 }
 .m-head { display: none; }
 .back {
   align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   color: var(--muted);
   font-size: 13px;
   line-height: 20px;
   text-decoration: none;
   white-space: pre;
+  transition: color var(--fast) var(--ease);
 }
 .back:hover { color: var(--ink); }
 .views { flex: 1; display: flex; align-items: center; justify-content: center; width: 100%; }
-.view { display: flex; flex-direction: column; gap: 20px; width: 100%; max-width: 424px; }
+.view { display: flex; flex-direction: column; gap: 20px; width: 100%; max-width: 424px; animation: rise var(--slow) var(--ease) 80ms both; }
 .view.compact { gap: 16px; }
 .form-head { display: flex; flex-direction: column; gap: 8px; }
-.eyebrow { color: var(--sage); font-size: 11px; font-weight: 500; line-height: 17px; }
-.view h1 { font-size: 32px; font-weight: 700; line-height: 48px; }
-.lead { color: var(--muted); line-height: 21px; }
-.panel-foot { color: var(--muted); font-size: 11px; line-height: 17px; text-align: center; }
+.view h1 { font-size: 32px; font-weight: 600; line-height: 40px; letter-spacing: -0.02em; }
+.lead { color: var(--muted); line-height: 22px; }
+.panel-foot { color: var(--muted); font-size: 12px; line-height: 16px; text-align: center; }
 
 /* SIX / Input */
 .fields { display: flex; flex-direction: column; gap: 16px; }
@@ -92,9 +100,9 @@ body[data-page="account"] {
   height: 52px;
   padding: 0 16px;
   border: 1px solid var(--line);
-  border-radius: 16px;
+  border-radius: 12px;
   background: var(--panel);
-  transition: border-color .15s ease;
+  transition: border-color var(--fast) var(--ease), box-shadow var(--fast) var(--ease);
 }
 .field-box:focus-within { border-color: var(--sage); box-shadow: 0 0 0 1px var(--sage); }
 .field-box input {
@@ -108,8 +116,8 @@ body[data-page="account"] {
   line-height: 24px;
 }
 .field-box input::placeholder { color: var(--muted); opacity: 1; }
-.eye { flex: none; display: grid; place-items: center; padding: 0; border: 0; background: none; opacity: .75; }
-.eye[aria-pressed="true"] { opacity: 1; filter: brightness(.5); }
+.eye { flex: none; display: grid; place-items: center; padding: 0; border: 0; background: none; color: var(--muted); transition: color var(--fast) var(--ease); }
+.eye:hover, .eye[aria-pressed="true"] { color: var(--ink); }
 
 /* 칸 안의 글자 버튼 (인증번호 받기·확인), 칸 아래 안내·오류 문구. 시안에 없어 SIX / Input 에 맞춰 둠 */
 .field-btn {
@@ -130,8 +138,9 @@ body[data-page="account"] {
 .field-msg.bad { color: var(--bad); }
 .field.invalid .field-box { border-color: var(--bad); box-shadow: none; }
 .form-msg {
-  padding: 10px 14px;
-  border-radius: 12px;
+  padding: 12px 16px;
+  border-radius: 8px;
+  animation: rise var(--mid) var(--ease) both;
   background: var(--bad-soft);
   color: var(--bad);
   font-size: 13px;
@@ -144,7 +153,7 @@ body[data-page="account"] {
 .agree {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 8px;
   min-height: 24px;
   color: var(--muted);
   font-size: 12px;
@@ -157,10 +166,11 @@ body[data-page="account"] {
   height: 18px;
   margin: 0;
   border: 1px solid var(--accent-mid);
-  border-radius: 8px;
+  border-radius: 4px;
   background: var(--panel);
   appearance: none;
   cursor: pointer;
+  transition: background-color var(--fast) var(--ease), border-color var(--fast) var(--ease);
 }
 .agree input:checked {
   border-color: var(--accent);
@@ -173,14 +183,15 @@ body[data-page="account"] {
 
 /* 가입 완료 */
 .done { align-items: center; gap: 24px; text-align: center; }
-.done h1 { font-size: 30px; line-height: 45px; }
+.done h1 { font-size: 28px; line-height: 36px; }
 .done-mark {
   display: grid;
   place-items: center;
   width: 80px;
   height: 80px;
-  border-radius: 28px;
+  border-radius: 24px;
   background: var(--accent-soft);
+  color: var(--ok);
 }
 .later { color: var(--muted); font-size: 13px; line-height: 20px; text-decoration: none; }
 .later:hover { color: var(--ink); }
@@ -197,15 +208,15 @@ body[data-page="account"] {
     justify-content: space-between;
     gap: 12px;
     width: 100%;
-    min-height: 76px;
+    min-height: 72px;
     padding: 12px 20px;
     background: var(--sidebar);
   }
-  .m-back { font-size: 24px; line-height: 1; text-decoration: none; color: var(--ink); }
-  .m-head .logo { height: 38px; }
+  .m-back { display: grid; place-items: center; color: var(--ink); text-decoration: none; }
+  .m-head .logo { height: 36px; }
   .views { padding: 24px; }
   .view { max-width: 424px; }
-  .view h1 { font-size: 28px; line-height: 42px; }
+  .view h1 { font-size: 28px; line-height: 36px; }
   /* iOS 는 16px 미만 입력창에 포커스하면 화면을 확대한다 */
   .field-box input { font-size: 16px; }
   .field-box input::placeholder { font-size: 14px; }

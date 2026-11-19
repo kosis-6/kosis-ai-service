@@ -1,6 +1,6 @@
 // SIX / Input: 이름표 + 입력 칸 + 칸 아래 안내·오류 문구
 import { useState, type InputHTMLAttributes, type ReactNode, type Ref } from "react";
-import iconEye from "../assets/icon-eye.svg";
+import { Icon } from "./Icon";
 
 export type Note = { text: string; kind?: "bad" | "ok" };
 
@@ -29,7 +29,7 @@ export function Field({ ref, label, note, hint, action, type, ...input }: Props)
             aria-pressed={showing}
             onClick={() => setShowing((on) => !on)}
           >
-            <img src={iconEye} width="18" height="18" alt="" />
+            <Icon name="eye" size={18} />
           </button>
         )}
         {action}
