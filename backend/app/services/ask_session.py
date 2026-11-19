@@ -61,6 +61,7 @@ from app.services import (
     conversations,
     cross_indicator,
     dynamic_indicator,
+    flow,
     indicators,
     qa,
     question_clarify,
@@ -1007,6 +1008,7 @@ async def _new(question: str, state: dict | None) -> tuple[dict, dict, str | Non
 
     if refused := await table_guide.off_domain_early(question):
         # 집값 · 실업률 · 미세먼지처럼 인구 통계에 없는 주제: 질문 이해(HCX)도 부르지 않고 거절한다
+        flow.add("범위 검사", refused.get("status"), "인구 통계에 없는 주제 (질문 이해 전에 거절)")
         refused["request_type"], refused["question"] = NEW, question
         return refused, {}, None
     res = await qa.ask(question, adjust=adjust)
@@ -1586,6 +1588,7 @@ async def _dynamic_side(
     }
     step = {"phrase": phrase, "question": sub_q}
     trace.setdefault("cross_sides", []).append(step)
+    flow.add("사전에 없는 쪽 계산", "시작", f"'{phrase}'를 따로 물은 질문으로 ({sub_q})")
     try:
         part = await dynamic_indicator.cached_answer(sub_q, sub_parsed, trace)
         if part is None:
@@ -1673,6 +1676,8 @@ async def _same_table_side(
                     {**record, "status": "ok", "leftover": [], "cells": report.get("cells") or [],
                      "why": None, "options": {}}
                 )  # fmt: skip
+                cells = report.get("cells")
+                flow.add("같은 표에서 찾기", "ok", f"'{phrase}' 표={tbl_id} 칸={cells}")
                 return {**got, "indicator": phrase}
             why = f"건수 · 인원이 아닌 값 ({got.get('unit')})"
         leftover = report.get("leftover") or []
@@ -1686,6 +1691,7 @@ async def _same_table_side(
             {**record, "status": status, "leftover": leftover, "cells": report.get("cells") or [],
              "why": why or "질문의 말과 맞는 칸이 없음", "options": options}
         )  # fmt: skip
+        flow.add("같은 표에서 찾기", status, f"'{phrase}' 표={tbl_id} {why or ''}")
     return None
 
 
@@ -1919,6 +1925,7 @@ async def handle(
     """/ask 한 턴. qa.ask의 응답에 더하는 것:
     session_id, question, chart, request_type, applied(적용한 조건), notice(알림)"""
     sid = session_id or new_id()
+    steps = flow.start()  # 이 턴의 처리 흐름 (요청 기록 · 평가 CSV에 남긴다)
     async with _lock(sid):
         state, expired = await _load(sid)
         moved = state is not None and not same_owner(state, user_id)
@@ -1951,6 +1958,9 @@ async def handle(
         res["applied"] = applied(after.get("conditions") or {}, after.get("sources") or {})
         res["notice"] = notice
         await _save(sid, after, res, state, question, user_id)
+    first_line = (res.get("answer") or "").strip().split("\n")[0][:80]
+    flow.add("최종 답", res.get("status"), f"{res.get('request_type') or ''} · {first_line}")
+    res.setdefault("trace", {})["flow"] = list(steps)
     return res
 
 

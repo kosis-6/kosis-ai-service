@@ -45,6 +45,7 @@ from app.core.stats_db import rows as _rows
 from app.services import (
     alternative,
     cell_pick,
+    flow,
     indicators,
     load_queue,
     lookup,
@@ -1670,6 +1671,8 @@ async def cached_answer(question: str, parsed: dict, trace: dict) -> dict | None
         logger.exception("계산 방법 캐시 읽기 실패")
         return None
     trace["plan_cache"] = "miss" if found else "skip"
+    if not plans:
+        flow.add("계산 방법 캐시", "없음" if found else "건너뜀", (found or ["", ""])[1])
     trace.setdefault("dynamic", [])
     for plan in plans:
         saved = {int(k): v for k, v in (plan.get("forced") or {}).items()}
@@ -1695,6 +1698,8 @@ async def cached_answer(question: str, parsed: dict, trace: dict) -> dict | None
             res = ask_answer(question, parsed, plan["tbl_id"], plan["tbl_id"], ask, forced)
         if res is not None:
             trace["plan_cache"] = {"hit": plan["id"], "tbl_id": plan["tbl_id"]}
+            used = f"전에 계산한 표 {plan['tbl_id']} (통계표 찾기 건너뜀)"
+            flow.add("계산 방법 캐시", "씀", used)
             if res.get("status") == "ok":
                 try:
                     await plan_cache.used(plan["id"])
@@ -1752,6 +1757,25 @@ async def _remember(parsed: dict, tbl_id: str, forced: dict, res: dict, words=()
 
 
 async def _try(
+    tbl_id, org_id, question, parsed, trace, forced, slots=None, notice=None, fetch_sem=None
+):
+    """표 하나로 계산해 보고 처리 흐름에 남긴다 (_try_once)"""
+    res, ask = await _try_once(
+        tbl_id, org_id, question, parsed, trace, forced, slots, notice, fetch_sem
+    )
+    step = (trace.get("dynamic") or [{}])[-1]
+    if res is not None:
+        outcome = res.get("status")
+    else:
+        outcome = "되묻기" if ask is not None else "못 함"
+    how = "칸 고르기 LLM" if step.get("by") == "cell_llm" else "규칙"
+    parts = [tbl_id, f"칸={step['cells']} ({how})" if step.get("cells") else ""]
+    parts.append(step.get("skip") or "")
+    flow.add("표 칸으로 계산", outcome, " · ".join(p for p in parts if p))
+    return res, ask
+
+
+async def _try_once(
     tbl_id, org_id, question, parsed, trace, forced, slots=None, notice=None, fetch_sem=None
 ):
     """표 하나로 계산해 본다 → (답 또는 None, 되물을 것 또는 None)

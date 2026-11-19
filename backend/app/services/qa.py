@@ -36,6 +36,7 @@ from app.services import (
     analysis,
     ask_followup,
     cross_indicator,
+    flow,
     indicators,
     load_queue,
     lookup,
@@ -103,6 +104,7 @@ async def understand(question, trace=None):
     if use_cache and (hit := UNDERSTAND_CACHE.get(key)) is not MISSING:
         if trace is not None:
             trace["hcx_raw"], trace["understand_cached"] = hit["raw"], True
+        flow.add("질문 이해", "캐시", _understood(hit["parsed"]))
         return copy.deepcopy(hit["parsed"])
     system = PARSE_SYSTEM.replace("{INDICATORS}", _indicator_list()).replace("{LATEST}", str(hi))
     text = await _chat(question, system, trace=trace)
@@ -110,16 +112,25 @@ async def understand(question, trace=None):
         trace["hcx_raw"] = text
     objects = _json_objects(text)
     if not objects:
+        flow.add("질문 이해", "parse_error", "HCX 출력에서 JSON을 읽지 못함")
         return {"type": "parse_error", "raw": text}  # 해석 실패는 남기지 않는다
     parsed = objects[0]
     # 남녀를 나눠 JSON을 두 번 쓴 경우 → 성별 구분 없이 (남녀를 함께 보여준다)
     if len({json.dumps(o.get("sex"), ensure_ascii=False) for o in objects}) > 1:
         parsed["sex"] = "계"
     result = await run_in_threadpool(correct, question, parsed)
+    flow.add("질문 이해", "HCX", _understood(result))
     if use_cache:
         # 대화 이어받기(ask_session의 adjust)는 꺼낸 뒤에 적용되므로 이어받기 전 결과를 남긴다
         UNDERSTAND_CACHE.set(key, {"raw": text, "parsed": copy.deepcopy(result)})
     return result
+
+
+def _understood(parsed):
+    """처리 흐름에 남길 질문 이해 결과 (코드가 고친 항목까지)"""
+    fixes = parsed.get("corrections") or []
+    tail = f" · 코드 보정: {'; '.join(map(str, fixes[:3]))}" if fixes else ""
+    return flow.summary_of(parsed) + tail
 
 
 def _json_objects(text):
@@ -2676,6 +2687,8 @@ async def answer(parsed, trace=None, question=""):
         if notes and result.get("status") == "ok":
             result["notes"] = list(result.get("notes") or []) + notes
     trace["compute_ms"] = round((time.perf_counter() - start) * 1000)
+    if not parsed.get("dynamic_spec"):  # 표 칸으로 계산한 답은 dynamic_indicator._try가 남긴다
+        flow.add("사전 계산", result.get("status"), flow_result(result))
     return {
         "status": result.get("status"),
         "answer": f"{summary(result)}\n\n{render(result)}".strip(),
@@ -2684,6 +2697,16 @@ async def answer(parsed, trace=None, question=""):
         "sources": sources(result),
         "trace": trace,
     }
+
+
+def flow_result(result):
+    """처리 흐름에 남길 계산 결과 한 줄 (값 · 표, 못 했으면 이유)"""
+    tbl = ",".join(s.get("tbl_id") or "" for s in sources(result))[:60]
+    if result.get("status") == "ok":
+        value = result.get("value")
+        shown = f"값={value}{result.get('unit') or ''}" if value is not None else "값 여러 개"
+        return f"{result.get('indicator') or ''} {shown} 표={tbl or '-'}".strip()
+    return str(result.get("reason") or result.get("indicator") or "")
 
 
 # ---- 요청 기록 ---------------------------------------------------------------------------
@@ -2762,6 +2785,8 @@ def log_request(question, res=None, error=None, elapsed_ms=None, path=None, user
     # 캐시를 썼는지: 질문 이해(같은 질문이면 HCX 0회), 계산 방법(통계표 찾기 건너뜀)
     if trace.get("understand_cached"):
         record["understand_cached"] = True
+    if trace.get("flow"):  # 처리 흐름 (app/services/flow.py, scripts/show_flow.py로 본다)
+        record["flow"] = trace["flow"]
     if trace.get("plan_cache"):
         record["plan_cache"] = trace["plan_cache"]
     if trace.get("refreshed"):  # 최근·최신 질문에서 KOSIS 새 연도를 확인한 결과
