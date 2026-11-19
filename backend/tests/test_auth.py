@@ -5,6 +5,7 @@
 """
 
 import asyncio
+import smtplib
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
@@ -62,8 +63,8 @@ SENT: list[dict[str, str]] = []
 def outbox(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, str]]:
     SENT.clear()
 
-    async def send(to, subject, body):
-        SENT.append({"to": to, "subject": subject, "body": body})
+    async def send(to, subject, body, html=None):
+        SENT.append({"to": to, "subject": subject, "body": body, "html": html})
 
     monkeypatch.setattr(mailer, "send", send)
     return SENT
@@ -521,6 +522,27 @@ def test_email_code_without_mail_settings_is_503(db, codes, monkeypatch) -> None
     r = client.post("/auth/email-code", json={"email": "a@b.co"})
     assert r.status_code == 503 and "SMTP_HOST" in r.json()["detail"]
     assert "a@b.co" not in codes  # 못 보냈으면 바로 다시 요청할 수 있게 지운다
+
+
+def test_email_code_mail_has_code_in_text_and_html(db, outbox) -> None:
+    assert client.post("/auth/email-code", json={"email": "a@b.co"}).status_code == 202
+    sent = outbox[-1]
+    code = _sent_code()
+    assert sent["to"] == "a@b.co"
+    assert code in sent["subject"] and code in sent["html"]
+    assert f"{email_verify.CODE_MINUTES}분" in sent["body"]
+
+
+def test_email_code_smtp_failure_is_502_and_logged(db, codes, monkeypatch, caplog) -> None:
+    async def fail(to, subject, body, html=None):
+        raise smtplib.SMTPAuthenticationError(535, b"5.7.8 Username and Password not accepted")
+
+    monkeypatch.setattr(mailer, "send", fail)
+    with caplog.at_level("WARNING"):
+        r = client.post("/auth/email-code", json={"email": "a@b.co"})
+    assert r.status_code == 502
+    assert "a@b.co" not in codes  # 바로 다시 요청할 수 있게 지운다
+    assert "SMTPAuthenticationError" in caplog.text  # 원인은 서버 로그에서 본다
 
 
 def test_nickname_rule_and_change(db) -> None:
