@@ -3,6 +3,7 @@
 //   통계표만 안내함(status "tables"): 통계표 찾기와 같은 말풍선·표 카드·선택지 (Reply)
 import { lazy, Suspense, useState } from "react";
 import type { Applied, AskResponse, Parsed, Recommendation, SearchResponse } from "../api/types";
+import { Icon } from "../components/Icon";
 import { safeUrl, splitLinks } from "./format";
 import { Reply, TopCard, type Send } from "./Reply";
 import { canReport, openReport } from "./report";
@@ -113,7 +114,6 @@ export function Answer({ data, busy, onSend, onOthers, onAskAgain }: Props) {
           busy={busy}
           onSend={onSend}
           onOthers={onOthers}
-          onDebug={() => undefined}
           onAskAgain={onAskAgain}
         />
       </>
@@ -181,7 +181,8 @@ export function Answer({ data, busy, onSend, onOthers, onAskAgain }: Props) {
       {cards.length > 0 && <TopCard r={cards[0]} badge="이 수치의 통계표" />}
       {cards.length > 1 && (
         <button type="button" className="btn secondary card-link" onClick={() => onOthers(cards.slice(1), {})}>
-          {`함께 쓴 통계표 ${cards.length - 1}개 더 보기  ⌄`}
+          {`함께 쓴 통계표 ${cards.length - 1}개 더 보기`}
+          <Icon name="chevronDown" />
         </button>
       )}
       {sources.length > 0 && (
@@ -189,11 +190,15 @@ export function Answer({ data, busy, onSend, onOthers, onAskAgain }: Props) {
           {sources.map((s) => (
             <li key={s.name}>
               <span className="source-label">출처</span>
-              <span className="source-name">{s.name}</span>
+              <span className="source-name">
+                {s.tbl_id ? s.name.replace(` (${s.tbl_id})`, "") : s.name}
+                {s.tbl_id && <code className="tbl-id">{s.tbl_id}</code>}
+              </span>
               <span className="source-basis">{s.basis}</span>
               {s.url && safeUrl(s.url) && (
                 <a className="source-link" href={safeUrl(s.url)} target="_blank" rel="noopener">
-                  {"KOSIS에서 보기  ↗"}
+                  KOSIS에서 보기
+                  <Icon name="external" />
                 </a>
               )}
             </li>

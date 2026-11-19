@@ -3,18 +3,17 @@
 import { Link, NavLink } from "react-router-dom";
 import { SearchesView } from "../admin/SearchesView";
 import { SessionsView } from "../admin/SessionsView";
-import iconChart from "../assets/icon-chart.svg";
-import iconSearch from "../assets/icon-search.svg";
 import { logout } from "../auth/client";
 import { useUser } from "../auth/useUser";
 import { Brand } from "../components/Brand";
+import { Icon } from "../components/Icon";
 import { usePage } from "../components/usePage";
 import "../styles/chat.css";
 import "../styles/admin.css";
 
 const VIEWS = {
-  sessions: { title: "대화 기록", to: "/admin", icon: iconChart },
-  searches: { title: "통계표 찾기 기록", to: "/admin/searches", icon: iconSearch },
+  sessions: { title: "대화 기록", to: "/admin", icon: "chart" },
+  searches: { title: "통계표 찾기 기록", to: "/admin/searches", icon: "search" },
 } as const;
 
 export function AdminPage({ view }: { view: keyof typeof VIEWS }) {
@@ -23,7 +22,7 @@ export function AdminPage({ view }: { view: keyof typeof VIEWS }) {
 
   const links = Object.values(VIEWS).map((v) => (
     <NavLink key={v.to} className="menu-item" to={v.to} end>
-      <img src={v.icon} width="18" height="18" alt="" />
+      <Icon name={v.icon} size={18} />
       {v.title}
     </NavLink>
   ));
@@ -33,7 +32,7 @@ export function AdminPage({ view }: { view: keyof typeof VIEWS }) {
       <aside className="sidebar">
         <div className="side-top">
           <Brand />
-          <p className="side-label">ADMIN</p>
+          <p className="side-label">관리자</p>
           <nav className="menu" aria-label="관리자 메뉴">
             {links}
           </nav>
@@ -45,7 +44,7 @@ export function AdminPage({ view }: { view: keyof typeof VIEWS }) {
           {user && (
             <div className="account">
               <span className="account-mark" aria-hidden="true">
-                S
+                {Array.from(user.name)[0]}
               </span>
               <span className="account-name">{user.name}</span>
               <button type="button" className="text-btn" onClick={() => void logout()}>

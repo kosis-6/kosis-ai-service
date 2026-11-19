@@ -11,7 +11,10 @@ export default defineConfig({
   plugins: [react()],
   server: {
     proxy: Object.fromEntries(
-      ["/auth", "/search", "/ask", "/admin", "/health", "/docs", "/openapi.json"].map((path) => [path, API]),
+      ["/auth", "/search", "/ask", "/conversations", "/admin", "/health", "/docs", "/openapi.json"].map((path) => [
+        path,
+        API,
+      ]),
     ),
   },
   build: {

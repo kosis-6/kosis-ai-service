@@ -1,4 +1,4 @@
-/* TEAM SIX 공통 토큰·버튼·로고 (Figma 'TEAM SIX · 인구통계 서비스 UI' 변수값) */
+/* LIKE SNAKE 공통 토큰·버튼·로고 (Figma 'TEAM SIX · 인구통계 서비스 UI' 변수값을 정리) */
 :root {
   color-scheme: light;
   --bg: #eaf0e6;
@@ -6,21 +6,29 @@
   --workspace: #fbfcf8;
   --panel: #ffffff;
   --logo-paper: #f4f3eb; /* Figma 토큰은 #f4f3ec. 로고 PNG 배경과 맞춰 경계선이 보이지 않게 한다 */
+  /* 글자는 두 단계: 본문·제목(ink), 설명·보조(muted). muted 는 바탕 위 4.5:1 이상 */
   --ink: #173b2e;
-  --muted: #687c6e;
+  --muted: #5f7265;
+  /* 글자에는 쓰지 않는다 (작은 글씨 대비가 모자라다): 초점 테두리, 큰 제목의 둘째 줄 */
   --sage: #5f8970;
   --line: #e1e9df;
+  /* 진초록은 셋: 채움(주요 버튼·사용자 말풍선·선택), 눌림·차트 선, 링크·좋은 변화 */
   --accent: #192e27;
   --accent-hover: #245941;
+  --ok: #2c6847;
   --accent-mid: #abc9af;
   --accent-soft: #e7f1e5;
-  --user: #194332;
-  --ok: #2c6847;
   /* 시안에 없는 오류 상태용 */
   --bad: #a33a2c;
   --bad-soft: #f8ebe7;
   --font: "Noto Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif;
   --font-brand: "Manrope", var(--font);
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  /* 움직임: 곡선 하나, 길이 셋 (누름·마우스 / 시트·접기 / 들어오기) */
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --fast: 160ms;
+  --mid: 220ms;
+  --slow: 420ms;
 }
 
 * { box-sizing: border-box; }
@@ -37,7 +45,6 @@ body {
   font-family: var(--font);
   font-size: 14px;
   line-height: 1.5;
-  letter-spacing: -0.02em;
   word-break: keep-all;
   overflow-wrap: anywhere;
 }
@@ -49,23 +56,31 @@ a { color: inherit; }
 
 :focus-visible { outline: 2px solid var(--sage); outline-offset: 2px; }
 
+.icon { flex: none; display: block; }
+
+/* 들어오기: 아래에서 조금 떠오르며 나타난다 (요소마다 animation-delay 로 차례를 준다) */
+@keyframes rise { from { opacity: 0; transform: translateY(8px); } }
+@keyframes fade { from { opacity: 0; } }
+
 /* SIX / Button: Primary · Secondary · Quiet */
 .btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  gap: 8px;
   height: 52px;
   padding: 0 20px;
   border: 0;
-  border-radius: 16px;
+  border-radius: 12px;
   background: transparent;
   color: var(--ink);
   font-weight: 500;
-  line-height: 23px;
+  line-height: 24px;
   text-decoration: none;
   white-space: pre;
-  transition: background-color .15s ease;
+  transition: background-color var(--fast) var(--ease), transform var(--fast) var(--ease);
 }
+.btn:active:not(:disabled) { transform: scale(0.98); }
 .btn.primary { background: var(--accent); color: var(--panel); }
 .btn.primary:hover { background: var(--accent-hover); }
 .btn.primary:disabled { background: var(--accent-mid); cursor: default; }
@@ -75,23 +90,35 @@ a { color: inherit; }
 .btn:disabled { cursor: default; }
 .btn.block { display: flex; width: 100%; }
 
+/* 표 ID: 모든 수치가 어느 KOSIS 표에서 왔는지 같은 모양으로 붙인다 */
+.tbl-id {
+  flex: none;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--panel);
+  color: var(--muted);
+  font: 400 12px/20px var(--font-mono);
+  white-space: nowrap;
+}
+
 /* SIX / Logo symbol: 원본 이미지를 시안의 잘라내기 비율 그대로 보여 준다 (42:60) */
 .logo {
   display: block;
   flex: none;
   aspect-ratio: 42 / 60;
   /* 작은 크기는 원본(910px)을 크게 줄일 때 일반 모니터에서 거칠어져서 작은 판을 쓴다 */
-  background: var(--logo-paper) image-set(url("../assets/team-six-symbol-small.png") 1x, url("../assets/team-six-symbol.png") 2x) 43.44% 29.44% / 212.5% 135.67% no-repeat;
+  background: var(--logo-paper) image-set(url("../assets/like-snake-symbol-small.png") 1x, url("../assets/like-snake-symbol.png") 2x) 43.44% 29.44% / 212.5% 135.67% no-repeat;
   border-radius: 13.33%/9.33%;
 }
 
-/* 팀 브랜드 */
+/* 서비스 이름 */
 .brand { display: flex; align-items: center; gap: 12px; min-width: 0; color: var(--accent); text-decoration: none; }
 .brand .logo { height: 52px; }
 .brand-text { display: flex; flex-direction: column; gap: 2px; white-space: nowrap; }
-.brand-name { font: 800 20px/30px var(--font-brand); letter-spacing: -0.02em; }
-.brand-tag { font-size: 10px; line-height: 15px; color: var(--muted); }
+.brand-name { font: 600 18px/24px var(--font-brand); letter-spacing: -0.01em; }
+.brand-tag { font-size: 12px; line-height: 16px; color: var(--muted); }
 
 @media (prefers-reduced-motion: reduce) {
-  * { transition: none !important; animation: none !important; }
+  *, *::before, *::after, ::backdrop { transition: none !important; animation: none !important; }
 }

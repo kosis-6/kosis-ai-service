@@ -1,0 +1,51 @@
+import { renderToStaticMarkup } from "react-dom/server";
+import { createElement } from "react";
+import { describe, expect, it } from "vitest";
+import { canReport } from "./report";
+import { Answer } from "./Answer";
+import { replayed, when } from "./conversations";
+
+const turn = (response: Record<string, unknown>) => ({
+  turn_no: 1,
+  question: "서울 인구 알려줘",
+  created_at: "2026-11-19T01:00:00Z",
+  response,
+});
+
+describe("지난 대화 다시 그리기", () => {
+  it("남겨 둔 답에 화면이 읽는 칸을 채운다", () => {
+    const data = replayed(turn({ status: "ok", answer: "서울 인구는 ...", sources: [{ name: "표" }] }), "A_1");
+    expect(data).toMatchObject({ status: "ok", answer: "서울 인구는 ...", session_id: "A_1", question: "서울 인구 알려줘" });
+    expect(data.parsed).toEqual({});
+    expect(data.result).toEqual({});
+    expect(data.sources).toHaveLength(1);
+  });
+
+  it("답 첫 부분만 남은 예전 턴(0019 전)도 그린다", () => {
+    const data = replayed(turn({ answer: "예전 답" }), "A_1");
+    expect(data.sources).toEqual([]);
+    const html = renderToStaticMarkup(
+      createElement(Answer, { data, busy: false, onSend: () => {}, onOthers: () => {}, onAskAgain: () => {} }),
+    );
+    expect(html).toContain("예전 답");
+  });
+
+  it("계산 결과가 없어 보고서 버튼은 내지 않는다", () => {
+    expect(canReport(replayed(turn({ status: "ok", answer: "답", sources: [] }), "A_1"))).toBe(false);
+  });
+});
+
+describe("목록의 마지막 대화 시각", () => {
+  const now = new Date(2026, 10, 19, 18, 30);
+  it("오늘은 시각, 어제는 '어제'", () => {
+    expect(when(new Date(2026, 10, 19, 9, 5).toISOString(), now)).toBe("09:05");
+    expect(when(new Date(2026, 10, 18, 23, 59).toISOString(), now)).toBe("어제");
+  });
+  it("올해는 월·일, 그 전은 연도까지", () => {
+    expect(when(new Date(2026, 0, 3).toISOString(), now)).toBe("1월 3일");
+    expect(when(new Date(2025, 11, 31).toISOString(), now)).toBe("2025. 12. 31.");
+  });
+  it("읽을 수 없는 시각은 비운다", () => {
+    expect(when("없음", now)).toBe("");
+  });
+});

@@ -39,13 +39,18 @@ import {
 
 // styles/base.css 의 토큰과 같은 값 (SVG 속성에는 CSS 변수를 쓸 수 없는 브라우저가 있다)
 const INK = "#173b2e";
-const MUTED = "#687c6e";
+const MUTED = "#5f7265";
 const GRID = "#e1e9df";
 const SERIES = "#245941";
 const SURFACE = "#ffffff";
 const HOVER = "#e7f1e5";
 
 const TICK = { fontSize: 11, fill: MUTED };
+
+// 선은 왼쪽에서부터 그려지고 막대는 바닥에서 자란다 (값이 어디서 어디로 가는지 눈으로 따라가게).
+// 움직임 줄이기를 켠 사용자에게는 처음부터 다 그린 상태로 보여 준다
+const MOTION = typeof window !== "undefined" && !window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+const DRAW = { isAnimationActive: MOTION, animationDuration: 700, animationEasing: "ease-out" } as const;
 
 type TipProps = { active?: boolean; payload?: readonly { value?: unknown }[]; label?: unknown };
 
@@ -102,7 +107,7 @@ function LineView({ chart }: { chart: Chart }) {
           // 점이 많으면 선만 그린다. 점에는 바탕색 테두리를 둘러 선과 겹쳐도 보이게 한다
           dot={rows.length <= 24 ? { r: 4, fill: SERIES, stroke: SURFACE, strokeWidth: 2 } : false}
           activeDot={{ r: 6, fill: SERIES, stroke: SURFACE, strokeWidth: 2 }}
-          isAnimationActive={false}
+          {...DRAW}
         >
           {/* 값은 처음과 끝에만 적는다 (모든 점에 적으면 읽히지 않는다). 나머지는 축·툴팁·표 */}
           <LabelList
@@ -139,7 +144,7 @@ function ColumnView({ chart }: { chart: Chart }) {
         <XAxis dataKey="label" tickLine={false} axisLine={{ stroke: GRID }} tick={TICK} minTickGap={8} />
         <YAxis width={48} tickLine={false} axisLine={false} tick={TICK} tickFormatter={(v: number) => axisTick(v, top)} />
         <Tooltip cursor={{ fill: HOVER }} content={(p) => <Tip {...p} chart={chart} />} />
-        <Bar dataKey="value" fill={SERIES} maxBarSize={24} radius={[4, 4, 0, 0]} isAnimationActive={false} />
+        <Bar dataKey="value" fill={SERIES} maxBarSize={24} radius={[4, 4, 0, 0]} {...DRAW} />
       </BarChart>
     </ResponsiveContainer>
   );
@@ -231,7 +236,7 @@ function MultiLineView({ chart }: { chart: Chart }) {
               strokeLinejoin="round"
               dot={rows.length <= 24 ? { r: 4, fill: LINE_COLORS[i], stroke: SURFACE, strokeWidth: 2 } : false}
               activeDot={{ r: 6, fill: LINE_COLORS[i], stroke: SURFACE, strokeWidth: 2 }}
-              isAnimationActive={false}
+              {...DRAW}
             />
           ))}
         </LineChart>
@@ -291,7 +296,7 @@ function GridView({ chart }: { chart: Chart }) {
                       dot={false}
                       activeDot={{ r: 5, fill: SERIES, stroke: SURFACE, strokeWidth: 2 }}
                       connectNulls={false}
-                      isAnimationActive={false}
+                      {...DRAW}
                     />
                   </LineChart>
                 </ResponsiveContainer>
@@ -326,7 +331,7 @@ function MultiColumnView({ chart }: { chart: Chart }) {
               fill={LINE_COLORS[i]}
               maxBarSize={16}
               radius={[4, 4, 0, 0]}
-              isAnimationActive={false}
+              {...DRAW}
             />
           ))}
         </BarChart>
@@ -352,7 +357,7 @@ function BarView({ chart }: { chart: Chart }) {
           interval={0}
         />
         <Tooltip cursor={{ fill: HOVER }} content={(p) => <Tip {...p} chart={chart} />} />
-        <Bar dataKey="value" fill={SERIES} maxBarSize={20} radius={[0, 4, 4, 0]} isAnimationActive={false}>
+        <Bar dataKey="value" fill={SERIES} maxBarSize={20} radius={[0, 4, 4, 0]} {...DRAW}>
           <LabelList
             dataKey="value"
             position="right"
@@ -501,6 +506,8 @@ export default function ChartCard({ chart }: { chart: Chart }) {
           ))}
         </div>
       </figcaption>
+      {/* 보기 방식을 바꾸면 key 가 바뀌어 새 그림이 서서히 나타난다 */}
+      <div className="chart-body" key={view}>
       {view === "table" ? (
         <TableView chart={chart} />
       ) : chart.type === "parts" ? (
@@ -516,6 +523,7 @@ export default function ChartCard({ chart }: { chart: Chart }) {
       ) : (
         <LineView chart={chart} />
       )}
+      </div>
       {chart.note && <p className="chart-note">{chart.note}</p>}
     </figure>
   );

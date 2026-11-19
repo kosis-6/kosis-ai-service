@@ -12,6 +12,8 @@ export function App() {
     <BrowserRouter basename={import.meta.env.BASE_URL}>
       <Routes>
         <Route path="/" element={<ChatPage />} />
+        {/* 로그인 유저의 대화 하나. 새로고침하면 서버 기록으로 다시 그린다 (같은 ChatPage 를 그대로 쓴다) */}
+        <Route path="/c/:sessionId" element={<ChatPage />} />
         <Route element={<AccountLayout />}>
           <Route path="/login" element={<LoginPage />} />
           <Route path="/signup" element={<SignupPage />} />

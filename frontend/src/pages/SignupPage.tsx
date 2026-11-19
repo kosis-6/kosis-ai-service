@@ -145,8 +145,7 @@ export function SignupPage() {
   return (
     <form className="view compact" onSubmit={submit}>
       <div className="form-head">
-        <p className="eyebrow">START WITH SIX</p>
-        <h1>함께 시작해 볼까요?</h1>
+        <h1>회원가입</h1>
         <p className="lead">간단한 가입으로 통계를 더 가까이 만나 보세요.</p>
       </div>
       <div className="fields">
