@@ -6,7 +6,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.openapi.utils import get_openapi
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 
 from app.api.router import api_router
 from app.core.config import get_settings
@@ -112,7 +112,13 @@ async def not_configured(request: Request, exc: RuntimeError) -> JSONResponse:
     return JSONResponse(status_code=503, content={"detail": str(exc)})
 
 
-# 화면 (React, frontend/ 를 빌드한 frontend/dist). /chat, 목업은 /chat/?mock=1
+# 화면 (React, frontend/ 를 빌드한 frontend/dist). /chat
 # API와 같은 주소로 서빙해 CORS가 필요 없다
 FRONTEND_DIR = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 app.mount("/chat", SpaFiles(directory=str(FRONTEND_DIR)), name="chat")
+
+
+@app.get("/", include_in_schema=False)
+async def home() -> RedirectResponse:
+    """서비스 주소만 치고 들어오면 화면으로 보낸다"""
+    return RedirectResponse("/chat/", status_code=302)
