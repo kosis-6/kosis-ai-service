@@ -72,10 +72,7 @@ TOTAL_NAMES = {"계", "합계", "전체", "총계", "소계", "총", "전국"}
 SEX_NAMES = {"남": {"남자", "남", "남성", "남편"}, "여": {"여자", "여", "여성", "아내"}}
 COUNT_UNITS = {"명", "가구", "건", "개", "세대", "호", "곳", "개소", "천명", "천가구"}
 # 표가 쓰는 말과 같은 뜻의 일상어 (글자 맞추기 전에 바꾼다). 뜻이 하나로 정해진 말만 둔다
-SAME_WORDS = {
-    "출퇴근": "통근", "출근": "통근",
-    "학교다닌": "통학", "학교다니는": "통학", "학교가는": "통학", "등교": "통학",
-}  # fmt: skip
+SAME_WORDS = {"출퇴근": "통근", "출근": "통근"}
 UNIT_TAIL = re.compile(r"\s*\([^()]*\)\s*$")
 TOTAL_SUFFIX = re.compile(r"(계|합계|소계|전체)$")  # 공백·기호를 뺀 이름 끝의 합계 표시
 PCT_ASK = re.compile(r"%|퍼센트|비율|비중|몇\s*프로")
@@ -464,31 +461,6 @@ def choose(
     return plan, None
 
 
-# 질문이 묻는 대상 (통근 · 통학). 질문이 이 대상을 말했는데 표 이름에도 칸에도 없으면
-# 다른 집단의 표다
-# ("지하철 타고 출퇴근하거나 학교 다닌 사람"을 통학 인구 표로 셌다)
-SUBJECTS = {
-    "통근": re.compile(r"출퇴근|출근|통근|직장\s*(다니|다닌|가는)"),
-    "통학": re.compile(r"통학|학교\s*(다니|다닌|가는|에)|등교"),
-}
-
-
-def _missing_subject(question: str, tbl_nm: str, dims: list[Dim]) -> str | None:
-    # 항목의 첫 칸(전체 이름)과 버스 이름은 보지 않는다: 통학 인구 표도 첫 항목이
-    # "통근·통학 인구(12세 이상)"이고 수단 칸에 "통근·통학버스"가 있다
-    cells = [
-        n
-        for d in dims
-        for i, n in enumerate(d.codes.values())
-        if not (d.no == 0 and i == 0) and not _norm(n).endswith("버스")
-    ]
-    names = _norm(tbl_nm) + "".join(_norm(n) for n in cells)
-    for word, pattern in SUBJECTS.items():
-        if pattern.search(question) and word not in names:
-            return f"질문의 '{word}' 대상이 표에 없음"
-    return None
-
-
 def _couple_code(d: Dim) -> str | None:
     """분류가 남편 · 아내 두 칸뿐이면 남편 칸 코드"""
     names = {_norm(n): c for c, n in d.codes.items()}
@@ -703,8 +675,6 @@ def build(
     if PER_AVERAGE.search(question) and (avg := _per_average(tbl_id, dims, region_dim, level)):
         return avg, None
     plan, why = choose(question, parsed, dims, region_dim, forced, tbl_nm)
-    if plan is not None and (missing := _missing_subject(question, tbl_nm, dims)):
-        plan, why = None, missing  # 칸은 골랐지만 질문이 묻는 집단(통근 · 통학)의 표가 아니다
     if plan is None:
         # 칸을 고르지 못했어도 질문의 숫자 조건(체중 3.2kg 등)이 이 표의 구간 분류에 해당하면
         # 그 조건에 맞는 구간이 없다고 답한다 (표 안내보다 구체적)
