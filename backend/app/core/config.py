@@ -1,6 +1,8 @@
 from functools import lru_cache
+from ipaddress import IPv4Network, IPv6Network, ip_network
 from typing import Literal
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -64,6 +66,12 @@ class Settings(BaseSettings):
     # FORWARDED_ALLOW_IPS=프록시 주소 (backend/Dockerfile). true/false로 강제할 수도 있다
     cookie_secure: bool | None = None
 
+    # 관리자 기능(관리자 API, 관리자 화면)을 쓸 수 있는 곳. 쉼표로 IP 또는 대역을 적는다
+    # 예: ADMIN_ALLOW_IPS=203.0.113.5,198.51.100.0/24   비워 두면 어디서나 (개발용)
+    # 다른 곳에서는 관리자 계정이어도 관리자 API가 403이고, 화면에 관리자 메뉴가 보이지 않는다
+    # (app/api/deps.py). 잘못 적으면 서버가 뜨지 않고 어느 값이 틀렸는지 알려 준다
+    admin_allow_ips: str = ""
+
     # 회원가입 이메일 인증번호 메일 (app/services/mailer.py)
     # smtp: 실제로 보낸다 (Gmail은 앱 비밀번호, 배포는 AWS SES SMTP 등)
     # console: 보내지 않고 서버 로그에 인증번호를 찍는다 (개발용. 배포에서는 쓰지 않는다)
@@ -108,6 +116,27 @@ class Settings(BaseSettings):
     # 넘기기 꾸러미의 후보 표에서 규칙(글자 맞추기)이 칸을 못 고르면 LLM 1회가 칸을 고른다
     # (app/services/cell_pick.py, Gemma 기본). HANDOFF_CELL_LLM=false 로 끄면 지금처럼 계산하지 않음
     handoff_cell_llm: bool = True
+
+    @field_validator("admin_allow_ips")
+    @classmethod
+    def _check_admin_ips(cls, value: str) -> str:
+        for item in value.split(","):
+            if item.strip():
+                try:
+                    ip_network(item.strip(), strict=False)
+                except ValueError as e:
+                    raise ValueError(
+                        f"ADMIN_ALLOW_IPS의 '{item.strip()}'은 IP나 대역이 아닙니다"
+                    ) from e
+        return value
+
+    @property
+    def admin_networks(self) -> list[IPv4Network | IPv6Network]:
+        return [
+            ip_network(i.strip(), strict=False)
+            for i in self.admin_allow_ips.split(",")
+            if i.strip()
+        ]
 
 
 @lru_cache

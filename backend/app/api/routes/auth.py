@@ -17,7 +17,13 @@ from fastapi import APIRouter, Cookie, Depends, Form, HTTPException, Request, Re
 from fastapi.responses import JSONResponse
 from fastapi.security import OAuth2PasswordRequestForm
 
-from app.api.deps import CurrentUser, Session, oauth2_scheme, optional_scheme
+from app.api.deps import (
+    CurrentUser,
+    Session,
+    admin_ip_allowed,
+    oauth2_scheme,
+    optional_scheme,
+)
 from app.core import login_limit
 from app.core.config import get_settings
 from app.core.security import create_access_token, decode_access_token, verify_password
@@ -298,16 +304,27 @@ async def logout(
     _forget_cookie(response, request)
 
 
+def _me(user: User, request: Request) -> UserRead:
+    """내 정보. 관리자를 허용하지 않은 곳에서는 is_admin을 false로 알려 화면이 관리자 메뉴를 숨긴다
+    (관리자 API는 require_admin이 따로 막는다)"""
+    out = UserRead.model_validate(user)
+    if out.is_admin and not admin_ip_allowed(request):
+        out.is_admin = False
+    return out
+
+
 @router.get("/me", summary="내 정보")
-async def me(user: CurrentUser) -> UserRead:
-    return UserRead.model_validate(user)
+async def me(user: CurrentUser, request: Request) -> UserRead:
+    return _me(user, request)
 
 
 @router.patch("/me", summary="닉네임 바꾸기")
-async def update_me(body: ProfileUpdate, user: CurrentUser, session: Session) -> UserRead:
+async def update_me(
+    body: ProfileUpdate, user: CurrentUser, session: Session, request: Request
+) -> UserRead:
     """내 닉네임을 바꾼다"""
     user = await users.set_nickname(session, user, body.nickname)
-    return UserRead.model_validate(user)
+    return _me(user, request)
 
 
 @router.post("/password", summary="비밀번호 바꾸기")

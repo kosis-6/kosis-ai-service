@@ -307,12 +307,54 @@ def test_login_without_secret_is_503(db, monkeypatch: pytest.MonkeyPatch) -> Non
     assert "JWT_SECRET_KEY" in r.json()["detail"]
 
 
+def _from(host: str) -> SimpleNamespace:
+    """그 IP에서 온 요청 (require_admin·admin_ip_allowed가 읽는 칸만)"""
+    return SimpleNamespace(client=SimpleNamespace(host=host))
+
+
 def test_require_admin() -> None:
-    admin = SimpleNamespace(is_admin=True)
-    assert asyncio.run(require_admin(admin)) is admin
+    admin = SimpleNamespace(id=1, is_admin=True)
+    assert asyncio.run(require_admin(admin, _from("203.0.113.5"))) is admin
     with pytest.raises(HTTPException) as e:
-        asyncio.run(require_admin(SimpleNamespace(is_admin=False)))
+        asyncio.run(require_admin(SimpleNamespace(id=2, is_admin=False), _from("203.0.113.5")))
     assert e.value.status_code == 403
+
+
+def test_admin_only_from_allowed_ips(monkeypatch, caplog) -> None:
+    monkeypatch.setattr(get_settings(), "admin_allow_ips", "203.0.113.5, 198.51.100.0/24")
+    admin = SimpleNamespace(id=1, is_admin=True)
+    for host in ("203.0.113.5", "198.51.100.77", "::ffff:198.51.100.8"):
+        assert asyncio.run(require_admin(admin, _from(host))) is admin
+    for host in ("203.0.113.6", "testclient", ""):
+        with caplog.at_level("WARNING"), pytest.raises(HTTPException) as e:
+            asyncio.run(require_admin(admin, _from(host)))
+        assert e.value.status_code == 403 and "이 곳" in e.value.detail
+    assert "203.0.113.6" in caplog.text  # 비밀번호가 샜는지 알아챌 수 있게 남긴다
+
+
+def test_admin_menu_hidden_outside_allowed_ips(db, monkeypatch) -> None:
+    token = _signup("admin@b.co")
+    db[1].is_admin = True
+    monkeypatch.setattr(get_settings(), "admin_allow_ips", "198.51.100.0/24")
+    inside = TestClient(app, client=("198.51.100.7", 50000))
+
+    assert inside.get("/auth/me", headers=_auth(token)).json()["is_admin"] is True
+    assert inside.get("/admin/users", headers=_auth(token)).status_code == 200
+    # 다른 곳(테스트 클라이언트 주소 "testclient")에서는 관리자 메뉴도 API도 없다
+    assert client.get("/auth/me", headers=_auth(token)).json()["is_admin"] is False
+    assert client.get("/admin/users", headers=_auth(token)).status_code == 403
+
+
+def test_wrong_admin_ip_setting_stops_server() -> None:
+    from pydantic import ValidationError
+
+    from app.core.config import Settings
+
+    with pytest.raises(ValidationError, match="1.2.3"):
+        Settings(admin_allow_ips="203.0.113.5,1.2.3")
+    assert [str(n) for n in Settings(admin_allow_ips=" 203.0.113.5 ,").admin_networks] == [
+        "203.0.113.5/32"
+    ]
 
 
 def test_token_without_login_record_is_rejected() -> None:
