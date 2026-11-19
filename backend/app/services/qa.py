@@ -16,6 +16,7 @@ API: POST /ask
       python -m scripts.ask --question "..." --debug   (중간 결과 JSON도 출력)
 """
 
+import copy
 import json
 import re
 import time
@@ -25,6 +26,7 @@ from pathlib import Path
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.concurrency import run_in_threadpool
 
+from app.core.config import get_settings
 from app.core.stats_db import StatsTableMissing
 from app.prompts.qa import PARSE_SYSTEM
 from app.services import (
@@ -40,16 +42,19 @@ from app.services import (
 )
 from app.services.hcx_client import HcxClient
 from app.services.josa import josa, ro
+from app.services.memory_cache import MISSING, MemoryCache
 
 MODEL = "HCX-007"
-# 질문 해석 응답 최대 길이. HCX 한도(분당 6만 토큰)는 요청마다 이 값만큼을 미리 잡아서,
-# 5,120이면 이 호출만으로 분당 약 10질문에 한도가 찼다. 추론을 끄면 JSON만 나오고
-# 변형셋 v1에서 최대 130토큰(95%가 99토큰 이하)이었다 (11/18)
+# 질문 해석 응답 최대 길이. HCX 한도(분당 60,000토큰)는 요청마다 '보낸 글 + 이 값'을 미리 잡는다.
+# 예전 값 5,120(+ 추론 low)은 이전 프로젝트의 범용 chat() 기본값이 그대로 따라온 것으로,
+# 질문마다 약 7,000토큰을 잡아 분당 약 8질문이면 한도가 찼다. 추론까지 넣은 실제 응답도
+# 평균 약 600 · 최대 약 1,100토큰이었고 (개발셋, 11/18), 추론을 끄면 짧은 JSON만 나온다
 UNDERSTAND_MAX_TOKENS = 1024
 
 
 async def _chat(prompt, system, temperature=0.1, trace=None):
-    """HCX-007 호출 (질문 해석). 짧은 JSON만 받으므로 추론을 끄고 응답 길이를 줄인다"""
+    """HCX-007 호출 (질문 해석). 짧은 JSON만 받으므로 추론을 끄고 응답 길이를 줄인다
+    (이어 묻는 말의 변경 추출 ask_session._chat과 같은 방식)"""
     result = await HcxClient().chat(
         MODEL,
         [
@@ -69,22 +74,43 @@ async def _chat(prompt, system, temperature=0.1, trace=None):
     return result.content
 
 
+# 질문 단위 캐시 (11/18): 글자까지 같은 질문이면 질문 이해(HCX)를 다시 부르지 않는다.
+# '작년' · '최근 5년'은 오늘 날짜와 자료의 마지막 연도로 풀리므로 열쇠에 둘 다 넣는다.
+# 서버 메모리라 재시작하면 비고, 1시간 지나면 지운다. 평가처럼 질문 이해를 고친 효과를 잴 때는
+# QUESTION_CACHE=false (scripts.eval_devset은 기본으로 끈다)
+UNDERSTAND_CACHE = MemoryCache("understand", maxsize=1024, ttl=3600)
+
+
+def _cache_key(question, latest):
+    return (re.sub(r"\s+", " ", question).strip(), date.today().isoformat(), latest)
+
+
 async def understand(question, trace=None):
     """1단계: 질문 → dict. JSON을 못 읽으면 type이 parse_error
     trace(dict)를 주면 HCX 원본 출력을 담는다 (요청 로그용)"""
     lo, hi = await run_in_threadpool(indicators._data_years)
+    use_cache = get_settings().question_cache
+    key = _cache_key(question, hi)
+    if use_cache and (hit := UNDERSTAND_CACHE.get(key)) is not MISSING:
+        if trace is not None:
+            trace["hcx_raw"], trace["understand_cached"] = hit["raw"], True
+        return copy.deepcopy(hit["parsed"])
     system = PARSE_SYSTEM.replace("{INDICATORS}", _indicator_list()).replace("{LATEST}", str(hi))
     text = await _chat(question, system, trace=trace)
     if trace is not None:
         trace["hcx_raw"] = text
     objects = _json_objects(text)
     if not objects:
-        return {"type": "parse_error", "raw": text}
+        return {"type": "parse_error", "raw": text}  # 해석 실패는 남기지 않는다
     parsed = objects[0]
     # 남녀를 나눠 JSON을 두 번 쓴 경우 → 성별 구분 없이 (남녀를 함께 보여준다)
     if len({json.dumps(o.get("sex"), ensure_ascii=False) for o in objects}) > 1:
         parsed["sex"] = "계"
-    return await run_in_threadpool(correct, question, parsed)
+    result = await run_in_threadpool(correct, question, parsed)
+    if use_cache:
+        # 대화 이어받기(ask_session의 adjust)는 꺼낸 뒤에 적용되므로 이어받기 전 결과를 남긴다
+        UNDERSTAND_CACHE.set(key, {"raw": text, "parsed": copy.deepcopy(result)})
+    return result
 
 
 def _json_objects(text):
@@ -279,7 +305,7 @@ UNSUPPORTED_MEASURE = re.compile(
     r"\d+(?:\.\d+)?\s*(?:kg|킬로그램|킬로|키로|그램)|\d+(?:\.\d+)?\s*(?:cm|센티)|"
     r"\d+\s*년\s*반|\d+\s*개월|(?:결혼|혼인|동거|거주|근속|재직)\s*기간|체중|몸무게|키가"
 )
-# 앞으로를 묻는 질문 ("앞으로 출산율 다시 오를까?").
+# 앞으로를 묻는 질문 ("출산율이 앞으로 오를까?").
 # 미래 연도를 말했으면 장래추계로 답하므로 따로 본다
 PREDICT = re.compile(
     r"앞으로|향후|미래에?|전망|예측|예상(?!보다)|"
@@ -341,11 +367,9 @@ INDICATOR_PATTERNS = [
         re.compile(r"(어르신|노인|고령자|노령)\S*\s*(인구\s*)?(몇\s*)?(비율|비중|%|퍼센트|프로)"),
         "고령인구 비율",
     ),
-    # "사람 수", "사람이 많아", "제일 많이 사는", "주민 수" → 총인구 (다른 지표 이름이 없을 때만)
-    (
-        re.compile(r"사람\s*(이|들)?\s*(수|몇|많|적)|많이\s*사는|사는\s*사람|주민\s*(수|이\s*몇)"),
-        "총인구",
-    ),
+    # "사람 수 · 사람 몇 · 사는 사람 → 총인구" 패턴은 뺐다 (11/19 세진). "지하철 타고 출근하거나
+    # 학교 다니는 사람 몇 명이야"처럼 다른 통계의 사람을 총인구로 끌어가 표 찾기를 막았고,
+    # OTHER_PEOPLE 낱말 목록으로는 일상어를 다 막을 수 없다
 ]
 MORE_SPECIFIC = {
     "조출생률": {"출생아 수"},
@@ -362,7 +386,7 @@ DECREASE_WORDS = re.compile(r"줄어|줄었|감소|빠졌")
 OTHER_AXIS = re.compile(r"(국적|나라|국가|교통\s*수단|이동\s*사유|전입\s*사유)\s*(별|중|가|이|마다)?")
 AXIS_REGION = re.compile(r"시도|시군구|지역|도시|광역시|어느\s*(시|구|군|도)")
 YEAR_ASKED = re.compile(r"(해|연도|년도|때)\s*(는|가|를|은|가\s*언제|$|\?)|언제")
-# 연령 구간 · 연령 집단을 말하고 사람 수를 물었으면 그 연령의 인구 ("수성구에 이십대 얼마나 살아?",
+# 연령 구간 · 연령 집단을 말하고 사람 수를 물었으면 그 연령의 인구 ("달서구 이십대는 몇 명 살아?",
 # "광주하고 전남 어르신 수 합쳐줘", "서울 사는 19살부터 34살까지 몇 명")
 PEOPLE_COUNT = re.compile(
     r"몇\s*(명|분)|얼마나\s*(살|계|있|돼|되|줄|늘)|(수|인구)\s*(는|가|를|합|얼마|좀)|사람|분\s*(이|들)"
@@ -370,7 +394,11 @@ PEOPLE_COUNT = re.compile(
 # '사람 · 분'이 이 통계의 사람이면 총인구가 아니다 ("외국인 등록한 사람", "통근한 사람", "사망자 중")
 OTHER_PEOPLE = re.compile(
     r"외국|등록|이사|전입|전출|이동|통근|통학|결혼|혼인|이혼|사망|돌아가|태어|출생|낳|가구|유학|귀화|"
-    r"근로|이민|입국|출국|취업|학생"
+    r"근로|이민|입국|출국|취업|학생|"
+    # 사는 방식 · 집 · 장애는 다른 통계다 ("혼자 사는 사람" → 1인 가구,
+    # "아파트에 사는 사람" → 거처별, "장애가 있는 사람" → 장애인).
+    # 총인구로 답하면 전체 인구 숫자가 틀린 답으로 나간다 (11/18)
+    r"혼자|홀로|독거|장애|아파트|주택|단독|연립|다세대|오피스텔|거처|셋방|기숙사"
 )
 # 구성비 질문에서 콕 집어 물은 항목 (질문 표현 → 구성 항목 이름)
 FOCUS_WORDS = {

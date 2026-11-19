@@ -20,8 +20,12 @@ class Settings(BaseSettings):
     hcx_base_url: str = "https://clovastudio.stream.ntruss.com"
     # 한 프로세스가 HCX에 동시에 보내는 요청 수 (app/services/hcx_client.py).
     # HCX-007 한도는 분당 60회·60,000토큰인데, 후보 표를 동시에 계산하면 칸 고르기 호출이
-    # 한꺼번에 몰려 질문 하나가 한도를 넘었다 (11/18 변형셋 평가). 0이면 제한하지 않는다
-    hcx_max_concurrency: int = 2
+    # 한꺼번에 몰려 질문 하나가 한도를 넘었다 (11/18 변형셋 평가). 0이면 제한하지 않는다.
+    # 3 (11/18 세진): 칸 고르기 LLM 상한(질문당 3회)과 맞춤
+    hcx_max_concurrency: int = 3
+    # 질문 이해 결과를 서버 메모리에 1시간 남겨, 글자까지 같은 질문이면 HCX를 다시 부르지 않는다
+    # (app/services/qa.py UNDERSTAND_CACHE). 평가로 질문 이해 효과를 잴 때는 QUESTION_CACHE=false
+    question_cache: bool = True
 
     # 통계표 찾기(조건 추출·계획·최종 검토)에 쓰는 LLM (app/services/search_llm.py)
     # auto(기본): GEMMA_BASE_URL이 있으면 Gemma 4 31B, 없으면 HCX-007
@@ -92,8 +96,11 @@ class Settings(BaseSettings):
     search_plan: bool = True
     # 표에서 바로 계산하지 못했을 때, 가까운 연도 · 다른 표로 계산한 대안을 LLM 1회가 골라 값과 함께
     # 되묻는다 (app/services/alternative.py). 대안이 계산되지 않으면 LLM을 부르지 않는다.
-    # HANDOFF_ALTERNATIVES=false 로 끄면 지금처럼 표 안내
-    handoff_alternatives: bool = True
+    # 기본은 끔 (HANDOFF_ALTERNATIVES=true 로 켠다). 11/18 변형셋 · 개발셋에서 대안 되묻기 13건 중
+    # 9건이 조건을 바꾸지 않은 정답을 "조건을 모두 만족하지 못함"으로 되물어 불필요한 되묻기가
+    # 됐고, 미리 계산한 값이 result · sources 밖(대화 상태)에만 있어 환각 숫자 16 · 17건이 모두
+    # 여기서 나왔다. 나머지는 최신 자료가 있는데 옛 연도를 내놓은 대안이었다
+    handoff_alternatives: bool = False
     # 넘기기 꾸러미의 후보 표에서 규칙(글자 맞추기)이 칸을 못 고르면 LLM 1회가 칸을 고른다
     # (app/services/cell_pick.py, Gemma 기본). HANDOFF_CELL_LLM=false 로 끄면 지금처럼 계산하지 않음
     handoff_cell_llm: bool = True

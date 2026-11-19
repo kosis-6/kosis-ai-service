@@ -891,6 +891,35 @@ def test_handoff_computes_with_search_reading(computed, monkeypatch) -> None:
     assert q2["regions"] == ["서울", "부산"] and q2["sex"] == "계"
 
 
+def test_school_going_is_commute_only_with_movement() -> None:
+    # 이동을 말하면 "학교 가는 · 다니는"은 통학 (통근 + 통학을 함께 묻는 질문)
+    assert {"통근", "통학"} <= {
+        w for w in ("통근", "통학") if w in d.table_words("출근하거나 학교 가는 사람 수")
+    }
+    assert "통학" in d.table_words("버스 타고 학교에 다니는 학생 수")
+    # 이동을 말하지 않으면 재학일 수 있어 그대로 둔다
+    assert "통학" not in d.table_words("학교 다니는 학생 몇 명이야")
+    # "고등학교 · 대학교"는 학교급 이름이라 바꾸지 않는다 (교육정도 칸과 맞아야 한다)
+    words = d.table_words("지하철 타고 고등학교 다니는 학생 수")
+    assert "고등학교" in words and "통학" not in words
+
+
+def test_handoff_drops_guessed_year() -> None:
+    # 질문 이해가 연도 없는 질문에 올해를 짐작해 넣었고(종류 other라 qa.correct가 안 지움)
+    # 탐색 해석은 연도가 없다 → 지워서 표의 마지막 해로 계산한다
+    no_year = _understanding(conditions={**_understanding()["conditions"], "year": None})
+    q = {**BASE, "type": "other", "year": 2025}
+    assert d.drop_guessed_year("버스로 출근하는 사람 수", no_year, q) and q["year"] is None
+    # 질문에 연도를 말했으면 그대로 둔다 (숫자 연도 · 상대 연도)
+    for said in ("2023년 버스로 출근하는 사람 수", "작년 버스로 출근하는 사람 수"):
+        q = {**BASE, "type": "other", "year": 2023}
+        assert not d.drop_guessed_year(said, no_year, q) and q["year"] == 2023
+    # 탐색 해석에 연도가 있으면 to_parsed가 넣은 연도를 그대로 둔다
+    q = {**BASE, "year": 2020}
+    assert not d.drop_guessed_year("버스로 출근하는 사람 수", _understanding(), q)
+    assert q["year"] == 2020
+
+
 def test_handoff_notice_has_notes_and_age_basis() -> None:
     entry = {"kind": "picked", "notes": ["2020.11.1. 기준입니다."]}
     age = {"expr": "노인", "lo": 65, "hi": None, "basis": "노인복지법"}
@@ -948,9 +977,11 @@ def test_handoff_exclude_ignores_region_names(computed, monkeypatch) -> None:
 
 def test_handoff_offers_an_alternative_when_nothing_computes(computed, monkeypatch) -> None:
     # 고른 표(모두 충족)에서 칸을 못 고르고, 다른 후보는
-    # 규칙으로 건너뜀 → 대안으로 계산해 LLM에 보임
+    # 규칙으로 건너뜀 → 대안으로 계산해 LLM에 보임 (대안 기능은 기본 꺼짐이라 켜고 본다)
+    from app.core.config import get_settings
     from app.services import alternative
 
+    monkeypatch.setattr(get_settings(), "handoff_alternatives", True)
     computed["fail"] = {"A"}
     seen = {}
 
@@ -1026,6 +1057,76 @@ def test_cell_llm_computes_a_table_the_rule_could_not(cell_llm) -> None:
     )
     # LLM이 고른 칸은 그 칸을 고른 근거 낱말과 함께 캐시에 남긴다 (다시 쓸 때 새 질문에 있는지 본다)
     assert cell_llm["remembered"] == [("A", {0: "T00"}, [["혼자 사는 집", "1인가구"]])]
+
+
+def _judged(cell_llm, fake_table, monkeypatch, fail: set, reply_for) -> list:
+    """규칙으로 못 고르는 표(fail)마다 칸 고르기 LLM을 부른 순서를 모은다.
+    reply_for(표 이름) → 답"""
+    from app.services import cell_pick
+
+    for t in fail:
+        fake_table["tables"][t] = (ONE_PERSON, 1, "시군구")
+    called: list[str] = []
+
+    async def judge(question, understanding, tbl_nm, groups):
+        called.append(tbl_nm[0])
+        return reply_for(tbl_nm[0]), "gemma"
+
+    monkeypatch.setattr(cell_pick, "judge", judge)
+    return called
+
+
+YES = {"fits": "예", "reason": "r", "read_as": None, "picks": {"항목": "1"}}
+NO = {"fits": "아니오", "reason": "r", "read_as": None, "picks": {}}
+
+
+def test_cell_llm_is_not_called_below_a_table_the_rule_computed(
+    cell_llm, computed, fake_table, monkeypatch
+) -> None:
+    # 규칙으로 계산된 첫 표(E, 3순위)보다 뒤의 표는 LLM으로 계산돼도 답이 되지 않아 부르지 않는다.
+    # 그 앞(A · D)은 순위대로 부르고, 계산되면 멈춘다 (11/18)
+    computed["fail"] = {"A", "D", "F"}
+    called = _judged(cell_llm, fake_table, monkeypatch, {"A", "D", "F"}, lambda t: YES)
+    cands = [
+        _cand("A", 1, picked=True, checks={"year": True}, review={"match": "partial"}),
+        _cand("D", 2, checks={"year": True}),
+        _cand("E", 3, checks={"year": True}),
+        _cand("F", 4, checks={"year": True}),
+    ]
+    trace: dict = {}
+    res = asyncio.run(d.compute_from_handoff(Q1, BASE, _found(cands), trace))
+    assert res["status"] == "ok" and trace["handoff"]["used"]["tbl_id"] == "A"
+    assert called == ["A"]  # A가 LLM으로 계산돼 D · F는 부르지 않음
+
+
+def test_cell_llm_goes_down_in_rank_until_one_computes(
+    cell_llm, computed, fake_table, monkeypatch
+) -> None:
+    computed["fail"] = {"A", "D", "F"}
+    called = _judged(cell_llm, fake_table, monkeypatch, {"A", "D", "F"}, lambda t: NO)
+    cands = [
+        _cand("A", 1, picked=True, checks={"year": True}, review={"match": "partial"}),
+        _cand("D", 2, checks={"year": True}),
+        _cand("E", 3, checks={"year": True}),
+        _cand("F", 4, checks={"year": True}),
+    ]
+    trace: dict = {}
+    res = asyncio.run(d.compute_from_handoff(Q1, BASE, _found(cands), trace))
+    assert trace["handoff"]["used"]["tbl_id"] == "E" and res["status"] == "ok"
+    assert called == ["A", "D"]  # 둘 다 '표에 없음' → 규칙으로 계산된 E. F는 부르지 않음
+
+
+def test_cell_llm_calls_stop_at_the_cap(cell_llm, computed, fake_table, monkeypatch) -> None:
+    fail = {"A", "D", "E", "F", "G"}
+    computed["fail"] = fail
+    called = _judged(cell_llm, fake_table, monkeypatch, fail, lambda t: NO)
+    cands = [_cand("A", 1, picked=True, checks={"year": True}, review={"match": "partial"})]
+    cands += [_cand(t, i, checks={"year": True}) for i, t in enumerate("DEFG", start=2)]
+    trace: dict = {}
+    assert asyncio.run(d.compute_from_handoff(Q1, BASE, _found(cands), trace)) is None
+    assert called == ["A", "D", "E"]  # 상한 MAX_CELL_LLM = 3
+    skipped = [s["tbl_id"] for s in trace["dynamic"] if s.get("cell_llm_skip")]
+    assert skipped == ["F", "G"]
 
 
 def test_cell_llm_says_the_table_does_not_fit(cell_llm) -> None:

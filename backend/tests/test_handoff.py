@@ -41,7 +41,9 @@ def test_one_indicator_question_hands_off_up_to_five_candidates(world, quiet_log
     assert len({c["family_id"] for c in cands}) == len(cands)  # 묶음마다 하나
     for c in cands:
         assert isinstance(c["checks"], dict) and isinstance(c["editions"], list)
-    assert h["combine"] == {"op": "none", "note": None, "out_of_scope": []}
+    assert h["combine"] == {
+        "op": "none", "note": None, "num": None, "den": None, "out_of_scope": []
+    }
 
 
 def test_existing_response_fields_are_unchanged(world, quiet_log, monkeypatch) -> None:  # noqa: F811

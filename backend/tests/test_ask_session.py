@@ -758,7 +758,8 @@ def test_out_of_scope_is_refused_not_table_guide(talk: Talk, refused: str) -> No
     # 통계표 찾기도 범위 밖으로 끝나면 표 안내(tables)가 아니라 거절로 답한다
     talk.parsed = {**BASE, "type": "value", "indicator": "반려동물 수"}  # 가짜 qa가 모르는 지표
     talk.found = {"status": refused, "answer": "제공 범위에서 찾지 못했습니다."}
-    res = talk.say("서울 아파트 값 알려줘")
+    # (아파트 값 같은 말은 LLM 호출 전 단어 검사가 먼저 거절하므로, 표 찾기까지 가는 말로 본다)
+    res = talk.say("서울 반려동물 몇 마리야")
     assert res["status"] == refused and res["chart"] is None
     assert "수치를 바로 계산하지 못해" not in res["answer"]
     # 거절 뒤의 말도 수치 조건 변경이 아니라 새 질문이다
@@ -920,10 +921,9 @@ def test_question_interpretation_records_usage(monkeypatch) -> None:
     trace = {}
     assert asyncio.run(qa._chat("질문", "시스템", trace=trace)) == "{}"
     assert trace["understand_usage"] == {"completionTokens": 123}
-    # 짧은 JSON만 받으므로 추론을 끄고 응답 길이를 줄인다 (HCX 한도를 미리 덜 잡게)
-    assert trace["understand_max_completion_tokens"] == 1024
-    assert sent["maxCompletionTokens"] == 1024
-    assert sent["thinking"] == {"effort": "none"}
+    # HCX 한도는 응답 최대 길이만큼을 미리 잡는다: 질문 해석은 추론 없이 짧게 (예전 5,120 + low)
+    assert trace["understand_max_completion_tokens"] == qa.UNDERSTAND_MAX_TOKENS == 1024
+    assert sent["maxCompletionTokens"] == 1024 and sent["thinking"] == {"effort": "none"}
 
 
 @pytest.mark.parametrize("region", ["서울", "전국"])

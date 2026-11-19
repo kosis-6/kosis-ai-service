@@ -78,3 +78,12 @@ def no_latest_month(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         population_latest, "components_many", lambda codes, sex="계", period=None: {}
     )
+
+
+@pytest.fixture(autouse=True)
+def no_question_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    """질문 이해 캐시(qa.UNDERSTAND_CACHE)가 테스트끼리 결과를 넘기지 않게 끈다.
+    캐시 자체는 test_understand_cache.py가 켜고 본다"""
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "question_cache", False)

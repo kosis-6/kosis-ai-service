@@ -23,6 +23,8 @@ SYSTEM = """너는 KOSIS 인구 통계 질문을 '필요한 통계 지표 목록
 5-1. 측정 대상이 다르면(출생아 수 / 사망자 수, 혼인 건수 / 이혼 건수, 내국인 / 외국인) 반드시 지표를 나눈다. 합치는 것은 같은 측정을 성별 · 연령으로만 나눈 경우뿐.
 6. 질문에 없는 연도 · 성별 · 연령을 지어내지 말 것. 질문에 연도가 없으면 year 칸을 비운다.
 7. combine.op: none(한 표) | compare(비교) | rank(순위·상위 k) | filter_then_lookup(조건에 맞는 지역을 고른 뒤 다른 지표 조회) | intersect(여러 조건 교집합) | ratio(비율·비중 계산) | diff(차이·증감).
+7-1. op 가 ratio 이면 combine.num 에 나뉘는 쪽(분자) 지표, combine.den 에 기준이 되는 쪽(분모) 지표의 span 을 indicators 에 적은 그대로 쓴다. ratio 가 아니면 둘 다 null.
+   'A는 B의 몇 배' · 'A가 B보다 몇 배' → num A, den B / 'A 중 B 비율' · 'A 대비 B' · 'A당 B' · 'A에 비해 B' → num B, den A
 반드시 JSON 하나만 출력한다.
 
 예시 1) '2010~2025년 남성의 평균 초혼 연령과 이혼 건수가 어떻게 변했는지 시도별로'
@@ -44,7 +46,12 @@ SYSTEM = """너는 KOSIS 인구 통계 질문을 '필요한 통계 지표 목록
 {"shared": {"region_level": "시군구"},
  "indicators": [{"span": "혼인 건수", "search": "시군구별 혼인 건수", "scope": "in", "role": "measure", "override": {}},
                 {"span": "65세 이상 1인 가구", "search": "시군구별 연령별 1인 가구", "scope": "in", "role": "measure", "override": {"age": "65세 이상"}}],
- "combine": {"op": "diff", "note": "두 지표 증감 비교 후 순위"}}"""
+ "combine": {"op": "diff", "note": "두 지표 증감 비교 후 순위"}}
+예시 4) '1인 가구 수는 통근 인구의 몇 배야'
+{"shared": {},
+ "indicators": [{"span": "1인 가구 수", "search": "시도별 1인 가구", "scope": "in", "role": "measure", "override": {}},
+                {"span": "통근 인구", "search": "시도별 통근 인구", "scope": "in", "role": "measure", "override": {}}],
+ "combine": {"op": "ratio", "num": "1인 가구 수", "den": "통근 인구", "note": "A는 B의 몇 배 = A ÷ B"}}"""
 
 # Gemma 4 31B 용 (SEARCH_LLM=gemma). 아래 네 군데에 문장을 더한다.
 # Gemma 는 '파생 지표는 풀어라'(1번) · 'search 는 표 제목처럼'(3번)을 글자 그대로 따라, KOSIS 가 그 이름으로
@@ -125,6 +132,9 @@ SCHEMA = {
                         "diff",
                     ],
                 },
+                # ratio일 때 분자 · 분모 지표의 span (규칙 7-1). 필수가 아니다: 빠지면 코드가 '없음'으로 읽는다
+                "num": {"anyOf": [{"type": "null"}, {"type": "string"}]},
+                "den": {"anyOf": [{"type": "null"}, {"type": "string"}]},
                 "note": {"type": "string"},
             },
         },
