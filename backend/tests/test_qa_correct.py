@@ -1099,4 +1099,3 @@ def test_sex_split_sentence_compares_sexes(monkeypatch: pytest.MonkeyPatch) -> N
     part = {"status": "ok", "indicator": "총인구", "unit": "명", "kind": "count"}
     r = {"split": [{**part, "sex": "남", "value": 100}, {**part, "sex": "여", "value": 130}]}
     assert qa._split_text(r).strip() == "여성이 30명 더 많습니다."
-
