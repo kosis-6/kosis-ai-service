@@ -36,7 +36,7 @@ def fake_table(monkeypatch: pytest.MonkeyPatch) -> dict:
     tables = {"DT_1PL1502": (ONE_PERSON, 1, "시군구")}
     units = {"DT_1PL1502": ("가구", True)}
     monkeypatch.setattr(d, "schema", lambda tbl_id: tables[tbl_id])
-    monkeypatch.setattr(d, "_unit", lambda tbl_id, item: units[tbl_id])
+    monkeypatch.setattr(d, "_unit", lambda tbl_id, item, cells=None: units[tbl_id])
     monkeypatch.setattr(lookup, "_dim_labels", lambda tbl_id, dim: tuple(sorted(AGES.items())))
     monkeypatch.setattr(indicators, "find_regions", lambda text: [])
     projection: set[str] = set()
@@ -805,14 +805,34 @@ def test_handoff_tries_candidates_and_keeps_priority(computed) -> None:
 
 
 def test_handoff_does_not_use_other_tables_when_review_is_exact(computed) -> None:
-    computed["fail"] = {"A"}
+    # 검토가 '모두 충족'으로 고른 표가 계산되면 다른 후보는 계산하지 않는다
     cands = [
         _cand("A", 1, picked=True, checks={"year": True}, review={"match": "exact"}),
         _cand("D", 2, checks={"year": True}),
     ]
     trace: dict = {}
-    assert asyncio.run(d.compute_from_handoff(Q1, BASE, _found(cands), trace)) is None
-    assert trace["dynamic"][1]["skip"] == "검토가 고른 표를 '모두 충족'으로 봄"
+    res = asyncio.run(d.compute_from_handoff(Q1, BASE, _found(cands), trace))
+    assert res["status"] == "ok" and trace["handoff"]["used"]["tbl_id"] == "A"
+    assert computed["tried"] == ["A"]
+    assert trace["dynamic"][1]["skip"] == d.EXACT_SKIP
+
+
+def test_handoff_retries_others_when_the_exact_table_fails(computed) -> None:
+    # 고른 표(모두 충족)가 계산되지 않으면 그 이유로 건너뛴 후보를 다시 계산한다 (11/20 D-020).
+    # ✘ 후보는 그대로 건너뛴다
+    computed["fail"] = {"A"}
+    cands = [
+        _cand("A", 1, picked=True, checks={"year": True}, review={"match": "exact"}),
+        _cand("B", 2, checks={"year": False}),
+        _cand("D", 3, checks={"year": True}),
+    ]
+    trace: dict = {}
+    res = asyncio.run(d.compute_from_handoff(Q1, BASE, _found(cands), trace))
+    assert res["status"] == "ok" and trace["handoff"]["used"]["tbl_id"] == "D"
+    assert sorted(computed["tried"]) == ["A", "D"]
+    steps = {s["tbl_id"]: s for s in trace["dynamic"]}
+    assert steps["B"]["skip"] == "통계표 찾기 조건 불충족 (year)"
+    assert steps["D"]["retry"]
 
 
 def test_handoff_falls_back_to_an_edition_with_the_asked_year(computed) -> None:
@@ -994,6 +1014,18 @@ def test_handoff_offers_an_alternative_when_nothing_computes(computed, monkeypat
         }, "gemma"
 
     monkeypatch.setattr(alternative, "judge", judge)
+    # D는 다시 계산(고른 표가 안 될 때)에서도 한 번 못 고르고, 대안 계산에서야 계산된다
+    calls = {"D": 0}
+    inner = d._build
+
+    async def build_d_later(tbl_id, *args, **kwargs):
+        if tbl_id == "D":
+            calls["D"] += 1
+            if calls["D"] == 1:
+                return None, "질문의 말과 맞는 칸이 없음"
+        return await inner(tbl_id, *args, **kwargs)
+
+    monkeypatch.setattr(d, "_build", build_d_later)
     cands = [
         _cand("A", 1, picked=True, checks={"year": True}, review={"match": "exact"}),
         _cand("D", 2, checks={"year": True}),
@@ -1261,6 +1293,55 @@ def test_more_is_a_comparison() -> None:
     assert d._multi_op("남자애가 더 많이 태어났어 여자애가 더 많이 태어났어?") == "compare"
 
 
+def test_name_drops_single_cell_item_and_unit_tail() -> None:
+    # 항목이 하나뿐인 표의 항목 이름과 칸 끝의 단위 괄호는 이름에 쓰지 않는다 (11/20)
+    item = d.Dim(0, "항목", {"T1": "출생사망혼인이혼"})
+    kinds = d.Dim(2, "종류별", {"30": "이혼건수(건)", "31": "조이혼율(천명당)"})
+    plan = d.Plan(pick={0: "T1", 2: "30"}, matched={0: "T1", 2: "30"})
+    assert d._name({}, [item, kinds], plan, True, unit="건") == "이혼건수"
+    # 질문의 지표 표현이 칸 이름을 담으면 그 표현
+    assert d._name({"term": "이혼 건수"}, [item, kinds], plan, True, unit="건") == "이혼 건수"
+    # 단위와 다른 괄호(조건)는 그대로 둔다
+    women = d.Dim(0, "항목", {"A": "기혼여성인구(15세 이상)", "B": "미혼"})
+    plan = d.Plan(pick={0: "A"}, matched={0: "A"})
+    assert d._name({}, [women], plan, True, unit="명") == "기혼여성인구(15세 이상) 수"
+    # 고른 칸이 하나뿐인 분류뿐이면 그 이름을 쓴다 (혼인 표의 항목 '혼인')
+    only = d.Dim(0, "항목", {"T3": "혼인"})
+    assert d._name({}, [only], d.Plan(pick={0: "T3"}, matched={0: "T3"}), True, unit="건") == (
+        "혼인 수"
+    )
+
+
+REAL_UNIT = d._unit  # fake_table(자동)이 _unit을 바꾸기 전의 진짜 함수
+
+
+def test_unit_follows_picked_cells_outside_item(monkeypatch) -> None:
+    # 항목은 하나이고 단위가 종류별 칸마다 다른 표(인구동향): 고른 칸의 단위
+    # (11/20 "11,798천명당")
+    kinds = d.Dim(2, "종류별", {"30": "이혼건수(건)", "31": "조이혼율(천명당)"})
+    item = d.Dim(0, "항목", {"T1": "출생사망혼인이혼"})
+    dims = [item, d.Dim(1, "행정구역별", {"11": "서울"}), kinds]
+    plan = d.Plan(pick={0: "T1", 1: "11", 2: "30"})
+    assert d._unit_cells(plan, dims, 1) == {2: ["30"]}  # 항목 · 지역은 빼고
+    plan.multi = (2, ["30", "31"], "compare")
+    assert d._unit_cells(plan, dims, 1) == {2: ["30", "31"]}
+
+    monkeypatch.setattr(lookup, "_codes", lambda t, n: {c: (f"{n}:{c}",) for c in dims[n].codes})
+    monkeypatch.setattr(lookup, "_tbl_key", lambda t: 1)
+    unit_of = {"2:30": "건", "2:31": "천명당"}
+    seen = []
+
+    def rows(sql, params):
+        seen.append(params)
+        picked = [unit_of[p] for p in params if p in unit_of]
+        return [{"u": picked[0] if picked else "천명당", "whole": bool(picked)}]
+
+    monkeypatch.setattr(d, "_rows", rows)
+    monkeypatch.setattr(d, "_unit", REAL_UNIT)
+    assert d._unit("T", "T1", {2: ["30"]}) == ("건", True)
+    assert d._unit("T", "T1") == ("천명당", False)  # 항목만 보면 행이 많은 단위
+
+
 def test_sexes_compared_within_item() -> None:
     items = d.Dim(0, "항목", {"0": "계", "1": "남자", "2": "여자"})
     plan, why = d.choose("작년에 남자애가 더 많이 태어났어 여자애가 더 많이 태어났어?",
@@ -1273,9 +1354,60 @@ def test_husband_wife_dimension_defaults_to_husband() -> None:
     couple = d.Dim(1, "성별", {"1": "남편", "2": "아내"})
     plan, why = d.choose("이혼 부부 중 미성년 자녀 없는 경우", {"sex": "계"}, [items, couple], None)
     assert why is None and plan.pick[1] == "1"
-    assert "부부 건수라 아내 기준과 같음" in plan.defaults[0]
+    assert "부부 단위 건수" in plan.defaults[0]
     # 칸 이름 끝의 '-계'는 항목 전체 (비율의 분모)
     assert d._item_whole(items, "연령/미성년자녀수별 이혼") == "0"
+
+
+def test_couple_counted_sex_dimension_uses_male_cell() -> None:
+    # 성별이 남자 · 여자뿐이고 부부를 한 쪽씩 센 표(couple=True): 성별을 말하지 않으면 남자 칸
+    items = d.Dim(0, "항목", {"T3": "혼인"})
+    region = d.Dim(1, "시도별", {"00": "전국", "21": "부산광역시"})
+    sex = d.Dim(2, "성별", {"1": "남자", "2": "여자"})
+    q = "1978년 대구 혼인 건수"
+    plan, why = d.choose(q, {"sex": "계"}, [items, region, sex], 1, couple=True)
+    assert why is None and plan.pick[2] == "1"
+    assert "부부 단위 건수" in plan.defaults[-1]
+    # 부부 단위 표가 아니면(사람 수 표) 지금처럼 고르지 못한다
+    plan, why = d.choose(q, {"sex": "계"}, [items, region, sex], 1)
+    assert plan is None and "성별" in why
+    # 연령을 물으면 남편 · 아내 나이가 달라 고르지 않는다
+    plan, why = d.choose(q, {"sex": "계", "ages": [30, 34]}, [items, region, sex], 1, couple=True)
+    assert plan is None
+    # 성별을 말하면 그 칸
+    plan, why = d.choose(q, {"sex": "여"}, [items, region, sex], 1, couple=True)
+    assert why is None and plan.pick[2] == "2"
+
+
+def test_couple_counted_compares_national_sums(monkeypatch) -> None:
+    dims = [
+        d.Dim(0, "항목", {"T3": "혼인"}),
+        d.Dim(1, "시도별", {"00": "전국", "21": "부산광역시"}),
+        d.Dim(2, "성별", {"1": "남자", "2": "여자"}),
+    ]
+    monkeypatch.setattr(d, "schema", lambda t: (dims, 1, "시도"))
+    monkeypatch.setattr(lookup, "_codes", lambda t, n: {c: (f"{n}:{c}",) for c in dims[n].codes})
+    monkeypatch.setattr(lookup, "_tbl_key", lambda t: 1)
+    sums = {"m": 283226.0, "f": 283226.0}
+    seen = []
+
+    def rows(sql, params):
+        seen.append(params)
+        return [dict(sums)]
+
+    monkeypatch.setattr(d, "_rows", rows)
+    d.couple_counted.cache_clear()
+    assert d.couple_counted("T_COUPLE") is True
+    assert "1:00" in seen[0]  # 전국 행만 본다
+    sums["f"] = 280000.0  # 사람 수 표: 남 ≠ 여
+    d.couple_counted.cache_clear()
+    assert d.couple_counted("T_COUPLE") is False
+    # 성별에 합계 칸이 있으면 해당하지 않는다 (값을 보지 않음)
+    dims[2] = d.Dim(2, "성별", {"0": "계", "1": "남자", "2": "여자"})
+    seen.clear()
+    d.couple_counted.cache_clear()
+    assert d.couple_counted("T_COUPLE") is False and not seen
+    d.couple_counted.cache_clear()
 
 
 def test_item_check_is_left_to_cell_check() -> None:
