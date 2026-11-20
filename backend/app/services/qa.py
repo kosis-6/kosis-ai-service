@@ -196,21 +196,69 @@ REGION_GROUPS = {
     # 위에서부터 차례로 보고 질문에 처음 들어 있는 묶음을 쓴다.
     # "비수도권"은 "수도권"을 품고 있으므로 수도권보다 먼저 둔다
     "비수도권": [
-        "부산", "대구", "광주광역시", "대전", "울산", "세종",
-        "강원", "충북", "충남", "전북", "전남", "경북", "경남", "제주",
+        "부산",
+        "대구",
+        "광주광역시",
+        "대전",
+        "울산",
+        "세종",
+        "강원",
+        "충북",
+        "충남",
+        "전북",
+        "전남",
+        "경북",
+        "경남",
+        "제주",
     ],
     "수도권 외": [
-        "부산", "대구", "광주광역시", "대전", "울산", "세종",
-        "강원", "충북", "충남", "전북", "전남", "경북", "경남", "제주",
+        "부산",
+        "대구",
+        "광주광역시",
+        "대전",
+        "울산",
+        "세종",
+        "강원",
+        "충북",
+        "충남",
+        "전북",
+        "전남",
+        "경북",
+        "경남",
+        "제주",
     ],
     "수도권 밖": [
-        "부산", "대구", "광주광역시", "대전", "울산", "세종",
-        "강원", "충북", "충남", "전북", "전남", "경북", "경남", "제주",
+        "부산",
+        "대구",
+        "광주광역시",
+        "대전",
+        "울산",
+        "세종",
+        "강원",
+        "충북",
+        "충남",
+        "전북",
+        "전남",
+        "경북",
+        "경남",
+        "제주",
     ],
     # "지방"만으로는 넣지 않는다 ("지방소멸", "지방자치단체")
     "지방 인구": [
-        "부산", "대구", "광주광역시", "대전", "울산", "세종",
-        "강원", "충북", "충남", "전북", "전남", "경북", "경남", "제주",
+        "부산",
+        "대구",
+        "광주광역시",
+        "대전",
+        "울산",
+        "세종",
+        "강원",
+        "충북",
+        "충남",
+        "전북",
+        "전남",
+        "경북",
+        "경남",
+        "제주",
     ],
     "수도권": ["서울", "인천", "경기"],
     # 서울 강남권 구 묶음 (질문 글자에 구 이름이 없어 지역 확인에서 막혔다)
@@ -316,6 +364,7 @@ def find_sub_area(question):
             return area, sigungu
     return None
 
+
 YEAR_EXTREME = {
     "min": re.compile(r"(가장|제일)\s*(낮|적)\S*(\s+\S+){0,2}\s*해(\s|$|[?가는를]|\d)"),
     "max": re.compile(r"(가장|제일)\s*(높|많)\S*(\s+\S+){0,2}\s*해(\s|$|[?가는를]|\d)"),
@@ -364,9 +413,7 @@ def _says_year(question):
 SINCE = re.compile(r"((?:19|20)\d{2})\s*년\s*(이후|이래|부터)(?!.*까지)")
 UNTIL = re.compile(r"((?:19|20)\d{2})\s*년\s*까지")
 # "한국 인구", "한국 사람"도 전국 ("한국 국적"은 아니다: 귀화자)
-NATIONWIDE = re.compile(
-    r"전국|우리나라|대한민국|한국\s*(전체|의|은|는|인구|사람)|국내\s*(전체)?"
-)
+NATIONWIDE = re.compile(r"전국|우리나라|대한민국|한국\s*(전체|의|은|는|인구|사람)|국내\s*(전체)?")
 WHY_WORDS = re.compile(r"왜|이유|원인|때문|탓|효과|영향")
 CAUSAL = re.compile(r"효과가?\s*(있|없|컸)|효과적|원인|왜\s|영향을?\s*(줬|주|미쳤|끼쳤)")
 # 지표 사전이 나누지 않는 조건 (체중·기간 등). 버리고 전체 값으로 답하면 틀린 답이 된다
@@ -453,7 +500,9 @@ CHANGE_RANK = re.compile(
 )
 DECREASE_WORDS = re.compile(r"줄어|줄었|감소|빠졌")
 # 지역이 아닌 순위 축 ("국적별로 많은 순서", "어느 나라가", "교통수단 중 가장 많이")
-OTHER_AXIS = re.compile(r"(국적|나라|국가|교통\s*수단|이동\s*사유|전입\s*사유)\s*(별|중|가|이|마다)?")
+OTHER_AXIS = re.compile(
+    r"(국적|나라|국가|교통\s*수단|이동\s*사유|전입\s*사유)\s*(별|중|가|이|마다)?"
+)
 AXIS_REGION = re.compile(r"시도|시군구|지역|도시|광역시|어느\s*(시|구|군|도)")
 YEAR_ASKED = re.compile(r"(해|연도|년도|때)\s*(는|가|를|은|가\s*언제|$|\?)|언제")
 # 연령 구간 · 연령 집단을 말하고 사람 수를 물었으면 그 연령의 인구 ("달서구 이십대는 몇 명 살아?",
@@ -461,7 +510,8 @@ YEAR_ASKED = re.compile(r"(해|연도|년도|때)\s*(는|가|를|은|가\s*언�
 PEOPLE_COUNT = re.compile(
     r"몇\s*(명|분)|얼마나\s*(살|계|있|돼|되|줄|늘)|(수|인구)\s*(는|가|를|합|얼마|좀)|사람|분\s*(이|들)"
 )
-# '사람 · 분'이 이 통계의 사람이면 총인구가 아니다 ("외국인 등록한 사람", "통근한 사람", "사망자 중")
+# '사람 · 분'이 이 통계의 사람이면 총인구가 아니다
+# ("외국인 등록한 사람", "통근한 사람", "사망자 중")
 OTHER_PEOPLE = re.compile(
     r"외국|등록|이사|전입|전출|이동|통근|통학|결혼|혼인|이혼|사망|돌아가|태어|출생|낳|가구|유학|귀화|"
     r"근로|이민|입국|출국|취업|학생|"
@@ -782,8 +832,9 @@ def correct(question, parsed, today=None):
         and kind in LATEST_KINDS
         and parsed.get("year")
     ):
-        # 질문에 연도 표현이 전혀 없을 때만 HCX가 짐작해 넣은 연도를 지운다 (예: 연도 없이 물었는데 2022)
-        # "22년", "2022.12", "이천이십이년", "코로나 첫 해"처럼 연도를 말했으면 HCX 연도를 그대로 둔다
+        # 질문에 연도 표현이 전혀 없을 때만 HCX가 짐작해 넣은 연도를 지운다
+        # (예: 연도 없이 물었는데 2022). "22년", "2022.12", "이천이십이년", "코로나 첫 해"처럼
+        # 연도를 말했으면 HCX 연도를 그대로 둔다
         fix("year", None, "연도를 말하지 않음 → 자료 마지막 해")
 
     # 지역이 여럿인 값 질문: 합계를 물었으면 더하고, 아니면 지역별 비교로 답한다.
@@ -879,9 +930,7 @@ def _mean_of_regions(q):
         within = (indicators.resolve_region(within) or {}).get("display") or within
     scope = f"{within} " if within else ""
     unit_name = {"시도": "시도", "시": "시"}.get(q.get("level") or "시도", "시군구")
-    out = {
-        k: v for k, v in r.items() if k not in ("ranking", "order", "level", "total_regions")
-    }
+    out = {k: v for k, v in r.items() if k not in ("ranking", "order", "level", "total_regions")}
     out.update(
         value=round(mean, 1 if r.get("kind") == "count" else 2),
         kind="value" if r.get("kind") == "count" else r.get("kind"),
@@ -924,7 +973,8 @@ def _cross(question, parsed, fix):
     parsed["grounded"] = True
     parsed.pop("unsupported", None)
     if (found.plus or found.form == "sum") and not parsed.get("group"):
-        # "혼인 건수와 이혼 건수 합"의 합은 분자 두 지표를 더하라는 말이다 (기간 · 지역 합계가 아니다)
+        # "혼인 건수와 이혼 건수 합"의 합은 분자 두 지표를 더하라는 말이다
+        # (기간 · 지역 합계가 아니다)
         parsed.pop("aggregate", None)
 
 
@@ -952,7 +1002,8 @@ def population_modifier(question):
     if group := agegroup.resolve(question):
         # 연령 집단 이름은 연령 조건이다 ("2030세대 인구"의 '세대'를 다른 통계로 보지 않는다)
         question = question.replace(group.expr, " ")
-    # 지역 묶음·생활권 이름도 지역 조건이다 ("부울경 인구", "특례시 인구"의 앞말을 다른 통계로 보지 않는다)
+    # 지역 묶음·생활권 이름도 지역 조건이다
+    # ("부울경 인구", "특례시 인구"의 앞말을 다른 통계로 보지 않는다)
     for word in REGION_GROUPS:
         if _group_in(word, question):
             question = question.replace(word, " ")
@@ -1007,15 +1058,18 @@ def _ground_regions(question, parsed, fix):
         short = re.sub(
             r"(특별자치시|특별자치도|특별시|광역시|시|군|구|도)$", "", reg.get("region_name") or ""
         )
-        # 단, 질문에 시도가 있으면 그 시도 안의 지역일 때만 (예: "서울 강서"를 부산 강서구로 바꾸면 막는다)
+        # 단, 질문에 시도가 있으면 그 시도 안의 지역일 때만
+        # (예: "서울 강서"를 부산 강서구로 바꾸면 막는다)
         named = found - {None}
         same_sido = not named or reg.get("sido_code") in named
-        # 짧은 이름이 지표 이름 안에만 있거나("고령" ⊂ "고령인구 비율") 흔한 낱말이면 지역으로 보지 않는다
+        # 짧은 이름이 지표 이름 안에만 있거나("고령" ⊂ "고령인구 비율") 흔한 낱말이면
+        # 지역으로 보지 않는다
         spans = indicators.find_in_text(question)
         hits = [m.start() for m in re.finditer(re.escape(short), text)] if len(short) >= 2 else []
         in_indicator = bool(hits) and all(any(a <= i < b for a, b, _ in spans) for i in hits)
         if hits and same_sido and not in_indicator and short not in COMMON_WORD_REGIONS:
-            # 질문에 시도가 없고 짧은 이름이 여러 곳이면 (예: "강서" → 서울·부산) AI가 고른 곳 대신 되묻는다
+            # 질문에 시도가 없고 짧은 이름이 여러 곳이면 (예: "강서" → 서울·부산)
+            # AI가 고른 곳 대신 되묻는다
             if not named and indicators.resolve_region(short)["status"] == "ambiguous_region":
                 fix(
                     "regions",
@@ -1337,7 +1391,8 @@ def _read_question(question, parsed, fix):
         and (sp := indicators.spec(parsed.get("indicator"))) is not None
         and sp.get("method") == "lookup"
     ):
-        # 연도를 말하지 않은 조회 지표 질문 ("서울 외국인주민 수")은 "최근"과 같이 표마다 마지막 해로
+        # 연도를 말하지 않은 조회 지표 질문 ("서울 외국인주민 수")은
+        # "최근"과 같이 표마다 마지막 해로
         # (공통 기준 연도로 계산하면 2024년까지인 표는 자료가 있는데도 범위 밖이 된다)
         asked["latest"] = True
     if ask_followup.FROM_PAST.search(question) and not SPAN.search(question):
@@ -2846,7 +2901,8 @@ def log_request(question, res=None, error=None, elapsed_ms=None, path=None, user
         record["understand_cached"] = True
     if trace.get("flow"):  # 처리 흐름 (app/services/flow.py, scripts/show_flow.py로 본다)
         record["flow"] = trace["flow"]
-    if trace.get("llm_calls"):  # LLM 호출 (app/services/llm_calls.py): 단계 · 토큰 · 시간 · 다시 시도
+    # LLM 호출 (app/services/llm_calls.py): 단계 · 토큰 · 시간 · 다시 시도
+    if trace.get("llm_calls"):
         record["llm_calls"] = trace["llm_calls"]
     if trace.get("plan_cache"):
         record["plan_cache"] = trace["plan_cache"]

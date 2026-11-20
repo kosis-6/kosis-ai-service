@@ -49,7 +49,9 @@ def _correct(q, indicator):
 
     from app.services import qa
 
-    return qa.correct(q, {"type": "value", "indicator": indicator, "regions": []}, datetime.date(2026, 11, 20))
+    return qa.correct(
+        q, {"type": "value", "indicator": indicator, "regions": []}, datetime.date(2026, 11, 20)
+    )
 
 
 def test_count_words_inside_alias_keep_indicator():
