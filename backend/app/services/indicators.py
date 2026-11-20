@@ -1046,7 +1046,7 @@ def compare(indicator, regions, year, sex="계", ages=None):
         comp = comps.get((year, reg["region_code"]))
         raw[reg["display"]] = ind["calc"](comp) if comp else None
         values.append({"region": reg["display"], "value": _r(raw[reg["display"]], ind)})
-    values.sort(key=lambda x: (x["value"] is None, -(x["value"] or 0)))
+    values.sort(key=lambda x: (raw[x["region"]] is None, -(raw[x["region"]] or 0)))
     valid = [x for x in values if x["value"] is not None]
     # 차이는 반올림 전 값으로 (trend와 같게. 표시값끼리 빼면 끝자리가 0.01 틀린다)
     gap = (

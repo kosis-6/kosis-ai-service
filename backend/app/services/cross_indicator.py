@@ -417,8 +417,10 @@ def compute(q: dict, run) -> dict:
         return [run({**base, **extra, "indicator": name, "term": name}) for name in names]
 
     parts = both()
-    if kind in ("value", "rank", "compare") and all(p.get("status") == "ok" for p in parts) and (
-        not q.get("year")
+    if (
+        kind in ("value", "rank", "compare")
+        and all(p.get("status") == "ok" for p in parts)
+        and (not q.get("year"))
     ):
         years = {p.get("year") for p in parts}
         if len(years) > 1 or any(p.get("as_of") for p in parts):
@@ -752,12 +754,13 @@ def _sum_parts(parts: list[dict], kind: str) -> dict | None:
 
 def _compare_facts(vals: list[dict], unit: str, raw: dict | None = None) -> dict:
     """raw: 지역 → 반올림 전 값. 있으면 차이 · 배수를 이 값으로 계산한다 (표시값은 vals)"""
-    vals = sorted(vals, key=lambda v: v["value"], reverse=True)  # 답 문장은 높은 순으로 읽는다
-    hi, lo = vals[0], vals[-1]
 
     def exact(v):
         return raw[v["region"]] if raw and raw.get(v["region"]) is not None else v["value"]
 
+    # 표시값이 같아도 원값의 크기로 정렬해야 최고·최저와 차이의 부호가 일치한다.
+    vals = sorted(vals, key=exact, reverse=True)
+    hi, lo = vals[0], vals[-1]
     out = {
         "values": vals,
         "highest": hi["region"],
