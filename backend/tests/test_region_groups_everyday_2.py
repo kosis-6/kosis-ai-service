@@ -99,5 +99,6 @@ def test_group_name_is_not_population_modifier(q):
     assert qa.population_modifier(q) is None, q
 
 
+@pytest.mark.needs_data  # find_regions가 DB의 region_aliases를 읽는다
 def test_population_modifier_still_works():
     assert qa.population_modifier("통학 인구") is not None

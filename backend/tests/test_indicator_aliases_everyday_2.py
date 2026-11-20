@@ -54,11 +54,13 @@ def _correct(q, indicator):
     )
 
 
+@pytest.mark.needs_data  # find_regions가 DB의 region_aliases를 읽는다
 def test_count_words_inside_alias_keep_indicator():
     """별칭 안의 '몇 명'을 보고 노년부양비를 65세 이상 인구 수로 바꾸지 않는다"""
     assert _correct("전남은 노인 한 명을 몇 명이 부양해", "노년부양비")["indicator"] == "노년부양비"
 
 
+@pytest.mark.needs_data  # find_regions가 DB의 region_aliases를 읽는다
 def test_count_question_still_becomes_population():
     """별칭 밖에서 '몇 명'을 물으면 전처럼 연령 구간 인구 수로 답한다"""
     assert _correct("서울 노인 몇 명이야", "고령인구 비율")["indicator"] == "총인구"
