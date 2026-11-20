@@ -845,6 +845,15 @@ def test_relative_year_overrides_hcx(talk: Talk, monkeypatch: pytest.MonkeyPatch
     assert res["parsed"]["year"] == 2025 and res["request_type"] == "change"
 
 
+def test_relative_year_keeps_hcx_new_question(talk: Talk, monkeypatch: pytest.MonkeyPatch) -> None:
+    # HCX가 새 질문으로 본 말은 상대 연도가 있어도 앞 조건 바꾸기로 뒤집지 않는다 (11/20):
+    # 사전에 없는 말로 지표를 말하면 앞 지표 · 지역으로 연도만 바꿔 답했다
+    monkeypatch.setattr(s, "follow_year", lambda q, c, today=None: 2025 if "작년" in q else None)
+    talk.say("2020년 부산 출생아 수")
+    res = talk.say("작년 대구에서 새로 생긴 아기네 집 몇 곳이야?", request_type="new")
+    assert res["request_type"] == "new"
+
+
 def test_inherited_region_falls_back_to_original_scope(talk: Talk) -> None:
     talk.parsed = {**BASE, "type": "value", "regions": ["수성구"]}
     talk.say("2024년 수성구 출생아 수")
@@ -1472,6 +1481,46 @@ def test_dictionary_notice_is_kept_when_other_tables_do_not_compute(talk: Talk) 
     res = talk.say("부산 출생아 2030년")
     assert res["status"] == "out_of_range"  # 사전의 안내 그대로
     assert res["tables"]["recommendations"] == [{"tbl_id": "DT_X"}]  # 찾은 표는 카드로
+
+
+def _handoff(review: str | None, year: bool) -> dict:
+    cand = {"tbl_id": "DT_X", "checks": {"year": year}, "review": review and {"match": review}}
+    return {"targets": [{"candidates": [cand]}]}
+
+
+def test_out_of_range_becomes_table_guide_when_picked_table_has_the_year(talk: Talk) -> None:
+    # 사전은 '수록 기간 밖'인데 검토가 고른 표가 그 연도를 담고 있고 계산만 못 함 (11/20):
+    # "1990~2025년만 있습니다 · 그 사이 연도로 다시"는 사실과 달라 표 안내로 바꾼다
+    talk.parsed = {**BASE, "type": "value", "indicator": "혼인 건수"}
+    talk.fail_when = lambda parsed: True
+    original = talk._result
+
+    def old(parsed, question=""):
+        result = original(parsed, question)
+        result["result"].update(available_years=[1990, 2025], asked_year=1977)
+        return result
+
+    talk._result = old
+    talk.dynamic = None
+    talk.found = {**talk.found, "handoff": _handoff("exact", True)}
+    res = talk.say("1977년 대구 혼인 건수")
+    assert res["status"] == "tables"
+    assert res["answer"].startswith("기본 통계의 혼인 건수 자료는 1990~2025년만 있지만, 1977년")
+    assert "다시 질문해 주세요" not in res["answer"]
+    assert res["tables"]["recommendations"] == [{"tbl_id": "DT_X"}]
+    assert res["trace"]["replaced"]["reason"] == "out_of_range"
+    # 고른 표에도 그 연도가 없거나(✘), 검토가 고르지 않은 후보뿐이면 사전의 안내 그대로
+    for handoff in (_handoff("exact", False), _handoff(None, True)):
+        talk.found = {**talk.found, "handoff": handoff}
+        assert talk.say("1977년 대구 혼인 건수")["status"] == "out_of_range"
+
+
+def test_region_not_in_year_is_not_turned_into_table_guide() -> None:
+    # 그해에 없던 지역: 표의 지역 단위 ✔는 그해에 그 지역이 있었다는 근거가 아니다
+    res = {"status": "region_not_in_year", "result": {}}
+    found = {"status": "ok", "handoff": _handoff("exact", True)}
+    assert s._year_found_elsewhere(res, found) is None
+    assert s._year_found_elsewhere({**res, "status": "out_of_range"}, found)
 
 
 def test_projection_suggestion_and_follow_ups_are_not_searched(talk: Talk, monkeypatch) -> None:
