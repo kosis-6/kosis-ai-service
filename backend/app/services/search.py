@@ -28,15 +28,14 @@ import math
 import re
 import sys
 import time
+from datetime import date
 from typing import Any
 
 from sqlalchemy import text
 
-from datetime import date
-
+from app.services import agegroup, search_llm, synonyms, timeref, vector_search
 from app.services import slots as slot_parser
 from app.services import slots as slots_mod
-from app.services import agegroup, search_llm, synonyms, timeref, vector_search
 
 logger = logging.getLogger(__name__)
 # 앱에 로그 설정이 없어 INFO가 안 보이므로, 서버 시작 메시지는 uvicorn 로그로 낸다
@@ -447,13 +446,15 @@ def _found(variants: list[str], field: str) -> bool:
 
 
 _value_index: dict[str, set[str]] | None = None
-_value_index_for: int | None = None
+_value_index_for: list[dict[str, Any]] | None = None
 
 
 def value_index(tables: list[dict[str, Any]]) -> dict[str, set[str]]:
-    """분류 값 → 그 값을 가진 (표, 분류) 열쇠. '아파트'·'단독주택'이 같은 열쇠에 있으면 같은 축의 값"""
+    """분류 값 → 그 값을 가진 (표, 분류) 열쇠.
+    '아파트'·'단독주택'이 같은 열쇠에 있으면 같은 축의 값"""
     global _value_index, _value_index_for
-    if _value_index is None or _value_index_for != id(tables):
+    # 목록 자체를 보관한다. id만 남기면 해제된 목록의 주소를 새 목록이 재사용할 수 있다.
+    if _value_index is None or _value_index_for is not tables:
         idx: dict[str, set[str]] = {}
         for t in tables:
             for c in t.get("classifications") or []:
@@ -461,21 +462,27 @@ def value_index(tables: list[dict[str, Any]]) -> dict[str, set[str]]:
                 for v in rank_values(c):
                     if v and (nv := norm(v)):
                         idx.setdefault(nv, set()).add(key)
-        _value_index, _value_index_for = idx, id(tables)
+        _value_index, _value_index_for = idx, tables
     return _value_index
 
 
 VALUE_LIKE_MIN = 20  # 분류 값으로만 나오는 표가 이만큼 이상이고
 VALUE_LIKE_RATIO = 5  # 표 이름에 나오는 표의 이 배 이상이면 '분류 값' 낱말
 _value_like: dict[str, bool] = {}
+_value_like_for: list[dict[str, Any]] | None = None
 
 
 def value_like(tables: list[dict[str, Any]], word: str) -> bool:
     """표 이름이 아니라 분류 값으로 주로 쓰이는 낱말인가.
-    아파트(표 이름 2 · 값으로만 144)·미혼(3 · 140)은 값, 귀화자(6 · 4)·결혼이민자(5 · 5)·유학생(9 · 3)은
+    아파트(표 이름 2 · 값으로만 144)·미혼(3 · 140)은 값,
+    귀화자(6 · 4)·결혼이민자(5 · 5)·유학생(9 · 3)은
     따로 있는 표(멤버)라 빼는 대상으로 남긴다"""
+    global _value_like_for
+    if _value_like_for is not tables:
+        _value_like.clear()
+        _value_like_for = tables
     vs = variants(word)
-    key = f"{id(tables)}|{vs[-1]}"
+    key = vs[-1]
     if key not in _value_like:
         in_name = sum(_found(vs, t["name_n"]) for t in tables)
         only_value = sum(_found(vs, t["meta_n"]) and not _found(vs, t["name_n"]) for t in tables)
@@ -484,7 +491,8 @@ def value_like(tables: list[dict[str, Any]], word: str) -> bool:
 
 
 def contrast_words(tables: list[dict[str, Any]], slots: dict[str, Any]) -> set[str]:
-    """빼는 단어 중, 질문의 다른 단어와 같은 분류 축의 값인 것 ('아파트가 아니라 단독주택'의 '아파트가')"""
+    """빼는 단어 중, 질문의 다른 단어와 같은 분류 축의 값인 것.
+    예: '아파트가 아니라 단독주택'의 '아파트가'"""
     idx = value_index(tables)
     words = re.findall(r"[0-9A-Za-z가-힣]+", slots.get("question") or "")
     out = set()
@@ -647,7 +655,9 @@ def check(t: dict[str, Any], slots: dict[str, Any]) -> dict[str, bool]:
             out["year"] = t["start_year"] <= c["year"] and last - t["end_year"] <= PUBLISH_LAG
         if (
             not out["year"]
-            and (ref := slots.get("time_ref")) and ref.get("open_end") and c["year_end"] is None
+            and (ref := slots.get("time_ref"))
+            and ref.get("open_end")
+            and c["year_end"] is None
             and t.get("end_year") is not None
             and t["end_year"] >= (t.get("family_last_year") or t["end_year"])
             and date.today().year - t["end_year"] <= CENSUS_CYCLE + PUBLISH_LAG
@@ -674,7 +684,8 @@ def check(t: dict[str, Any], slots: dict[str, Any]) -> dict[str, bool]:
         own = "male_only" if sex == "남" else "female_only"
         # 여성만 다루는 표는 성별 분류가 없어도 '여' 조건을 만족한다
         # 항목이 남자 / 여자로 갈라진 표도 그 성별을 담는다 ('2025년 대구 남자 인구수' → 주민등록
-        # '행정구역(시군구)별, 성별 인구수'는 항목이 총인구수 · 남자인구수 · 여자인구수라 sex_coverage 가
+        # '행정구역(시군구)별, 성별 인구수'는 항목이 총인구수 · 남자인구수 · 여자인구수라
+        # sex_coverage 가
         # none 이어서 성별 ✘ 가 붙던 문제. 분류 '성별' 판정에는 같은 보완이 이미 있었다)
         out["sex"] = (
             t["sex_coverage"] in ("both", own)
@@ -695,7 +706,8 @@ def check(t: dict[str, Any], slots: dict[str, Any]) -> dict[str, bool]:
             # HCX 가 '미혼'처럼 분류 값을 classes 에 넣기도 하므로 항목·표본값(meta_n)도 본다
             ok = any(key in n for n in t["class_n"]) or key in t["name_n"] or has_value(t, key)
             if key == "연령" and not ok:
-                # 각세(1세 단위) 축도 연령 축이다 ('서울 구별 나이별 전입 전출' → 서울특별시 시군구 각세별 이동자수)
+                # 각세(1세 단위) 축도 연령 축이다 ('서울 구별 나이별 전입 전출'
+                # → 서울특별시 시군구 각세별 이동자수)
                 ok = any("각세" in n for n in t["class_n"]) or "각세" in t["name_n"]
             if key == "연령" and ok and not has_age_axis(t):
                 # 이름에만 '연령별'이 있고 한 나이대만 담은 표는 나이로 나눠 볼 수 없다
@@ -902,7 +914,8 @@ def rank(
 ) -> list[dict[str, Any]]:
     """dense: tables 순서의 임베딩 점수 (없으면 키워드만)"""
     if slots.get("exclude"):
-        # 같은 분류 축의 반대 값을 찾는 말('아파트가 아니라 단독주택', '미혼 말고 이혼한')은 그 축을 담은 표가
+        # 같은 분류 축의 반대 값을 찾는 말('아파트가 아니라 단독주택', '미혼 말고 이혼한')은
+        # 그 축을 담은 표가
         # 답이다. 빼는 단어로 다루면 그 표를 오히려 놓친다 → 빼지 않는다
         contrast = contrast_words(tables, slots)
         if contrast:
@@ -1140,7 +1153,7 @@ def find(
         and OUR_PLACE.search(slots.get("question") or "")
         and (sido := SIDO_PREFIX.match(top["table"]["table_name"]))
     ):
-        shape = top["table"]["table_name"][sido.end():].strip()
+        shape = top["table"]["table_name"][sido.end() :].strip()
         same = [
             f
             for f in families[:30]
