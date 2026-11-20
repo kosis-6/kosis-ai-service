@@ -164,6 +164,16 @@ def _indicator_list():
 GENDER_WORDS = {"여": re.compile(r"여성|여자"), "남": re.compile(r"남성|남자")}
 # 남녀를 함께 묻는 표현 (구성비 질문이면 성별 구성)
 SEX_SPLIT = re.compile(r"남녀|성별|(남성|남자).*(여성|여자)|(여성|여자).*(남성|남자)")
+# 남녀를 나누지 않고 합계를 물음 ("남녀 합계 인구", "성별 구분 없이")
+SEX_TOTAL = re.compile(
+    r"남녀\s*(?:합계|전체|합산|합쳐|모두|통틀어)|성별\s*(?:합계|전체|구분\s*없이|상관\s*없이)"
+)
+# 낱말 자체에 성별이 든 말: 성별 말(GENDER_WORDS)이 없어도 HCX가 읽은 성별을 지우지 않는다
+# ("남편 평균 초혼연령" → 남, "미혼모" → 여)
+SEX_IMPLIED = re.compile(
+    r"남편|신랑|아버지|아빠|부친|아들|소년|할아버지|남아"
+    r"|아내|부인|와이프|신부|어머니|엄마|모친|딸|소녀|할머니|여아|미혼모|산모|임산부|임신부"
+)
 # 상대시점("작년", "2년 전")은 app.services.timeref 가 검색과 같은 규칙으로 푼다
 NO_REGION_TYPES = {"rank", "other", "parse_error"}
 
@@ -288,7 +298,7 @@ TOP_N = re.compile(r"(상위|하위)\s*(\d+)|(\d+)\s*(곳|개|위까지)(?!\s*\S
 # "최근 5년", "과거 10년간", "지난 3년 동안" (timeref와 같은 표현)
 RECENT = timeref.RECENT_N_YEARS
 UNIT_SUFFIX = re.compile(r"\s*\([^()]*\)\s*$")  # 지표 이름 뒤의 "(명)"·"(%)"
-LATEST = re.compile(r"최근|최신|현재|요즘|지금")
+LATEST = re.compile(r"최근|최신|현재|요즘|요새|지금")
 # 기간 변화를 묻는 표현 ("최근 부산 인구 추이"는 추이, "최근 부산 인구"는 최신 값)
 LATEST_KINDS = ("value", "compare", "rank")  # "최근"이면 마지막 해로 답하는 질문 유형
 CHANGE_ASK = re.compile(r"추이|변화|변동|흐름|증감|추세|늘|줄|증가|감소|동안|사이|년간|그래프")
@@ -699,8 +709,18 @@ def correct(question, parsed, today=None):
     genders = [sex for sex, pattern in GENDER_WORDS.items() if pattern.search(question)]
     if len(genders) == 1 and parsed.get("sex") in (None, "", "계"):
         fix("sex", genders[0], "질문의 성별 표현")
-    if len(genders) == 2 and parsed.get("sex") in ("남", "여"):  # "남자랑 여자 중 누가"
-        fix("sex", "계", "남녀를 함께 물음")
+    both = len(genders) == 2 or (not genders and SEX_SPLIT.search(question))
+    if parsed.get("sex") in ("남", "여"):
+        if both:
+            fix("sex", "계", "남녀를 함께 물음")  # "남자랑 여자 중 누가", "남녀 인구 비교"
+        elif not genders and not SEX_IMPLIED.search(question):
+            # 성별을 말하지 않았는데 HCX가 짐작해 넣은 성별 ("서울 인구 몇 명이야?" → 남)
+            fix("sex", "계", "성별을 말하지 않음")
+    if both and kind != "composition" and not SEX_TOTAL.search(question):
+        # 남녀를 나눠 물음 → 계산 단계(compute)가 남·여를 따로 계산한다 (구성비는 by=sex가 맡는다)
+        parsed["split_sex"] = True
+        if kind == "compare" and len(parsed.get("regions") or []) == 1:
+            fix("type", "value", "한 지역의 남녀 비교")  # 지역 비교가 아니라 남·여 값
     if kind == "composition" and parsed.get("by") != "sex" and SEX_SPLIT.search(question):
         fix("by", "sex", "질문의 남녀 구성 표현")
 
@@ -1283,6 +1303,19 @@ def _read_question(question, parsed, fix):
         # 연도를 말하지 않은 조회 지표 질문 ("서울 외국인주민 수")은 "최근"과 같이 표마다 마지막 해로
         # (공통 기준 연도로 계산하면 2024년까지인 표는 자료가 있는데도 범위 밖이 된다)
         asked["latest"] = True
+    elif (
+        kind == "trend"
+        and not by_year
+        and not _says_year(question)
+        and not SPAN.search(question)
+        and not SINCE.search(question)
+        and not ask_followup.FROM_PAST.search(question)
+    ):
+        # 기간을 말하지 않은 추이 ("서울 인구 추이 보여줘"): HCX가 짐작한 기간(2015~2024 등)
+        # 대신 계산 단계의 기본 기간(자료 마지막 해까지 6개 연도). 위 분기는 값·비교·순위만 본다
+        for key in ("start_year", "end_year", "year"):
+            if parsed.get(key):
+                fix(key, None, "기간을 말하지 않음 → 자료 마지막 해까지 최근 6개 연도")
     if ask_followup.FROM_PAST.search(question) and not SPAN.search(question):
         # "과거부터 지금까지 합계출산율 추이" → 수록 기간 전체 추이
         asked["from_start"] = True
@@ -1393,10 +1426,31 @@ MAX_TREND_REGIONS = 20
 MAX_INDICATORS = 3  # 한 질문에서 함께 답하는 지표 수
 
 
+# 계산 지표 중 남녀로 나눠 볼 수 없는 것 (성비는 그 자체가 남녀 비교, 세대·면적은 성별이 없다)
+NO_SEX_SPLIT = frozenset({"성비", "세대당 인구", "인구밀도"})
+
+
+def _splits_by_sex(q):
+    """남녀를 나눠 물은 질문(split_sex)을 남·여 따로 계산할 수 있는가"""
+    if q.get("type") not in ("value", "trend", "compare") or q.get("sex") in ("남", "여"):
+        return False
+    sp = indicators.spec(q.get("indicator"))
+    if sp is None or sp["name"] in NO_SEX_SPLIT:
+        return False
+    if sp.get("method") == "lookup":
+        # 성별 칸이 없는 지표(합계출산율)는 나눌 수 없고, 남녀 값만 있는 지표(평균 초혼연령)는
+        # 계산 단계가 이미 남녀를 나눠 보여준다
+        return any(s.get("by_sex") for s in sp["sources"]) and not lookup.needs_split(sp, "계")
+    return True
+
+
 def compute(q):
     """2~4단계: 질문 분석 결과 → indicators.py(계산 지표)·lookup.py(조회 지표) 결과.
     연도를 말하지 않아 최신 달 값으로 계산했는데 기간 밖이면 연간 자료의 마지막 해로 다시 계산한다
     (총인구는 최신 달이 다음 해라, 등록외국인처럼 연간 자료를 섞는 지표가 '기간 밖'으로 끝났다)"""
+    if q.get("split_sex") and _splits_by_sex(q):
+        # "서울 남녀 인구 비교": 남·여를 따로 계산해 함께 보여준다 (더하지 않는다)
+        return _combine([compute({**q, "sex": s, "split_sex": False}) for s in ("남", "여")])
     result = _compute(q)
     asked = q.get("asked") or {}
     if result.get("status") == "out_of_range" and asked.get("latest") and not q.get("year"):
@@ -2373,7 +2427,14 @@ def _split_text(r):
             hi, lo = (a, b) if vals[0] > vals[1] else (b, a)
             gap = round(abs(vals[0] - vals[1]), 3)
             unit = lookup.diff_unit({"unit": hi["unit"], "kind": hi.get("kind")})
-            text += f" {_josa(hi['indicator'], '이가')} {_val(gap, unit, full=True)} 더 높습니다."
+            who = hi["indicator"]
+            word = "높습니다"
+            same = a.get("indicator") == b.get("indicator")
+            if same and {a.get("sex"), b.get("sex")} == {"남", "여"}:
+                # 같은 지표를 남녀로 나눈 경우 ("서울 남녀 인구 비교"): 성별로 견준다
+                who = {"남": "남성", "여": "여성"}[hi["sex"]]
+                word = "많습니다" if hi.get("kind", "count") == "count" else "높습니다"
+            text += f" {_josa(who, '이가')} {_val(gap, unit, full=True)} 더 {word}."
     return text
 
 
@@ -2561,7 +2622,7 @@ def sources(result):
     ]
 
 
-RECENT_WORDS = re.compile(r"최근|최신|현재|요즘|지금|올해|금년")
+RECENT_WORDS = re.compile(r"최근|최신|현재|요즘|요새|지금|올해|금년")
 
 
 async def _refresh_recent(question, parsed, trace):

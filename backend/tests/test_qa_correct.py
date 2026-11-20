@@ -1014,3 +1014,89 @@ def test_region_mean_is_mean_of_regions() -> None:
     # 전국 평균과의 비교는 지역 평균이 아니다
     c = qa.correct("부산 출생아 수 지역 평균보다 많아?", parsed(regions=["부산"]), TODAY)
     assert not c.get("region_mean")
+
+
+@pytest.mark.parametrize(
+    "question, llm_sex, expected",
+    [
+        ("서울 인구 몇 명이야?", "남", "계"),  # 성별을 말하지 않았는데 HCX가 짐작 (E1)
+        ("서울 남녀 인구 비교", "남", "계"),  # "남녀"는 둘 다 (E1')
+        ("서울 남자랑 여자 인구", "여", "계"),
+        ("서울 여자 인구", "여", "여"),
+        ("서울 여자 인구", "계", "여"),
+        ("세종 미혼모 몇 명", "여", "여"),  # 낱말에 성별이 든 말은 그대로
+        ("이혼하는 남편 평균 나이", "남", "남"),
+        ("엄마 평균 나이", "여", "여"),
+    ],
+)
+def test_sex_not_said(question: str, llm_sex: str, expected: str) -> None:
+    p = qa.correct(question, parsed(indicator="총인구", regions=["서울"], sex=llm_sex), TODAY)
+    assert p["sex"] == expected
+
+
+@pytest.mark.parametrize(
+    "question, llm_span, expected",
+    [
+        ("서울 인구 추이 보여줘", (2015, 2024), (None, None)),  # 기간을 말하지 않음 (E2)
+        ("요새 서울 사람 수 감소 중이야?", (2015, 2024), (None, None)),
+        ("2010년부터 서울 인구 추이", (2010, 2025), (2010, None)),
+        ("2010년에서 2020년까지 서울 인구 추이", (2010, 2020), (2010, 2020)),
+        ("서울 인구 10년간 추이", (2015, 2024), (2015, 2024)),  # '년'이 있으면 HCX 기간을 둔다
+    ],
+)
+def test_trend_period_not_said(question: str, llm_span, expected) -> None:
+    start, end = llm_span
+    p = qa.correct(
+        question,
+        parsed(type="trend", indicator="총인구", regions=["서울"], start_year=start, end_year=end),
+        TODAY,
+    )
+    assert (p.get("start_year"), p.get("end_year")) == expected
+
+
+@pytest.mark.parametrize(
+    "question, kind, split, expected_kind",
+    [
+        ("서울 남녀 인구 비교", "compare", True, "value"),  # 한 지역의 남녀 비교 → 남·여 값
+        ("서울 남자랑 여자 인구", "value", True, "value"),
+        # 지역 비교는 그대로 두고 지역마다 남녀를 나눈다
+        ("서울이랑 부산 남녀 인구", "compare", True, "compare"),
+        ("서울 남녀 인구 추이", "trend", True, "trend"),
+        ("서울 남녀 합계 인구", "value", None, "value"),  # 합계를 물음
+        ("서울 성별 구분 없이 인구", "value", None, "value"),
+        ("서울 남녀 인구 구성", "composition", None, "composition"),  # 구성비는 by=sex가 맡는다
+        ("서울 인구", "value", None, "value"),
+    ],
+)
+def test_sex_split_asked(question: str, kind: str, split, expected_kind: str) -> None:
+    regions = ["서울", "부산"] if "부산" in question else ["서울"]
+    p = qa.correct(question, parsed(type=kind, indicator="총인구", regions=regions), TODAY)
+    assert p.get("split_sex") is split
+    assert p["type"] == expected_kind
+
+
+def test_sex_split_computes_men_and_women(monkeypatch: pytest.MonkeyPatch) -> None:
+    """남녀를 나눠 물으면 남·여를 따로 계산한다 (더하지 않는다)"""
+    monkeypatch.setattr(
+        qa, "_compute", lambda q: {"status": "ok", "indicator": "총인구", "sex": q["sex"]}
+    )
+    q = {
+        "type": "value",
+        "indicator": "총인구",
+        "regions": ["서울"],
+        "sex": "계",
+        "split_sex": True,
+    }
+    r = qa.compute(q)
+    assert [p["sex"] for p in r["split"]] == ["남", "여"]
+    # 남녀로 나눌 수 없는 지표는 한 번만 계산한다
+    for name in ("성비", "세대당 인구", "합계출산율"):
+        assert "split" not in qa.compute({**q, "indicator": name})
+
+
+def test_sex_split_sentence_compares_sexes(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(qa, "summary", lambda p: "")
+    part = {"status": "ok", "indicator": "총인구", "unit": "명", "kind": "count"}
+    r = {"split": [{**part, "sex": "남", "value": 100}, {**part, "sex": "여", "value": 130}]}
+    assert qa._split_text(r).strip() == "여성이 30명 더 많습니다."
+
