@@ -1204,7 +1204,13 @@ def _guard_indicator(question, parsed, names, fix):
     if sp is None:
         return
     k = lookup.kind_of(sp)
-    asks_count = COUNT_ASK.search(question) and not PCT_ASK.search(question)
+    # 고른 지표의 별칭 안에 든 "몇 명"은 사람 수를 묻는 말이 아니다
+    # ("노인 한 명을 몇 명이 부양해" = 노년부양비, 65세 이상 인구 수가 아님)
+    rest = indicators._norm(question)
+    for start, end, name in indicators.find_in_text(question):
+        if name == sp["name"]:
+            rest = rest[:start] + " " * (end - start) + rest[end:]
+    asks_count = COUNT_ASK.search(rest) and not PCT_ASK.search(rest)
     ungrounded = (
         sp["method"] == "computed"
         and sp["name"] != "총인구"
