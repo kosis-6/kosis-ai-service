@@ -627,7 +627,11 @@ def trend(spec, region, start_year, end_year, sex="계", ages=None):
             region=reg["display"],
             reason=f"{reg['display']} {start_year}~{end_year}년 {spec['name']} 자료가 부족합니다.",
         )
-    first, last = series[0]["value"], series[-1]["value"]
+    # 변화량 · 증감률 · 연평균은 반올림 전 값으로. 표 칸으로 계산한 작은 비율은
+    # 둘째 자리 반올림만으로 증감률이 0.5%p 가까이 틀어진다
+    # (1.176583% → 1.18%, 1.879596% → 1.88%면 59.75%가 59.3%)
+    raw = [v for (_, _), v in sorted(vals.items()) if v is not None]
+    first, last = raw[0], raw[-1]
     k = kind_of(spec)
     change = {
         "from_year": series[0]["year"],
@@ -642,6 +646,10 @@ def trend(spec, region, start_year, end_year, sex="계", ages=None):
         # 율 지표도 "증감률"을 물으면 쓴다
         change["rate"] = round(analysis.growth_rate(first, last), 2)
         change["rate_unit"] = "%"
+    years = series[-1]["year"] - series[0]["year"]
+    if "rate" in change and change["diff_unit"] != "%p" and years and first > 0 and last > 0:
+        # 연평균 증감률도 반올림 전 값으로 (qa._add_trend_facts는 이미 있으면 그대로 둔다)
+        change["cagr"] = round(((last / first) ** (1 / years) - 1) * 100, 1)
     return _base(
         spec,
         src,
@@ -665,10 +673,14 @@ def compare(spec, regions, year, sex="계", ages=None):
         {"region": r["display"], "value": _round(vals.get((year, r["region_code"])), spec)}
         for r in regs
     ]
-    in_order = [v["value"] for v in values]
+    # 차이 · 배수는 반올림 전 값으로 (표시값만 반올림)
+    raw = {r["display"]: vals.get((year, r["region_code"])) for r in regs}
+    in_order = [raw[r["display"]] for r in regs]
     values.sort(key=lambda x: (x["value"] is None, -(x["value"] or 0)))
     valid = [x for x in values if x["value"] is not None]
-    gap = _diff(valid[-1]["value"], valid[0]["value"], spec) if len(valid) >= 2 else None
+    gap = (
+        _diff(raw[valid[-1]["region"]], raw[valid[0]["region"]], spec) if len(valid) >= 2 else None
+    )
     out = _base(
         spec,
         src,
