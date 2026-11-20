@@ -693,3 +693,29 @@ def test_basis_gap_does_not_block_without_db(monkeypatch) -> None:
 
     monkeypatch.setattr(catalog, "surveys", down)
     assert x.basis_gap({"tbl_id": "A"}, {"tbl_id": "B"}, "가", "나") is None
+
+
+def test_change_and_compare_use_unrounded_values():
+    """연도별 · 지역별 값은 반올림해 보여 주고, 증감률 · 차이 · 배수는 반올림 전 값으로 계산한다.
+    1% 안팎의 비율은 둘째 자리 반올림만으로 증감률이 59.75% → 59.3%로 틀어졌다"""
+    c = x.Cross(num="등록외국인 수", den="총인구", scale=100, form="within")
+    raw = [x._calc_raw(c, 39420, 3350380), x._calc_raw(c, 60929, 3241600)]
+    series = [{"year": 2021, "value": x._round(raw[0])}, {"year": 2025, "value": x._round(raw[1])}]
+    assert [s["value"] for s in series] == [1.18, 1.88]
+    change = x._change(series, c, raw=raw)
+    assert change["relative_rate"] == 59.8
+    assert change["diff"] == 0.703
+
+    vals = [{"region": "가", "value": 1.18}, {"region": "나", "value": 1.88}]
+    facts = x._compare_facts(vals, "%", raw={"가": raw[0], "나": raw[1]})
+    assert facts["ratio"]["value"] == 1.6  # 1.879596 / 1.176583 (표시값끼리면 1.59)
+    assert facts["gap"] == 0.703
+
+
+def test_change_gives_cagr_from_unrounded_values():
+    c = x.Cross(num="출생아 수", den="총인구", scale=1000, form="per")
+    raw = [x._calc_raw(c, 10000, 1000000), x._calc_raw(c, 8000, 1100000)]
+    series = [{"year": 2015, "value": x._round(raw[0])}, {"year": 2025, "value": x._round(raw[1])}]
+    change = x._change(series, c, raw=raw)
+    assert change["rate"] == -27.27
+    assert change["cagr"] == -3.1

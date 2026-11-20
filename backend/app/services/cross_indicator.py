@@ -378,13 +378,21 @@ def _div(a, b, scale):
     return _round(a / b * scale)
 
 
-def _calc(c: Cross, a, b):
-    """두 값으로 계산: 차이면 A − B, 그 밖은 A ÷ B × 배율"""
+def _calc_raw(c: Cross, a, b):
+    """두 값으로 계산 (반올림 전): 차이면 A − B, 합이면 A + B, 그 밖은 A ÷ B × 배율"""
+    if a is None or b is None:
+        return None
     if c.form == "diff":
-        return None if a is None or b is None else _round(a - b)
+        return a - b
     if c.form == "sum":
-        return None if a is None or b is None else _round(a + b)
-    return _div(a, b, c.scale)
+        return a + b
+    return None if b == 0 else a / b * c.scale
+
+
+def _calc(c: Cross, a, b):
+    """표시값 (반올림). 변화량 · 증감률 · 차이 · 배수는 _calc_raw 값으로 계산한다"""
+    v = _calc_raw(c, a, b)
+    return None if v is None else _round(v)
 
 
 def compute(q: dict, run) -> dict:
@@ -409,8 +417,10 @@ def compute(q: dict, run) -> dict:
         return [run({**base, **extra, "indicator": name, "term": name}) for name in names]
 
     parts = both()
-    if kind in ("value", "rank", "compare") and all(p.get("status") == "ok" for p in parts) and (
-        not q.get("year")
+    if (
+        kind in ("value", "rank", "compare")
+        and all(p.get("status") == "ok" for p in parts)
+        and (not q.get("year"))
     ):
         years = {p.get("year") for p in parts}
         if len(years) > 1 or any(p.get("as_of") for p in parts):
@@ -463,12 +473,14 @@ def combine_parts(c: Cross, nums: list[dict], den: dict, q: dict) -> dict:
     out = _shell(c, num, den)
     if kind == "trend":
         dv = {s["year"]: s.get("value") for s in den.get("series") or []}
-        series = [
-            {"year": s["year"], "value": _calc(c, s.get("value"), dv[s["year"]])}
+        # 연도별 값은 반올림해 보여 주고, 변화량 · 증감률 · 연평균은 반올림 전 값으로 계산한다
+        raw = [
+            (s["year"], _calc_raw(c, s.get("value"), dv[s["year"]]))
             for s in num.get("series") or []
             if s["year"] in dv
         ]
-        series = [s for s in series if s["value"] is not None]
+        raw = [(y, v) for y, v in raw if v is not None]
+        series = [{"year": y, "value": _round(v)} for y, v in raw]
         if len(series) < 2:
             return _fail(
                 c,
@@ -476,19 +488,20 @@ def combine_parts(c: Cross, nums: list[dict], den: dict, q: dict) -> dict:
                 "함께 있는 연도가 두 해 이상 없습니다.",
             )
         out.update(region=num.get("region"), sex=num.get("sex"), series=series)
-        out["change"] = _change(series, c)
+        out["change"] = _change(series, c, raw=[v for _, v in raw])
     else:  # compare · rank: 지역마다 나눈다
         key = "values" if kind == "compare" else "ranking"
         dv = {v["region"]: v.get("value") for v in den.get(key) or []}
-        vals = [
-            {"region": v["region"], "value": _calc(c, v.get("value"), dv.get(v["region"]))}
+        raw = {
+            v["region"]: _calc_raw(c, v.get("value"), dv.get(v["region"]))
             for v in num.get(key) or []
-        ]
+        }
+        vals = [{"region": r, "value": None if v is None else _round(v)} for r, v in raw.items()]
         if any(v["value"] is None for v in vals) or not vals:
             return _fail(c, "어떤 지역은 두 값 중 하나가 없습니다.")
         out.update(year=num.get("year"), sex=num.get("sex"))
         if kind == "compare":
-            out.update(_compare_facts(vals, out["unit"]))
+            out.update(_compare_facts(vals, out["unit"], raw=raw))
         else:
             out.update(_rank_facts(vals, num, q))
     return out
@@ -516,9 +529,11 @@ def combine_value(c: Cross, num: dict, den: dict, q: dict) -> dict:
     return out
 
 
-def _change(series: list[dict], c: Cross) -> dict:
-    """처음 해 대비 마지막 해 변화 (indicators.trend와 같은 칸)"""
-    first, last = series[0]["value"], series[-1]["value"]
+def _change(series: list[dict], c: Cross, raw: list[float] | None = None) -> dict:
+    """처음 해 대비 마지막 해 변화 (indicators.trend와 같은 칸).
+    raw: 연도별 반올림 전 값. 있으면 변화량 · 증감률 · 연평균을 이 값으로 계산한다
+    (1% 안팎의 작은 비율은 둘째 자리 반올림만으로 증감률이 0.5%p 가까이 틀어진다)"""
+    first, last = (raw[0], raw[-1]) if raw else (series[0]["value"], series[-1]["value"])
     if c.scale == 100:
         diff = analysis.point_change(first, last)
     else:
@@ -534,6 +549,10 @@ def _change(series: list[dict], c: Cross) -> dict:
         out[key] = round(analysis.growth_rate(first, last), 1 if key == "relative_rate" else 2)
         if key == "rate":
             out["rate_unit"] = "%"
+    years = series[-1]["year"] - series[0]["year"]
+    if "rate" in out and years and first > 0 and last > 0:
+        # 연평균 증감률. qa._add_trend_facts는 있으면 그대로 둔다 (거기서 내면 표시값으로 계산됨)
+        out["cagr"] = round(((last / first) ** (1 / years) - 1) * 100, 1)
     return out
 
 
@@ -733,22 +752,28 @@ def _sum_parts(parts: list[dict], kind: str) -> dict | None:
     return out if out[key] else None
 
 
-def _compare_facts(vals: list[dict], unit: str) -> dict:
-    vals = sorted(vals, key=lambda v: v["value"], reverse=True)  # 답 문장은 높은 순으로 읽는다
+def _compare_facts(vals: list[dict], unit: str, raw: dict | None = None) -> dict:
+    """raw: 지역 → 반올림 전 값. 있으면 차이 · 배수를 이 값으로 계산한다 (표시값은 vals)"""
+
+    def exact(v):
+        return raw[v["region"]] if raw and raw.get(v["region"]) is not None else v["value"]
+
+    # 표시값이 같아도 원값의 크기로 정렬해야 최고·최저와 차이의 부호가 일치한다.
+    vals = sorted(vals, key=exact, reverse=True)
     hi, lo = vals[0], vals[-1]
     out = {
         "values": vals,
         "highest": hi["region"],
         "lowest": lo["region"],
-        "gap": _round(hi["value"] - lo["value"]),
+        "gap": _round(exact(hi) - exact(lo)),
         "gap_unit": "%p" if unit == "%" else unit,
     }
-    if len(vals) == 2 and vals[1]["value"]:
+    if len(vals) == 2 and exact(vals[1]):
         a, b = vals
         out["ratio"] = {
             "a": a["region"],
             "b": b["region"],
-            "value": round(a["value"] / b["value"], 2),
+            "value": round(exact(a) / exact(b), 2),
         }
     return out
 

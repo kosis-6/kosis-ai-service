@@ -105,6 +105,15 @@ INDICATORS = {
         "calc": lambda c: _div(c["old"], c["working"]),
         "meaning": "생산연령인구(15~64세) 100명당 65세 이상 인구가 {value}명",
     },
+    "노인 1명당 생산연령인구": {
+        "unit": "명",
+        "kind": "value",
+        "diff_unit": "명",
+        "formula": "15~64세 인구 ÷ 65세 이상 인구",
+        "calc": lambda c: c["working"] / c["old"] if c.get("old") else None,
+        "meaning": "65세 이상 인구 1명당 생산연령인구(15~64세)가 {value}명"
+        " (실제 부양자 수가 아닌 연령별 인구 기준)",
+    },
     "유소년부양비": {
         "unit": "생산연령인구 100명당 명",
         "kind": "index",
@@ -1041,18 +1050,19 @@ def compare(indicator, regions, year, sex="계", ages=None):
     comps = _components(
         [r["region_code"] for r in regs], year, year, sex, ind.get("band"), ind.get("area"), ind
     )
-    values = []
+    values, raw = [], {}
     for reg in regs:
         comp = comps.get((year, reg["region_code"]))
-        values.append(
-            {
-                "region": reg["display"],
-                "value": _r(ind["calc"](comp), ind) if comp else None,
-            }
-        )
-    values.sort(key=lambda x: (x["value"] is None, -(x["value"] or 0)))
+        raw[reg["display"]] = ind["calc"](comp) if comp else None
+        values.append({"region": reg["display"], "value": _r(raw[reg["display"]], ind)})
+    values.sort(key=lambda x: (raw[x["region"]] is None, -(raw[x["region"]] or 0)))
     valid = [x for x in values if x["value"] is not None]
-    gap = _diff(valid[-1]["value"], valid[0]["value"], ind["kind"]) if len(valid) >= 2 else None
+    # 차이는 반올림 전 값으로 (trend와 같게. 표시값끼리 빼면 끝자리가 0.01 틀린다)
+    gap = (
+        _diff(raw[valid[-1]["region"]], raw[valid[0]["region"]], ind["kind"])
+        if len(valid) >= 2
+        else None
+    )
     out = _base(
         name,
         ind,
