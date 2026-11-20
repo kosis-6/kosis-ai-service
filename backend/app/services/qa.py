@@ -237,7 +237,7 @@ REGION_GROUPS = {
     "지방 광역시": ["부산", "대구", "광주광역시", "대전", "울산"],
     "지방광역시": ["부산", "대구", "광주광역시", "대전", "울산"],
     # 인구 100만 이상 특례시 (화성은 2025년부터)
-    "특례시": ["경기 수원시", "경기 고양시", "경기 용인시", "경남 창원시", "경기 화성시"],
+    "특례시": ["경기 수원시", "경기 고양시", "경기 용인시", "경남 창원시(통합)", "경기 화성시"],
     "6대 광역시": ["부산", "대구", "인천", "광주광역시", "대전", "울산"],
     "5대 광역시": ["부산", "대구", "인천", "광주광역시", "대전"],
     # "광역시 전체"의 "전체"를 전국으로 읽지 않게 묶음으로 먼저 잡는다
@@ -952,6 +952,12 @@ def population_modifier(question):
     if group := agegroup.resolve(question):
         # 연령 집단 이름은 연령 조건이다 ("2030세대 인구"의 '세대'를 다른 통계로 보지 않는다)
         question = question.replace(group.expr, " ")
+    # 지역 묶음·생활권 이름도 지역 조건이다 ("부울경 인구", "특례시 인구"의 앞말을 다른 통계로 보지 않는다)
+    for word in REGION_GROUPS:
+        if _group_in(word, question):
+            question = question.replace(word, " ")
+    if sub := find_sub_area(question):
+        question = question.replace(sub[0], " ")
     for m in POPULATION_NOUN.finditer(question):
         # 조사를 뗀 말과 그대로의 말을 모두 본다 ("나이"의 '이'는 조사가 아니다)
         words = {m[1], re.sub(r"(의|은|는|이|가|에서|에|별)$", "", m[1]) or m[1]}

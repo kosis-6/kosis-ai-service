@@ -80,3 +80,16 @@ def test_sub_areas_2(q, area):
 )
 def test_not_sub_area(q):
     assert qa.find_sub_area(q) is None, q
+
+
+@pytest.mark.parametrize(
+    "q",
+    ["부울경 인구", "특례시 인구", "마용성 인구", "강남 3구 인구", "지방 광역시 인구", "영남 인구", "운정 인구"],
+)
+def test_group_name_is_not_population_modifier(q):
+    """지역 묶음·생활권 이름을 '통학 인구'처럼 다른 통계를 가리키는 말로 보지 않는다"""
+    assert qa.population_modifier(q) is None, q
+
+
+def test_population_modifier_still_works():
+    assert qa.population_modifier("통학 인구") is not None
