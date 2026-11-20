@@ -443,6 +443,7 @@ PREDICT = re.compile(
 # "가장 많이 빠져나간 시군구", "합계출산율이 가장 높은 시도" → 순위
 RANK_ASK = re.compile(
     r"(가장|제일|꼴찌|최하위)\S*\s*(\S+\s*){0,3}?(시군구|시도|지역|곳|구|시)(는|가|은|이|를|\s|$|\?)"
+    r"|(?:비중|비율)이?\s*(?:높|낮)은\s*(?:시군구|시도|지역|곳)(?:은|는|이|가|\s|$|\?)"
 )
 # 별칭으로 못 찾은 지표 표현 (질문 표현 → 지표 이름)
 # "아기 몇 명 낳"은 여자 한 명이 평균 몇 명 낳는지(합계출산율)를 물을 때와 그해 태어난 아이 수
@@ -1281,7 +1282,7 @@ def _guard_indicator(question, parsed, names, fix):
         return
     k = lookup.kind_of(sp)
     # 고른 지표의 별칭 안에 든 "몇 명"은 사람 수를 묻는 말이 아니다
-    # ("노인 한 명을 몇 명이 부양해" = 노년부양비, 65세 이상 인구 수가 아님)
+    # ("노인 한 명을 몇 명이 부양해" = 노인 1명당 생산연령인구, 노인 인구 수가 아님)
     rest = indicators._norm(question)
     for start, end, name in indicators.find_in_text(question):
         if name == sp["name"]:

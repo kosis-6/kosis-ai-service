@@ -18,7 +18,7 @@ def names(q):
         ("서울 엄마들 몇 살에 아이 낳아", "모의 평균 출산연령"),
         ("부산 애 낳는 나이 알려줘", "모의 평균 출산연령"),
         ("서울 첫 아이 낳는 나이", "첫째아 평균 출산연령"),
-        ("전남은 노인 한 명을 몇 명이 부양해", "노년부양비"),
+        ("전남은 노인 한 명을 몇 명이 부양해", "노인 1명당 생산연령인구"),
         ("서울 아이 비율", "유소년인구 비율"),
         ("부산 아이들 비중", "유소년인구 비율"),
         # 원래 되던 것
@@ -57,8 +57,9 @@ def _correct(q, indicator):
 
 @pytest.mark.needs_data  # find_regions가 DB의 region_aliases를 읽는다
 def test_count_words_inside_alias_keep_indicator():
-    """별칭 안의 '몇 명'을 보고 노년부양비를 65세 이상 인구 수로 바꾸지 않는다"""
-    assert _correct("전남은 노인 한 명을 몇 명이 부양해", "노년부양비")["indicator"] == "노년부양비"
+    """별칭 안의 '몇 명'을 보고 노인 1명당 생산연령인구를 노인 인구 수로 바꾸지 않는다"""
+    result = _correct("전남은 노인 한 명을 몇 명이 부양해", "노년부양비")
+    assert result["indicator"] == "노인 1명당 생산연령인구"
 
 
 @pytest.mark.needs_data  # find_regions가 DB의 region_aliases를 읽는다
