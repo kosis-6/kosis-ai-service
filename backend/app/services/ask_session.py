@@ -747,10 +747,6 @@ OKAY = re.compile(
     r"|잘\s*가요?|바이|bye)" + _END,
     re.I,
 )
-PRETTIEST = re.compile(
-    r"(누가|누구).{0,8}(제일|가장)\s*(예뻐|예쁘|이뻐|이쁘)"
-    r"|(제일|가장)\s*(예쁜|이쁜)\s*\S{0,4}\s*(누구|누가)"
-)
 
 
 def chat_reply(question: str) -> str | None:
@@ -762,8 +758,6 @@ def chat_reply(question: str) -> str | None:
         return f"도움이 되었다니 다행입니다. {more}"
     if OKAY.search(question):
         return f"네. {more}"
-    if PRETTIEST.search(question):
-        return "윤지연"
     return None
 
 

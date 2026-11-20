@@ -105,6 +105,15 @@ INDICATORS = {
         "calc": lambda c: _div(c["old"], c["working"]),
         "meaning": "생산연령인구(15~64세) 100명당 65세 이상 인구가 {value}명",
     },
+    "노인 1명당 생산연령인구": {
+        "unit": "명",
+        "kind": "value",
+        "diff_unit": "명",
+        "formula": "15~64세 인구 ÷ 65세 이상 인구",
+        "calc": lambda c: c["working"] / c["old"] if c.get("old") else None,
+        "meaning": "65세 이상 인구 1명당 생산연령인구(15~64세)가 {value}명"
+        " (실제 부양자 수가 아닌 연령별 인구 기준)",
+    },
     "유소년부양비": {
         "unit": "생산연령인구 100명당 명",
         "kind": "index",
