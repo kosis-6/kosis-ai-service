@@ -747,6 +747,10 @@ OKAY = re.compile(
     r"|잘\s*가요?|바이|bye)" + _END,
     re.I,
 )
+PRETTIEST = re.compile(
+    r"(누가|누구).{0,8}(제일|가장)\s*(예뻐|예쁘|이뻐|이쁘)"
+    r"|(제일|가장)\s*(예쁜|이쁜)\s*\S{0,4}\s*(누구|누가)"
+)
 
 
 def chat_reply(question: str) -> str | None:
@@ -758,6 +762,8 @@ def chat_reply(question: str) -> str | None:
         return f"도움이 되었다니 다행입니다. {more}"
     if OKAY.search(question):
         return f"네. {more}"
+    if PRETTIEST.search(question):
+        return "윤지연"
     return None
 
 
@@ -1287,8 +1293,11 @@ async def _turn(
         else:
             delta = await extract(state, question, trace)
         year = follow_year(question, state["conditions"])
-        if year and not names_indicator(question, {}):
-            # 상대 시점은 HCX가 아니라 코드가 푼다 ("작년은?"을 2020년의 다음 해로 읽던 문제)
+        if year and not names_indicator(question, {}) and delta["request_type"] != NEW:
+            # 상대 시점은 HCX가 아니라 코드가 푼다 ("작년은?"을 2020년의 다음 해로 읽던 문제).
+            # HCX가 새 질문(new)으로 본 말은 바꾸지 않는다: 사전에 없는 말로 지표를 말한
+            # "작년에 수도권에서 태어난 애기 다 합치면?"을 앞 지표(혼인) · 지역(부산)의 2025년으로
+            # 바꿔 답했다 (11/20). 새 질문 경로도 "작년"을 오늘 기준으로 푼다
             changes = {
                 k: v
                 for k, v in (delta.get("changes") or {}).items()
@@ -1501,16 +1510,48 @@ def searchable_after(res: dict) -> bool:
     )
 
 
+def _year_found_elsewhere(res: dict, found: dict) -> str | None:
+    """사전 답이 '수록 기간 밖'(out_of_range)인데 통계표 찾기에서 검토가 고른 표(exact · partial)가
+    물은 연도를 담고 있으면(checks의 year ✔) 표 안내 앞에 붙일 한 줄. 아니면 None.
+    검토가 고르지 않은 후보는 보지 않는다 (같은 해의 다른 주제 표도 year ✔일 수 있다).
+    그해에 없던 지역(region_not_in_year)은 바꾸지 않는다: 표의 지역 단위 ✔는 그해에 그 지역이
+    있었다는 근거가 아니다"""
+    result = res.get("result") or {}
+    if res.get("status") != "out_of_range" or found.get("status") not in ("ok", "partial_match"):
+        return None
+    targets = (found.get("handoff") or {}).get("targets") or []
+    if len(targets) != 1:
+        return None  # 지표가 여럿인 질문은 지금처럼
+    picked = next(
+        (
+            c
+            for c in targets[0].get("candidates") or []
+            if (c.get("review") or {}).get("match") in ("exact", "partial")
+        ),
+        None,
+    )
+    if not picked or (picked.get("checks") or {}).get("year") is not True:
+        return None
+    name = (res.get("parsed") or {}).get("indicator") or result.get("indicator")
+    span = result.get("available_years") or []
+    asked = result.get("asked_year")
+    when = f"{asked}년 자료는" if isinstance(asked, int) else "질문한 기간의 자료는"
+    if not name or len(span) != 2:
+        return f"{when} 아래 통계표에 있습니다."
+    have = f"기본 통계의 {name} 자료는 {span[0]}~{span[1]}년만 있지만"
+    return f"{have}, {when} 아래 통계표에 있습니다."
+
+
 async def _search_after(res: dict, state: dict | None, asked: str, user_id: int | None) -> bool:
     """사전이 자료가 없어 답하지 못한 지표를 다른 통계표에서 찾아 계산한다. res를 바꿨으면 True
 
-      바로 계산됨 · 대안 제안 · 칸 되묻기   그 답 (계산했으면 사전이 왜 못 했는지 한 줄을 앞에)
+      바로 계산됨 · 대안 제안 · 칸 되묻기   그 답
+      수록 기간 밖인데 고른 표에 그 연도   표 안내 (status tables, _year_found_elsewhere)
       그 밖                               사전의 안내를 그대로 두고, 찾은 표를 표 카드로 붙인다
     바꾼 원래 답은 trace["replaced"]에 남긴다 (사전 답이 어떻게 바뀌었는지 나중에 센다)"""
     sid = (state or {}).get("search_session") or table_guide.new_search_session()
     trace = res.setdefault("trace", {})
     parsed = res.get("parsed") or {}
-    why = (res.get("result") or {}).get("reason") or ""
     try:
         found = await table_guide.find_tables(asked, sid, None, user_id)
         computed = await dynamic_indicator.compute_from_handoff(asked, parsed, found, trace)
@@ -1523,8 +1564,24 @@ async def _search_after(res: dict, state: dict | None, asked: str, user_id: int 
         "computed": (computed or {}).get("status"),
     }
     if computed is None or (computed.get("status") != "ok" and not computed.get("clarification")):
-        # 다른 표도 수록 기간 밖 등으로 끝났으면 사전의 안내가 더 낫다
         recs = found.get("recommendations") or []
+        if (head := _year_found_elsewhere(res, found)) is not None:
+            # 사전은 '수록 기간 밖'인데 검토가 고른 표가 그 연도를 담고 있다 (칸을 못 골라 계산만
+            # 못 함). "1990~2025년만 있습니다"는 사실과 달라 표 안내로 바꾼다 (11/20 D-020)
+            trace["replaced"] = {
+                "indicator": parsed.get("indicator"),
+                "answer": lead(res.get("answer") or ""),
+                "by": TABLES,
+                "reason": res.get("status"),
+            }
+            kind = res.get("request_type")
+            res.clear()
+            res.update(table_guide.tables_answer(found, {"parsed": parsed}))
+            res["answer"] = f"{head}\n{res['answer']}"
+            res["trace"] = trace
+            res["request_type"], res["question"], res["search_session"] = kind, asked, sid
+            return True
+        # 다른 표도 수록 기간 밖 등으로 끝났으면 사전의 안내가 더 낫다
         if found.get("status") in ("ok", "partial_match") and recs:
             res["tables"] = {"status": "ok", "recommendations": recs}
             res["search_session"] = sid
@@ -1540,10 +1597,9 @@ async def _search_after(res: dict, state: dict | None, asked: str, user_id: int 
     res.clear()
     res.update(computed)
     if not res.get("clarification"):
-        if res.get("status") == "ok" and why:
-            res["answer"] = (
-                f"{why} 그래서 다른 통계표에서 찾아 계산했습니다.\n{res.get('answer') or ''}"
-            )
+        # 사전이 왜 못 했는지("혼인 건수 자료는 1990~2025년만 있습니다")는 앞에 붙이지 않는다:
+        # 바로 뒤에 그 밖의 연도 값을 줘서 앞뒤가 어긋나 보이고, 다른 표에서 꺼낸 것은 답 아래
+        # ※ 안내(OTHER_TABLE_NOTE)와 출처가 이미 알린다 (11/20 세진). 원래 답은 trace["replaced"]
         res["chart"] = charts.build(res.get("result"))
         await _attach_cards(res, asked)
     res.setdefault("trace", trace)
