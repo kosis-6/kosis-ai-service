@@ -5,7 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
-from app.services import qa
+from app.services import ask_session, qa
 from scripts import missing_requests as mr
 
 client = TestClient(app)
@@ -35,7 +35,13 @@ def test_ask_route_logs_refusal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     async def fake_ask(question: str, adjust=None) -> dict:
         return refused("out_of_range")
 
+    async def no_search(*args, **kwargs) -> bool:
+        return False
+
     monkeypatch.setattr(qa, "ask", fake_ask)
+    # 사전이 못 한 뒤의 통계표 찾기(HCX · Gemma)는 이 테스트 밖: 찾은 표에 그 연도가 있으면
+    # 표 안내로 바뀌어(ask_session._year_found_elsewhere) 거절이 아니게 된다
+    monkeypatch.setattr(ask_session, "_search_after", no_search)
     assert client.post("/ask", json={"question": "2030년 서울 인구"}).status_code == 200
     assert json.loads(log.read_text(encoding="utf-8"))["question"] == "2030년 서울 인구"
 
