@@ -687,12 +687,34 @@ def survey_for(question, parsed):
     return said if said in indicators.alt_surveys(sp) else None
 
 
+def survey_missing(question, parsed):
+    """질문이 말한 조사에 그 지표의 표가 없으면 그 조사 이름 (기본 표로 답하고 이유를 밝힌다).
+    예) "인구총조사 기준 합계출산율": 합계출산율은 인구동향조사로만 공표된다.
+    지표가 원래 그 조사의 표를 쓰면 None (미혼 비율은 인구총조사)"""
+    said = survey_said(question)
+    # 조사 이름을 직접 말했을 때만 ("외국인 포함 출생아 수"에 "인구총조사 값은 없다"고 하지 않는다)
+    named = said and re.search(r"총조사|센서스|추계", question)
+    sp = indicators.spec(parsed.get("indicator")) if named else None
+    if not sp or len(parsed.get("indicators") or []) > 1:
+        return None
+    if said in indicators.alt_surveys(sp):
+        return None
+    own = indicators.source_surveys(sp)
+    return said if own and said not in own else None
+
+
 def set_survey(question, parsed):
     """조건이 바뀐 뒤(앞 질문의 지표를 이어받음) 조사 표시를 다시 정한다
     ("영도구 중위연령" → "인구총조사 기준으로 다시 구해줘")"""
-    asked = {k: v for k, v in (parsed.get("asked") or {}).items() if k != "survey"}
+    asked = {
+        k: v
+        for k, v in (parsed.get("asked") or {}).items()
+        if k not in ("survey", "survey_missing")
+    }
     if survey := survey_for(question, parsed):
         asked["survey"] = survey
+    elif missing := survey_missing(question, parsed):
+        asked["survey_missing"] = missing
     if asked:
         parsed["asked"] = asked
     else:
@@ -1513,6 +1535,8 @@ def _read_question(question, parsed, fix):
     if survey := survey_for(question, parsed):
         # "인구총조사 기준 영도구 중위연령": 사전의 계산(주민등록인구) 대신 그 조사의 공표값
         asked["survey"] = survey
+    elif missing := survey_missing(question, parsed):
+        asked["survey_missing"] = missing  # 그 조사에 이 지표가 없다: 기본 표로 답하고 알린다
     focus = [label for word, label in FOCUS_WORDS.items() if word in question]
     if focus:
         asked["focus"] = list(dict.fromkeys(focus))
@@ -1625,6 +1649,17 @@ def compute(q):
         retry = _compute({**q, "asked": {**asked, "latest": False}})
         if retry.get("status") == "ok":
             return retry
+    if (missing := asked.get("survey_missing")) and result.get("status") == "ok":
+        sp = indicators.spec(q.get("indicator"))
+        own = " · ".join(indicators.source_surveys(sp)) if sp else ""
+        if own:
+            note = (
+                f"{josa(sp['name'], '은는')} {ro(own)}만 공표되어 {missing} 기준 값은 없습니다. "
+                f"{own} 값으로 답했습니다"
+            )
+            for r in _leaves(result):
+                if note not in r.setdefault("notes", []):
+                    r["notes"].insert(0, note)
     if survey := asked.get("survey"):
         _add_default_value(q, result)
         if result.get("status") != "ok" and (reason := result.get("reason")):

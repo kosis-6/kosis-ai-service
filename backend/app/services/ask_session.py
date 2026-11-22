@@ -501,7 +501,10 @@ def survey_switch(question: str, conditions: dict) -> dict | None:
     if indicators.find_in_text(rest) or said_region(rest):
         return None
     switched = qa.set_survey(question, copy.deepcopy(conditions))
-    return switched if (switched.get("asked") or {}).get("survey") else None
+    asked = switched.get("asked") or {}
+    # 앞 지표에 그 조사의 표가 없으면 기본 표로 다시 답하고 이유를 밝힌다
+    # ("서울 합계출산율" → "인구총조사로 보면?": 인구동향조사로만 공표된다)
+    return switched if asked.get("survey") or asked.get("survey_missing") else None
 
 
 def said_region(question: str) -> bool:

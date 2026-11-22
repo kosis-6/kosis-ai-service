@@ -303,6 +303,25 @@ def alt_spec(sp, survey):
     return out
 
 
+@lru_cache(maxsize=512)
+def _survey_of(tbl_id):
+    r = _rows("select survey_name from table_meta where tbl_id = ?", [tbl_id])
+    return r[0]["survey_name"] if r and r[0]["survey_name"] else None
+
+
+def source_surveys(sp):
+    """지표가 평소에 쓰는 표의 조사 이름들 (예: 합계출산율 → ["인구동향조사"])"""
+    names = []
+    for s in sp.get("sources") or []:
+        try:
+            name = _survey_of(s["table"])
+        except Exception:  # 표 목록을 읽지 못해도 답은 한다 (안내만 빠진다)
+            name = None
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
 def alt_surveys(sp):
     """지표에 공표값이 따로 있는 조사 이름들"""
     return list(dict.fromkeys(a["survey"] for a in sp.get("alt_sources") or []))

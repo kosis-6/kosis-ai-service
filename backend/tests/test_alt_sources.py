@@ -140,9 +140,10 @@ def test_survey_switch_keeps_previous_conditions(question: str, survey: str | No
         assert got["indicator"] == "고령인구 비율" and got["regions"] == ["서울"]
 
 
-def test_survey_switch_needs_alt_table() -> None:
-    """앞 지표에 그 조사의 표가 없으면 바꾸지 않는다 (합계출산율은 인구동향조사뿐)"""
-    assert ask_session.survey_switch("인구총조사로 보면?", parsed(indicator="합계출산율")) is None
+def test_survey_switch_without_alt_table_explains() -> None:
+    """앞 지표에 그 조사의 표가 없으면 기본 표로 다시 답하고 이유를 밝힌다 (합계출산율)"""
+    got = ask_session.survey_switch("인구총조사로 보면?", parsed(indicator="합계출산율"))
+    assert got["asked"] == {"survey_missing": "인구총조사"}
 
 
 def test_survey_word_is_not_indicator() -> None:
@@ -174,3 +175,30 @@ def test_unavailable_level_names_the_survey(monkeypatch: pytest.MonkeyPatch) -> 
     )
     r = qa.compute({"type": "value", "indicator": "중위연령", "asked": {"survey": "장래인구추계"}})
     assert r["reason"] == "장래인구추계 중위연령은 시도 단위까지만 자료가 있습니다."
+
+
+@pytest.mark.parametrize(
+    "question, indicator, missing",
+    [
+        ("인구총조사 기준 서울 합계출산율", "합계출산율", "인구총조사"),
+        ("장래인구추계 기준 서울 이혼 건수", "이혼 건수", "장래인구추계"),
+        ("인구총조사 기준 서울 미혼 비율", "미혼 비율", None),  # 원래 인구총조사 표
+        ("외국인 포함 서울 출생아 수", "출생아 수", None),  # 조사 이름을 말하지 않음
+        ("인구총조사 기준 영도구 중위연령", "중위연령", None),  # 대체 표로 답함
+    ],
+)
+def test_survey_missing(question: str, indicator: str, missing: str | None) -> None:
+    p = qa.correct(question, parsed(indicator=indicator, regions=["서울"]))
+    assert (p.get("asked") or {}).get("survey_missing") == missing
+
+
+def test_survey_missing_note(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(qa, "_compute", lambda q: {"status": "ok", "value": 0.632, "notes": []})
+    monkeypatch.setattr(qa.indicators, "source_surveys", lambda sp: ["인구동향조사"])
+    r = qa.compute(
+        {"type": "value", "indicator": "합계출산율", "asked": {"survey_missing": "인구총조사"}}
+    )
+    assert r["notes"][0] == (
+        "합계출산율은 인구동향조사로만 공표되어 인구총조사 기준 값은 없습니다. "
+        "인구동향조사 값으로 답했습니다"
+    )
