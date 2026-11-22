@@ -41,6 +41,7 @@ from app.services import (
     llm_calls,
     load_queue,
     lookup,
+    slots,
     table_cache,
     timeref,
 )
@@ -112,7 +113,10 @@ async def understand(question, trace=None):
     text = await _chat(question, system, trace=trace)
     if trace is not None:
         trace["hcx_raw"] = text
-    objects = _json_objects(text)
+    # 연도 칸에 계산식("start_year": 2025 - 8)을 쓰면 JSON이 깨져 안쪽 객체를 질문 해석으로
+    # 읽었다 (11/21). 상대 연도는 코드 규칙표(_apply_time)가 다시 세므로 계산식은 null로 읽고,
+    # 질문 해석은 type이 있는 객체만 쓴다
+    objects = [o for o in _json_objects(YEAR_ARITH.sub(": null", text)) if "type" in o]
     if not objects:
         flow.add("질문 이해", "parse_error", "HCX 출력에서 JSON을 읽지 못함")
         return {"type": "parse_error", "raw": text}  # 해석 실패는 남기지 않는다
@@ -399,9 +403,16 @@ RECENT = timeref.RECENT_N_YEARS
 UNIT_SUFFIX = re.compile(r"\s*\([^()]*\)\s*$")  # 지표 이름 뒤의 "(명)"·"(%)"
 LATEST = re.compile(r"최근|최신|현재|요즘|요새|지금")
 # 기간 변화를 묻는 표현 ("최근 부산 인구 추이"는 추이, "최근 부산 인구"는 최신 값)
+THESE_DAYS = re.compile(r"요즘|요새")
 LATEST_KINDS = ("value", "compare", "rank")  # "최근"이면 마지막 해로 답하는 질문 유형
 CHANGE_ASK = re.compile(r"추이|변화|변동|흐름|증감|추세|늘|줄|증가|감소|동안|사이|년간|그래프")
-SPAN = re.compile(r"((?:19|20)\d{2})\s*년?\s*(대비|부터|에서)\s*((?:19|20)\d{2})\s*년")
+# 두 연도 사이: "2020년부터 2025년", "2020년 대비 2023년", 조사만 다른 "2020년이랑 2023년" ·
+# "2020년과 2023년"도 같다 (11/22: 이 모양은 HCX가 옮겨 적은 연도를 검증 없이 썼다)
+SPAN = re.compile(
+    r"((?:19|20)\d{2})\s*년?\s*(대비|부터|에서|이랑|랑|하고|과|와|및)\s*((?:19|20)\d{2})\s*년"
+)
+# 질문에 숫자로 적힌 연도 ('년' 없이 쓴 "2020~2025"도)
+YEAR_NUMBER = re.compile(r"(?<!\d)((?:19|20)\d{2})(?!\d)")
 YEAR = re.compile(r"((?:19|20)\d{2})\s*년")
 # 한글 숫자·사건으로 말한 해 ("이천이십이년", "십 년 전", "코로나 첫 해", "월드컵 때", "그 당시")
 # 청년·유소년·노년·중년·장년의 "년"은 연도가 아니다
@@ -650,6 +661,78 @@ def _ratio_sibling(question, parsed, fix):
     return None
 
 
+# 연도 칸의 계산식 ("start_year": 2025 - 8)
+YEAR_ARITH = re.compile(r":\s*(?:19|20)\d{2}\s*[-+]\s*\d{1,3}(?=\s*[,}])")
+PERIOD_KINDS = ("recent", "span", "compare_ago", "span_from", "until_now")
+
+
+def _apply_time(question, parsed, fix, today):
+    """상대 기간은 코드가 질문에서 직접 알아보고(timeref.find: 표현 · 종류 · N) 연도도
+    규칙표(timeref.period)가 센다. LLM은 오늘이 언제인지 모르고 산수도 틀린다:
+    "2020년이랑 작년"의 작년을 2024로, "10년 동안"의 끝을 2024로, '최근 5년'을 6개 해로 적었다.
+    여기서 고치는 것은 지금까지 코드가 풀지 못한 모양뿐이다.
+      기간(최근 N년 · N년 동안 · N년 전보다 · ○년부터 N년 동안 · 지금까지): 시작 · 끝
+      숫자 연도 + 낱말 시점인 추이("2018년이랑 작년"): 두 해를 시작 · 끝으로
+      N년 뒤: 그 해
+    작년 · N년 전 한 시점은 아래 timeref.resolve 가 지금처럼 푼다.
+    상대 기간을 풀었는데 질문에 숫자 연도가 없으면, HCX가 직접 채운 시작 · 끝은 버린다"""
+    refs = timeref.find(question)
+    if not refs:
+        _drop_unsaid_years(question, parsed, fix, set())
+        return
+    end = indicators._data_years()[1]
+    said = sorted({int(y) for y in YEAR.findall(question)})
+    kind_now, resolved, touched = parsed.get("type"), [], set()
+
+    def put(key, value, why):
+        touched.add(key)
+        if parsed.get(key) != value:
+            fix(key, value, why)
+
+    for ref in refs:
+        got = timeref.period(ref, today, end)
+        resolved.append({"expr": ref["expr"], "kind": ref["kind"], "n": ref.get("n"), **got})
+        why = f"'{ref['expr']}'"
+        if ref["kind"] in PERIOD_KINDS:
+            if "start" in got:
+                put("start_year", got["start"], f"{why} = {got['start']}년부터")
+            if "end" in got:
+                shown = f"{got['end']}년까지" if got["end"] else "자료 마지막 해까지"
+                put("end_year", got["end"], f"{why} = {shown}")
+        elif "year" in got and len(said) == 1 and kind_now == "trend" and ref["kind"] != "later":
+            lo, hi = sorted((said[0], got["year"]))
+            put("start_year", lo, f"{why} = {got['year']}년 (올해 {today.year} 기준)")
+            put("end_year", hi, f"{why} = {got['year']}년 (올해 {today.year} 기준)")
+        elif ref["kind"] == "later" and not said and kind_now != "trend":
+            put("year", got["year"], f"{why} = {got['year']}년 (올해 {today.year} 기준)")
+    if not said and not slots.short_years(question):  # "22년"처럼 두 자리로 말한 연도는 둔다
+        keys = ["start_year", "end_year"]
+        if kind_now == "trend" and any(r["kind"] in PERIOD_KINDS for r in refs):
+            # 기간을 물은 추이의 year: 계산이 끝 해로 쓴다 ("7년 동안"에 HCX가 2022를 넣어
+            # 2019~2022로 답했다)
+            keys.append("year")
+        for key in keys:
+            if key not in touched and parsed.get(key):
+                fix(key, None, "질문에 숫자로 없는 연도 (상대 기간은 코드가 센다)")
+    _drop_unsaid_years(question, parsed, fix, touched)
+    parsed["time_refs"] = resolved
+
+
+def _drop_unsaid_years(question, parsed, fix, touched):
+    """질문에 숫자 연도가 있는데 HCX가 연도 칸에 그 밖의 연도를 넣었으면 믿지 않는다
+    (잘못 옮겨 적었거나 짐작한 연도. 코드가 방금 센 칸(touched)은 그대로).
+    숫자 연도가 없는 질문은 보지 않는다: 한글 연도 · 사건으로 말한 해("코로나 첫 해")는
+    HCX가 푼 값을 쓴다 (_says_year)"""
+    said = {int(y) for y in YEAR_NUMBER.findall(question)} | slots.short_years(question)
+    if not said:
+        return
+    for key in ("year", "start_year", "end_year"):
+        value = parsed.get(key)
+        if key not in touched and isinstance(value, int) and value not in said:
+            fix(key, None, "질문에 없는 연도")
+
+
+
 def correct(question, parsed, today=None):
     """같은 질문도 실행마다 HCX 해석이 달라서, 질문 원문에서 확실히 알 수 있는 것은 코드가 맞춘다.
 
@@ -802,6 +885,7 @@ def correct(question, parsed, today=None):
                 _region_list(question, parsed, fix)
     kind = parsed.get("type")
 
+    _apply_time(question, parsed, fix, today)
     _read_question(question, parsed, fix)
 
     genders = [sex for sex, pattern in GENDER_WORDS.items() if pattern.search(question)]
@@ -1361,7 +1445,7 @@ def _read_question(question, parsed, fix):
         if not any(y > hi for y in years):
             parsed["prediction"] = True
     if (m := SPAN.search(question)) and kind in ("value", "trend", "causal"):
-        start, end = int(m[1]), int(m[3])
+        start, end = sorted((int(m[1]), int(m[3])))  # "2023년이랑 2020년"도 앞선 해부터
         if kind == "value":
             fix("type", "trend", "두 연도 사이 변화")
         if (parsed.get("start_year"), parsed.get("end_year")) != (start, end):
@@ -1387,6 +1471,8 @@ def _read_question(question, parsed, fix):
         asked["recent"] = int(m[2])
     elif LATEST.search(question) and not YEAR.search(question) and not timeref.resolve(question):
         asked["latest"] = True  # "최근 서울 인구" → 연도 없이 가장 최근 값 (인구는 최신 달까지)
+        if THESE_DAYS.search(question):
+            asked["these_days"] = True  # 추이면 최근 5개 해 (11/22 세진, 골든셋 '요즘' 기준)
         if kind == "trend" and not by_year and not CHANGE_ASK.search(question):
             # HCX가 "최근"을 최근 몇 년 추이로 읽는 경우: 변화를 묻지 않았으면 최신 값 하나
             fix("type", "value", "최근 값을 물음 (변화를 묻지 않음)")
@@ -1443,7 +1529,10 @@ def _read_question(question, parsed, fix):
         if kind != "trend":
             fix("type", "trend", "과거부터의 변화를 물음")
             kind = "trend"
-    if (m := SINCE.search(question)) and not SPAN.search(question):  # "1970년 이후" → 끝은 최신
+    # "1995년부터 8년 동안"은 끝이 정해진 기간이다 (_apply_time 이 그 해 + N 으로 셌다)
+    fixed_span = any(r.get("kind") == "span_from" for r in parsed.get("time_refs") or [])
+    if (m := SINCE.search(question)) and not SPAN.search(question) and not fixed_span:
+        # "1970년 이후" → 끝은 최신
         asked["since"] = int(m[1])
         if parsed.get("start_year") != int(m[1]):
             fix("start_year", int(m[1]), "질문의 시작 연도")
@@ -1865,6 +1954,28 @@ def _value_instead(result, name):
     return result
 
 
+def _asked_years(q):
+    """질문이 말한 햇수 N ("최근 N년", "N년 동안"). 없으면 None"""
+    if n := (q.get("asked") or {}).get("recent"):
+        return n
+    spans = [r.get("n") for r in q.get("time_refs") or [] if r.get("kind") == "span"]
+    return spans[0] if spans and spans[0] else None
+
+
+def _with_this_year(ind, region, sex, ages, end):
+    """끝을 말하지 않은 추이의 끝 해. 연간 자료 다음 해의 최신 달 값이 있으면 그 해까지 붙인다
+    (11/22 세진: 2026년 자료가 있으면 넣는다. 지금은 주민등록인구 월별 자료뿐이고,
+    연간 자료만 있는 지표(등록외국인 등)는 그대로다).
+    indicators.trend 가 그 해 값의 기준 달을 알린다"""
+    try:
+        _, spec = indicators._get_indicator(ind, ages)
+        if spec is None or not indicators._years_of(spec)[2]:
+            return end
+        return max(end, indicators.latest_year([region], sex))
+    except Exception:
+        return end
+
+
 def _compute_population(q, ind, kind, regions, year, sex, ages, hi):
     """계산 지표 (주민등록인구)"""
     if kind == "composition":  # 총인구의 구성비는 compute가 먼저 처리한다
@@ -1882,10 +1993,26 @@ def _compute_population(q, ind, kind, regions, year, sex, ages, hi):
     if kind == "trend":
         asked = q.get("asked") or {}
         start, end = q.get("start_year") or hi - 5, q.get("end_year") or hi
+        open_end = not q.get("end_year")
         if asked.get("recent"):  # "최근 5년" → HCX가 준 기간 대신 자료 마지막 연도 기준 N개년
-            start, end = hi - asked["recent"] + 1, hi
+            start, end, open_end = hi - asked["recent"] + 1, hi, True
+        elif asked.get("these_days") and not q.get("start_year"):
+            start = hi - 4  # "요즘" → 최근 5개 해
         elif asked.get("from_start") and not q.get("start_year"):
             start = indicators._data_years()[0]  # "과거부터" → 수록 첫해부터
+        if open_end:
+            end = _with_this_year(ind, regions[0], sex, ages, end)
+            # 햇수를 말했으면("최근 5년", "7년 동안") 가장 최근 자료가 있는 해를 끝으로 N개 해
+            # (2026년 자료가 있으면 2020~2026, 없으면 2019~2025). 햇수가 없는 "요즘" · "추이"는
+            # 연간 자료 기간 뒤에 올해 값을 덧붙인다 (11/22 세진)
+            if (n := _asked_years(q)) and end > hi:
+                out = indicators.trend(ind, regions[0], end - n + 1, end, sex, ages)
+                series = out.get("series") or []
+                if out.get("status") == "ok" and series and series[-1]["year"] == end:
+                    return out
+                # 올해 값이 실제로는 없다 (세대당 인구: 인구는 최신 달이 있어도 세대수는 없다)
+                # → 연간 자료 마지막 해를 끝으로 N개 해
+                end = hi
         return indicators.trend(ind, regions[0], start, end, sex, ages)
     if kind == "compare":
         return indicators.compare(ind, regions, year, sex, ages)
@@ -1977,6 +2104,8 @@ def _lookup_trend(q, sp, region, year, sex, ages):
         start = end - asked["recent"] + 1
     elif (asked.get("streak") or asked.get("from_start")) and not q.get("start_year"):
         start = lo
+    elif asked.get("these_days") and not q.get("start_year"):
+        start = end - 4  # "요즘" → 최근 5개 해
     else:
         start = q.get("start_year") or end - 5
     notes = []
@@ -2848,6 +2977,44 @@ async def ask(question, adjust=None):
     return await answer(parsed, trace, question)
 
 
+def _add_data_end_note(parsed, result, today=None):
+    """'최근 5년' · 'N년 동안' · 'N년 전보다' · '지금까지'는 오늘이 아니라 자료 마지막 해에서 센다.
+    올해 자료가 아직 없으면 어느 해까지의 자료로 어떻게 셌는지 밝힌다 (11/22 세진):
+      최근 N년      가장 최근 자료가 2025년까지라 2021~2025년(5개 연도)으로 계산했습니다
+      자료가 모자람  자료가 2023~2025년만 있어 3개 연도로 계산했습니다
+      N년 전보다    가장 최근 자료가 2025년까지라 2015년과 2025년을 비교했습니다
+      N년 동안 등   가장 최근 자료가 2025년까지라 2015~2025년으로 계산했습니다
+    추이(연도별 값)일 때만. 끝이 올해면(올해 자료가 있으면) 붙이지 않는다"""
+    if result.get("status") != "ok":
+        return
+    today = today or date.today()
+    refs = [r for r in parsed.get("time_refs") or [] if r.get("kind") in PERIOD_KINDS]
+    recent = _asked_years(parsed)  # 최근 N년 · N년 동안
+    kinds = {r["kind"] for r in refs}
+    if not recent and not kinds - {"span_from"}:
+        return  # '○년부터 N년 동안'은 사용자가 정한 기간이다
+    parts = _leaves(result) if result.get("split") else [result]
+    years = [(p["series"][0]["year"], p["series"][-1]["year"], len(p["series"]))
+             for p in parts if p.get("series")]
+    if not years:
+        return
+    first, last = min(y[0] for y in years), max(y[1] for y in years)
+    count = max(y[2] for y in years)
+    if last >= today.year:
+        return
+    if recent and count < recent:
+        note = f"자료가 {first}~{last}년만 있어 {count}개 연도로 계산했습니다"
+    elif recent:
+        note = f"가장 최근 자료가 {last}년까지라 {first}~{last}년({recent}개 연도)으로 계산했습니다"
+    elif "compare_ago" in kinds:
+        note = f"가장 최근 자료가 {last}년까지라 {first}년과 {last}년을 비교했습니다"
+    else:
+        note = f"가장 최근 자료가 {last}년까지라 {first}~{last}년으로 계산했습니다"
+    holder = parts[0]  # 나눠 계산한 답은 첫 결과의 안내를 모아 보여 준다 (_source_result)
+    holder["notes"] = [*(holder.get("notes") or []), note]
+
+
+
 async def answer(parsed, trace=None, question=""):
     """해석된 조건(parsed)으로 조회·계산해 답을 만든다. ask의 2단계부터.
     대화에서 조건만 바꿔 다시 답할 때는 HCX 해석 없이 여기를 바로 부른다 (question은 비워 둔다)"""
@@ -2864,6 +3031,7 @@ async def answer(parsed, trace=None, question=""):
         result = await _compute_fetching(parsed, trace)
         if notes and result.get("status") == "ok":
             result["notes"] = list(result.get("notes") or []) + notes
+        _add_data_end_note(parsed, result)
     trace["compute_ms"] = round((time.perf_counter() - start) * 1000)
     if not parsed.get("dynamic_spec"):  # 표 칸으로 계산한 답은 dynamic_indicator._try가 남긴다
         flow.add("사전 계산", result.get("status"), flow_result(result))
