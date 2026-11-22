@@ -107,8 +107,8 @@ DECADE_PARTS = {
     "초반": (0, 3), "초": (0, 3), "중반": (4, 6), "후반": (7, 9), "말": (7, 9), "말기": (7, 9),
 }  # fmt: skip
 # 출생 연도: '1990년생', "'90년생", '1990년대생'
-BIRTH_YEAR = re.compile(r"(?<!\d)((?:19|20)\d{2})\s*년대?생")
-SHORT_BIRTH_YEAR = re.compile(r"(?<![\d~])'?(\d{2})\s*년대?생")
+BIRTH_YEAR = re.compile(r"(?<!\d)((?:19|20)\d{2})\s*년(대)?생")
+SHORT_BIRTH_YEAR = re.compile(r"(?<![\d~])'?(\d{2})\s*년(대)?생")
 SHORT_YEAR_PIVOT = 50  # 50 미만은 20xx, 이상은 19xx ('45년' → 2045 추계, '95년' → 1995)
 PROJECTION = re.compile(r"앞으로|예측|전망|미래|추계|장래|될까|될지|예상")
 # '귀화한 사람 말고', '외국인 빼고', '서울 제외하고'
@@ -327,6 +327,15 @@ def correct(question: str, slots: dict[str, Any]) -> dict[str, Any]:
     slots["age"] = (
         {"expr": age.expr, "lo": age.lo, "hi": age.hi, "basis": age.basis} if age else None
     )
+    # 출생 연도('1990년생')는 나이 조건: 물은 연도(기간이면 끝), 없으면 올해 기준 만 나이
+    ref = c["year_end"] or c["year"] or today.year
+    if not age and (born := birth_spans(question)) and (span := birth_age(born, ref)):
+        slots["age"] = {
+            "expr": birth_expr(question),
+            "lo": span[0],
+            "hi": span[1],
+            "basis": f"{ref}년 기준 만 나이",
+        }
 
     # 성별: 한 성별만 말했으면 그 성별, 남녀로 나눠 보려면 성별 분류, 말이 없으면 null
     if HOUSEHOLDER_SEX.search(question) and "가구주 성별" not in c["classes"]:
@@ -458,11 +467,38 @@ def decades(question: str, today: date | None = None) -> list[tuple[int, int]]:
     return sorted(spans)
 
 
-def birth_years(question: str) -> set[int]:
-    """출생 연도 ('1990년생' → 1990, "'90년생" → 1990). 조회 연도가 아니다"""
-    years = {int(y) for y in BIRTH_YEAR.findall(question)}
+def birth_spans(question: str) -> list[tuple[int, int]]:
+    """출생 연도 범위 ('1990년생' → (1990, 1990), '1990년대생' → (1990, 1999), "'90년생" → 1990)"""
+    found = [(int(y), bool(dae)) for y, dae in BIRTH_YEAR.findall(question)]
     rest = BIRTH_YEAR.sub(" ", question)
-    return years | {_full_year(yy) for yy in SHORT_BIRTH_YEAR.findall(rest)}
+    found += [(_full_year(yy), bool(dae)) for yy, dae in SHORT_BIRTH_YEAR.findall(rest)]
+    return sorted({(y, y + 9 if dae else y) for y, dae in found})
+
+
+def birth_years(question: str) -> set[int]:
+    """출생 연도 ('1990년생' → {1990}, '1990년대생' → {1990..1999}). 조회 연도가 아니다"""
+    return {y for lo, hi in birth_spans(question) for y in range(lo, hi + 1)}
+
+
+def birth_age(spans: list[tuple[int, int]], ref_year: int) -> tuple[int, int] | None:
+    """출생 연도 범위 → ref_year 기준 만 나이 구간 (연말 기준: 1990년생은 2025년에 35세).
+    ref_year에 아직 태어나지 않았으면 None"""
+    oldest, youngest = min(lo for lo, _ in spans), max(hi for _, hi in spans)
+    if youngest > ref_year:
+        youngest = ref_year
+    if oldest > ref_year:
+        return None
+    return ref_year - youngest, ref_year - oldest
+
+
+def birth_expr(question: str) -> str:
+    """질문에 쓴 출생 연도 표현 ('1990년생', '90년대생')"""
+    found = BIRTH_YEAR.search(question) or SHORT_BIRTH_YEAR.search(question)
+    return found.group(0).strip() if found else ""
+
+
+def age_label(lo: int, hi: int) -> str:
+    return f"{lo}세" if lo == hi else f"{lo}~{hi}세"
 
 
 NEG_AFTER = re.compile(NEGATION_WORDS + r"|빼|제외")

@@ -41,7 +41,7 @@ def test_decades(question: str, span: list[tuple[int, int]]) -> None:
     [
         ("1990년생 인구", {1990}),
         ("90년생 인구", {1990}),
-        ("1990년대생 인구", {1990}),
+        ("1990년대생 인구", set(range(1990, 2000))),  # 출생 연대는 열 해 모두
         ("2020년 생산가능인구", set()),  # 띄어 쓴 '생'은 출생이 아니다
     ],
 )
@@ -103,3 +103,59 @@ def test_indicator_path(question: str, parsed: dict, expected: tuple) -> None:
 def test_followup_decade_reply_is_a_year() -> None:
     assert ask_followup.has_explicit_year("1990년대")
     assert ask_followup._only_years("1990년대")
+
+
+@pytest.mark.parametrize(
+    ("question", "ref", "span"),
+    [
+        ("1990년생", 2025, (35, 35)),  # 연말 기준 만 나이
+        ("90년대생", 2025, (26, 35)),
+        ("2020년대생", 2025, (0, 5)),  # 아직 다 태어나지 않은 연대는 기준 해까지
+        ("2030년생", 2025, None),
+    ],
+)
+def test_birth_age(question: str, ref: int, span: tuple | None) -> None:
+    assert sl.birth_age(sl.birth_spans(question), ref) == span
+
+
+@pytest.mark.parametrize(
+    ("question", "age"),
+    [
+        ("1990년생 인구", (36, 36, "2026년 기준 만 나이")),  # 연도가 없으면 올해 기준
+        ("90년대생 서울 인구", (27, 36, "2026년 기준 만 나이")),
+        ("1990년생이 2020년에 몇 명", (30, 30, "2020년 기준 만 나이")),  # 물은 연도 기준
+    ],
+)
+def test_slot_birth_to_age(question: str, age: tuple, monkeypatch) -> None:
+    monkeypatch.setattr(sl, "date", type("D", (), {"today": staticmethod(lambda: TODAY)}))
+    a = _slots(question)["age"]
+    assert (a["lo"], a["hi"], a["basis"]) == age
+
+
+def test_slot_named_age_group_wins_over_birth_year() -> None:
+    assert _slots("청년 1990년생")["age"]["expr"] == "청년"
+
+
+def test_indicator_birth_year_becomes_age() -> None:
+    p = qa.correct("1990년생 서울 인구", _parsed(year=1990), TODAY)
+    assert p["year"] is None and p["born"]["expr"] == "1990년생"
+    # 계산할 때 자료 마지막 해 기준으로 나이를 정하고 답에 기준을 남긴다
+    q = dict(p)
+    assert qa.born_ages(q, 2025) == [(35, 35)]
+    assert q["age_group"] == {"expr": "1990년생", "range": "35세", "basis": "2025년 기준 만 나이"}
+    q = {**p, "year": 2020}
+    assert qa.born_ages(q, 2025) == [(30, 30)]
+
+
+def test_indicator_birth_decade_trend_drops_birth_years() -> None:
+    parsed = _parsed(type="trend", start_year=2000, end_year=2009)
+    p = qa.correct("2000년대생 서울 인구 변화", parsed, TODAY)
+    assert (p.get("start_year"), p.get("end_year")) == (None, None)
+    assert p["born"]["spans"] == [[2000, 2009]]
+
+
+def test_single_age_label() -> None:
+    from app.services import indicators
+
+    assert indicators.age_label((35, 35)) == "35세"
+    assert indicators.age_label((30, 39)) == "30대"

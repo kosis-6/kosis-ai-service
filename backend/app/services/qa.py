@@ -708,6 +708,14 @@ def correct(question, parsed, today=None):
         parsed["age_group"] = {"expr": group.expr, "range": group.label(), "basis": group.basis}
         ages = [[group.lo, group.hi]]  # 이름 연령도 계산에 쓴다 (예: 청년 → 19~34세)
         parsed["ages"] = ages
+    elif born := slots.birth_spans(question):
+        # '1990년생' → 나이 조건. 기준 연도는 계산할 때 정한다 (born_ages). 여기서는 물은 연도,
+        # 없으면 작년으로 잡아 둔다 (연령 조건이 있는 질문으로 다루도록)
+        said = [int(y) for y in YEAR.findall(question)]
+        if span := slots.birth_age(born, max(said) if said else today.year - 1):
+            parsed["born"] = {"expr": slots.birth_expr(question), "spans": [list(b) for b in born]}
+            ages = [list(span)]
+            parsed["ages"] = ages
     if parsed.get("sex") not in (None, "", "계", "남", "여"):  # 예: ["남", "여"]
         fix("sex", "계", "성별 값 정리")
     if parsed.get("level") in ("구", "시군구별", "구별", "군", "시군"):
@@ -868,10 +876,12 @@ def correct(question, parsed, today=None):
         if parsed.get("year"):
             fix("year", None, "질문의 연대")
     born = slots.birth_years(question) - {int(y) for y in YEAR.findall(question)}
-    if parsed.get("year") in born:
-        fix("year", None, "'년생'은 출생 연도 → 자료 마지막 해")
-    elif (
-        not has_abs_year
+    born_keys = [k for k in ("year", "start_year", "end_year") if parsed.get(k) in born]
+    for key in born_keys:
+        fix(key, None, "'년생'은 출생 연도 → 자료 마지막 해")
+    if (
+        not born_keys
+        and not has_abs_year
         and not _says_year(question)
         and kind in LATEST_KINDS
         and parsed.get("year")
@@ -1562,6 +1572,23 @@ MAX_TREND_REGIONS = 20
 MAX_INDICATORS = 3  # 한 질문에서 함께 답하는 지표 수
 
 
+def born_ages(q, latest):
+    """'1990년생' → 계산할 해(기간이면 끝 해, 없으면 자료 마지막 해) 기준 만 나이 구간.
+    답에 밝히도록 q["age_group"]에 기준을 남긴다"""
+    born = q["born"]
+    ref = q.get("end_year") or q.get("year") or latest
+    span = slots.birth_age([tuple(b) for b in born["spans"]], ref)
+    if not span:
+        return None
+    q["ages"] = [list(span)]
+    q["age_group"] = {
+        "expr": born["expr"],
+        "range": slots.age_label(*span),
+        "basis": f"{ref}년 기준 만 나이",
+    }
+    return [span]
+
+
 # 계산 지표 중 남녀로 나눠 볼 수 없는 것 (성비는 그 자체가 남녀 비교, 세대·면적은 성별이 없다)
 NO_SEX_SPLIT = frozenset({"성비", "세대당 인구", "인구밀도"})
 
@@ -1617,6 +1644,8 @@ def _compute(q):
     ages = [tuple(a) for a in q.get("ages") or []] or None
     lo, hi = indicators._data_years()
     year = q.get("year") or hi
+    if q.get("born"):
+        ages = born_ages(q, hi) or ages
 
     if kind == "parse_error":
         return {

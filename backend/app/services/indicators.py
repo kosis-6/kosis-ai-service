@@ -297,6 +297,8 @@ def age_label(band):
         return f"{lo}세 이상"
     if lo % 10 == 0 and hi == lo + 9:
         return f"{lo}대"
+    if lo == hi:  # 한 살 ('1990년생' → 35세)
+        return f"{lo}세"
     return f"{lo}~{hi}세"
 
 
@@ -308,10 +310,15 @@ def _get_indicator(indicator, ages=None):
         lo, hi = ages[0]
         label = age_label(ages[0])
         upper = "" if hi is None else f" ~ {hi}세"
+        formula = (
+            f"주민등록인구 중 {lo}세 인구"
+            if lo == hi
+            else f"주민등록인구 중 {lo}세{upper or ' 이상'} 인구의 합"
+        )
         return f"{label} 인구", {
             "unit": "명",
             "kind": "count",
-            "formula": f"주민등록인구 중 {lo}세{upper or ' 이상'} 인구의 합",
+            "formula": formula,
             "calc": lambda c: c["band"],
             "band": (lo, hi),
         }
