@@ -1368,14 +1368,13 @@ def test_trend_end_note_only_when_end_asked(monkeypatch: pytest.MonkeyPatch) -> 
         (
             {"type": "value"},
             {"year": 2024},
-            "연도를 말하지 않아 가장 최근 자료인 2024년 기준으로 답했습니다",
+            "가장 최근 자료인 2024년 기준으로 답했습니다",
         ),
-        # 월 자료는 달까지
+        # 월 자료는 달까지: 새 달 자료가 들어오면 답이 바뀌므로 어느 달 기준인지 밝힌다
         (
             {"type": "value"},
             {"year": 2026, "as_of": "2026년 10월 말"},
-            "연도를 말하지 않아 가장 최근 자료인 2026년 10월 말 기준으로 답했습니다"
-            " (KOSIS 월별 자료)",
+            "가장 최근 자료인 2026년 10월 말 기준으로 답했습니다",
         ),
         ({"type": "value", "year": 2020}, {"year": 2020}, None),  # 연도를 말함
         # 추이: 끝을 말하지 않았으면 ("2010년부터" 포함) 마지막 해를 밝힌다
@@ -1440,7 +1439,7 @@ def test_rank_falls_back_to_annual_when_month_drops_regions(
     r = qa.compute({"type": "rank", "indicator": "총인구", "asked": {"latest": True}})
     assert r["year"] == 2025
     assert r["notes"] == [
-        "연도를 말하지 않아 가장 최근 연간 자료인 2025년 기준으로 답했습니다. "
+        "가장 최근 연간 자료인 2025년 기준으로 답했습니다. "
         "최신 달(2026년 10월 말) 자료는 행정구역 개편으로 일부 지역이 달라 쓰지 않았습니다"
     ]
 

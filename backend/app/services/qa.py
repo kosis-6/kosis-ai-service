@@ -1822,7 +1822,8 @@ def _monthly_empty(result):
 def _add_latest_note(q, result):
     """연도 · 기간을 말하지 않아 가장 최근 자료로 답했으면 그 시점을 밝힌다.
     첫 문장의 "2024년"만으로는 그게 가장 최근 자료인지 알 수 없다 (외국인주민 수는 2024년까지,
-    총인구는 최신 달까지). 연도를 말하지 않은 질문은 correct가 year · start_year · end_year를
+    총인구는 최신 달까지). 최신 달 값은 새 달 자료가 들어올 때마다 답이 바뀌므로 어느 달
+    기준인지 꼭 밝힌다. 연도를 말하지 않은 질문은 correct가 year · start_year · end_year를
     비운다"""
     if result.get("status") != "ok" or q.get("prediction"):
         return
@@ -1838,15 +1839,15 @@ def _add_latest_note(q, result):
         elif q.get("year"):
             continue
         elif r.get("as_of") or r.get("year"):
-            note = f"연도를 말하지 않아 가장 최근 자료인 {_when(r)} 기준으로 답했습니다"
+            note = f"가장 최근 자료인 {_when(r)} 기준으로 답했습니다"
             if month := r.get("skipped_month"):
                 note = (
-                    f"연도를 말하지 않아 가장 최근 연간 자료인 {_when(r)} 기준으로 답했습니다. "
+                    f"가장 최근 연간 자료인 {_when(r)} 기준으로 답했습니다. "
                     f"최신 달({month}) 자료는 행정구역 개편으로 일부 지역이 달라 쓰지 않았습니다"
                 )
             elif r.get("as_of"):
-                # 최신 달 값: "○년까지는 연간 자료이고 ○년은 월별 자료의 최신 달 값" 안내와 겹친다
-                note += " (KOSIS 월별 자료)"
+                # 최신 달 값: "○년까지는 연간 자료이고 ○년은 월별 자료의 최신 달 값" 안내와 겹친다.
+                # 월별 자료라는 것은 출처 줄의 기준이 밝히므로 여기에 다시 적지 않는다
                 r["notes"] = [n for n in r.get("notes", []) if "KOSIS 월별 자료의" not in n]
         else:
             continue
