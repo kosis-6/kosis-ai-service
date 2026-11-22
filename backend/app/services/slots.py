@@ -59,8 +59,33 @@ for _name, _aliases in SIDO.items():
     if _name.endswith(("특별시", "광역시", "특별자치시")) and _aliases[0] != "광주":
         SIDO_ALIAS.setdefault(_aliases[0] + "시", _name)
 
-# "2030세대"·"2030 세대"는 20~39세(agegroup.py)이지 2030년이 아니다
-YEAR = re.compile(r"(?<!\d)((?:19|20)\d{2})(?!\d|\s*세대)")
+# 네 자리 수가 연도가 아닌 경우 (단위·범위·견주는 말이 뒤따르는 수)
+#   "2030세대"·"2030 세대"     20~39세 (agegroup.py)
+#   '2000명'·'2000가구가'      단위가 붙고 낱말이 끝난다
+#                              ('2018평창'·'2020건강검진'은 낱말이 이어져 연도)
+#   '2000만 명'·'2000여 곳'    만·천·여 뒤에 단위 ('2020만 보여줘'·'2020여성'은 연도)
+#   '2000 명 이하'             띄어 쓴 '명'은 낱말이 끝날 때만 ('2020 명절'은 연도), 다른 단위는
+#                              뒤에 견주는 말이 올 때만 ('2000 가구 넘는'. '2020 가구 수'는 연도)
+#   '2000~3000명'              범위 끝이 단위로 끝난다 ('2000~2020년'은 연도)
+#   '2000 이하'·'2000이상'     연도는 '이전·이후'라 하지 '이하·이상'이라 하지 않는다
+#   '2000km'·'2000%'
+COUNT_UNIT = r"(?:명|가구|개월|개|건|원|곳|채|톤|평|달러|회|번|위|배|시간|일|마리|권|호)"
+LATIN_UNIT = r"(?:%|㎡|㎢|km|kg|ha|m²)"
+COMPARE_WORD = r"(?:이상|이하|미만|초과|이내|넘|정도|가량|남짓|안팎|내외|쯤|보다|가까이)"
+# 단위 뒤에 붙는 말. 두 글자 조사를 먼저 본다 ('명이나'가 '명이'+'나'로 끊기지 않게)
+COUNT_SUFFIX = r"(?:당|씩|짜리|규모|수준|대|째)"
+COUNT_JOSA = r"(?:이나|에서|으로|에게|까지|부터|보다|[이을은의도가인를에만로과와])"
+UNIT_END = rf"(?:{COUNT_SUFFIX}?{COUNT_JOSA}?(?![가-힣])|{COMPARE_WORD})"
+COUNT_PREFIX = r"(?:[만천여]\s*){0,2}"  # '2000만', '2000여', '2000여만'
+ATTACHED_COUNT = rf"(?:{COUNT_PREFIX}{COUNT_UNIT}{UNIT_END}|\s*{LATIN_UNIT}|여(?![가-힣]))"
+SPACED_COUNT = (
+    rf"\s+{COUNT_PREFIX}"
+    rf"(?:명{UNIT_END}|{COUNT_UNIT}(?:이|을|은|가|를)?\s*{COMPARE_WORD})"
+)
+COUNT_RANGE = rf"\s*(?:~|-|에서|부터)\s*\d[\d,]*\s*{COUNT_PREFIX}(?:{COUNT_UNIT}|{LATIN_UNIT})"
+BARE_COMPARE = r"\s*(?:이상|이하|미만|초과|넘)"
+NOT_YEAR_TAIL = rf"(?!\d|\s*세대|{ATTACHED_COUNT}|{SPACED_COUNT}|{COUNT_RANGE}|{BARE_COMPARE})"
+YEAR = re.compile(rf"(?<!\d)((?:19|20)\d{{2}}){NOT_YEAR_TAIL}")
 # '95년', "'05년도". '10년 전', '20년간', '90년생', '80년대', '10년 넘게'는 연도가 아니다
 SHORT_YEAR = re.compile(
     r"(?<![\d~])'?(\d{2})\s*년(?!\s*(?:전|후|뒤|간|동안|생|대|째|만|마다|이상|이하|이내|미만|차|넘|넘게|넘는|넘은|가까이|정도|쯤|남짓))"

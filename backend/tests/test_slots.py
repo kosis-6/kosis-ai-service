@@ -249,3 +249,71 @@ def test_generation_is_not_a_year(question: str) -> None:
     assert out["conditions"]["year"] is None and out["projection"] is False
     assert (out["age"]["lo"], out["age"]["hi"]) == (20, 39)
     assert _slots("2030년 서울 인구는?", year=2030)["projection"] is True
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "인구 2000명 이하인 시군구",
+        "2000가구 넘는 읍면동",
+        "2000여 곳",
+        "인구 2000만 명 넘는 나라",
+        "인구 2000 명 이하인 지역",  # 숫자와 단위 사이 공백
+        "2000 가구 넘는 곳",
+        "2000 명이나 되는 곳",  # 두 글자 조사
+        "2000 명에서 3000 명 사이인 지역",
+        "2000 명으로 줄어든 지역",
+        "2000~3000명인 지역",  # 수의 범위
+        "2000에서 3000명 사이",
+        "인구 2000 이하인 시군구",  # 단위 없이 견주는 말
+        "2000명당 의사 수",
+        "2000명대인 지역",
+        "2000회 이상",
+        "2000km",
+        "2000여만 명",
+        "인구 2,000명 이상인 지역",  # 쉼표
+    ],
+)
+def test_count_with_unit_is_not_a_year(question: str) -> None:
+    # '2000명'·'2000만 명'은 수다. 연도(2000년)로 읽지 않는다
+    assert _slots(question)["conditions"]["year"] is None
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "2020만 보여줘",
+        "2020 원주 인구",
+        "2020 가구 수",
+        "2020 명절 이동",
+        "2020 개인사업자",
+        "2020 명인전 관람객",  # 조사 뒤에 낱말이 이어진다
+        "2018평창 올림픽",  # 붙여 쓴 단위 글자 뒤에 낱말이 이어진다
+        "2020여성 고용률",
+        "2020건강검진",
+        "2020 이후 인구",
+    ],
+)
+def test_bare_year_still_a_year(question: str) -> None:
+    # '만' 뒤에 단위가 없거나, 띄어 쓴 뒤 낱말이 단위가 아니면('가구 수'·'명절') 연도다
+    assert _slots(question)["conditions"]["year"] in (2018, 2020)
+
+
+@pytest.mark.parametrize(
+    ("question", "year", "year_end"),
+    [
+        ("2020년 기준 인구 2000명 이상", 2020, None),  # 연도와 수량이 함께
+        ("2000년 인구 2000명", 2000, None),
+        ("2000~2020년 인구 변화", 2000, 2020),  # 연도 범위
+    ],
+)
+def test_year_beside_count(question: str, year: int, year_end: int | None) -> None:
+    c = _slots(question)["conditions"]
+    assert (c["year"], c["year_end"]) == (year, year_end)
+
+
+def test_relative_year_beside_count() -> None:
+    # '작년'은 오늘 기준으로 풀고, '2000명'이 연도로 끼어들어 상대 시점을 막지 않는다
+    out = _slots("작년 인구가 2000명 이하인 지역")
+    assert out["time_ref"]["expr"] == "작년"
+    assert out["conditions"]["year"] == out["time_ref"]["year"]

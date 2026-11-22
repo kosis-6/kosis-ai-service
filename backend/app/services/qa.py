@@ -413,7 +413,8 @@ COMMON_WORD_REGIONS = frozenset({"고령", "장수", "영양", "이천", "예산
 def _says_year(question):
     """질문에 연도를 말한 표현이 있는지. 있으면 HCX가 읽은 연도를 지우지 않는다.
     애매하면 있다고 본다 (지우면 사용자가 말한 연도를 무시하게 되므로).
-    "인구 2000명 이하"의 2000도 있다고 보지만, 그때는 HCX 연도를 그대로 두니 develop과 같다"""
+    "인구 2000명 이하"의 2000은 수라 연도로 보지 않는다 (slots.YEAR).
+    HCX가 2000년으로 읽었으면 지운다"""
     return bool(
         YEAR.search(question)
         or ask_followup.has_explicit_year(question)
