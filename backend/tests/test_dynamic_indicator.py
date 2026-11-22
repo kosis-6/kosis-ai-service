@@ -1367,28 +1367,44 @@ def test_couple_counted_sex_dimension_uses_male_cell() -> None:
     sex = d.Dim(2, "성별", {"1": "남자", "2": "여자"})
     q = "1978년 대구 혼인 건수"
     plan, why = d.choose(q, {"sex": "계"}, [items, region, sex], 1, couple=True)
-    assert why is None and plan.pick[2] == "1"
-    assert "부부 단위 건수" in plan.defaults[-1]
+    assert why is None and plan.pick[2] == "1" and plan.couple
+    assert d.COUPLE_NOTE in plan.defaults[-1]
     # 부부 단위 표가 아니면(사람 수 표) 지금처럼 고르지 못한다
     plan, why = d.choose(q, {"sex": "계"}, [items, region, sex], 1)
     assert plan is None and "성별" in why
     # 연령을 물으면 남편 · 아내 나이가 달라 고르지 않는다
     plan, why = d.choose(q, {"sex": "계", "ages": [30, 34]}, [items, region, sex], 1, couple=True)
     assert plan is None
-    # 성별을 말하면 그 칸
+    # 성별을 말하면 그 칸. 부부 단위 표라는 표시는 그대로 (V2-035 "결혼한 남자 중 30대")
     plan, why = d.choose(q, {"sex": "여"}, [items, region, sex], 1, couple=True)
-    assert why is None and plan.pick[2] == "2"
+    assert why is None and plan.pick[2] == "2" and plan.couple
+    plan, why = d.choose(q, {"sex": "남"}, [items, region, sex], 1, couple=True)
+    assert why is None and plan.pick[2] == "1" and plan.couple
+    # 사람 수 표에서 성별을 말한 경우는 부부 단위가 아니다
+    plan, why = d.choose(q, {"sex": "남"}, [items, region, sex], 1)
+    assert why is None and not plan.couple
+
+
+def test_couple_note_without_region_dimension() -> None:
+    # 지역 구분이 없는 부부 단위 표 (다문화 유형별 이혼 DT_1BB0003): 지역 값 안내를 붙이지 않는다
+    items = d.Dim(0, "항목", {"T00": "이혼건수"})
+    sex = d.Dim(1, "성별", {"1": "남자", "2": "여자"})
+    kind = d.Dim(2, "유형별", {"0": "계", "1": "출생기준 한국인", "2": "외국인"})
+    plan, why = d.choose("다문화 이혼 건수", {"sex": "계"}, [items, sex, kind], None, couple=True)
+    assert why is None and plan.pick[1] == "1" and plan.couple
+    note = ", ".join(plan.defaults)
+    assert d.COUPLE_NOTE_NATIONAL in note and "지역별" not in note
 
 
 def test_couple_answer_drops_add_sexes_notice() -> None:
-    # 남편 쪽 칸이 곧 부부 건수: "남녀 값을 더해 보라"는 표 안내를 붙이면 두 번 세게 된다 (V2-053)
-    note = f"직접 계산. 말하지 않은 구분은 합계·기본값으로 계산했습니다 (성별: 남자 {d.COUPLE_NOTE})"
+    # 부부 단위 표의 성별 칸이 곧 부부 건수: "남녀 값을 더해 보라"는 표 안내를 붙이면 두 번 세게
+    # 된다 (V2-053). 성별을 말해 고른 칸도 같다 (V2-035)
     no_total = d.search_answer.NO_TOTAL_NOTE.rstrip(".")
-    assert d.table_notice(no_total, note) is None
-    assert d.table_notice(f"표 주석 A. {no_total}. 표 주석 B", note) == "표 주석 A. 표 주석 B"
+    assert d.table_notice(no_total, True) is None
+    assert d.table_notice(f"표 주석 A. {no_total}. 표 주석 B", True) == "표 주석 A. 표 주석 B"
     # 사람 수 표(부부 단위가 아님)에는 그대로 붙인다
-    assert d.table_notice(no_total, "직접 계산") == no_total
-    assert d.table_notice(None, note) is None
+    assert d.table_notice(no_total, False) == no_total
+    assert d.table_notice(None, True) is None
 
 
 def test_couple_counted_compares_national_sums(monkeypatch) -> None:
