@@ -1809,7 +1809,13 @@ def _monthly_empty(result):
     if result.get("status") != "ok":
         return False
     leaves = [r for r in _leaves(result) if r.get("as_of")]
-    vals = [v.get("value") for r in leaves for v in (r.get("values") or r.get("ranking") or [r])]
+    # 구성비는 값이 parts(count · share)에 있다. value 만 보면 빈 것으로 잘못 봐
+    # 연간 마지막 해로 다시 계산한다
+    vals = [
+        v.get("value", v.get("count"))
+        for r in leaves
+        for v in (r.get("values") or r.get("ranking") or r.get("parts") or [r])
+    ]
     return bool(leaves) and all(v is None for v in vals)
 
 
