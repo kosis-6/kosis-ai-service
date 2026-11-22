@@ -503,7 +503,7 @@ def combine_parts(c: Cross, nums: list[dict], den: dict, q: dict) -> dict:
         if kind == "compare":
             out.update(_compare_facts(vals, out["unit"], raw=raw))
         else:
-            out.update(_rank_facts(vals, num, q))
+            out.update(_rank_facts(vals, num, q, raw=raw))
     return out
 
 
@@ -778,9 +778,15 @@ def _compare_facts(vals: list[dict], unit: str, raw: dict | None = None) -> dict
     return out
 
 
-def _rank_facts(vals: list[dict], num: dict, q: dict) -> dict:
+def _rank_facts(vals: list[dict], num: dict, q: dict, raw: dict | None = None) -> dict:
+    """raw: 지역 → 반올림 전 값. 있으면 이 값으로 순위를 매긴다 (_compare_facts 와 같은 기준).
+    표시값으로 매기면 1.1761 · 1.1840 이 둘 다 1.18 이 되어, 들어온 순서대로 1위가 정해진다"""
+
+    def exact(v):
+        return raw[v["region"]] if raw and raw.get(v["region"]) is not None else v["value"]
+
     low_first = "낮은" in str(num.get("order") or "")
-    ranked = sorted(vals, key=lambda v: v["value"], reverse=not low_first)
+    ranked = sorted(vals, key=exact, reverse=not low_first)
     top = q.get("top") or len(ranked)
     return {
         "level": num.get("level"),
