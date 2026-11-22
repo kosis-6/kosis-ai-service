@@ -664,6 +664,42 @@ def _ratio_sibling(question, parsed, fix):
     return None
 
 
+def survey_said(question):
+    """질문이 말한 조사 이름 (인구총조사 · 장래인구추계). 없으면 None"""
+    return next((name for name, pat in SURVEY_ASK if pat.search(question or "")), None)
+
+
+def without_survey(question):
+    """조사 이름을 뺀 질문 ("인구총조사"의 "인구"를 지표로 읽지 않게)"""
+    for _, pat in SURVEY_ASK:
+        question = pat.sub(" ", question)
+    return question
+
+
+def survey_for(question, parsed):
+    """질문이 말한 조사로 답할 수 있으면 그 조사. 지표에 그 조사의 표(alt_sources)가 있어야 한다.
+    여러 지표를 함께 물으면 바꾸지 않는다 ("인구랑 등록외국인 합쳐": 외국인 포함 총조사 인구에
+    등록외국인을 또 더하게 된다)"""
+    said = survey_said(question)
+    sp = indicators.spec(parsed.get("indicator")) if said else None
+    if not sp or len(parsed.get("indicators") or []) > 1:
+        return None
+    return said if said in indicators.alt_surveys(sp) else None
+
+
+def set_survey(question, parsed):
+    """조건이 바뀐 뒤(앞 질문의 지표를 이어받음) 조사 표시를 다시 정한다
+    ("영도구 중위연령" → "인구총조사 기준으로 다시 구해줘")"""
+    asked = {k: v for k, v in (parsed.get("asked") or {}).items() if k != "survey"}
+    if survey := survey_for(question, parsed):
+        asked["survey"] = survey
+    if asked:
+        parsed["asked"] = asked
+    else:
+        parsed.pop("asked", None)
+    return parsed
+
+
 def correct(question, parsed, today=None):
     """같은 질문도 실행마다 HCX 해석이 달라서, 질문 원문에서 확실히 알 수 있는 것은 코드가 맞춘다.
 
@@ -1474,13 +1510,9 @@ def _read_question(question, parsed, fix):
             fix("end_year", year, "전년 대비")
     if RATIO_ASK.search(question):
         asked["ratio"] = True
-    if (alt := indicators.spec(parsed.get("indicator"))) and (
-        surveys := indicators.alt_surveys(alt)
-    ):
+    if survey := survey_for(question, parsed):
         # "인구총조사 기준 영도구 중위연령": 사전의 계산(주민등록인구) 대신 그 조사의 공표값
-        said = next((name for name, pat in SURVEY_ASK if pat.search(question)), None)
-        if said in surveys:
-            asked["survey"] = said
+        asked["survey"] = survey
     focus = [label for word, label in FOCUS_WORDS.items() if word in question]
     if focus:
         asked["focus"] = list(dict.fromkeys(focus))
@@ -1593,7 +1625,27 @@ def compute(q):
         retry = _compute({**q, "asked": {**asked, "latest": False}})
         if retry.get("status") == "ok":
             return retry
+    if survey := asked.get("survey"):
+        _add_default_value(q, result)
+        if result.get("status") != "ok" and (reason := result.get("reason")):
+            # "중위연령은 시도 단위까지만 자료가 있습니다" → 어느 조사의 이야기인지 밝힌다
+            if not reason.startswith(survey):
+                result["reason"] = f"{survey} {reason}"
     return result
+
+
+def _add_default_value(q, result):
+    """다른 조사로 답한 값 옆에 같은 해 주민등록인구 기준 값을 함께 둔다
+    ("인구총조사 기준 영도구 중위연령 55.2세" + "주민등록인구 기준으로는 56.8세입니다")"""
+    if result.get("status") != "ok" or result.get("value") is None or q.get("type") != "value":
+        return
+    asked = {k: v for k, v in (q.get("asked") or {}).items() if k != "survey"}
+    other = _compute({**q, "asked": asked, "year": result.get("year")})
+    if other.get("status") != "ok" or other.get("value") is None:
+        return
+    when = f"{result['year']}년 " if result.get("year") else ""
+    value = _val(other["value"], other.get("unit", ""))
+    result.setdefault("notes", []).append(f"{when}주민등록인구 기준으로는 {value}입니다")
 
 
 CALC_ERROR_TEXT = "계산하는 중에 문제가 생겨 답하지 못했습니다. 잠시 후 다시 질문해 주세요."
@@ -1750,7 +1802,10 @@ def _compute(q):
         # 질문이 말한 조사의 공표값으로 (주민등록인구로 계산하지 않는다). 그 조사에 없는 지역 수준
         # (장래인구추계는 시도까지) · 연도는 조회 단계가 "○○ 단위까지만 자료가 있습니다"로 알린다
         sp = alt
-        ages = None  # 지표 정의에 연령이 들어 있다 ("노인 비율"의 65세 이상을 다시 나누지 않는다)
+        if not any(s.get("age_dim") for s in alt["sources"]):
+            ages = (
+                None  # 지표 정의에 연령이 들어 있다 ("노인 비율"의 65세 이상을 다시 나누지 않는다)
+            )
         if kind not in ("value", "trend", "compare", "rank"):
             kind = "value"
 

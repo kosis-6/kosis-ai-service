@@ -408,6 +408,7 @@ def names_indicator(question: str, parsed: dict) -> bool:
     질문에 지원 지표의 이름·별칭이 있거나, 질문에 있는 말을 지표로 적었으면 말한 것.
     "2015년부터 추이로 보여줘"처럼 기간·방식만 말하면 말하지 않은 것 (앞 지표를 이어받는다).
     HCX가 지표 없는 질문에 총인구를 채워 넣기도 해서, 지표 이름이 아니라 질문의 말을 본다"""
+    question = qa.without_survey(question)  # "인구총조사 기준으로"의 "인구"는 지표가 아니다
     if indicators.find_in_text(question):
         return True
     compact = question.replace(" ", "")
@@ -485,7 +486,22 @@ def inherit(
         for key in ("year", "start_year", "end_year"):
             p[key] = prev.get(key)
         s["period"] = "inherited"
+    if question:
+        qa.set_survey(question, p)  # 이어받은 지표로 조사 표시를 다시 정한다
     return p, s
+
+
+def survey_switch(question: str, conditions: dict) -> dict | None:
+    """조사만 바꿔 달라는 말이면 그 조사로 바꾼 조건, 아니면 None.
+    "인구총조사로 보면?" · "장래인구추계로는?" · "외국인 포함하면?" (지표 · 지역을 말하지 않음).
+    앞 지표에 그 조사의 표(alt_sources)가 없으면 None (새 질문으로 해석한다)"""
+    if not qa.survey_said(question) or not conditions.get("indicator"):
+        return None
+    rest = qa.without_survey(question)
+    if indicators.find_in_text(rest) or said_region(rest):
+        return None
+    switched = qa.set_survey(question, copy.deepcopy(conditions))
+    return switched if (switched.get("asked") or {}).get("survey") else None
 
 
 def said_region(question: str) -> bool:
@@ -1259,6 +1275,12 @@ async def _turn(
 
     if await asyncio.to_thread(complete_question, question):
         return await _new(question, state)
+
+    if switched := await asyncio.to_thread(survey_switch, question, state["conditions"]):
+        # "인구총조사로 보면?" · "외국인 포함하면?": 앞 조건 그대로 그 조사의 표로 다시 답한다
+        res = await _answer(switched)
+        res["request_type"] = CHANGE
+        return res, state["sources"], None
 
     has_last = bool((state.get("last") or {}).get("answer"))
     view = chart_request(question) if has_last else None

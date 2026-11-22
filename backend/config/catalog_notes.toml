@@ -300,6 +300,13 @@ method = "computed"
 desc = "주민등록인구. 연령 구간(예: 6~11세, 20대) 인구 수도 이 지표"
 sources = [{ table = "DT_1B04006", level = "시군구" }]
 projection = { table = "DT_1BPB002", c3_id = "10" }
+# 같은 이름의 공표값이 다른 조사에 있다: 질문이 그 조사를 말하면 ("인구총조사 기준") 그 표로 답한다
+# 인구총조사는 연령(1세 · 5세) · 성별로 나뉘어 있어 "인구총조사 기준 서울 20대 여자"도 이 표로 답한다
+alt_sources = [
+  { survey = "인구총조사", table = "DT_1IN1503", level = "시군구", age_dim = "c2", age_total = "000", by_sex = { "계" = { item_id = "T00" }, "남" = { item_id = "T01" }, "여" = { item_id = "T02" } } },
+  { survey = "장래인구추계", table = "DT_1BPB002", item_id = "T10", level = "시도", filters = { c1_id = "1" }, by_sex = { "계" = { filters = { c3_id = "10" } }, "남" = { filters = { c3_id = "11" } }, "여" = { filters = { c3_id = "12" } } } },
+  { survey = "장래인구추계", table = "DT_1BPA002", item_id = "T10", level = "전국", national_only = true, filters = { c1_id = "1" }, by_sex = { "계" = { filters = { c2_id = "10" } }, "남" = { filters = { c2_id = "11" } }, "여" = { filters = { c2_id = "12" } } } },
+]
 
 [[indicators]]
 name = "고령인구 비율"

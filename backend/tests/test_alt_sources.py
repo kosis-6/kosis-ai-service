@@ -6,7 +6,7 @@
 
 import pytest
 
-from app.services import indicators, qa
+from app.services import ask_session, indicators, qa
 
 
 def parsed(**kw):
@@ -25,6 +25,7 @@ def parsed(**kw):
         ("추계인구로 서울 노인 비율", "고령인구 비율", "장래인구추계"),
         ("영도구 중위연령", "중위연령", None),  # 조사를 말하지 않음 → 사전의 계산
         ("인구총조사 기준 서울 합계출산율", "합계출산율", None),  # 그 지표에 다른 조사 표가 없음
+        ("외국인 포함 서울 인구", "총인구", "인구총조사"),
     ],
 )
 def test_survey_in_question(question: str, indicator: str, survey: str | None) -> None:
@@ -37,7 +38,7 @@ def test_alt_spec_is_lookup_of_that_survey() -> None:
     assert sp["method"] == "lookup" and sp["name"] == "중위연령" and sp["unit"] == "세"
     assert [s["table"] for s in sp["sources"]] == ["DT_1IN2030"]
     assert "survey" not in sp["sources"][0]
-    assert sp["note"].startswith("인구총조사 공표값입니다")
+    assert sp["note"].startswith("인구총조사 기준입니다. 실제로 사는 곳에서 외국인까지 센 인구")
     proj = indicators.alt_spec(indicators.spec("중위연령"), "장래인구추계")
     assert [s["level"] for s in proj["sources"]] == ["시도", "전국"]
     assert indicators.alt_spec(indicators.spec("합계출산율"), "인구총조사") is None
@@ -48,7 +49,7 @@ def test_alt_ratio_is_computed_from_counts() -> None:
     sp = indicators.alt_spec(indicators.spec("고령인구 비율"), "인구총조사")
     assert sp["sources"][0]["den_item_id"] == "T00"
     assert "인구총조사 연령별 인구로 계산" in sp["formula"]
-    assert sp["note"].startswith("인구총조사 인구(외국인 포함, 11월 1일 기준)로 계산한 값입니다")
+    assert sp["note"].startswith("인구총조사 연령별 인구로 계산했습니다 (비율은 공표되지 않음)")
 
 
 def test_every_alt_source_is_well_formed() -> None:
@@ -86,3 +87,90 @@ def test_without_survey_keeps_dictionary(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setattr(indicators, "alt_spec", boom)
     p = qa.correct("영도구 중위연령", parsed())
     assert not (p.get("asked") or {}).get("survey")
+
+
+def test_multi_indicator_keeps_dictionary() -> None:
+    """여러 지표를 함께 물으면 바꾸지 않는다 (외국인 포함 총조사 인구에 등록외국인을 또 더함)"""
+    p = qa.correct(
+        "춘천 인구, 외국인까지 합쳐서 등록외국인이랑 몇 명이야?",
+        parsed(indicator="총인구", regions=["춘천"], indicators=["총인구", "등록외국인 수"]),
+    )
+    assert not (p.get("asked") or {}).get("survey")
+
+
+def test_total_population_alt_keeps_sex_and_ages() -> None:
+    """총인구의 인구총조사 표는 성별 · 연령으로 나뉘어 있어 "20대 여자"도 그 표로 답한다"""
+    sp = indicators.alt_spec(indicators.spec("총인구"), "인구총조사")
+    src = sp["sources"][0]
+    assert src["age_dim"] == "c2" and src["by_sex"]["여"]["item_id"] == "T02"
+
+
+def test_default_value_shown_next_to_alt(monkeypatch: pytest.MonkeyPatch) -> None:
+    """다른 조사로 답하면 같은 해 주민등록인구 기준 값을 함께 둔다"""
+
+    def fake(q):
+        if (q.get("asked") or {}).get("survey"):
+            return {"status": "ok", "value": 55.2, "unit": "세", "year": 2025, "notes": []}
+        assert q["year"] == 2025  # 같은 해로 비교
+        return {"status": "ok", "value": 56.8, "unit": "세", "year": 2025}
+
+    monkeypatch.setattr(qa, "_compute", fake)
+    r = qa.compute({"type": "value", "indicator": "중위연령", "asked": {"survey": "인구총조사"}})
+    assert r["notes"] == ["2025년 주민등록인구 기준으로는 56.8세입니다"]
+
+
+@pytest.mark.parametrize(
+    "question, survey",
+    [
+        ("인구총조사로 보면?", "인구총조사"),
+        ("외국인 포함하면?", "인구총조사"),
+        ("장래인구추계로는?", "장래인구추계"),
+        ("인구총조사 기준 의성군 노령화지수", None),  # 지표 · 지역을 말함: 새 질문
+        ("서울은?", None),  # 조사를 말하지 않음
+    ],
+)
+def test_survey_switch_keeps_previous_conditions(question: str, survey: str | None) -> None:
+    """이어 묻기 "인구총조사로 보면?": 앞 조건 그대로 조사만 바꾼다"""
+    prev = parsed(indicator="고령인구 비율", regions=["서울"])
+    got = ask_session.survey_switch(question, prev)
+    if survey is None:
+        assert got is None
+    else:
+        assert got["asked"]["survey"] == survey
+        assert got["indicator"] == "고령인구 비율" and got["regions"] == ["서울"]
+
+
+def test_survey_switch_needs_alt_table() -> None:
+    """앞 지표에 그 조사의 표가 없으면 바꾸지 않는다 (합계출산율은 인구동향조사뿐)"""
+    assert ask_session.survey_switch("인구총조사로 보면?", parsed(indicator="합계출산율")) is None
+
+
+def test_survey_word_is_not_indicator() -> None:
+    """ "인구총조사 기준으로 다시 구해줘"의 "인구"는 지표(총인구)가 아니다: 앞 지표를 이어받는다"""
+    assert not ask_session.names_indicator("인구총조사 기준으로 다시 구해줘", {})
+    assert ask_session.names_indicator("인구총조사 기준 노령화지수", {})
+
+
+def test_inherited_indicator_gets_survey() -> None:
+    prev = parsed()
+    p, _ = ask_session.inherit(
+        parsed(indicator="총인구", regions=[]),
+        {"indicator": "user", "regions": "default", "period": "default"},
+        prev,
+        {"indicator": "user", "regions": "user", "period": "default"},
+        "인구총조사 기준으로 다시 구해줘",
+    )
+    assert p["indicator"] == "중위연령" and p["asked"]["survey"] == "인구총조사"
+
+
+def test_unavailable_level_names_the_survey(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        qa,
+        "_compute",
+        lambda q: {
+            "status": "missing_data",
+            "reason": "중위연령은 시도 단위까지만 자료가 있습니다.",
+        },
+    )
+    r = qa.compute({"type": "value", "indicator": "중위연령", "asked": {"survey": "장래인구추계"}})
+    assert r["reason"] == "장래인구추계 중위연령은 시도 단위까지만 자료가 있습니다."
