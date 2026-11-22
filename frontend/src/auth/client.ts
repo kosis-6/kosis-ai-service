@@ -125,14 +125,17 @@ function withToken(options: RequestInit): RequestInit {
 }
 
 // 만료(401)면 한 번만 새로 받아 다시 부르고, 새로 받지 못하면 로그인 없이(손님으로) 다시 부른다
+// 401 이면 새 토큰을 받아 한 번 다시 보낸다
+//   - 함께 401 을 받은 요청들은 같은 refresh 를 기다린다. 다른 요청이 이미 새 토큰을 받았으면 그걸 쓴다
+//   - 새 토큰을 받지 못하면(서버 오류 등) 401 을 그대로 돌려준다. 토큰 없이 다시 보내면 서버가
+//     손님 요청으로 처리해, 로그인한 화면인데 기록·대화 이어 가기가 계정과 끊긴다
 async function call(url: string, options: RequestInit = {}): Promise<Response> {
-  let res = await fetch(url, withToken(options));
-  if (res.status === 401 && token) {
-    token = null;
-    await refresh();
-    res = await fetch(url, withToken(options));
-  }
-  return res;
+  const sent = token;
+  const res = await fetch(url, withToken(options));
+  if (res.status !== 401 || !sent) return res;
+  if (token === sent) token = null; // 이 토큰은 끝났다 (다른 요청이 먼저 새로 받았으면 그대로 둔다)
+  if (!token && !(await refresh())) return res;
+  return fetch(url, withToken(options));
 }
 
 async function loadMe(): Promise<boolean> {
