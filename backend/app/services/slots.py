@@ -25,7 +25,7 @@ from datetime import date
 from typing import Any
 
 from app.prompts.search import SLOT_SYSTEM, SLOT_SYSTEM_GEMMA
-from app.services import agegroup, llm_calls, search_llm, synonyms, timeref
+from app.services import agegroup, llm_calls, search_llm, synonyms, timeref, understand_merged
 from app.services.hcx_client import HcxError
 
 MODEL = "HCX-007"
@@ -192,6 +192,11 @@ def _json_object(text: str) -> dict[str, Any] | None:
 
 async def extract(question: str, trace: dict[str, Any] | None = None) -> dict[str, Any]:
     """질문 → 슬롯. trace(dict)를 주면 HCX 원본 출력을 담는다 (요청 로그용)"""
+    if (kept := understand_merged.take(question)) is not None:
+        # UNDERSTAND_MERGED=gemma: 질문 이해가 같은 질문의 조건 추출까지 Gemma 한 번으로 해 두었다
+        if trace is not None:
+            trace["hcx_raw"] = ["(질문 이해에서 함께 뽑음)"]
+        return kept
     raws = []
     parsed = None
     try:

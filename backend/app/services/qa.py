@@ -30,6 +30,7 @@ from starlette.concurrency import run_in_threadpool
 
 from app.core.config import get_settings
 from app.core.stats_db import StatsTableMissing
+from app.prompts import understand_merged as merged_prompt
 from app.prompts.qa import PARSE_SYSTEM
 from app.services import (
     agegroup,
@@ -39,13 +40,16 @@ from app.services import (
     flow,
     indicators,
     llm_calls,
+    llm_json,
     load_queue,
     lookup,
+    search_llm,
     slots,
     table_cache,
     timeref,
+    understand_merged,
 )
-from app.services.hcx_client import HcxClient
+from app.services.hcx_client import HcxClient, HcxError
 from app.services.josa import josa, ro
 from app.services.memory_cache import MISSING, MemoryCache
 
@@ -109,27 +113,85 @@ async def understand(question, trace=None):
             trace["hcx_raw"], trace["understand_cached"] = hit["raw"], True
         flow.add("질문 이해", "캐시", _understood(hit["parsed"]))
         return copy.deepcopy(hit["parsed"])
-    system = PARSE_SYSTEM.replace("{INDICATORS}", _indicator_list()).replace("{LATEST}", str(hi))
-    text = await _chat(question, system, trace=trace)
-    if trace is not None:
-        trace["hcx_raw"] = text
-    # 연도 칸에 계산식("start_year": 2025 - 8)을 쓰면 JSON이 깨져 안쪽 객체를 질문 해석으로
-    # 읽었다 (11/21). 상대 연도는 코드 규칙표(_apply_time)가 다시 세므로 계산식은 null로 읽고,
-    # 질문 해석은 type이 있는 객체만 쓴다
-    objects = [o for o in _json_objects(YEAR_ARITH.sub(": null", text)) if "type" in o]
-    if not objects:
-        flow.add("질문 이해", "parse_error", "HCX 출력에서 JSON을 읽지 못함")
-        return {"type": "parse_error", "raw": text}  # 해석 실패는 남기지 않는다
-    parsed = objects[0]
-    # 남녀를 나눠 JSON을 두 번 쓴 경우 → 성별 구분 없이 (남녀를 함께 보여준다)
-    if len({json.dumps(o.get("sex"), ensure_ascii=False) for o in objects}) > 1:
-        parsed["sex"] = "계"
+    merged = None
+    if get_settings().understand_merged == "gemma":
+        merged = await _understand_merged(question, hi, trace)
+    if merged is not None:
+        text, parsed = merged
+        llm = "Gemma(합침)"
+    else:
+        system = PARSE_SYSTEM.replace("{INDICATORS}", _indicator_list())
+        system = system.replace("{LATEST}", str(hi))
+        text = await _chat(question, system, trace=trace)
+        if trace is not None:
+            trace["hcx_raw"] = text
+        # 연도 칸에 계산식("start_year": 2025 - 8)을 쓰면 JSON이 깨져 안쪽 객체를 질문 해석으로
+        # 읽었다 (11/21). 상대 연도는 코드 규칙표(_apply_time)가 다시 세므로 계산식은 null로 읽고,
+        # 질문 해석은 type이 있는 객체만 쓴다
+        objects = [o for o in _json_objects(YEAR_ARITH.sub(": null", text)) if "type" in o]
+        if not objects:
+            flow.add("질문 이해", "parse_error", "HCX 출력에서 JSON을 읽지 못함")
+            return {"type": "parse_error", "raw": text}  # 해석 실패는 남기지 않는다
+        parsed = objects[0]
+        # 남녀를 나눠 JSON을 두 번 쓴 경우 → 성별 구분 없이 (남녀를 함께 보여준다)
+        if len({json.dumps(o.get("sex"), ensure_ascii=False) for o in objects}) > 1:
+            parsed["sex"] = "계"
+        llm = "HCX"
     result = await run_in_threadpool(correct, question, parsed)
-    flow.add("질문 이해", "HCX", _understood(result))
+    flow.add("질문 이해", llm, _understood(result))
     if use_cache:
         # 대화 이어받기(ask_session의 adjust)는 꺼낸 뒤에 적용되므로 이어받기 전 결과를 남긴다
         UNDERSTAND_CACHE.set(key, {"raw": text, "parsed": copy.deepcopy(result)})
     return result
+
+
+MERGED_MAX_TOKENS = 512  # 합친 출력은 140토큰 안팎 (11/21 개발셋 v2 · v1 최대 186)
+
+
+async def _understand_merged(question, latest, trace=None):
+    """UNDERSTAND_MERGED=gemma: 질문 이해 + 조건 추출을 Gemma 한 번으로 → (원문, 질문 이해 출력).
+    조건 추출 몫은 slots.correct 까지 거쳐 이 요청에 보관한다 (slots.extract 가 꺼내 쓴다).
+    Gemma 가 없거나(넘어가 있는 중 포함) 실패 · JSON 을 못 읽으면 None → 지금 방식(HCX)으로"""
+    if not search_llm.is_gemma() or search_llm.falling_back():
+        return None
+    system = merged_prompt.system(_indicator_list(), date.today(), latest)
+    messages = [{"role": "system", "content": system}, {"role": "user", "content": question}]
+    try:
+        with llm_calls.stage("understand"):
+            result = await search_llm.GemmaClient(retry_waits=()).chat(
+                MODEL,
+                messages,
+                thinking={"effort": "none"},
+                topP=0.8,
+                topK=0,
+                maxCompletionTokens=MERGED_MAX_TOKENS,
+                temperature=0.1,
+                repetitionPenalty=1.1,
+                # JSON 뒤에 설명과 '수정된 JSON'을 이어 써서 20초 걸린 응답이 있었다 (11/21 D-049)
+                responseFormat={"type": "json_object"},
+            )
+    except HcxError as e:
+        logger.warning("합친 질문 이해(Gemma) 실패 → HCX 질문 이해: %s", e)
+        return None
+    text = result.content
+    objects = _json_objects(text)
+    obj = objects[0] if objects else llm_json.loads(text)[0]
+    numeric, search = understand_merged.split(obj) if isinstance(obj, dict) else (None, None)
+    if numeric is None:
+        logger.warning("합친 질문 이해(Gemma) 출력을 읽지 못함 → HCX 질문 이해")
+        return None
+    if trace is not None:
+        trace["hcx_raw"], trace["understand_llm"] = text, "gemma_merged"
+        trace["understand_usage"] = dict(result.usage)
+    if search is not None:
+        try:
+            slots_out = await run_in_threadpool(
+                lambda: slots.correct(question, slots.normalize(question, search))
+            )
+            understand_merged.keep(question, slots_out)
+        except Exception:  # 조건 추출 몫이 없으면 통계표 찾기가 따로 부른다
+            logger.exception("합친 질문 이해의 조건 추출 몫 정리 실패")
+    return text, numeric
 
 
 def _understood(parsed):
