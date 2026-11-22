@@ -1650,16 +1650,15 @@ def compute(q):
         if retry.get("status") == "ok":
             return retry
     if (missing := asked.get("survey_missing")) and result.get("status") == "ok":
+        # 물은 조사의 값이 없다: 답 첫머리에 이유를 두고, 원래 조사의 값임을 밝힌다
+        # ("인구총조사로 보면?"에 앞 답과 같은 첫 문장만 나가면 질문을 무시한 것처럼 보인다)
         sp = indicators.spec(q.get("indicator"))
         own = " · ".join(indicators.source_surveys(sp)) if sp else ""
         if own:
-            note = (
-                f"{josa(sp['name'], '은는')} {ro(own)}만 공표되어 {missing} 기준 값은 없습니다. "
-                f"{own} 값으로 답했습니다"
+            result["lead"] = (
+                f"{josa(sp['name'], '은는')} {ro(own)}만 공표되어 {missing} 기준 값은 없습니다."
             )
-            for r in _leaves(result):
-                if note not in r.setdefault("notes", []):
-                    r["notes"].insert(0, note)
+            result["lead_basis"] = f"{own} 기준"
     if survey := asked.get("survey"):
         _add_default_value(q, result)
         if result.get("status") != "ok" and (reason := result.get("reason")):
@@ -2674,7 +2673,16 @@ def _split_text(r):
 
 
 def summary(r):
-    """계산 결과 → 답변 문장 (LLM을 거치지 않는다)"""
+    """계산 결과 → 답변 문장 (LLM을 거치지 않는다). 첫머리에 둘 말(lead)이 있으면 앞에 둔다
+    ("합계출산율은 인구동향조사로만 공표되어 인구총조사 기준 값은 없습니다.")"""
+    text = _summary(r)
+    if r.get("lead") and text:
+        basis = f"{r['lead_basis']} " if r.get("lead_basis") else ""
+        return f"{r['lead']}\n{basis}{text}"
+    return text
+
+
+def _summary(r):
     status = r.get("status")
     if status == "ok" and r.get("split"):
         text = _split_text(r)

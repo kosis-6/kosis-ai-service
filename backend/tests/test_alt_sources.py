@@ -192,13 +192,16 @@ def test_survey_missing(question: str, indicator: str, missing: str | None) -> N
     assert (p.get("asked") or {}).get("survey_missing") == missing
 
 
-def test_survey_missing_note(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_survey_missing_leads_the_answer(monkeypatch: pytest.MonkeyPatch) -> None:
+    """물은 조사의 값이 없으면 이유를 답 첫머리에 두고, 원래 조사의 값임을 밝힌다"""
     monkeypatch.setattr(qa, "_compute", lambda q: {"status": "ok", "value": 0.632, "notes": []})
     monkeypatch.setattr(qa.indicators, "source_surveys", lambda sp: ["인구동향조사"])
+    monkeypatch.setattr(qa, "_summary", lambda r: "2025년 서울특별시의 합계출산율은 0.632명입니다.")
     r = qa.compute(
         {"type": "value", "indicator": "합계출산율", "asked": {"survey_missing": "인구총조사"}}
     )
-    assert r["notes"][0] == (
-        "합계출산율은 인구동향조사로만 공표되어 인구총조사 기준 값은 없습니다. "
-        "인구동향조사 값으로 답했습니다"
+    assert r["notes"] == []  # ※ 줄로 따로 두지 않는다
+    assert qa.summary(r) == (
+        "합계출산율은 인구동향조사로만 공표되어 인구총조사 기준 값은 없습니다.\n"
+        "인구동향조사 기준 2025년 서울특별시의 합계출산율은 0.632명입니다."
     )
