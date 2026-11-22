@@ -794,6 +794,22 @@ def _drop_unsaid_years(question, parsed, fix, touched):
             fix(key, None, "질문에 없는 연도")
 
 
+def _blank_to_none(parsed, fix):
+    """HCX가 '없음'을 0이나 빈 문자열로 적은 칸을 정리한다 (연도 0 · "" → 없음, 성별 "" → 계).
+    지금 지시문에서도 성별 빈 문자열이 나오고(11/22 80문항 중 3), 지시문에서 '최신 연도' 줄을 빼면
+    연도 0이 3~7% 나온다. 0을 진짜 연도로, ""를 성별 값으로 읽지 않게 한다.
+    숫자 글자로 온 연도("2020")는 숫자로 바꾼다"""
+    for key in ("year", "start_year", "end_year"):
+        value = parsed.get(key)
+        if isinstance(value, str) and value.strip().isdigit():
+            value = parsed[key] = int(value.strip())
+        real = isinstance(value, int) and not isinstance(value, bool) and value > 0
+        if value is not None and not real:
+            fix(key, None, "빈 값 정리")
+    if parsed.get("sex") == "":
+        fix("sex", "계", "빈 값 정리")
+
+
 def correct(question, parsed, today=None):
     """같은 질문도 실행마다 HCX 해석이 달라서, 질문 원문에서 확실히 알 수 있는 것은 코드가 맞춘다.
 
@@ -815,6 +831,7 @@ def correct(question, parsed, today=None):
         fixes.append(f"{key}: {parsed.get(key)!r} → {value!r} ({reason})")
         parsed[key] = value
 
+    _blank_to_none(parsed, fix)
     name = parsed.get("indicator")
     if name and indicators.spec(name) is None:
         # HCX가 "전출자 수(명)"·"고령인구 비율 (%)"처럼 단위를 붙여 쓰면 지표를 못 찾는다
@@ -998,15 +1015,13 @@ def correct(question, parsed, today=None):
                 kind = "trend"
         elif kind not in ("trend", "other", "parse_error") and parsed.get("year") != ref.year:
             fix("year", ref.year, ref.describe(today))
-    elif (
-        not has_abs_year
-        and not _says_year(question)
-        and kind in LATEST_KINDS
-        and parsed.get("year")
-    ):
+    elif not has_abs_year and not _says_year(question) and parsed.get("year"):
         # 질문에 연도 표현이 전혀 없을 때만 HCX가 짐작해 넣은 연도를 지운다
         # (예: 연도 없이 물었는데 2022). "22년", "2022.12", "이천이십이년", "코로나 첫 해"처럼
-        # 연도를 말했으면 HCX 연도를 그대로 둔다
+        # 연도를 말했으면 HCX 연도를 그대로 둔다.
+        # 질문 유형과 관계없이 지운다 (11/22): 값 · 비교 · 순위만 지웠더니 구성비 · 원인 · 기타로
+        # 읽힌 질문은 프롬프트가 넣게 한 최신 연도(2025)가 남아, 통계표 찾기로 넘어가 2020년까지인
+        # 표를 만나면 범위 밖이 됐다. 비우면 계산이 그 자료의 마지막 해를 쓴다
         fix("year", None, "연도를 말하지 않음 → 자료 마지막 해")
 
     # 지역이 여럿인 값 질문: 합계를 물었으면 더하고, 아니면 지역별 비교로 답한다.

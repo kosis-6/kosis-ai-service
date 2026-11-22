@@ -1315,3 +1315,36 @@ def test_people_of_another_statistic_is_not_grounded(question: str) -> None:
     # 총인구로 확정하지 않는다 → 통계표 찾기가 맞는 표를 찾는다
     p = qa.correct(question, parsed(indicator="총인구", regions=["서울"]), TODAY)
     assert p["grounded"] is False
+
+
+# ---- 연도를 말하지 않은 질문: 유형과 관계없이 HCX가 넣은 연도를 버린다, 빈 값 정리 ----
+
+
+@pytest.mark.parametrize("kind", ["value", "compare", "rank", "composition", "causal", "other"])
+def test_guessed_year_is_dropped_for_every_type(kind: str) -> None:
+    p = qa.correct("버스로 일터에 가는 사람 수", parsed(type=kind, year=2025), TODAY)
+    assert p["year"] is None
+
+
+@pytest.mark.parametrize("question", ["2019년 서울 인구 구성", "코로나 첫 해 서울 인구 구성"])
+def test_said_year_is_kept_for_composition(question: str) -> None:
+    year = 2019 if "2019" in question else 2020
+    p = qa.correct(question, parsed(type="composition", indicator="총인구", year=year), TODAY)
+    assert p["year"] == year
+
+
+@pytest.mark.parametrize(
+    "given, want",
+    [
+        ({"year": 0}, {"year": None}),
+        ({"year": ""}, {"year": None}),
+        ({"start_year": 0, "end_year": 0}, {"start_year": None, "end_year": None}),
+        ({"year": "2019"}, {"year": 2019}),
+        ({"sex": ""}, {"sex": "계"}),
+        ({"year": 2019, "sex": "여"}, {"year": 2019, "sex": "여"}),
+    ],
+)
+def test_blank_values_are_cleaned(given: dict, want: dict) -> None:
+    p = parsed(**given)
+    qa._blank_to_none(p, lambda key, value, reason: p.__setitem__(key, value))
+    assert {k: p[k] for k in want} == want
