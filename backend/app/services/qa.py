@@ -919,6 +919,10 @@ def correct(question, parsed, today=None):
         chosen = indicators.canonical_name(parsed.get("indicator") or "")
         # 지표가 없으면(원인 질문 등) 판단하지 않는다 (None)
         parsed["grounded"] = (chosen in names) if chosen else None
+        if chosen == "총인구" and parsed["grounded"] is False and _plain_people_question(question):
+            # "노원구가 강남구보다 사람이 많아 적어?": '인구'라는 말은 없지만 다른 통계를 가리키는
+            # 말도 없다 → 총인구로 본다 (통계표 찾기로 돌아가지 않고 사전 계산으로 답한다)
+            parsed["grounded"] = True
         if chosen == "총인구" and population_modifier(question):
             # "통학 인구"·"외국인 인구"처럼 '인구' 앞에 다른 통계를 가리키는 말이 있으면
             # 별칭 '인구'만으로 총인구라고 볼 수 없다 → 바로 계산을 시도한다
@@ -1164,6 +1168,53 @@ PLAIN_POPULATION = {
     "개", "곳", "군데",
 }  # fmt: skip
 POPULATION_NOUN = re.compile(r"([가-힣]+)\s*인구")
+
+
+# '사람 · 주민'으로 인구를 물은 질문에 있어도 되는 말: 세는 말 · 비교 · 순위 · 지역 단위.
+# 여기에 없는 낱말이 하나라도 남으면 다른 통계의 사람일 수 있다 ("지하철 타고 출근하는 사람",
+# "혼자 사는 사람") → 총인구로 확정하지 않고 지금처럼 통계표 찾기에 넘긴다.
+# 막을 낱말을 모으는 방식(OTHER_PEOPLE)은 일상어를 다 막지 못해 11/19에 '사람 → 총인구' 규칙을
+# 뺐다. 반대로 허용할 말만 정해 두면 모르는 말은 늘 넘어간다
+PEOPLE_WORD = re.compile(r"사람|주민")
+PLAIN_PEOPLE_WORD = re.compile(
+    r"^(?:사람들?|주민들?|인구수?|몇|몇명|명(?:이야|이에요|입니까|인가요|인지|이나)?|수|얼마|얼마나|"
+    r"총|전체|모두|다|더|제일|가장|어디|어느|쪽|중|누가|"
+    r"순|순서|순위|위|등|상위|하위|곳|군데|개|구|시|군|도|동|읍|면|지역|도시|시도|시군구|전국|우리나라|"
+    r"한|두|세|네|다섯|여섯|일곱|여덟|아홉|열|\d+|top\d*|"
+    r"살아요?|사는|살고|살지|사나요?|삽니까|많아요?|많은|많이|많나요?|많습니까|많을까|"
+    r"적어요?|적은|적게|적나요?|있어요?|있나요?|있는|있습니까|돼요?|되나요?|되지|됩니까|되는지|"
+    r"알려줘|알려|줘|보여줘|비교해줘|비교해|비교|차이|현재|지금|요즘|최근)$",
+    re.IGNORECASE,
+)
+PEOPLE_PARTICLES = (
+    "에서는", "에서", "에는", "으로", "보다", "까지", "부터", "이랑", "하고", "이나",
+    "은", "는", "이", "가", "을", "를", "에", "의", "와", "과", "랑", "도", "로", "만", "나",
+)  # fmt: skip
+
+
+def _plain_token(token):
+    """낱말 하나가 지역 이름이거나 PLAIN_PEOPLE_WORD 인가 (조사를 뗀 모양도 본다)"""
+    cut = [token[: -len(p)] for p in PEOPLE_PARTICLES if token.endswith(p) and token != p]
+    forms = [token, *cut]
+    for form in forms:
+        if PLAIN_PEOPLE_WORD.match(form) or indicators.find_regions(form) == [form]:
+            return True
+        if form not in COMMON_WORD_REGIONS and len(form) >= 2:
+            if indicators.resolve_region(form).get("status") == "ok":
+                return True
+    return False
+
+
+def _plain_people_question(question):
+    """'사람 · 주민'으로 인구를 물었고, 지역 · 연도 · 세는 말 · 비교 · 순위 말 말고는
+    남는 낱말이 없는가"""
+    if not PEOPLE_WORD.search(question) or OTHER_PEOPLE.search(question):
+        return False
+    text = YEAR.sub(" ", question)
+    for ref in timeref.find(question):
+        text = text.replace(ref["expr"], " ")
+    tokens = re.findall(r"[가-힣A-Za-z0-9]+", text)
+    return bool(tokens) and all(_plain_token(t) for t in tokens)
 
 
 def population_modifier(question):

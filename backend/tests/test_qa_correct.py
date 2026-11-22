@@ -1264,3 +1264,35 @@ def test_n_years_fall_back_when_this_year_value_is_missing(monkeypatch) -> None:
     recent = {"type": "trend", "asked": {"recent": 5}}
     qa._compute_population(recent, "세대당 인구", "trend", ["서울특별시"], 2025, "계", None, 2025)
     assert calls == [(2022, 2026), (2021, 2025)]
+
+
+# ---- '사람 · 주민'으로 인구를 물은 질문: 남는 낱말이 없을 때만 총인구로 확정 ----
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "수영구가 연제구보다 사람이 많아?",
+        "대구에서 사람 제일 많이 사는 구 다섯 곳",
+        "춘천시 주민 몇 명이야?",
+        "작년 인천 사람 얼마나 돼?",
+    ],
+)
+def test_plain_people_question_is_population(question: str) -> None:
+    p = qa.correct(question, parsed(indicator="총인구", regions=["서울"]), TODAY)
+    assert p["indicator"] == "총인구" and p["grounded"] is True
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "버스 타고 일하러 가는 사람 몇 명이야?",  # 다른 통계의 사람 (낱말 목록에 없는 일상어)
+        "대전에서 반려동물 키우는 사람 몇 명이야?",
+        "울산에 귀촌한 사람 얼마나 돼?",
+        "창원에서 혼자 사는 사람 몇 명이야?",  # OTHER_PEOPLE
+    ],
+)
+def test_people_of_another_statistic_is_not_grounded(question: str) -> None:
+    # 총인구로 확정하지 않는다 → 통계표 찾기가 맞는 표를 찾는다
+    p = qa.correct(question, parsed(indicator="총인구", regions=["서울"]), TODAY)
+    assert p["grounded"] is False
