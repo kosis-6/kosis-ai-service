@@ -378,7 +378,7 @@ def follow_year(question: str, conditions: dict, today: date | None = None) -> i
       "작년", "올해", "3년 전" 오늘 기준 (timeref, 2026년이면 "작년" → 2025)
     "전년 대비"처럼 비교 기준으로 쓴 말, 연도를 숫자로 말한 경우, "작년부터"처럼 기간이면 None"""
     q = timeref.COMPARE_BASE.sub(" ", question)
-    if FULL_YEAR.search(q):
+    if FULL_YEAR.search(q) or slots.decades(q):
         return None
     base = conditions.get("end_year") or conditions.get("year")
     for pattern, step in CONTEXT_YEAR:

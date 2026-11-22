@@ -41,6 +41,7 @@ from app.services import (
     llm_calls,
     load_queue,
     lookup,
+    slots,
     table_cache,
     timeref,
 )
@@ -402,7 +403,8 @@ LATEST = re.compile(r"최근|최신|현재|요즘|요새|지금")
 LATEST_KINDS = ("value", "compare", "rank")  # "최근"이면 마지막 해로 답하는 질문 유형
 CHANGE_ASK = re.compile(r"추이|변화|변동|흐름|증감|추세|늘|줄|증가|감소|동안|사이|년간|그래프")
 SPAN = re.compile(r"((?:19|20)\d{2})\s*년?\s*(대비|부터|에서)\s*((?:19|20)\d{2})\s*년")
-YEAR = re.compile(r"((?:19|20)\d{2})\s*년")
+# '1990년대'(기간, slots.decades)·'1990년생'(출생 연도)은 조회 연도가 아니다 ('2000년 대비'는 연도)
+YEAR = re.compile(r"((?:19|20)\d{2})\s*년(?!대(?!비)|생)")
 # 한글 숫자·사건으로 말한 해 ("이천이십이년", "십 년 전", "코로나 첫 해", "월드컵 때", "그 당시")
 # 청년·유소년·노년·중년·장년의 "년"은 연도가 아니다
 YEAR_WORDS = re.compile(r"(?<![청소노중장])년|때|당시|해(?![가-힣])")
@@ -832,7 +834,8 @@ def correct(question, parsed, today=None):
             fix("regions", ["전국"], "질문의 전국 표현")
 
     years = {int(y) for y in YEAR.findall(question)}
-    has_abs_year = bool(years)
+    spans = slots.decades(question, today)
+    has_abs_year = bool(years or spans)
     single = len(years) == 1 and not SPAN.search(question) and not SINCE.search(question)
     if single and parsed.get("type") not in ("trend", "other", "parse_error"):
         year = years.pop()
@@ -850,6 +853,23 @@ def correct(question, parsed, today=None):
                 kind = "trend"
         elif kind not in ("trend", "other", "parse_error") and parsed.get("year") != ref.year:
             fix("year", ref.year, ref.describe(today))
+    if spans and kind in ("value", "trend", "compare"):
+        # '1990년대 서울 인구' → 1990~1999 변화. '1990년대부터 2010년까지'처럼 연도와 섞이면 합친다
+        said = {int(y) for y in YEAR.findall(question)}  # 위에서 years.pop()으로 비었을 수 있다
+        start = min([lo for lo, _ in spans] + list(said))
+        end = max([hi for _, hi in spans] + list(said))
+        if kind != "trend":
+            fix("type", "trend", "연대는 기간")
+            kind = "trend"
+        if parsed.get("start_year") != start:
+            fix("start_year", start, "질문의 연대")
+        if parsed.get("end_year") != end:
+            fix("end_year", end, "질문의 연대")
+        if parsed.get("year"):
+            fix("year", None, "질문의 연대")
+    born = slots.birth_years(question) - {int(y) for y in YEAR.findall(question)}
+    if parsed.get("year") in born:
+        fix("year", None, "'년생'은 출생 연도 → 자료 마지막 해")
     elif (
         not has_abs_year
         and not _says_year(question)
