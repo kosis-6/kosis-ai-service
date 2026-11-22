@@ -1452,3 +1452,52 @@ def test_empty_month_falls_back_to_annual(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setattr(qa, "_compute", lambda q: monthly if q["asked"]["latest"] else annual)
     r = qa.compute({"type": "value", "indicator": "세대당 인구", "asked": {"latest": True}})
     assert r["value"] == 2.07
+
+
+def test_indicators_aligned_to_common_year_and_summed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """V2-032 "춘천 인구, 등록된 외국인까지 다 합치면": 지표마다 최신 시점이 다르면 (주민등록인구
+    2026년 10월, 등록외국인 2025년) 둘 다 있는 해로 맞추고, 합계를 물었으면 더한다"""
+    asked_years = []
+
+    def fake(q):
+        asked_years.append((q["indicator"], q.get("year")))
+        year = q.get("year")
+        if q["indicator"] == "총인구":
+            if year:
+                return {
+                    "status": "ok",
+                    "indicator": "총인구",
+                    "unit": "명",
+                    "kind": "count",
+                    "region": "춘천시",
+                    "year": year,
+                    "value": 285234,
+                }
+            return {
+                "status": "ok",
+                "indicator": "총인구",
+                "unit": "명",
+                "kind": "count",
+                "region": "춘천시",
+                "year": 2026,
+                "as_of": "2026년 10월 말",
+                "value": 284762,
+            }
+        return {"status": "ok", "indicator": "등록외국인 수", "unit": "명", "kind": "count",
+                "region": "춘천시", "year": 2025, "value": 5637}  # fmt: skip
+
+    monkeypatch.setattr(qa, "compute", fake)
+    monkeypatch.setattr(qa.indicators, "_data_years", lambda: (2008, 2025))
+    q = {"type": "value", "indicators": ["총인구", "등록외국인 수"], "aggregate": "sum",
+         "regions": ["춘천"]}  # fmt: skip
+    r = qa._compute(q)
+    assert ("총인구", 2025) in asked_years
+    assert r["value"] == 290871 and r["year"] == 2025
+    assert [m["value"] for m in r["members"]] == [285234, 5637]
+
+
+def test_sum_indicators_refuses_mixed_periods_or_rates() -> None:
+    one = {"status": "ok", "unit": "명", "kind": "count", "region": "춘천시", "value": 1}
+    assert qa._sum_indicators([{**one, "year": 2025}, {**one, "year": 2024}], {}) is None
+    assert qa._sum_indicators([{**one, "year": 2025}, {**one, "year": 2025, "unit": "%",
+                                                       "kind": "rate"}], {}) is None  # fmt: skip
