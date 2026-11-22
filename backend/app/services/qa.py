@@ -1411,12 +1411,13 @@ def _read_question(question, parsed, fix):
         and not timeref.resolve(question)
         and not SPAN.search(question)
         and not SINCE.search(question)
-        and (sp := indicators.spec(parsed.get("indicator"))) is not None
-        and sp.get("method") == "lookup"
+        and indicators.spec(parsed.get("indicator")) is not None
     ):
-        # 연도를 말하지 않은 조회 지표 질문 ("서울 외국인주민 수")은
-        # "최근"과 같이 표마다 마지막 해로
-        # (공통 기준 연도로 계산하면 2024년까지인 표는 자료가 있는데도 범위 밖이 된다)
+        # 연도를 말하지 않은 질문은 "최근"과 같이 가장 최근 자료로 답한다
+        # - 조회 지표 ("서울 외국인주민 수"): 표마다 마지막 해
+        #   (공통 기준 연도로 계산하면 2024년까지인 표는 자료가 있는데도 범위 밖이 된다)
+        # - 주민등록인구 계산 지표 ("서울 인구"): 연간 자료 다음 해의 KOSIS 최신 달
+        #   (연간 마지막 해 12월 말이 아니라). 연간 자료와 섞는 지표는 compute가 연간으로 다시 계산
         asked["latest"] = True
     elif (
         kind == "trend"
@@ -1568,11 +1569,67 @@ def compute(q):
         return _combine([compute({**q, "sex": s, "split_sex": False}) for s in ("남", "여")])
     result = _compute(q)
     asked = q.get("asked") or {}
-    if result.get("status") == "out_of_range" and asked.get("latest") and not q.get("year"):
+    if (
+        asked.get("latest")
+        and not q.get("year")
+        and (result.get("status") == "out_of_range" or _monthly_empty(result))
+    ):
         retry = _compute({**q, "asked": {**asked, "latest": False}})
         if retry.get("status") == "ok":
-            return retry
+            result = retry
+    elif asked.get("latest") and not q.get("year") and result.get("as_of") and "ranking" in result:
+        # 최신 달 자료는 행정구역 개편(예: 전남광주통합특별시, 인천 중·동·서구)이 반영돼
+        # 지역 목록과 맞지 않는 곳이 순위에서 빠진다. 빠지면 연간 마지막 해로 답한다
+        annual = _compute({**q, "asked": {**asked, "latest": False}})
+        if (annual.get("total_regions") or 0) > (result.get("total_regions") or 0):
+            annual["skipped_month"] = result["as_of"]
+            result = annual
+    _add_latest_note(q, result)
     return result
+
+
+def _monthly_empty(result):
+    """최신 달 값으로 계산했는데 값이 비었다 (세대당 인구: 최신 달 세대수가 없음)"""
+    if result.get("status") != "ok":
+        return False
+    leaves = [r for r in _leaves(result) if r.get("as_of")]
+    vals = [v.get("value") for r in leaves for v in (r.get("values") or r.get("ranking") or [r])]
+    return bool(leaves) and all(v is None for v in vals)
+
+
+def _add_latest_note(q, result):
+    """연도 · 기간을 말하지 않아 가장 최근 자료로 답했으면 그 시점을 밝힌다.
+    첫 문장의 "2024년"만으로는 그게 가장 최근 자료인지 알 수 없다 (외국인주민 수는 2024년까지,
+    총인구는 최신 달까지). 연도를 말하지 않은 질문은 correct가 year · start_year · end_year를
+    비운다"""
+    if result.get("status") != "ok" or q.get("prediction"):
+        return
+    for r in _leaves(result):
+        if r.get("series"):
+            # 추이는 끝 연도만 본다: "2010년부터" · "최근 5년"도 끝은 가장 최근 자료
+            if q.get("end_year"):
+                continue
+            last = r["series"][-1]
+            when = last.get("as_of") or f"{last['year']}년"
+            name = r.get("indicator") or "이"
+            note = f"{name} 자료는 {when}이 가장 최근입니다"
+        elif q.get("year"):
+            continue
+        elif r.get("as_of") or r.get("year"):
+            note = f"연도를 말하지 않아 가장 최근 자료인 {_when(r)} 기준으로 답했습니다"
+            if month := r.get("skipped_month"):
+                note = (
+                    f"연도를 말하지 않아 가장 최근 연간 자료인 {_when(r)} 기준으로 답했습니다. "
+                    f"최신 달({month}) 자료는 행정구역 개편으로 일부 지역이 달라 쓰지 않았습니다"
+                )
+            elif r.get("as_of"):
+                # 최신 달 값: "○년까지는 연간 자료이고 ○년은 월별 자료의 최신 달 값" 안내와 겹친다
+                note += " (KOSIS 월별 자료)"
+                r["notes"] = [n for n in r.get("notes", []) if "KOSIS 월별 자료의" not in n]
+        else:
+            continue
+        if note not in (notes := r.setdefault("notes", [])):
+            notes.append(note)
 
 
 CALC_ERROR_TEXT = "계산하는 중에 문제가 생겨 답하지 못했습니다. 잠시 후 다시 질문해 주세요."
@@ -1991,7 +2048,10 @@ def _lookup_trend(q, sp, region, year, sex, ages):
     if start < lo:
         notes.append(f"{sp['name']} 자료가 {lo}년부터 있어 {lo}년부터 봤습니다")
         start = lo
-    if (q.get("end_year") or year or hi) > hi and not asked.get("recent"):
+    # 끝 연도를 말했을 때만 알린다. 말하지 않았으면 year는 주민등록인구 표의 마지막 해라
+    # 2024년까지인 표(외국인주민 수)에 묻지도 않은 "2024년까지 봤습니다"가 붙었다
+    said_end = q.get("end_year") or q.get("year")
+    if said_end and said_end > hi and not asked.get("recent"):
         notes.append(f"{sp['name']} 자료가 {hi}년까지 있어 {hi}년까지 봤습니다")
     result = lookup.trend(sp, region, start, end, sex, ages)
     if result.get("status") == "ok":
