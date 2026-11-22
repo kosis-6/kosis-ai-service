@@ -265,6 +265,48 @@ def spec(indicator):
     return specs().get(name) if name else None
 
 
+# 조사마다 답에 붙이는 기준 (다른 조사의 공표값으로 답할 때)
+ALT_NOTES = {
+    "인구총조사": "인구총조사 공표값입니다 (외국인 포함, 11월 1일 기준). "
+    "주민등록인구로 계산한 값과 다를 수 있습니다",
+    "장래인구추계": "장래인구추계(중위 추계) 값입니다 (외국인 포함, 7월 1일 기준 추정). "
+    "주민등록인구로 계산한 값과 다를 수 있습니다",
+}
+
+
+def alt_spec(sp, survey):
+    """지표의 다른 조사 공표값 정의 (지표 사전의 alt_sources) → 조회 지표 정의. 없으면 None
+    예) "인구총조사 기준 영도구 중위연령": 주민등록 1세별 계산 대신 DT_1IN2030의 중위연령"""
+    alts = [a for a in sp.get("alt_sources") or [] if a.get("survey") == survey]
+    if not alts:
+        return None
+    base = INDICATORS.get(sp["name"], {})
+    out = {
+        "name": sp["name"],
+        "unit": sp.get("unit") or base.get("unit", ""),
+        "kind": sp.get("kind") or base.get("kind"),
+        "diff_unit": sp.get("diff_unit") or base.get("diff_unit"),
+        "method": "lookup",
+        "survey": survey,
+        "note": ALT_NOTES.get(survey, f"{survey} 공표값입니다"),
+        "sources": [{k: v for k, v in a.items() if k != "survey"} for a in alts],
+    }
+    if any(a.get("den_item_id") for a in alts):
+        # 비율이 공표되지 않아 그 조사의 연령별 인구로 나눴다 (인구총조사 고령인구 비율 등)
+        formula = base.get("formula") or sp.get("formula") or ""
+        out["formula"] = f"{formula} ({survey} 연령별 인구로 계산)".strip()
+        out["note"] = (
+            f"{survey} 인구(외국인 포함, 11월 1일 기준)로 계산한 값입니다. "
+            "주민등록인구로 계산한 값과 다를 수 있습니다"
+        )
+    return out
+
+
+def alt_surveys(sp):
+    """지표에 공표값이 따로 있는 조사 이름들"""
+    return list(dict.fromkeys(a["survey"] for a in sp.get("alt_sources") or []))
+
+
 def _alias_map():
     """지표 이름 → 별칭 목록 (계산·조회 지표 모두)"""
     return {name: ind.get("aliases", []) for name, ind in specs().items()}

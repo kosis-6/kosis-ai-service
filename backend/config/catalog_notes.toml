@@ -308,6 +308,12 @@ unit = "%"
 method = "computed"
 sources = [{ table = "DT_1B04006", level = "시군구" }]
 projection = { table = "DT_1BPB002", c3_id = "33" }
+# 같은 이름의 공표값이 다른 조사에 있다: 질문이 그 조사를 말하면 ("인구총조사 기준") 그 표로 답한다
+alt_sources = [
+  { survey = "인구총조사", table = "DT_1IN1503", item_id = "T00", den_item_id = "T00", level = "시군구", filters = { c2_id = "104" }, den_filters = { c2_id = "000" } },
+  { survey = "장래인구추계", table = "DT_1BPB002", item_id = "T10", level = "시도", filters = { c1_id = "1", c3_id = "33" } },
+  { survey = "장래인구추계", table = "DT_1BPA002", item_id = "T10", level = "전국", national_only = true, filters = { c1_id = "1", c2_id = "33" } },
+]
 
 [[indicators]]
 name = "유소년인구 비율"
@@ -319,6 +325,12 @@ unit = "%"
 method = "computed"
 sources = [{ table = "DT_1B04006", level = "시군구" }]
 projection = { table = "DT_1BPB002", c3_id = "31" }
+# 같은 이름의 공표값이 다른 조사에 있다: 질문이 그 조사를 말하면 ("인구총조사 기준") 그 표로 답한다
+alt_sources = [
+  { survey = "인구총조사", table = "DT_1IN1503", item_id = "T00", den_item_id = "T00", level = "시군구", filters = { c2_id = "102" }, den_filters = { c2_id = "000" } },
+  { survey = "장래인구추계", table = "DT_1BPB002", item_id = "T10", level = "시도", filters = { c1_id = "1", c3_id = "31" } },
+  { survey = "장래인구추계", table = "DT_1BPA002", item_id = "T10", level = "전국", national_only = true, filters = { c1_id = "1", c2_id = "31" } },
+]
 
 [[indicators]]
 name = "노령화지수"
@@ -327,6 +339,12 @@ unit = "유소년인구 100명당 명"
 method = "computed"
 sources = [{ table = "DT_1B04006", level = "시군구" }]
 projection = { table = "DT_1BPB002", c3_id = "50" }
+# 같은 이름의 공표값이 다른 조사에 있다: 질문이 그 조사를 말하면 ("인구총조사 기준") 그 표로 답한다
+alt_sources = [
+  { survey = "인구총조사", table = "DT_1IN2030", item_id = "T4", level = "시군구", filters = { c1_id = "01" } },
+  { survey = "장래인구추계", table = "DT_1BPB002", item_id = "T10", level = "시도", filters = { c1_id = "1", c3_id = "50" } },
+  { survey = "장래인구추계", table = "DT_1BPA002", item_id = "T10", level = "전국", national_only = true, filters = { c1_id = "1", c2_id = "50" } },
+]
 
 [[indicators]]
 name = "생산연령인구 비율"
@@ -335,6 +353,12 @@ unit = "%"
 method = "computed"
 desc = "15~64세 인구 ÷ 총인구 × 100"
 sources = [{ table = "DT_1B04006", level = "시군구" }]
+# 같은 이름의 공표값이 다른 조사에 있다: 질문이 그 조사를 말하면 ("인구총조사 기준") 그 표로 답한다
+alt_sources = [
+  { survey = "인구총조사", table = "DT_1IN1503", item_id = "T00", den_item_id = "T00", level = "시군구", filters = { c2_id = "103" }, den_filters = { c2_id = "000" } },
+  { survey = "장래인구추계", table = "DT_1BPB002", item_id = "T10", level = "시도", filters = { c1_id = "1", c3_id = "32" } },
+  { survey = "장래인구추계", table = "DT_1BPA002", item_id = "T10", level = "전국", national_only = true, filters = { c1_id = "1", c2_id = "32" } },
+]
 
 [[indicators]]
 name = "노년부양비"
@@ -343,6 +367,12 @@ unit = "생산연령인구 100명당 명"
 method = "computed"
 desc = "65세 이상 ÷ 15~64세 × 100. 일하는 나이 100명이 부양하는 노인 수"
 sources = [{ table = "DT_1B04006", level = "시군구" }]
+# 같은 이름의 공표값이 다른 조사에 있다: 질문이 그 조사를 말하면 ("인구총조사 기준") 그 표로 답한다
+alt_sources = [
+  { survey = "인구총조사", table = "DT_1IN2030", item_id = "T3", level = "시군구", filters = { c1_id = "01" } },
+  { survey = "장래인구추계", table = "DT_1BPB002", item_id = "T10", level = "시도", filters = { c1_id = "1", c3_id = "42" } },
+  { survey = "장래인구추계", table = "DT_1BPA002", item_id = "T10", level = "전국", national_only = true, filters = { c1_id = "1", c2_id = "42" } },
+]
 
 [[indicators]]
 name = "노인 1명당 생산연령인구"
@@ -360,6 +390,12 @@ unit = "생산연령인구 100명당 명"
 method = "computed"
 desc = "0~14세 ÷ 15~64세 × 100"
 sources = [{ table = "DT_1B04006", level = "시군구" }]
+# 같은 이름의 공표값이 다른 조사에 있다: 질문이 그 조사를 말하면 ("인구총조사 기준") 그 표로 답한다
+alt_sources = [
+  { survey = "인구총조사", table = "DT_1IN2030", item_id = "T2", level = "시군구", filters = { c1_id = "01" } },
+  { survey = "장래인구추계", table = "DT_1BPB002", item_id = "T10", level = "시도", filters = { c1_id = "1", c3_id = "41" } },
+  { survey = "장래인구추계", table = "DT_1BPA002", item_id = "T10", level = "전국", national_only = true, filters = { c1_id = "1", c2_id = "41" } },
+]
 
 [[indicators]]
 name = "총부양비"
@@ -368,6 +404,12 @@ unit = "생산연령인구 100명당 명"
 method = "computed"
 desc = "(0~14세 + 65세 이상) ÷ 15~64세 × 100. 그냥 '부양비'라고 물으면 이것"
 sources = [{ table = "DT_1B04006", level = "시군구" }]
+# 같은 이름의 공표값이 다른 조사에 있다: 질문이 그 조사를 말하면 ("인구총조사 기준") 그 표로 답한다
+alt_sources = [
+  { survey = "인구총조사", table = "DT_1IN2030", item_id = "T1", level = "시군구", filters = { c1_id = "01" } },
+  { survey = "장래인구추계", table = "DT_1BPB002", item_id = "T10", level = "시도", filters = { c1_id = "1", c3_id = "40" } },
+  { survey = "장래인구추계", table = "DT_1BPA002", item_id = "T10", level = "전국", national_only = true, filters = { c1_id = "1", c2_id = "40" } },
+]
 
 [[indicators]]
 name = "성비"
@@ -377,6 +419,12 @@ unit = "여자 100명당 남자 수"
 method = "computed"
 desc = "남자 ÷ 여자 × 100. 100보다 크면 남자가 더 많음"
 sources = [{ table = "DT_1B04006", level = "시군구" }]
+# 같은 이름의 공표값이 다른 조사에 있다: 질문이 그 조사를 말하면 ("인구총조사 기준") 그 표로 답한다
+alt_sources = [
+  { survey = "인구총조사", table = "DT_1IN1503", item_id = "T03", level = "시군구", filters = { c2_id = "000" } },
+  { survey = "장래인구추계", table = "DT_1BPB002", item_id = "T10", level = "시도", filters = { c1_id = "1", c3_id = "13" } },
+  { survey = "장래인구추계", table = "DT_1BPA002", item_id = "T10", level = "전국", national_only = true, filters = { c1_id = "1", c2_id = "13" } },
+]
 
 [[indicators]]
 name = "중위연령"
@@ -386,6 +434,12 @@ method = "computed"
 desc = "인구를 나이순으로 세웠을 때 가운데 사람의 나이 (주민등록 1세별 인구로 계산)"
 note = "주민등록 1세별 인구로 계산한 값입니다. 장래인구추계의 중위연령(7월 1일, 외국인 포함)과 다를 수 있습니다"
 sources = [{ table = "DT_1B04006", level = "시군구" }]
+# 같은 이름의 공표값이 다른 조사에 있다: 질문이 그 조사를 말하면 ("인구총조사 기준") 그 표로 답한다
+alt_sources = [
+  { survey = "인구총조사", table = "DT_1IN2030", item_id = "T5", level = "시군구", filters = { c1_id = "01" } },
+  { survey = "장래인구추계", table = "DT_1BPB002", item_id = "T10", level = "시도", filters = { c1_id = "1", c3_id = "60" } },
+  { survey = "장래인구추계", table = "DT_1BPA002", item_id = "T10", level = "전국", national_only = true, filters = { c1_id = "1", c2_id = "60" } },
+]
 
 [[indicators]]
 name = "세대당 인구"
@@ -394,6 +448,10 @@ unit = "명"
 method = "computed"
 desc = "주민등록 총인구 ÷ 주민등록 세대수 (한 세대에 평균 몇 명)"
 sources = [{ table = "DT_1B04006", level = "시군구" }, { table = "DT_1B040B3", level = "시군구" }]
+# 같은 이름의 공표값이 다른 조사에 있다: 질문이 그 조사를 말하면 ("인구총조사 기준") 그 표로 답한다
+alt_sources = [
+  { survey = "인구총조사", table = "DT_1JC1511", item_id = "T300", level = "시군구", label = "평균 가구원 수", filters = { c2_id = "000" } },
+]
 
 # 면적은 pipeline/load_area.py가 지적통계(DT_MLTM_2300)를 mart.area에 넣는다 (KOSIS 공식 인구밀도
 # DT_1B08024는 인구총조사 기준·시도만이라, 주민등록인구로 시군구까지 같은 기준으로 계산한다)
@@ -406,6 +464,10 @@ diff_unit = "명/㎢"
 method = "computed"
 desc = "주민등록인구 ÷ 행정구역 면적(㎢). 1㎢에 사는 사람 수. '빽빽한', '밀집한' 지역 질문도 이 지표"
 sources = [{ table = "DT_1B04006", level = "시군구" }]
+# 같은 이름의 공표값이 다른 조사에 있다: 질문이 그 조사를 말하면 ("인구총조사 기준") 그 표로 답한다
+alt_sources = [
+  { survey = "인구총조사", table = "DT_1B08024", item_id = "T7", level = "시도" },
+]
 
 [[indicators]]
 name = "세대수"

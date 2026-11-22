@@ -386,6 +386,20 @@ REBOUND = re.compile(r"다시\s*(오르|늘|증가|올라)|반등")
 PER_YEAR = re.compile(r"해마다|매년|연평균|1년에|한 해에")
 PREV_YEAR = re.compile(r"(작년|전년|지난해)\s*(보다|대비|에 비해)")
 RATIO_ASK = re.compile(r"몇\s*배")
+# 질문이 조사를 말하면 그 조사의 공표값으로 답한다 (지표 사전의 alt_sources)
+# "외국인 포함"은 인구총조사 총인구 기준 (주민등록인구는 내국인만)
+SURVEY_ASK = [
+    (
+        "장래인구추계",
+        re.compile(r"장래\s*인구\s*추계|장래\s*추계|추계\s*인구|추계\s*(?:값|치|기준|자료|로)"),
+    ),
+    (
+        "인구총조사",
+        re.compile(
+            r"인구\s*(?:주택\s*)?총조사|총조사|센서스|외국인\s*(?:까지\s*)?(?:포함|합쳐|넣어|더해)"
+        ),
+    ),
+]
 LEVEL_CITY = re.compile(r"전국\s*(의\s*)?시\s*(중|가운데)|시\s*단위")
 ASCENDING = re.compile(r"꼴찌|최하위|가장\s*(낮|적)|제일\s*(낮|적)")
 # 높은 순으로 물음 ("초혼연령 높은 시도 3곳", "인구 많은 순서로", "상위 3곳"). 질문 해석이 추론 없이
@@ -1460,6 +1474,13 @@ def _read_question(question, parsed, fix):
             fix("end_year", year, "전년 대비")
     if RATIO_ASK.search(question):
         asked["ratio"] = True
+    if (alt := indicators.spec(parsed.get("indicator"))) and (
+        surveys := indicators.alt_surveys(alt)
+    ):
+        # "인구총조사 기준 영도구 중위연령": 사전의 계산(주민등록인구) 대신 그 조사의 공표값
+        said = next((name for name, pat in SURVEY_ASK if pat.search(question)), None)
+        if said in surveys:
+            asked["survey"] = said
     focus = [label for word, label in FOCUS_WORDS.items() if word in question]
     if focus:
         asked["focus"] = list(dict.fromkeys(focus))
@@ -1723,6 +1744,15 @@ def _compute(q):
             "그 값을 낼 수 없습니다.",
             "alternative": f"대신 조건 없는 {where} {sp['name']}는 확인할 수 있습니다",
         }
+
+    survey = (q.get("asked") or {}).get("survey")
+    if survey and not dyn and (alt := indicators.alt_spec(sp, survey)):
+        # 질문이 말한 조사의 공표값으로 (주민등록인구로 계산하지 않는다). 그 조사에 없는 지역 수준
+        # (장래인구추계는 시도까지) · 연도는 조회 단계가 "○○ 단위까지만 자료가 있습니다"로 알린다
+        sp = alt
+        ages = None  # 지표 정의에 연령이 들어 있다 ("노인 비율"의 65세 이상을 다시 나누지 않는다)
+        if kind not in ("value", "trend", "compare", "rank"):
+            kind = "value"
 
     def calc(rs):
         if sp["method"] == "lookup":
