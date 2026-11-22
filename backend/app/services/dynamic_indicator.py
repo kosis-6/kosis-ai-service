@@ -53,6 +53,7 @@ from app.services import (
     plan_cache,
     qa,
     search,
+    search_answer,
     table_cache,
 )
 from app.services.memory_cache import MISSING, MemoryCache
@@ -517,9 +518,19 @@ def _couple_code(d: Dim) -> str | None:
 
 
 # 부부 단위 건수 표에서 남편 쪽 칸으로 답할 때의 안내.
-# 전국 값은 두 쪽이 같지만 지역 값은 다를 수 있다
-# (1975년 혼인 DT_1B80023: 전국 남 = 여 283,226, 부산 남 18,679 · 여 16,324, 혼인 총계는 18,679)
-COUPLE_NOTE = "기준 (부부 단위 건수. 전국 값은 다른 쪽 기준과 같고, 지역별 값은 다를 수 있음)"
+# 전국 값은 두 쪽이 같고, 지역 값은 남편 쪽이 공표된 시도별 건수와 같다 (남편 주소지 기준).
+# 혼인 DT_1B80023 남편 칸 = 시도별 혼인 DT_1B80022 (1980 서울 90,497 · 아내 칸 76,675),
+# 이혼 DT_1B80032 남편 칸 = 시도별 이혼 DT_1B80030 (1980 서울 7,935 · 아내 칸 8,020) (11/22 확인)
+COUPLE_NOTE = "기준 (부부 단위 건수. 지역별 값은 남편 주소지 기준으로, 공표된 시도별 건수와 같음)"
+
+
+def table_notice(notice: str | None, note: str) -> str | None:
+    """답에 붙일 통계표 찾기의 주의. 남편 쪽 칸으로 답했으면(note에 COUPLE_NOTE) 그 칸이 곧 부부
+    건수라 "남녀 값을 더해 보라"는 표 안내를 뺀다 (더하면 두 번 센다, V2-053)"""
+    if not notice or COUPLE_NOTE not in note:
+        return notice
+    left = notice.replace(search_answer.NO_TOTAL_NOTE.rstrip("."), "")
+    return re.sub(r"(?:\.\s*){2,}", ". ", left).strip(" .") or None
 
 
 @lru_cache(maxsize=512)
@@ -1904,6 +1915,7 @@ async def _try_once(
         step["skip"] = str(why)
         return None, why if isinstance(why, Ask) else None
     step["cells"] = spec["cells"]
+    notice = table_notice(notice, spec["note"])
     if notice:
         spec["note"] = f"{spec['note']}. {notice}"
     if spec.get("parts_op"):  # 한 분류 안의 칸들로 합·비교·순위

@@ -924,6 +924,7 @@ def test_school_going_is_commute_only_with_movement() -> None:
     assert "고등학교" in words and "통학" not in words
 
 
+
 def test_handoff_drops_guessed_year() -> None:
     # 질문 이해가 연도 없는 질문에 올해를 짐작해 넣었고(종류 other라 qa.correct가 안 지움)
     # 탐색 해석은 연도가 없다 → 지워서 표의 마지막 해로 계산한다
@@ -1377,6 +1378,17 @@ def test_couple_counted_sex_dimension_uses_male_cell() -> None:
     # 성별을 말하면 그 칸
     plan, why = d.choose(q, {"sex": "여"}, [items, region, sex], 1, couple=True)
     assert why is None and plan.pick[2] == "2"
+
+
+def test_couple_answer_drops_add_sexes_notice() -> None:
+    # 남편 쪽 칸이 곧 부부 건수: "남녀 값을 더해 보라"는 표 안내를 붙이면 두 번 세게 된다 (V2-053)
+    note = f"직접 계산. 말하지 않은 구분은 합계·기본값으로 계산했습니다 (성별: 남자 {d.COUPLE_NOTE})"
+    no_total = d.search_answer.NO_TOTAL_NOTE.rstrip(".")
+    assert d.table_notice(no_total, note) is None
+    assert d.table_notice(f"표 주석 A. {no_total}. 표 주석 B", note) == "표 주석 A. 표 주석 B"
+    # 사람 수 표(부부 단위가 아님)에는 그대로 붙인다
+    assert d.table_notice(no_total, "직접 계산") == no_total
+    assert d.table_notice(None, note) is None
 
 
 def test_couple_counted_compares_national_sums(monkeypatch) -> None:
