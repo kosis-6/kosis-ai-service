@@ -794,7 +794,6 @@ def _drop_unsaid_years(question, parsed, fix, touched):
             fix(key, None, "질문에 없는 연도")
 
 
-
 def correct(question, parsed, today=None):
     """같은 질문도 실행마다 HCX 해석이 달라서, 질문 원문에서 확실히 알 수 있는 것은 코드가 맞춘다.
 
@@ -3107,8 +3106,11 @@ def _add_data_end_note(parsed, result, today=None):
     if not recent and not kinds - {"span_from"}:
         return  # '○년부터 N년 동안'은 사용자가 정한 기간이다
     parts = _leaves(result) if result.get("split") else [result]
-    years = [(p["series"][0]["year"], p["series"][-1]["year"], len(p["series"]))
-             for p in parts if p.get("series")]
+    years = [
+        (p["series"][0]["year"], p["series"][-1]["year"], len(p["series"]))
+        for p in parts
+        if p.get("series")
+    ]
     if not years:
         return
     first, last = min(y[0] for y in years), max(y[1] for y in years)
@@ -3125,7 +3127,6 @@ def _add_data_end_note(parsed, result, today=None):
         note = f"가장 최근 자료가 {last}년까지라 {first}~{last}년으로 계산했습니다"
     holder = parts[0]  # 나눠 계산한 답은 첫 결과의 안내를 모아 보여 준다 (_source_result)
     holder["notes"] = [*(holder.get("notes") or []), note]
-
 
 
 async def answer(parsed, trace=None, question=""):

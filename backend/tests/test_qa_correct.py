@@ -1168,18 +1168,36 @@ NOTE_DAY = date(2026, 10, 24)
 @pytest.mark.parametrize(
     "q, years, want",
     [
-        ({"asked": {"recent": 5}}, range(2021, 2026),
-         "가장 최근 자료가 2025년까지라 2021~2025년(5개 연도)으로 계산했습니다"),
-        ({"asked": {"recent": 5}}, range(2020, 2025),
-         "가장 최근 자료가 2024년까지라 2020~2024년(5개 연도)으로 계산했습니다"),
-        ({"asked": {"recent": 5}}, range(2023, 2026),
-         "자료가 2023~2025년만 있어 3개 연도로 계산했습니다"),
-        ({"time_refs": [{"kind": "compare_ago"}]}, range(2015, 2026),
-         "가장 최근 자료가 2025년까지라 2015년과 2025년을 비교했습니다"),
-        ({"time_refs": [{"kind": "span", "n": 7}]}, range(2019, 2026),
-         "가장 최근 자료가 2025년까지라 2019~2025년(7개 연도)으로 계산했습니다"),
-        ({"time_refs": [{"kind": "until_now"}]}, range(2015, 2026),
-         "가장 최근 자료가 2025년까지라 2015~2025년으로 계산했습니다"),
+        (
+            {"asked": {"recent": 5}},
+            range(2021, 2026),
+            "가장 최근 자료가 2025년까지라 2021~2025년(5개 연도)으로 계산했습니다",
+        ),
+        (
+            {"asked": {"recent": 5}},
+            range(2020, 2025),
+            "가장 최근 자료가 2024년까지라 2020~2024년(5개 연도)으로 계산했습니다",
+        ),
+        (
+            {"asked": {"recent": 5}},
+            range(2023, 2026),
+            "자료가 2023~2025년만 있어 3개 연도로 계산했습니다",
+        ),
+        (
+            {"time_refs": [{"kind": "compare_ago"}]},
+            range(2015, 2026),
+            "가장 최근 자료가 2025년까지라 2015년과 2025년을 비교했습니다",
+        ),
+        (
+            {"time_refs": [{"kind": "span", "n": 7}]},
+            range(2019, 2026),
+            "가장 최근 자료가 2025년까지라 2019~2025년(7개 연도)으로 계산했습니다",
+        ),
+        (
+            {"time_refs": [{"kind": "until_now"}]},
+            range(2015, 2026),
+            "가장 최근 자료가 2025년까지라 2015~2025년으로 계산했습니다",
+        ),
         ({"asked": {"recent": 5}}, range(2022, 2027), None),  # 올해 자료가 있으면 붙이지 않는다
         ({"time_refs": [{"kind": "span_from"}]}, range(1995, 2004), None),  # 사용자가 정한 기간
         ({"time_refs": [{"kind": "word"}]}, range(2020, 2026), None),  # 달력 기준 한 시점
@@ -1195,6 +1213,7 @@ def test_data_end_note(q, years, want) -> None:
 def test_n_years_end_at_this_year_when_it_has_data(monkeypatch) -> None:
     # 햇수를 말했으면 가장 최근 자료가 있는 해를 끝으로 N개 해 (올해 자료가 있으면 올해까지)
     calls = []
+
     def fake_trend(ind, reg, a, b, *rest):
         calls.append((a, b))
         return {"status": "ok", "series": [{"year": y, "value": 1} for y in range(a, b + 1)]}

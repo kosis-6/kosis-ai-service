@@ -44,7 +44,8 @@ COMPARE_BASE = re.compile(
 FROM = re.compile(r"(부터|이후|이래)")
 # "최근 5년", "지난 10년간", "과거 10년 동안", "최근 3개년 동안"
 # → 자료 마지막 해를 포함한 N개 해 (끝이 열린 기간. recent_period).
-# 두 자리 연도 규칙이 '최근 10년'을 2010년으로 읽던 문제도 이 표현을 먼저 걷어 내 막는다 (slots.short_years)
+# 두 자리 연도 규칙이 '최근 10년'을 2010년으로 읽던 문제도 이 표현을 먼저 걷어 내 막는다
+# (slots.short_years)
 RECENT_N_YEARS = re.compile(
     r"(최근|최신|지난|요즘|과거)\s*(\d{1,2})\s*(?:개년|년)(?!\s*" + AGO + r")"
     r"(?:\s*(?:간|동안|사이))?"
@@ -153,8 +154,13 @@ def find(question: str) -> list[dict]:
         if WORD_AS_BASE.match(tail):
             continue
         out.append(
-            {"expr": word, "kind": "word", "n": None, "offset": offset,
-             "open": bool(FROM.match(tail[:3].strip()))}
+            {
+                "expr": word,
+                "kind": "word",
+                "n": None,
+                "offset": offset,
+                "open": bool(FROM.match(tail[:3].strip())),
+            }
         )
     return out
 
