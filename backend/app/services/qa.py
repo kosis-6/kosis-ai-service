@@ -1541,6 +1541,19 @@ MAX_TREND_REGIONS = 20
 MAX_INDICATORS = 3  # 한 질문에서 함께 답하는 지표 수
 
 
+def basis_note(sp, term):
+    """기준이 여럿인 말(지표 사전의 basis_terms)로 물었으면 기본 기준과 다른 기준 안내.
+    아니면 None"""
+    terms = {indicators._norm(t) for t in sp.get("basis_terms") or []}
+    return sp.get("basis_note") if indicators._norm(term) in terms else None
+
+
+def age_basis_note(group):
+    """연령 집단 이름의 기준 한 줄 ("'청년'은 19~34세로 계산했습니다 (청년기본법 19~34세 · …)")"""
+    basis = group["basis"].replace(" (", " · ").replace(")", "")
+    return f"{josa(repr_q(group['expr']), '은는')} {ro(group['range'])} 계산했습니다 ({basis})"
+
+
 # 계산 지표 중 남녀로 나눠 볼 수 없는 것 (성비는 그 자체가 남녀 비교, 세대·면적은 성별이 없다)
 NO_SEX_SPLIT = frozenset({"성비", "세대당 인구", "인구밀도"})
 
@@ -1763,9 +1776,20 @@ def _compute(q):
         result.setdefault("asked_year", q.get("end_year") or year)
     term = q.get("term")
     if result.get("status") == "ok" and term and indicators.canonical_name(term) == sp["name"]:
-        if indicators._norm(term) != indicators._norm(sp["name"]):  # 예: 합계출생율 → 합계출산율
+        if note := basis_note(sp, term):
+            # 기준이 여럿인 말("이혼율", "외국인 수"): 되묻지 않고 기본 기준으로 답하고
+            # 다른 기준을 안내
+            for r in _leaves(result):
+                r["notes"] = [note] + r.get("notes", [])
+        elif indicators._norm(term) != indicators._norm(sp["name"]):  # 예: 합계출생율 → 합계출산율
             for r in _leaves(result):
                 note = f"{josa(repr_q(term), '을를')} {ro(sp['name'])} 보고 답했습니다"
+                r["notes"] = [note] + r.get("notes", [])
+    if result.get("status") == "ok" and (group := q.get("age_group")) and group.get("basis"):
+        # "청년" · "노인"처럼 정의로 정한 연령 구간: 어느 기준으로 계산했는지 밝힌다
+        note = age_basis_note(group)
+        for r in _leaves(result):
+            if note not in r.get("notes", []):
                 r["notes"] = [note] + r.get("notes", [])
     if (group := q.get("group")) and result.get("status") == "ok" and "values" in result:
         # 묶음 비교·순위는 정의가 갈릴 수 있어 (예: 5대 광역시에 울산 포함 여부) 포함 지역을 밝힌다
