@@ -1669,10 +1669,27 @@ def _compute(q):
     names = q.get("indicators") or []
     if len(names) > 1 and kind in ("value", "trend", "compare"):
         # 여러 지표를 함께 물음: 지표마다 따로 계산해 묶는다 (단위가 달라 차트 하나에 그리지 않는다)
-        parts = [compute({**q, "indicators": None, "indicator": n, "term": n}) for n in names]
+        def each(extra=None):
+            return [
+                compute({**q, "indicators": None, "indicator": n, "term": n, **(extra or {})})
+                for n in names
+            ]
+
+        parts = each()
         ok = [p for p in parts if p.get("status") == "ok"]
         if not ok:
             return parts[0]
+        if kind == "value" and not q.get("year") and (year := _common_year(ok)):
+            # 연도를 말하지 않아 지표마다 각자 최신으로 답했다 (주민등록인구 2026년 10월,
+            # 등록외국인 2025년): 모두 있는 해로 맞춘다. 다른 시점의 값을 나란히 놓거나
+            # 더하지 않는다
+            asked = {**(q.get("asked") or {}), "latest": False}
+            parts = each({"year": year, "asked": asked})
+            ok = [p for p in parts if p.get("status") == "ok"]
+            if not ok:
+                return parts[0]
+        if q.get("aggregate") == "sum" and kind == "value" and (total := _sum_indicators(ok, q)):
+            return total
         result = _combine(ok, by="indicator")
         missed = [n for n, p in zip(names, parts, strict=False) if p.get("status") != "ok"]
         if missed:
@@ -2093,6 +2110,51 @@ def _combine(parts, by=None):
     if by:
         out["split_by"] = by
     return out
+
+
+def _common_year(parts):
+    """지표마다 최신 시점이 다르면 모두 있는 해 (최신 달 값은 연간 마지막 해로 본다). 같으면 None"""
+    leaves = [r for p in parts for r in _leaves(p)]
+    if len({r.get("year") for r in leaves}) <= 1 and not any(r.get("as_of") for r in leaves):
+        return None
+    years = [r["year"] for r in leaves if r.get("year")]
+    if any(r.get("as_of") for r in leaves):
+        years.append(indicators._data_years()[1])
+    return min(years) if years else None
+
+
+def _sum_indicators(parts, q):
+    """여러 지표의 합 ("춘천 주민등록인구 + 등록외국인"). 같은 시점 · 같은 단위의 수만 더한다"""
+    leaves = [_leaves(p) for p in parts]
+    if any(len(ls) != 1 for ls in leaves):
+        return None
+    rows = [ls[0] for ls in leaves]
+    if len({(r.get("year"), r.get("as_of")) for r in rows}) > 1:
+        return None
+    if len({r.get("unit") for r in rows}) > 1 or any(r.get("value") is None for r in rows):
+        return None
+    if any(r.get("kind", "count") != "count" and r.get("unit") not in ("명", "건") for r in rows):
+        return None  # 비율은 더하지 않는다
+    names = [r.get("indicator") for r in rows]
+    notes = list(dict.fromkeys(n for r in rows for n in r.get("notes", [])))
+    return {
+        **{
+            k: rows[0][k]
+            for k in ("source", "basis", "tbl_id", "url", "unit", "region", "year")
+            if k in rows[0]
+        },
+        "status": "ok",
+        "kind": "count",
+        "indicator": " + ".join(names),
+        "value": sum(r["value"] for r in rows),
+        "members": [{"region": r.get("indicator"), "value": r["value"]} for r in rows],
+        "extra_sources": [
+            {k: r.get(k) for k in ("source", "basis", "tbl_id", "url")}
+            for r in rows[1:]
+            if r.get("tbl_id") != rows[0].get("tbl_id")
+        ],
+        "notes": notes,
+    }
 
 
 def _leaves(result):
