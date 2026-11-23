@@ -953,10 +953,18 @@ def _load_version():
     return r["n"], r["loaded_at"], r["job_done_at"]
 
 
+def _forget_search_tables():
+    """통계표 찾기(search.py)가 메모리에 둔 표 정보도 버린다 (수록 기간·판 이름이 적재 때 바뀜)"""
+    from app.services import search  # search가 lookup을 부르므로 여기서 불러 순환을 피한다
+
+    search.forget_tables()
+
+
 def clear_table_caches():
     """표 정보 캐시를 지금 비운다 (질문 처리 중에 표를 바로 적재한 뒤, table_cache.py)"""
     for cached in TABLE_CACHES:
         cached.cache_clear()
+    _forget_search_tables()
 
 
 def refresh_if_reloaded(now=None):
@@ -981,6 +989,7 @@ def refresh_if_reloaded(now=None):
     if changed:
         for cached in TABLE_CACHES:
             cached.cache_clear()
+        _forget_search_tables()
     return changed
 
 

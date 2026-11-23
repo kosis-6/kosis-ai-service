@@ -340,8 +340,33 @@ def age_coverage(
     return None
 
 
+def forget_tables() -> None:
+    """메모리에 둔 표 정보를 버린다. 다음 load_tables()가 DB에서 다시 읽는다.
+
+    적재할 때 수록 기간·판 이름(table_meta·table_families)이 바뀌므로, 처음 읽은 것을 계속 쓰면
+    있는 연도를 없다고 본다 (2026-11-23). lookup이 표 캐시를 비울 때 같이 부른다.
+    """
+    global _tables, _vectors
+    _tables = None
+    _vectors = None
+
+
+def _check_reloaded() -> None:
+    """적재 프로세스가 표를 새로 넣었으면 표 정보를 다시 읽게 한다 (DB는 30초에 한 번만 본다).
+    바뀌었으면 lookup.refresh_if_reloaded가 forget_tables를 부른다.
+    확인이 실패해도 검색은 계속한다
+    """
+    from app.services import lookup  # lookup이 search를 부르므로 여기서 불러 순환을 피한다
+
+    try:
+        lookup.refresh_if_reloaded()
+    except Exception:
+        logging.getLogger(__name__).warning("표 적재 상태 확인 실패", exc_info=True)
+
+
 async def load_tables() -> list[dict[str, Any]]:
     global _tables, _vectors
+    _check_reloaded()
     if _tables is None:
         from app.core.db import engine
 
