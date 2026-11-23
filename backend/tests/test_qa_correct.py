@@ -863,8 +863,6 @@ def test_generation_population_is_total_population(question: str) -> None:
         ("노인 비율 제일 높은 지역 다섯 군데", "고령인구 비율%", "고령인구 비율"),
         ("광주랑 울산 중 여자 1명이 평생 낳는 아이 수가 더 많은 곳?", "합계출산율", "합계출산율"),
         ("요즘 사람들은 애를 몇 명씩 낳아?", "출생아 수", "합계출산율"),
-        ("노원구가 강남구보다 사람이 많아 적어?", "총인구", "총인구"),
-        ("부산에서 사람 제일 많이 사는 구 세 곳", "총인구", "총인구"),
         ("북구에 사는 이십대는 얼마나 돼?", "총인구", "총인구"),
         ("대전하고 충청남도 어르신 수 합쳐 줘", "고령인구 수", "총인구"),
     ],
@@ -874,6 +872,17 @@ def test_spelled_out_indicators(question: str, llm, expected: str) -> None:
     assert p["indicator"] == expected
     # 근거 없는 지표로 보고 통계표 찾기로 넘기지 않는다 (이 파일은 별칭을 줄여 둬서 None일 수 있다)
     assert p["grounded"] is not False
+
+
+@pytest.mark.parametrize(
+    "question",
+    ["노원구가 강남구보다 사람이 많아 적어?", "부산에서 사람 제일 많이 사는 구 세 곳"],
+)
+def test_people_count_is_grounded_without_other_population_modifier(question: str) -> None:
+    """#202에서 합친 일반 인구 질문 보정을 유지한다."""
+    p = qa.correct(question, parsed(indicator="총인구", regions=["서울"]), TODAY)
+    assert p["indicator"] == "총인구"
+    assert p["grounded"] is True
 
 
 @pytest.mark.parametrize(
@@ -1038,10 +1047,11 @@ def test_sex_not_said(question: str, llm_sex: str, expected: str) -> None:
     "question, llm_span, expected",
     [
         ("서울 인구 추이 보여줘", (2015, 2024), (None, None)),  # 기간을 말하지 않음 (E2)
-        ("요새 서울 사람 수 감소 중이야?", (2015, 2024), (None, None)),
+        ("요새 서울 사람 수 감소 중이야?", (2015, 2024), (None, None)),  # P-038
         ("2010년부터 서울 인구 추이", (2010, 2025), (2010, None)),
         ("2010년에서 2020년까지 서울 인구 추이", (2010, 2020), (2010, 2020)),
-        ("서울 인구 10년간 추이", (2015, 2024), (2015, 2024)),  # '년'이 있으면 HCX 기간을 둔다
+        # 'N년간'은 코드가 센다: 자료 마지막 해를 포함한 N개 해 (HCX의 2015~2024는 버린다)
+        ("서울 인구 10년간 추이", (2015, 2024), (2016, None)),
     ],
 )
 def test_trend_period_not_said(question: str, llm_span, expected) -> None:
@@ -1099,3 +1109,463 @@ def test_sex_split_sentence_compares_sexes(monkeypatch: pytest.MonkeyPatch) -> N
     part = {"status": "ok", "indicator": "총인구", "unit": "명", "kind": "count"}
     r = {"split": [{**part, "sex": "남", "value": 100}, {**part, "sex": "여", "value": 130}]}
     assert qa._split_text(r).strip() == "여성이 30명 더 많습니다."
+
+
+# ---- 상대 기간: 표현 · 종류 · N만 알아보고 연도는 규칙표(timeref.period)가 센다 ----
+# (오늘 2026-10-24, 자료 마지막 해 2025)
+
+
+@pytest.fixture
+def data_end_2025(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(indicators, "_data_years", lambda: (2008, 2025))
+
+
+def trend(**kw) -> dict:
+    return parsed(type="trend", **kw)
+
+
+@pytest.mark.parametrize(
+    "question, llm, want",
+    [
+        # 최근 N년 = 마지막 해를 포함한 N개 해 (HCX가 6개 해로 적어도)
+        ("최근 5년 인천 사망자 수 변화", (2020, 2025), (2021, None)),
+        ("지난 3년간 인천 사망자 수 변화", (2022, 2024), (2023, None)),
+        # N년 동안 = 최근 N년과 같다 / N년 전보다 = 마지막 해 − N 과 견준다
+        ("부산 조출생률 7년 동안 어떻게 됐어?", (2017, 2024), (2019, None)),
+        ("8년 전보다 고령인구 비율 얼마나 올랐어?", (2018, 2026), (2017, None)),
+        # ○년부터 N년 동안 = 그 해 + N 까지
+        ("울산 인구 1995년부터 8년 동안 얼마나 늘었어?", (1995, None), (1995, 2003)),
+        # 지금까지: 끝은 자료 마지막 해 (HCX의 2026은 버린다)
+        ("2016년부터 지금까지 서울 인구 추이", (2016, 2026), (2016, None)),
+        # 숫자 연도 + 낱말 시점
+        ("2018년이랑 작년 출생아 수 얼마나 달라졌어?", (2018, 2024), (2018, 2025)),
+    ],
+)
+def test_relative_period_by_rule(data_end_2025, question, llm, want) -> None:
+    p = qa.correct(question, trend(start_year=llm[0], end_year=llm[1]), TODAY)
+    assert (p["start_year"], p["end_year"]) == want
+
+
+def test_years_later_is_counted_from_today(data_end_2025) -> None:
+    q = "6년 뒤 대구 인구 몇 명이야?"
+    p = qa.correct(q, parsed(indicator="총인구", regions=["대구"]), TODAY)
+    assert p["year"] == 2032
+
+
+def test_llm_year_without_number_is_dropped(data_end_2025) -> None:
+    # 질문에 숫자 연도가 없는데 HCX가 직접 채운 기간은 믿지 않는다
+    p = qa.correct("외국인 작년에 얼마나 늘었어?", trend(start_year=2024, end_year=2024), TODAY)
+    assert (p["start_year"], p["end_year"]) == (None, None)
+
+
+def test_year_arithmetic_reads_as_null() -> None:
+    raw = (
+        '{"type": "trend", "year": 2025, "start_year": 2025 - 8, "end_year": 2025,'
+        ' "time": [{"expr": "8년 전"}]}'
+    )
+    objs = [o for o in qa._json_objects(qa.YEAR_ARITH.sub(": null", raw)) if "type" in o]
+    assert objs and objs[0]["start_year"] is None and objs[0]["type"] == "trend"
+
+
+def series(*years) -> list[dict]:
+    return [{"year": y, "value": 1} for y in years]
+
+
+NOTE_DAY = date(2026, 10, 24)
+
+
+@pytest.mark.parametrize(
+    "q, years, want",
+    [
+        (
+            {"asked": {"recent": 5}},
+            range(2021, 2026),
+            "가장 최근 자료가 2025년까지라 2021~2025년(5개 연도)으로 계산했습니다",
+        ),
+        (
+            {"asked": {"recent": 5}},
+            range(2020, 2025),
+            "가장 최근 자료가 2024년까지라 2020~2024년(5개 연도)으로 계산했습니다",
+        ),
+        (
+            {"asked": {"recent": 5}},
+            range(2023, 2026),
+            "자료가 2023~2025년만 있어 3개 연도로 계산했습니다",
+        ),
+        (
+            {"time_refs": [{"kind": "compare_ago"}]},
+            range(2015, 2026),
+            "가장 최근 자료가 2025년까지라 2015년과 2025년을 비교했습니다",
+        ),
+        (
+            {"time_refs": [{"kind": "span", "n": 7}]},
+            range(2019, 2026),
+            "가장 최근 자료가 2025년까지라 2019~2025년(7개 연도)으로 계산했습니다",
+        ),
+        (
+            {"time_refs": [{"kind": "until_now"}]},
+            range(2015, 2026),
+            "가장 최근 자료가 2025년까지라 2015~2025년으로 계산했습니다",
+        ),
+        ({"asked": {"recent": 5}}, range(2022, 2027), None),  # 올해 자료가 있으면 붙이지 않는다
+        ({"time_refs": [{"kind": "span_from"}]}, range(1995, 2004), None),  # 사용자가 정한 기간
+        ({"time_refs": [{"kind": "word"}]}, range(2020, 2026), None),  # 달력 기준 한 시점
+        ({}, range(2020, 2024), None),  # 기간을 숫자로 말함
+    ],
+)
+def test_data_end_note(q, years, want) -> None:
+    result = {"status": "ok", "series": series(*years), "notes": []}
+    qa._add_data_end_note(q, result, NOTE_DAY)
+    assert result["notes"] == ([want] if want else [])
+
+
+def test_n_years_end_at_this_year_when_it_has_data(monkeypatch) -> None:
+    # 햇수를 말했으면 가장 최근 자료가 있는 해를 끝으로 N개 해 (올해 자료가 있으면 올해까지)
+    calls = []
+
+    def fake_trend(ind, reg, a, b, *rest):
+        calls.append((a, b))
+        return {"status": "ok", "series": [{"year": y, "value": 1} for y in range(a, b + 1)]}
+
+    monkeypatch.setattr(indicators, "trend", fake_trend)
+    monkeypatch.setattr(qa, "_with_this_year", lambda ind, region, sex, ages, end: 2026)
+    span = {"type": "trend", "start_year": 2019, "time_refs": [{"kind": "span", "n": 7}]}
+    qa._compute_population(span, "총인구", "trend", ["대구광역시"], 2025, "계", None, 2025)
+    recent = {"type": "trend", "asked": {"recent": 5}}
+    qa._compute_population(recent, "총인구", "trend", ["대구광역시"], 2025, "계", None, 2025)
+    these_days = {"type": "trend", "asked": {"these_days": True, "latest": True}}
+    qa._compute_population(these_days, "총인구", "trend", ["대구광역시"], 2025, "계", None, 2025)
+    assert calls == [(2020, 2026), (2022, 2026), (2021, 2026)]
+
+
+def test_n_years_end_at_data_end_without_this_year(monkeypatch) -> None:
+    calls = []
+    monkeypatch.setattr(indicators, "trend", lambda ind, reg, a, b, *rest: calls.append((a, b)))
+    monkeypatch.setattr(qa, "_with_this_year", lambda ind, region, sex, ages, end: end)
+    span = {"type": "trend", "start_year": 2019, "time_refs": [{"kind": "span", "n": 7}]}
+    qa._compute_population(span, "총인구", "trend", ["대구광역시"], 2025, "계", None, 2025)
+    assert calls == [(2019, 2025)]
+
+
+def test_guessed_year_of_period_trend_is_dropped(data_end_2025) -> None:
+    # 기간을 물은 추이에 HCX가 넣은 year(2022)는 끝 해로 쓰이므로 버린다
+    p = qa.correct("대구 출생아 수 7년 동안 어떻게 변했어?", trend(year=2022), TODAY)
+    assert (p["start_year"], p.get("end_year"), p["year"]) == (2019, None, None)
+
+
+@pytest.mark.parametrize(
+    "question, llm, want",
+    [
+        # 조사만 다른 두 연도도 코드가 읽는다 (HCX가 틀리게 옮겨 적어도)
+        ("2019년이랑 2023년 인천 사망자 수 비교해줘", (2019, 2022), (2019, 2023)),
+        ("2023년과 2019년 인천 사망자 수 얼마나 달라?", (2023, 2019), (2019, 2023)),
+    ],
+)
+def test_two_years_with_any_particle(data_end_2025, question, llm, want) -> None:
+    p = qa.correct(question, trend(start_year=llm[0], end_year=llm[1]), TODAY)
+    assert (p["start_year"], p["end_year"]) == want
+
+
+def test_year_not_in_question_is_dropped(data_end_2025) -> None:
+    # 질문에 숫자 연도가 있는데 그 밖의 연도를 HCX가 넣으면 버린다 (끝은 자료 마지막 해까지)
+    p = qa.correct("2019년 이후 인천 사망자 수 추이", trend(start_year=2019, end_year=2023), TODAY)
+    assert (p["start_year"], p.get("end_year")) == (2019, None)
+
+
+def test_year_said_in_words_is_kept(data_end_2025) -> None:
+    # 숫자 연도가 없는 질문은 보지 않는다: 사건으로 말한 해는 HCX가 푼 값을 쓴다
+    p = qa.correct("코로나 첫 해 인천 사망자 수", parsed(indicator="사망자 수", year=2020), TODAY)
+    assert p["year"] == 2020
+
+
+def test_n_years_fall_back_when_this_year_value_is_missing(monkeypatch) -> None:
+    # 끝을 올해로 잡았는데 올해 값이 실제로 없으면(세대수는 최신 달이 없다) 연간 자료 기준 N개 해
+    calls = []
+
+    def fake_trend(ind, reg, a, b, *rest):
+        calls.append((a, b))
+        years = range(a, min(b, 2025) + 1)
+        return {"status": "ok", "series": [{"year": y, "value": 1} for y in years]}
+
+    monkeypatch.setattr(indicators, "trend", fake_trend)
+    monkeypatch.setattr(qa, "_with_this_year", lambda ind, region, sex, ages, end: 2026)
+    recent = {"type": "trend", "asked": {"recent": 5}}
+    qa._compute_population(recent, "세대당 인구", "trend", ["서울특별시"], 2025, "계", None, 2025)
+    assert calls == [(2022, 2026), (2021, 2025)]
+
+
+# ---- '사람 · 주민'으로 인구를 물은 질문: 남는 낱말이 없을 때만 총인구로 확정 ----
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "수영구가 연제구보다 사람이 많아?",
+        "대구에서 사람 제일 많이 사는 구 다섯 곳",
+        "춘천시 주민 몇 명이야?",
+        "작년 인천 사람 얼마나 돼?",
+    ],
+)
+def test_plain_people_question_is_population(question: str) -> None:
+    p = qa.correct(question, parsed(indicator="총인구", regions=["서울"]), TODAY)
+    assert p["indicator"] == "총인구" and p["grounded"] is True
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "버스 타고 일하러 가는 사람 몇 명이야?",  # 다른 통계의 사람 (낱말 목록에 없는 일상어)
+        "대전에서 반려동물 키우는 사람 몇 명이야?",
+        "울산에 귀촌한 사람 얼마나 돼?",
+        "창원에서 혼자 사는 사람 몇 명이야?",  # OTHER_PEOPLE
+    ],
+)
+def test_people_of_another_statistic_is_not_grounded(question: str) -> None:
+    # 총인구로 확정하지 않는다 → 통계표 찾기가 맞는 표를 찾는다
+    p = qa.correct(question, parsed(indicator="총인구", regions=["서울"]), TODAY)
+    assert p["grounded"] is False
+
+
+# ---- 연도를 말하지 않은 질문: 유형과 관계없이 HCX가 넣은 연도를 버린다, 빈 값 정리 ----
+
+
+@pytest.mark.parametrize("kind", ["value", "compare", "rank", "composition", "causal", "other"])
+def test_guessed_year_is_dropped_for_every_type(kind: str) -> None:
+    p = qa.correct("버스로 일터에 가는 사람 수", parsed(type=kind, year=2025), TODAY)
+    assert p["year"] is None
+
+
+@pytest.mark.parametrize("question", ["2019년 서울 인구 구성", "코로나 첫 해 서울 인구 구성"])
+def test_said_year_is_kept_for_composition(question: str) -> None:
+    year = 2019 if "2019" in question else 2020
+    p = qa.correct(question, parsed(type="composition", indicator="총인구", year=year), TODAY)
+    assert p["year"] == year
+
+
+@pytest.mark.parametrize(
+    "given, want",
+    [
+        ({"year": 0}, {"year": None}),
+        ({"year": ""}, {"year": None}),
+        ({"start_year": 0, "end_year": 0}, {"start_year": None, "end_year": None}),
+        ({"year": "2019"}, {"year": 2019}),
+        ({"sex": ""}, {"sex": "계"}),
+        ({"year": 2019, "sex": "여"}, {"year": 2019, "sex": "여"}),
+    ],
+)
+def test_blank_values_are_cleaned(given: dict, want: dict) -> None:
+    p = parsed(**given)
+    qa._blank_to_none(p, lambda key, value, reason: p.__setitem__(key, value))
+    assert {k: p[k] for k in want} == want
+
+
+def test_trend_end_note_only_when_end_asked(monkeypatch: pytest.MonkeyPatch) -> None:
+    """2024년까지인 표: 끝 연도를 말하지 않은 추이에 "2024년까지 봤습니다"를 붙이지 않는다 (E6)"""
+    monkeypatch.setattr(qa, "_lookup_span", lambda sp, region, sex: (2015, 2024))
+    monkeypatch.setattr(qa.lookup, "trend", lambda *a: {"status": "ok", "notes": []})
+    sp = {"name": "외국인주민 수", "sources": []}
+    q = {"type": "trend", "indicator": "외국인주민 수", "regions": ["서울"]}
+    assert qa._lookup_trend(q, sp, "서울", 2025, "계", None)["notes"] == []
+    asked = qa._lookup_trend({**q, "end_year": 2025}, sp, "서울", 2025, "계", None)
+    assert asked["notes"] == ["외국인주민 수 자료가 2024년까지 있어 2024년까지 봤습니다"]
+
+
+@pytest.mark.parametrize(
+    "q, leaf, expected",
+    [
+        # 연도를 말하지 않은 값: 가장 최근 자료의 시점을 밝힌다
+        (
+            {"type": "value"},
+            {"year": 2024},
+            "가장 최근 자료인 2024년 기준으로 답했습니다",
+        ),
+        # 월 자료는 달까지: 새 달 자료가 들어오면 답이 바뀌므로 어느 달 기준인지 밝힌다
+        (
+            {"type": "value"},
+            {"year": 2026, "as_of": "2026년 10월 말"},
+            "가장 최근 자료인 2026년 10월 말 기준으로 답했습니다",
+        ),
+        ({"type": "value", "year": 2020}, {"year": 2020}, None),  # 연도를 말함
+        # 추이: 끝을 말하지 않았으면 ("2010년부터" 포함) 마지막 해를 밝힌다
+        (
+            {"type": "trend", "start_year": 2010},
+            {"indicator": "외국인주민 수", "series": [{"year": 2015}, {"year": 2024}]},
+            "외국인주민 수 자료는 2024년이 가장 최근입니다",
+        ),
+        (
+            {"type": "trend", "end_year": 2020},
+            {"indicator": "외국인주민 수", "series": [{"year": 2015}, {"year": 2020}]},
+            None,
+        ),
+    ],
+)
+def test_latest_note(q: dict, leaf: dict, expected: str | None) -> None:
+    result = {"status": "ok", **leaf}
+    qa._add_latest_note(q, result)
+    assert result.get("notes", []) == ([expected] if expected else [])
+
+
+def test_latest_note_once_for_split() -> None:
+    """남녀로 나눠 compute를 다시 부른 결과에도 한 번만 붙는다"""
+    part = {"status": "ok", "year": 2025, "notes": []}
+    result = {"status": "ok", "split": [dict(part), dict(part, notes=[])]}
+    qa._add_latest_note({"type": "value"}, result)
+    qa._add_latest_note({"type": "value"}, result)
+    assert all(len(p["notes"]) == 1 for p in result["split"])
+
+
+def test_no_year_uses_latest_for_computed_indicator() -> None:
+    """연도를 말하지 않으면 계산 지표도 가장 최근 자료로 ("서울 인구" → 최신 달)"""
+    p = qa.correct(
+        "서울 인구 몇 명이야", parsed(indicator="총인구", regions=["서울"], year=2025), TODAY
+    )
+    assert p.get("year") is None
+    assert (p.get("asked") or {}).get("latest") is True
+    p = qa.correct(
+        "2025년 서울 인구", parsed(indicator="총인구", regions=["서울"], year=2025), TODAY
+    )
+    assert not (p.get("asked") or {}).get("latest")
+
+
+def test_rank_falls_back_to_annual_when_month_drops_regions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """최신 달 순위가 행정구역 개편으로 지역이 적으면 연간 마지막 해로 (전남광주통합특별시)"""
+    monthly = {
+        "status": "ok",
+        "as_of": "2026년 10월 말",
+        "year": 2026,
+        "total_regions": 16,
+        "ranking": [{"region": "서울특별시", "value": 1}],
+    }
+    annual = {
+        "status": "ok",
+        "year": 2025,
+        "total_regions": 17,
+        "ranking": [{"region": "서울특별시", "value": 1}],
+    }
+    monkeypatch.setattr(qa, "_compute", lambda q: monthly if q["asked"]["latest"] else annual)
+    r = qa.compute({"type": "rank", "indicator": "총인구", "asked": {"latest": True}})
+    assert r["year"] == 2025
+    assert r["notes"] == [
+        "가장 최근 연간 자료인 2025년 기준으로 답했습니다. "
+        "최신 달(2026년 10월 말) 자료는 행정구역 개편으로 일부 지역이 달라 쓰지 않았습니다"
+    ]
+
+
+def test_empty_month_falls_back_to_annual(monkeypatch: pytest.MonkeyPatch) -> None:
+    """최신 달 값이 비면 (세대당 인구: 최신 달 세대수 없음) 연간 마지막 해로"""
+    monthly = {"status": "ok", "as_of": "2026년 10월 말", "year": 2026, "value": None}
+    annual = {"status": "ok", "year": 2025, "value": 2.07}
+    monkeypatch.setattr(qa, "_compute", lambda q: monthly if q["asked"]["latest"] else annual)
+    r = qa.compute({"type": "value", "indicator": "세대당 인구", "asked": {"latest": True}})
+    assert r["value"] == 2.07
+
+
+def test_indicators_aligned_to_common_year_and_summed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """V2-032 "춘천 인구, 등록된 외국인까지 다 합치면": 지표마다 최신 시점이 다르면 (주민등록인구
+    2026년 10월, 등록외국인 2025년) 둘 다 있는 해로 맞추고, 합계를 물었으면 더한다"""
+    asked_years = []
+
+    def fake(q):
+        asked_years.append((q["indicator"], q.get("year")))
+        year = q.get("year")
+        if q["indicator"] == "총인구":
+            if year:
+                return {
+                    "status": "ok",
+                    "indicator": "총인구",
+                    "unit": "명",
+                    "kind": "count",
+                    "region": "춘천시",
+                    "year": year,
+                    "value": 285234,
+                }
+            return {
+                "status": "ok",
+                "indicator": "총인구",
+                "unit": "명",
+                "kind": "count",
+                "region": "춘천시",
+                "year": 2026,
+                "as_of": "2026년 10월 말",
+                "value": 284762,
+            }
+        return {"status": "ok", "indicator": "등록외국인 수", "unit": "명", "kind": "count",
+                "region": "춘천시", "year": 2025, "value": 5637}  # fmt: skip
+
+    monkeypatch.setattr(qa, "compute", fake)
+    monkeypatch.setattr(qa.indicators, "_data_years", lambda: (2008, 2025))
+    q = {"type": "value", "indicators": ["총인구", "등록외국인 수"], "aggregate": "sum",
+         "regions": ["춘천"]}  # fmt: skip
+    r = qa._compute(q)
+    assert ("총인구", 2025) in asked_years
+    assert r["value"] == 290871 and r["year"] == 2025
+    assert [m["value"] for m in r["members"]] == [285234, 5637]
+
+
+def _count(name: str, value: int, year: int, as_of: str | None = None) -> dict:
+    out = {"status": "ok", "indicator": name, "unit": "명", "kind": "count", "region": "가시"}
+    return {**out, "year": year, "value": value, **({"as_of": as_of} if as_of else {})}
+
+
+def test_sum_needs_every_asked_indicator(monkeypatch: pytest.MonkeyPatch) -> None:
+    """합계를 물었는데 한 지표가 계산되지 않으면 남은 값만 '합계'로 내지 않는다"""
+
+    def fake(q):
+        if q["indicator"] == "총인구":
+            return {"status": "missing_data", "reason": "자료 없음"}
+        return _count("등록외국인 수", 7, 2025)
+
+    monkeypatch.setattr(qa, "compute", fake)
+    q = {"type": "value", "indicators": ["총인구", "등록외국인 수"], "aggregate": "sum",
+         "regions": ["가시"]}  # fmt: skip
+    r = qa._compute(q)
+    assert "members" not in r and " + " not in (r.get("indicator") or "")
+    notes = [n for leaf in qa._leaves(r) for n in leaf.get("notes", [])]
+    assert any("총인구" in n and "뺐습니다" in n for n in notes)
+
+
+def test_common_year_keeps_values_of_the_same_month() -> None:
+    """둘 다 같은 달 값이면 같은 시점이다: 연간 마지막 해로 되돌리지 않는다"""
+    month = "2026년 10월 말"
+    same = [_count("총인구", 10, 2026, month), _count("고령인구", 2, 2026, month)]
+    assert qa._common_year(same) is None
+    assert qa._common_year([_count("가", 1, 2025), _count("나", 2, 2025)]) is None
+    assert qa._common_year([_count("가", 1, 2025), _count("나", 2, 2024)]) == 2024
+
+
+def test_common_year_for_a_month_value_and_an_annual_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(qa.indicators, "_data_years", lambda: (2008, 2025))
+    mixed = [_count("총인구", 10, 2026, "2026년 10월 말"), _count("등록외국인 수", 2, 2025)]
+    assert qa._common_year(mixed) == 2025
+    # 기준 달이 서로 다른 월별 값끼리도 연간 마지막 해로 (달을 지정해 받는 길이 아직 없다)
+    months = [_count("가", 1, 2026, "2026년 5월 말"), _count("나", 2, 2026, "2026년 10월 말")]
+    assert qa._common_year(months) == 2025
+
+
+def test_default_value_next_to_alt_is_of_the_same_year(monkeypatch: pytest.MonkeyPatch) -> None:
+    """다른 조사 값 옆의 주민등록인구 값은 그 해 값이다: 연도를 말하지 않아 켜진 latest 를 넘기면
+    최신 달 값을 구해 놓고 "2025년 주민등록인구 기준"이라고 적게 된다"""
+    seen = []
+
+    def fake(q):
+        asked = q.get("asked") or {}
+        if asked.get("survey"):
+            return {"status": "ok", "value": 55.2, "unit": "세", "year": 2025, "notes": []}
+        seen.append((asked.get("latest"), q.get("year")))
+        return {"status": "ok", "value": 56.8, "unit": "세", "year": 2025}
+
+    monkeypatch.setattr(qa, "_compute", fake)
+    q = {"type": "value", "indicator": "중위연령"}
+    qa.compute({**q, "asked": {"survey": "인구총조사", "latest": True}})
+    assert seen == [(None, 2025)]
+
+
+def test_sum_indicators_refuses_mixed_periods_or_rates() -> None:
+    one = {"status": "ok", "unit": "명", "kind": "count", "region": "춘천시", "value": 1}
+    assert qa._sum_indicators([{**one, "year": 2025}, {**one, "year": 2024}], {}) is None
+    assert qa._sum_indicators([{**one, "year": 2025}, {**one, "year": 2025, "unit": "%",
+                                                       "kind": "rate"}], {}) is None  # fmt: skip

@@ -295,19 +295,39 @@ verified = true
 [[indicators]]
 name = "총인구"
 aliases = ["인구", "인구수", "전체 인구", "주민등록인구"]
+# 기준이 여럿인 말(basis_terms)로 물으면 답에 기본값과 다른 기준을 안내한다
+basis_terms = ["인구", "인구수", "전체 인구"]
+basis_note = "인구는 기준이 여럿입니다. 주민등록인구(내국인, 12월 31일 기준)로 답했습니다. 외국인을 포함하는 인구총조사 인구(11월 1일 기준)나 장래추계인구(7월 1일 기준)와는 값이 다릅니다"
 unit = "명"
 method = "computed"
 desc = "주민등록인구. 연령 구간(예: 6~11세, 20대) 인구 수도 이 지표"
 sources = [{ table = "DT_1B04006", level = "시군구" }]
 projection = { table = "DT_1BPB002", c3_id = "10" }
+# 같은 이름의 공표값이 다른 조사에 있다: 질문이 그 조사를 말하면 ("인구총조사 기준") 그 표로 답한다
+# 인구총조사는 연령(1세 · 5세) · 성별로 나뉘어 있어 "인구총조사 기준 서울 20대 여자"도 이 표로 답한다
+alt_sources = [
+  { survey = "인구총조사", table = "DT_1IN1503", level = "시군구", age_dim = "c2", age_total = "000", by_sex = { "계" = { item_id = "T00" }, "남" = { item_id = "T01" }, "여" = { item_id = "T02" } } },
+  { survey = "장래인구추계", table = "DT_1BPB002", item_id = "T10", level = "시도", filters = { c1_id = "1" }, by_sex = { "계" = { filters = { c3_id = "10" } }, "남" = { filters = { c3_id = "11" } }, "여" = { filters = { c3_id = "12" } } } },
+  { survey = "장래인구추계", table = "DT_1BPA002", item_id = "T10", level = "전국", national_only = true, filters = { c1_id = "1" }, by_sex = { "계" = { filters = { c2_id = "10" } }, "남" = { filters = { c2_id = "11" } }, "여" = { filters = { c2_id = "12" } } } },
+]
 
 [[indicators]]
 name = "고령인구 비율"
 aliases = ["고령화율", "고령 비율", "노인 비율", "노인인구 비율", "65세 이상 비율", "65세 이상 인구 비율", "고령층", "노인층", "고령자 비율"]
+# 기준이 여럿인 말(basis_terms)로 물으면 답에 기본값과 다른 기준을 안내한다
+basis_terms = ["노인 비율", "고령화율", "고령 비율", "노인인구 비율", "고령자 비율"]
+basis_note = "노인 비율은 65세 이상 인구 ÷ 전체 인구(주민등록인구)로 답했습니다. 0~14세 인구 100명당 65세 이상 인구를 보는 노령화지수와는 다른 지표입니다"
 unit = "%"
 method = "computed"
+note = "주민등록인구로 계산한 값입니다. 인구총조사(외국인 포함) · 장래인구추계(7월 1일)의 고령인구 비율과 다를 수 있습니다"
 sources = [{ table = "DT_1B04006", level = "시군구" }]
 projection = { table = "DT_1BPB002", c3_id = "33" }
+# 같은 이름의 공표값이 다른 조사에 있다: 질문이 그 조사를 말하면 ("인구총조사 기준") 그 표로 답한다
+alt_sources = [
+  { survey = "인구총조사", table = "DT_1IN1503", item_id = "T00", den_item_id = "T00", level = "시군구", filters = { c2_id = "104" }, den_filters = { c2_id = "000" }, by_sex = { "계" = { item_id = "T00", den_item_id = "T00" }, "남" = { item_id = "T01", den_item_id = "T01" }, "여" = { item_id = "T02", den_item_id = "T02" } } },
+  { survey = "장래인구추계", table = "DT_1BPB002", item_id = "T10", level = "시도", filters = { c1_id = "1", c3_id = "33" } },
+  { survey = "장래인구추계", table = "DT_1BPA002", item_id = "T10", level = "전국", national_only = true, filters = { c1_id = "1", c2_id = "33" } },
+]
 
 [[indicators]]
 name = "유소년인구 비율"
@@ -317,32 +337,60 @@ aliases = ["유소년 비율", "어린이 비율", "0~14세 비율", "0-14세 �
 not_in = ["노인 대 아이 비율", "노인 대 어린이 비율", "노인 대 아이 비중", "노인 대 어린이 비중", "첫째 아이 비율", "둘째 아이 비율", "셋째 아이 비율", "첫째 아이 비중", "둘째 아이 비중", "셋째 아이 비중"]
 unit = "%"
 method = "computed"
+note = "주민등록인구로 계산한 값입니다. 인구총조사(외국인 포함) · 장래인구추계(7월 1일)의 유소년인구 비율과 다를 수 있습니다"
 sources = [{ table = "DT_1B04006", level = "시군구" }]
 projection = { table = "DT_1BPB002", c3_id = "31" }
+# 같은 이름의 공표값이 다른 조사에 있다: 질문이 그 조사를 말하면 ("인구총조사 기준") 그 표로 답한다
+alt_sources = [
+  { survey = "인구총조사", table = "DT_1IN1503", item_id = "T00", den_item_id = "T00", level = "시군구", filters = { c2_id = "102" }, den_filters = { c2_id = "000" }, by_sex = { "계" = { item_id = "T00", den_item_id = "T00" }, "남" = { item_id = "T01", den_item_id = "T01" }, "여" = { item_id = "T02", den_item_id = "T02" } } },
+  { survey = "장래인구추계", table = "DT_1BPB002", item_id = "T10", level = "시도", filters = { c1_id = "1", c3_id = "31" } },
+  { survey = "장래인구추계", table = "DT_1BPA002", item_id = "T10", level = "전국", national_only = true, filters = { c1_id = "1", c2_id = "31" } },
+]
 
 [[indicators]]
 name = "노령화지수"
 aliases = ["노령화 지수", "노인 대 아이", "노인 대 어린이", "아이 대비 노인", "어린이 대비 노인"]
 unit = "유소년인구 100명당 명"
 method = "computed"
+note = "주민등록인구로 계산한 값입니다. 인구총조사 노령화지수(외국인 포함)와 다를 수 있습니다"
 sources = [{ table = "DT_1B04006", level = "시군구" }]
 projection = { table = "DT_1BPB002", c3_id = "50" }
+# 같은 이름의 공표값이 다른 조사에 있다: 질문이 그 조사를 말하면 ("인구총조사 기준") 그 표로 답한다
+alt_sources = [
+  { survey = "인구총조사", table = "DT_1IN2030", item_id = "T4", level = "시군구", filters = { c1_id = "01" } },
+  { survey = "장래인구추계", table = "DT_1BPB002", item_id = "T10", level = "시도", filters = { c1_id = "1", c3_id = "50" } },
+  { survey = "장래인구추계", table = "DT_1BPA002", item_id = "T10", level = "전국", national_only = true, filters = { c1_id = "1", c2_id = "50" } },
+]
 
 [[indicators]]
 name = "생산연령인구 비율"
 aliases = ["생산가능인구 비율", "생산연령 비율", "15~64세 비율", "15-64세 비율", "생산연령인구 비중"]
 unit = "%"
 method = "computed"
+note = "주민등록인구로 계산한 값입니다. 인구총조사(외국인 포함) · 장래인구추계(7월 1일)의 생산연령인구 비율과 다를 수 있습니다"
 desc = "15~64세 인구 ÷ 총인구 × 100"
 sources = [{ table = "DT_1B04006", level = "시군구" }]
+# 같은 이름의 공표값이 다른 조사에 있다: 질문이 그 조사를 말하면 ("인구총조사 기준") 그 표로 답한다
+alt_sources = [
+  { survey = "인구총조사", table = "DT_1IN1503", item_id = "T00", den_item_id = "T00", level = "시군구", filters = { c2_id = "103" }, den_filters = { c2_id = "000" }, by_sex = { "계" = { item_id = "T00", den_item_id = "T00" }, "남" = { item_id = "T01", den_item_id = "T01" }, "여" = { item_id = "T02", den_item_id = "T02" } } },
+  { survey = "장래인구추계", table = "DT_1BPB002", item_id = "T10", level = "시도", filters = { c1_id = "1", c3_id = "32" } },
+  { survey = "장래인구추계", table = "DT_1BPA002", item_id = "T10", level = "전국", national_only = true, filters = { c1_id = "1", c2_id = "32" } },
+]
 
 [[indicators]]
 name = "노년부양비"
 aliases = ["노년 부양비", "노인 부양비", "고령 부양비", "노인 부양 부담"]
 unit = "생산연령인구 100명당 명"
 method = "computed"
+note = "주민등록인구로 계산한 값입니다. 인구총조사 노년부양비(외국인 포함)와 다를 수 있습니다"
 desc = "65세 이상 ÷ 15~64세 × 100. 일하는 나이 100명이 부양하는 노인 수"
 sources = [{ table = "DT_1B04006", level = "시군구" }]
+# 같은 이름의 공표값이 다른 조사에 있다: 질문이 그 조사를 말하면 ("인구총조사 기준") 그 표로 답한다
+alt_sources = [
+  { survey = "인구총조사", table = "DT_1IN2030", item_id = "T3", level = "시군구", filters = { c1_id = "01" } },
+  { survey = "장래인구추계", table = "DT_1BPB002", item_id = "T10", level = "시도", filters = { c1_id = "1", c3_id = "42" } },
+  { survey = "장래인구추계", table = "DT_1BPA002", item_id = "T10", level = "전국", national_only = true, filters = { c1_id = "1", c2_id = "42" } },
+]
 
 [[indicators]]
 name = "노인 1명당 생산연령인구"
@@ -358,25 +406,52 @@ name = "유소년부양비"
 aliases = ["유소년 부양비", "아동 부양비", "어린이 부양비"]
 unit = "생산연령인구 100명당 명"
 method = "computed"
+note = "주민등록인구로 계산한 값입니다. 인구총조사 유소년부양비(외국인 포함)와 다를 수 있습니다"
 desc = "0~14세 ÷ 15~64세 × 100"
 sources = [{ table = "DT_1B04006", level = "시군구" }]
+# 같은 이름의 공표값이 다른 조사에 있다: 질문이 그 조사를 말하면 ("인구총조사 기준") 그 표로 답한다
+alt_sources = [
+  { survey = "인구총조사", table = "DT_1IN2030", item_id = "T2", level = "시군구", filters = { c1_id = "01" } },
+  { survey = "장래인구추계", table = "DT_1BPB002", item_id = "T10", level = "시도", filters = { c1_id = "1", c3_id = "41" } },
+  { survey = "장래인구추계", table = "DT_1BPA002", item_id = "T10", level = "전국", national_only = true, filters = { c1_id = "1", c2_id = "41" } },
+]
 
 [[indicators]]
 name = "총부양비"
 aliases = ["부양비", "총 부양비", "전체 부양비"]
+# 기준이 여럿인 말(basis_terms)로 물으면 답에 기본값과 다른 기준을 안내한다
+basis_terms = ["부양비"]
+basis_note = "부양비는 총부양비(15~64세 인구 100명당 0~14세와 65세 이상 인구)로 답했습니다. 노인만 보면 노년부양비, 아이만 보면 유소년부양비입니다"
 unit = "생산연령인구 100명당 명"
 method = "computed"
+note = "주민등록인구로 계산한 값입니다. 인구총조사 총부양비(외국인 포함)와 다를 수 있습니다"
 desc = "(0~14세 + 65세 이상) ÷ 15~64세 × 100. 그냥 '부양비'라고 물으면 이것"
 sources = [{ table = "DT_1B04006", level = "시군구" }]
+# 같은 이름의 공표값이 다른 조사에 있다: 질문이 그 조사를 말하면 ("인구총조사 기준") 그 표로 답한다
+alt_sources = [
+  { survey = "인구총조사", table = "DT_1IN2030", item_id = "T1", level = "시군구", filters = { c1_id = "01" } },
+  { survey = "장래인구추계", table = "DT_1BPB002", item_id = "T10", level = "시도", filters = { c1_id = "1", c3_id = "40" } },
+  { survey = "장래인구추계", table = "DT_1BPA002", item_id = "T10", level = "전국", national_only = true, filters = { c1_id = "1", c2_id = "40" } },
+]
 
 [[indicators]]
 name = "성비"
 aliases = ["남녀 성비", "여자 100명당 남자", "남녀 비율", "남녀비"]
+# 기준이 여럿인 말(basis_terms)로 물으면 답에 기본값과 다른 기준을 안내한다
+basis_terms = ["성비", "남녀 성비", "남녀 비율", "남녀비"]
+basis_note = "성비는 여자 100명당 남자 수(주민등록인구)로 답했습니다. 태어난 아기의 성비(출생성비)는 따로 공표됩니다"
 not_in = ["구성비", "여성 비율", "남성 비율", "여성비율", "남성비율"]  # 구성비, 여성 비율 안의 성비는 성비가 아니다 (띄어쓰기를 지우면 여성비율에 성비가 들어 있음)
 unit = "여자 100명당 남자 수"
 method = "computed"
+note = "주민등록인구로 계산한 값입니다. 인구총조사 성비(외국인 포함)와 다를 수 있습니다"
 desc = "남자 ÷ 여자 × 100. 100보다 크면 남자가 더 많음"
 sources = [{ table = "DT_1B04006", level = "시군구" }]
+# 같은 이름의 공표값이 다른 조사에 있다: 질문이 그 조사를 말하면 ("인구총조사 기준") 그 표로 답한다
+alt_sources = [
+  { survey = "인구총조사", table = "DT_1IN1503", item_id = "T03", level = "시군구", filters = { c2_id = "000" } },
+  { survey = "장래인구추계", table = "DT_1BPB002", item_id = "T10", level = "시도", filters = { c1_id = "1", c3_id = "13" } },
+  { survey = "장래인구추계", table = "DT_1BPA002", item_id = "T10", level = "전국", national_only = true, filters = { c1_id = "1", c2_id = "13" } },
+]
 
 [[indicators]]
 name = "중위연령"
@@ -384,16 +459,27 @@ aliases = ["중위 연령", "중간 나이", "중위나이", "가운데 나이"]
 unit = "세"
 method = "computed"
 desc = "인구를 나이순으로 세웠을 때 가운데 사람의 나이 (주민등록 1세별 인구로 계산)"
-note = "주민등록 1세별 인구로 계산한 값입니다. 장래인구추계의 중위연령(7월 1일, 외국인 포함)과 다를 수 있습니다"
+note = "주민등록 1세별 인구로 계산한 값입니다. 인구총조사 중위연령(외국인 포함)과 다를 수 있습니다"
 sources = [{ table = "DT_1B04006", level = "시군구" }]
+# 같은 이름의 공표값이 다른 조사에 있다: 질문이 그 조사를 말하면 ("인구총조사 기준") 그 표로 답한다
+alt_sources = [
+  { survey = "인구총조사", table = "DT_1IN2030", item_id = "T5", level = "시군구", filters = { c1_id = "01" } },
+  { survey = "장래인구추계", table = "DT_1BPB002", item_id = "T10", level = "시도", filters = { c1_id = "1", c3_id = "60" } },
+  { survey = "장래인구추계", table = "DT_1BPA002", item_id = "T10", level = "전국", national_only = true, filters = { c1_id = "1", c2_id = "60" } },
+]
 
 [[indicators]]
 name = "세대당 인구"
 aliases = ["세대당 인구수", "세대 당 인구", "세대당 평균 인구", "한 세대 인구", "세대원 수", "한 세대에 사는 사람", "한 세대에 평균", "세대당 사람", "한 세대에 몇 명"]
 unit = "명"
 method = "computed"
+note = "주민등록 세대 기준입니다. 인구총조사의 평균 가구원 수와는 기준이 다릅니다"
 desc = "주민등록 총인구 ÷ 주민등록 세대수 (한 세대에 평균 몇 명)"
 sources = [{ table = "DT_1B04006", level = "시군구" }, { table = "DT_1B040B3", level = "시군구" }]
+# 같은 이름의 공표값이 다른 조사에 있다: 질문이 그 조사를 말하면 ("인구총조사 기준") 그 표로 답한다
+alt_sources = [
+  { survey = "인구총조사", table = "DT_1JC1511", item_id = "T300", level = "시군구", label = "평균 가구원 수", filters = { c2_id = "000" } },
+]
 
 # 면적은 pipeline/load_area.py가 지적통계(DT_MLTM_2300)를 mart.area에 넣는다 (KOSIS 공식 인구밀도
 # DT_1B08024는 인구총조사 기준·시도만이라, 주민등록인구로 시군구까지 같은 기준으로 계산한다)
@@ -404,8 +490,13 @@ unit = "명/㎢"
 kind = "value"
 diff_unit = "명/㎢"
 method = "computed"
+note = "주민등록인구 ÷ 지적통계 면적으로 계산한 값입니다. 인구총조사 인구밀도(외국인 포함, 시도만 공표)와 다를 수 있습니다"
 desc = "주민등록인구 ÷ 행정구역 면적(㎢). 1㎢에 사는 사람 수. '빽빽한', '밀집한' 지역 질문도 이 지표"
 sources = [{ table = "DT_1B04006", level = "시군구" }]
+# 같은 이름의 공표값이 다른 조사에 있다: 질문이 그 조사를 말하면 ("인구총조사 기준") 그 표로 답한다
+alt_sources = [
+  { survey = "인구총조사", table = "DT_1B08024", item_id = "T7", level = "시도" },
+]
 
 [[indicators]]
 name = "세대수"
@@ -421,7 +512,7 @@ sources = [{ table = "DT_1B040B3", item_id = "T1", level = "시군구" }]
 
 [[indicators]]
 name = "출생아 수"
-aliases = ["출생아수", "출생건수", "출생 수", "신생아 수", "태어난 아이", "아이가 태어난", "태어난 아이 수", "태어난 아기", "아기가 태어난", "아기 몇 명 태어", "애기 몇 명 태어", "아이 몇 명 태어", "애 몇 명 낳았", "아이 몇 명 낳았", "아기 몇 명 낳았", "애기 몇 명 낳았"]
+aliases = ["출생아수", "출생건수", "출생 수", "신생아 수", "태어난 아이", "아이가 태어난", "태어난 아이 수", "태어난 아기", "아기가 태어난", "아기 몇 명 태어", "애기 몇 명 태어", "아이 몇 명 태어", "애 몇 명 낳았", "아이 몇 명 낳았", "아기 몇 명 낳았", "애기 몇 명 낳았", "출생아"]
 unit = "명"
 method = "lookup"
 sources = [
@@ -435,6 +526,9 @@ name = "합계출산율"
 # 합계출산율: 1인당 · 평생 뜻이 있을 때만 별칭으로 ("서울에서 아기 몇 명 낳았어?"는 출생아 수).
 # 별칭에 없는 표현("애 몇 명씩 낳아?", "여자 1명이 평생 낳는 아이 수")은 qa.BIRTHS_PER_WOMAN 규칙이 받는다
 aliases = ["출산율", "TFR", "합계출생율", "합계출생률", "합계 출산율", "평생 애 몇 명", "평생 아이 몇 명", "평생 아기 몇 명", "한 명이 애 몇 명", "한 명이 아이 몇 명", "한 명당 애 몇 명", "한 명당 아이 몇 명", "한 명이 애 몇 명 낳았", "한 명이 아이 몇 명 낳았", "평생 애 몇 명 낳았", "평생 아이 몇 명 낳았"]
+# 기준이 여럿인 말(basis_terms)로 물으면 답에 기본값과 다른 기준을 안내한다
+basis_terms = ["출산율"]
+basis_note = "출산율은 합계출산율(여자 한 명이 15~49세에 낳을 것으로 예상되는 평균 출생아 수)로 답했습니다. 인구 1,000명당 출생아 수는 조출생률입니다"
 unit = "가임여성 1명당 명"
 kind = "value"
 diff_unit = "명"
@@ -473,6 +567,9 @@ sources = [
 [[indicators]]
 name = "조사망률"
 aliases = ["사망률"]
+# 기준이 여럿인 말(basis_terms)로 물으면 답에 기본값과 다른 기준을 안내한다
+basis_terms = ["사망률"]
+basis_note = "사망률은 조사망률(인구 1,000명당 사망자 수)로 답했습니다. 연령 구조 차이를 없앤 연령표준화 사망률이나 영아사망률과는 다릅니다"
 unit = "인구 1000명당 명"
 kind = "value"
 diff_unit = "명"
@@ -513,6 +610,9 @@ sources = [
 [[indicators]]
 name = "조혼인율"
 aliases = ["혼인율", "결혼율", "조혼인률", "혼인률"]
+# 기준이 여럿인 말(basis_terms)로 물으면 답에 기본값과 다른 기준을 안내한다
+basis_terms = ["혼인율", "결혼율", "혼인률"]
+basis_note = "혼인율은 조혼인율(인구 1,000명당 혼인 건수)로 답했습니다. 15세 이상 남자·여자 인구 1,000명당으로 따로 보는 일반혼인율도 있습니다"
 unit = "인구 1000명당 건"
 kind = "value"
 diff_unit = "건"
@@ -548,6 +648,9 @@ sources = [
 [[indicators]]
 name = "조이혼율"
 aliases = ["이혼율", "조이혼률"]
+# 기준이 여럿인 말(basis_terms)로 물으면 답에 기본값과 다른 기준을 안내한다
+basis_terms = ["이혼율"]
+basis_note = "이혼율은 조이혼율(인구 1,000명당 이혼 건수)로 답했습니다. 배우자가 있는 인구 1,000명당으로 보는 유배우 이혼율이나 같은 해 혼인 건수 대비 이혼 건수와는 다릅니다"
 unit = "인구 1000명당 건"
 kind = "value"
 diff_unit = "건"
@@ -664,6 +767,9 @@ sources = [
 [[indicators]]
 name = "모의 평균 출산연령"
 aliases = ["평균 출산연령", "엄마 평균 나이", "출산 연령", "평균 출산 연령", "몇 살에 아이 낳", "몇 살에 애 낳", "몇 살에 아기 낳", "아이 낳는 나이", "애 낳는 나이", "아기 낳는 나이"]
+# 기준이 여럿인 말(basis_terms)로 물으면 답에 기본값과 다른 기준을 안내한다
+basis_terms = ["평균 출산연령", "출산 연령", "평균 출산 연령"]
+basis_note = "평균 출산연령은 그해 태어난 모든 아이의 어머니 평균 나이로 답했습니다. 첫째를 낳는 나이는 첫째아 평균 출산연령으로 따로 공표됩니다"
 unit = "세"
 kind = "value"
 method = "lookup"
@@ -728,6 +834,7 @@ sources = [{ table = "DT_1B26002", item_id = "T60", level = "시군구", filters
 [[indicators]]
 name = "전출자 수"
 aliases = ["전출자", "전출자수", "전출 인구", "전출 인원", "전출 건수", "전출", "이사 나간 사람", "나간 사람 수", "다른 지역으로 이사한 사람", "다른 시도로 빠져나간 사람", "다른 지역으로 빠져나간 사람", "다른 시도로 나간 사람"]
+not_in = ["전출생", "전출산"]
 unit = "명"
 method = "lookup"
 desc = "그 지역 밖으로 이사해 나간 사람 수 (지역 안 이사는 뺌). 시군구는 다른 시군구·시도로 나간 사람"
@@ -775,21 +882,21 @@ sources = [{ table = "DT_1B26B24", item_id = "T10", level = "시도", age_dim = 
 
 [[indicators]]
 name = "다문화 출생아 수"
-aliases = ["다문화 출생 수", "다문화 출생아", "다문화 출생아수", "다문화 아이", "다문화 출생", "다문화 가정 아기", "다문화 가정 아이", "다문화 아기"]
+aliases = ["다문화 출생 수", "다문화 출생아", "다문화 출생아수", "다문화 아이", "다문화 출생", "다문화 가정 아기", "다문화 가정 아이", "다문화 아기", "다문화 가정에서 태어난 아기", "다문화 가정에서 태어난 아이", "다문화 가정 출생아"]
 unit = "명"
 method = "lookup"
 sources = [{ table = "DT_1BB0006", item_id = "T01", level = "시군구" }]
 
 [[indicators]]
 name = "다문화 출생 비중"
-aliases = ["다문화 출생비중", "다문화 출생 비율", "다문화 가정 아이", "다문화 가정 출생"]
+aliases = ["다문화 출생비중", "다문화 출생 비율", "다문화 가정 출생", "다문화 출생아 비중", "다문화 출생아 비율"]
 unit = "%"
 method = "lookup"
 sources = [{ table = "DT_1BB0006", item_id = "T02", level = "시군구" }]
 
 [[indicators]]
 name = "다문화 혼인 건수"
-aliases = ["다문화 혼인", "다문화 결혼 건수", "다문화 혼인건수", "국제결혼 건수", "다문화 결혼"]
+aliases = ["다문화 혼인", "다문화 결혼 건수", "다문화 혼인건수", "국제결혼 건수", "다문화 결혼", "국제결혼 몇 건", "국제결혼 몇 쌍"]
 unit = "건"
 method = "lookup"
 sources = [{ table = "DT_1BB0002", item_id = "T01", level = "시군구" }]
@@ -804,6 +911,9 @@ sources = [{ table = "DT_1BB0002", item_id = "T02", level = "시군구" }]
 [[indicators]]
 name = "외국인주민 수"
 aliases = ["외국인 주민 수", "외국인주민", "외국인 수", "외국인 주민", "외국인 몇 명"]
+# 기준이 여럿인 말(basis_terms)로 물으면 답에 기본값과 다른 기준을 안내한다
+basis_terms = ["외국인 수", "외국인 몇 명"]
+basis_note = "외국인 수는 기준이 여럿입니다. 행정안전부 외국인주민(한국 국적이 없는 외국인 + 귀화자 + 외국인주민 자녀, 11월 1일 기준)으로 답했습니다. 한국 국적이 없는 사람만 보려면 법무부 등록외국인 수를 물어보세요"
 not_in = ["등록외국인", "등록된 외국인", "등록 외국인", "체류외국인"]  # 법무부 통계 (귀화자·외국인주민 자녀 없음)
 unit = "명"
 method = "lookup"
@@ -874,6 +984,9 @@ sources = [{ table = "TX_11025_A000_A", item_id = "16110AAA0", level = "시도",
 name = "외국인주민 비율"
 formula = "외국인주민 수 ÷ 총인구 × 100"
 aliases = ["외국인 주민 비율", "외국인 비율", "외국인주민 비중", "외국인 주민 비중"]
+# 기준이 여럿인 말(basis_terms)로 물으면 답에 기본값과 다른 기준을 안내한다
+basis_terms = ["외국인 비율"]
+basis_note = "외국인 비율은 행정안전부 외국인주민(귀화자·외국인주민 자녀 포함) 기준으로 답했습니다. 법무부 등록외국인 기준 비율은 '등록외국인 비율'로 물어보세요"
 not_in = ["등록외국인", "등록된 외국인", "등록 외국인", "체류외국인"]  # 법무부 통계 (귀화자·외국인주민 자녀 없음)
 unit = "%"
 method = "lookup"

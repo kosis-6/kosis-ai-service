@@ -147,6 +147,21 @@ def test_value_without_year_uses_a_year_both_have() -> None:
     assert ("출생아 수", 2024) in run.calls and ("세대수", 2024) in run.calls
 
 
+def test_value_without_year_keeps_values_of_the_same_month() -> None:
+    # 두 값이 모두 같은 달(2026년 10월 말) 값이면 같은 시점: 연간 마지막 해로 다시 계산하지 않는다
+    inner = fake_run(latest={"출생아 수": 2025, "세대수": 2025})
+
+    def run(q: dict) -> dict:
+        out = inner(q)
+        if out.get("status") == "ok" and not q.get("year"):
+            out = {**out, "year": 2026, "as_of": "2026년 10월 말"}
+        return out
+
+    res = x.compute(q_of("value"), run)
+    assert res["status"] == "ok" and res["year"] == 2026
+    assert all(year is None for _, year in inner.calls)  # 연도를 넣어 다시 부르지 않았다
+
+
 def test_part_failure_is_passed_on_with_reason() -> None:
     res = x.compute(q_of("value", year=2030), fake_run())
     assert res["status"] == "out_of_range"

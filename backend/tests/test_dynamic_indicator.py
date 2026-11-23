@@ -97,6 +97,39 @@ def test_ratio_of_age_band_puts_ages_in_filters() -> None:
     assert "age_dim" not in src and spec["ages_in_filters"]
 
 
+def test_age_ratio_uses_population_sex_on_both_sides() -> None:
+    spec = build("서울 여성 1인 가구 중 70세 이상 비율", sex="여", ages=[[70, None]])
+    src = spec["sources"][0]
+    assert (src["item_id"], src["den_item_id"]) == ("T20", "T20")
+    assert src["filters"]["c2_id"] == ["075", "080", "085", "086"]
+    assert src["den_filters"]["c2_id"] == "000"
+    assert spec["name"].startswith("여성 ")
+
+
+@pytest.mark.parametrize(
+    ("asked_age", "expected"),
+    [(85, "086"), (65, ["075", "080", "085", "086"])],
+)
+def test_age_ratio_uses_subgroup_as_denominator(asked_age, expected) -> None:
+    spec = build(
+        f"서울 70세 이상 여성 1인 가구 중 {asked_age}세 이상 비율",
+        sex="여",
+        ages=[[70, None], [asked_age, None]],
+    )
+    src = spec["sources"][0]
+    assert (src["item_id"], src["den_item_id"]) == ("T20", "T20")
+    assert src["filters"]["c2_id"] == expected
+    assert src["den_filters"]["c2_id"] == ["075", "080", "085", "086"]
+    assert "÷ 70세 이상" in spec["formula"]
+
+
+def test_sex_ratio_keeps_age_filter_on_both_sides() -> None:
+    spec = build("서울 70세 이상 1인 가구 중 여성 비율", sex="여", ages=[[70, None]])
+    src = spec["sources"][0]
+    assert (src["item_id"], src["den_item_id"]) == ("T20", "T00")
+    assert src["filters"]["c2_id"] == src["den_filters"]["c2_id"] == ["075", "080", "085", "086"]
+
+
 def test_composition_by_named_dimension() -> None:
     spec = build("서울 1인 가구 연령별 구성", type="composition")
     src = spec["sources"][0]
@@ -817,6 +850,50 @@ def test_handoff_does_not_use_other_tables_when_review_is_exact(computed) -> Non
     assert trace["dynamic"][1]["skip"] == d.EXACT_SKIP
 
 
+@pytest.mark.parametrize("have_full_table", [True, False])
+@pytest.mark.parametrize("use_handoff", [True, False])
+def test_ratio_requires_the_requested_population(computed, have_full_table, use_handoff) -> None:
+    question = "2020년 서울 1인 가구 중 70세 이상 비율은?"
+    q = {**BASE, "ages": [[70, None]]}
+    limited = _cand(
+        "A",
+        1,
+        picked=True,
+        checks={"year": True},
+        review={"match": "exact"},
+        tbl_nm="성별·연령별 1인가구(20세 이상, 일반가구)",
+    )
+    cands = [limited]
+    if have_full_table:
+        cands.append(_cand("B", 2, checks={"year": True}, tbl_nm="성 및 연령별 1인가구"))
+    trace = {}
+    if use_handoff:
+        res = asyncio.run(d.compute_from_handoff(question, q, _found(cands), trace))
+    else:
+        res = asyncio.run(d.answer(question, q, {"status": "ok", "recommendations": cands}, trace))
+    assert res is not None
+    if have_full_table:
+        assert res["status"] == "ok"
+        assert computed["tried"] == ["B"]
+    else:
+        assert res["status"] == "band_mismatch" and "value" not in res["result"]
+        assert "20세 이상만 집계" in res["answer"] and res["sources"][0]["tbl_id"] == "A"
+        assert computed["tried"] == []
+
+
+@pytest.mark.parametrize(
+    ("question", "limit"),
+    [
+        ("1인 가구 중 20세 이상 비율", "20세 이상"),
+        ("18세 이상 1인 가구 중 70세 이상 비율", "20세 이상"),
+        ("20세 이상 1인 가구 중 70세 이상 비율", None),
+        ("70세 이상 1인 가구 중 여성 비율", None),
+    ],
+)
+def test_age_limit_checks_the_population_side_of_a_ratio(question, limit) -> None:
+    assert d.age_limit("성별·연령별 1인가구(20세 이상, 일반가구)", question) == limit
+
+
 def test_handoff_retries_others_when_the_exact_table_fails(computed) -> None:
     # 고른 표(모두 충족)가 계산되지 않으면 그 이유로 건너뛴 후보를 다시 계산한다 (11/20 D-020).
     # ✘ 후보는 그대로 건너뛴다
@@ -1366,17 +1443,69 @@ def test_couple_counted_sex_dimension_uses_male_cell() -> None:
     sex = d.Dim(2, "성별", {"1": "남자", "2": "여자"})
     q = "1978년 대구 혼인 건수"
     plan, why = d.choose(q, {"sex": "계"}, [items, region, sex], 1, couple=True)
-    assert why is None and plan.pick[2] == "1"
-    assert "부부 단위 건수" in plan.defaults[-1]
-    # 부부 단위 표가 아니면(사람 수 표) 지금처럼 고르지 못한다
+    assert why is None and plan.pick[2] == "1" and plan.couple
+    assert d.COUPLE_NOTE in plan.defaults[-1]
+    # 부부 단위 표가 아니면(사람 수 표) 남자 · 여자를 따로 보여 준다
     plan, why = d.choose(q, {"sex": "계"}, [items, region, sex], 1)
-    assert plan is None and "성별" in why
-    # 연령을 물으면 남편 · 아내 나이가 달라 고르지 않는다
-    plan, why = d.choose(q, {"sex": "계", "ages": [30, 34]}, [items, region, sex], 1, couple=True)
-    assert plan is None
-    # 성별을 말하면 그 칸
+    assert why is None and plan.split_sex == {"남": "남자", "여": "여자"} and not plan.couple
+    # 연령을 물으면 남편 · 아내 나이가 달라 한 쪽 칸으로 답하지 않고 따로 보여 준다
+    age = d.Dim(3, "연령(각세)별", {"000": "계", "230": "30세", "231": "31세", "232": "32세"})
+    plan, why = d.choose(
+        q, {"sex": "계", "ages": [[30, 34]]}, [items, region, sex, age], 1, couple=True
+    )
+    assert why is None and plan.split_sex == {"남": "남편", "여": "아내"} and plan.couple
+    assert "남편 · 아내 따로" in plan.defaults[-1]
+    # 성별을 말하면 그 칸. 부부 단위 표라는 표시는 그대로 (V2-035 "결혼한 남자 중 30대")
     plan, why = d.choose(q, {"sex": "여"}, [items, region, sex], 1, couple=True)
-    assert why is None and plan.pick[2] == "2"
+    assert why is None and plan.pick[2] == "2" and plan.couple
+    plan, why = d.choose(q, {"sex": "남"}, [items, region, sex], 1, couple=True)
+    assert why is None and plan.pick[2] == "1" and plan.couple
+    # 사람 수 표에서 성별을 말한 경우는 부부 단위가 아니다
+    plan, why = d.choose(q, {"sex": "남"}, [items, region, sex], 1)
+    assert why is None and not plan.couple
+
+
+def test_no_sex_total_split_builds_sexes_without_total(monkeypatch) -> None:
+    # 성별 합계 칸이 없는 표에서 남녀를 따로 보여 줄 때: by_sex에 '계'가 없어야 qa.compute가
+    # lookup.needs_split으로 남 · 여를 각각 계산한다. 이름표는 답의 "기혼자 수(남자)"
+    items = d.Dim(0, "항목", {"1": "남자", "2": "여자"})
+    region = d.Dim(1, "시도별", {"00": "전국", "11": "서울특별시"})
+    kind = d.Dim(2, "초혼연령별", {"0": "15세이상자", "1": "기혼자"})
+    monkeypatch.setattr(d, "schema", lambda t: ([items, region, kind], 1, "시도"))
+    monkeypatch.setattr(d, "couple_counted", lambda t: False)
+    monkeypatch.setattr(d.lookup, "_table", lambda t: {"tbl_nm": "시도/초혼연령/성별 기혼자"})
+    monkeypatch.setattr(d, "_unit", lambda *a: ("명", None))
+    parsed = {"type": "value", "indicator": "기혼자 수", "regions": ["서울"], "sex": "계"}
+    spec, why = d.build("T_NO_TOTAL", "서울 기혼자 수", parsed)
+    assert why is None
+    by_sex = spec["sources"][0]["by_sex"]
+    assert set(by_sex) == {"남", "여"} and by_sex["여"]["label"] == "여자"
+    assert d.lookup.needs_split(spec, "계")
+    # 비율은 남녀를 나눠 계산하지 않는다: 남자 칸 값이 답이 되지 않게 고르지 못한 것으로 둔다
+    spec, why = d.build("T_NO_TOTAL", "서울 기혼자 비율", {**parsed, "indicator": "기혼자 비율"})
+    assert spec is None and "칸을 고르지 못함" in str(why)
+
+
+def test_couple_note_without_region_dimension() -> None:
+    # 지역 구분이 없는 부부 단위 표 (다문화 유형별 이혼 DT_1BB0003): 지역 값 안내를 붙이지 않는다
+    items = d.Dim(0, "항목", {"T00": "이혼건수"})
+    sex = d.Dim(1, "성별", {"1": "남자", "2": "여자"})
+    kind = d.Dim(2, "유형별", {"0": "계", "1": "출생기준 한국인", "2": "외국인"})
+    plan, why = d.choose("다문화 이혼 건수", {"sex": "계"}, [items, sex, kind], None, couple=True)
+    assert why is None and plan.pick[1] == "1" and plan.couple
+    note = ", ".join(plan.defaults)
+    assert d.COUPLE_NOTE_NATIONAL in note and "지역별" not in note
+
+
+def test_couple_answer_drops_add_sexes_notice() -> None:
+    # 부부 단위 표의 성별 칸이 곧 부부 건수: "남녀 값을 더해 보라"는 표 안내를 붙이면 두 번 세게
+    # 된다 (V2-053). 성별을 말해 고른 칸도 같다 (V2-035)
+    no_total = d.search_answer.NO_TOTAL_NOTE.rstrip(".")
+    assert d.table_notice(no_total, True) is None
+    assert d.table_notice(f"표 주석 A. {no_total}. 표 주석 B", True) == "표 주석 A. 표 주석 B"
+    # 사람 수 표(부부 단위가 아님)에는 그대로 붙인다
+    assert d.table_notice(no_total, False) == no_total
+    assert d.table_notice(None, True) is None
 
 
 def test_couple_counted_compares_national_sums(monkeypatch) -> None:
@@ -1555,3 +1684,109 @@ def test_same_table_unit_not_count_is_its_own_status(nation, monkeypatch) -> Non
     assert rec["status"] == "not_count" and rec["status"] in ask_session.SAME_TABLE_STATUSES
     assert rec["cells"] == ["베트남"] and rec["leftover"] == [] and rec["unit"] == "%"
     assert rec["why"] == "건수 · 인원이 아닌 값 (%)" and set(rec) == SAME_TABLE_KEYS
+
+
+# 표 이름에 있는 조건은 표가 이미 반영한 것 (통계표 찾기의 조건 확인과 같은 기준)
+REMARRY = [d.Dim(0, "항목", {"H": "남편", "W": "아내"})]
+
+
+@pytest.mark.parametrize(
+    "items, words, why",
+    [
+        # 재혼 표: 재혼 칸 없이 아내 칸으로 답한다
+        (["재혼"], ["시도별 평균재혼연령", None], None),
+        # 표 이름에 없는 조건은 지금처럼 칸에서 찾는다 (넓은 값으로 답하지 않게)
+        (["미혼"], ["시도별 평균재혼연령", None], "질문의 조건 '미혼'을 표의 칸에 반영할 수 없음"),
+        # 표 이름이 없는 계산(넘기기 꾸러미 밖)은 지금 그대로
+        (["재혼"], None, "질문의 조건 '재혼'을 표의 칸에 반영할 수 없음"),
+    ],
+)
+def test_item_in_table_name_is_covered(items, words, why) -> None:
+    slots = {"conditions": {"items": items}}
+    if words is not None:
+        slots["table_words"] = words
+    plan = d.Plan(pick={0: "W"})
+    assert d.uncovered(slots, plan, REMARRY, {"type": "trend"}) == why
+
+
+# ---- 실제 테스트 오류 (11/23): 비율 이름 · 모집단 · 추계 문구 --------------------------------
+
+
+def test_ratio_name_says_whole_part_and_ratio() -> None:
+    # 값 정의 이름("… 수")을 비율에 그대로 쓰면 "… 수는 13.27%"가 됐다
+    assert d._ratio_name("1인가구(20세이상 인구) 수", "70세 이상") == (
+        "1인가구(20세이상 인구) 중 70세 이상 비율"
+    )
+    assert d._ratio_name("1인가구 여자 수", "여자") == "1인가구 중 여자 비율"
+    assert d._ratio_name("1인 가구 중 70세 이상 비율", "70세 이상") == "1인 가구 중 70세 이상 비율"
+
+
+def test_ratio_spec_is_named_as_ratio() -> None:
+    spec = build("서울 1인 가구 중 여성 비율", indicator="2020년 서울", sex="여")
+    assert spec["kind"] == "ratio" and spec["name"].endswith("비율")
+    assert "수" not in spec["name"].split()
+
+
+def _entry(tbl_id: str, tbl_nm: str) -> dict:
+    return {"tbl_id": tbl_id, "tbl_nm": tbl_nm, "kind": "other"}
+
+
+def _ok(tbl_id: str) -> tuple:
+    return ({"status": "ok", "tbl": tbl_id}, None, {"dynamic": []})
+
+
+def test_table_limited_to_unasked_ages_goes_after_whole_population() -> None:
+    entries = [
+        _entry("A", "성별/연령별/사회활동별 1인가구(20세 이상, 일반가구)-시도"),
+        _entry("B", "성별/연령별/거주기간별 1인가구(일반가구)-시도"),
+    ]
+    outcomes = [_ok("A"), _ok("B")]
+    trace: dict = {"handoff": {}}
+    order = d._whole_population_first(entries, outcomes, "서울 1인 가구 중 70세 이상 비율", trace)
+    assert [e["tbl_id"] for e, _ in order] == ["B", "A"]
+    assert "20세 이상" in trace["handoff"]["population"]
+    # 질문이 그 연령을 말했으면 목록 순서 그대로
+    same = d._whole_population_first(entries, outcomes, "20세 이상 1인 가구 중 70세 이상", {})
+    assert [e["tbl_id"] for e, _ in same] == ["A", "B"]
+    # 제한 없는 표가 계산되지 않았으면 제한 있는 표로 답한다
+    failed = [_ok("A"), (None, None, {"dynamic": []})]
+    alone = d._whole_population_first(entries, failed, "서울 1인 가구 중 70세 이상 비율", {})
+    assert [e["tbl_id"] for e, _ in alone] == ["A", "B"]
+
+
+def test_projection_answer_says_it_is_an_estimate(fake_table: dict) -> None:
+    fake_table["projection"].add("DT_1PL1502")
+    spec = build("2040년 서울 1인 가구 수", year=2040)
+    assert spec["answer_note"] == d.PROJECTION_ANSWER
+    # 첫 문장 바로 뒤에 붙는다 (qa._summary)
+    result = {"status": "ok", "indicator": "1인 가구", "unit": "가구", "value": 1842002}
+    result.update(year=2040, region="서울특별시", answer_note=spec["answer_note"])
+    text = qa.summary(result)
+    assert text.endswith("1,842,002가구입니다. " + d.PROJECTION_ANSWER)
+
+
+def test_ratio_whole_target_drops_question_age() -> None:
+    u = {"conditions": {"region": "서울"}, "age": {"expr": "70세 이상", "lo": 70, "hi": None}}
+    assert d._target_understanding(u, {"span": "전체 1인 가구", "unsaid_age": True})["age"] is None
+    kept = d._target_understanding(u, {"span": "70세 이상 1인 가구"})
+    assert kept["age"]["lo"] == 70
+
+
+def test_cached_plan_on_age_limited_table_goes_to_table_search(monkeypatch) -> None:
+    # 이 규칙 전에 20세 이상 표로 저장한 계획이 통계표 찾기보다 먼저 쓰이지 않게 한다
+    async def find(key):
+        return [{"id": 1, "tbl_id": "DT_LIMITED", "forced": {}, "words": []}]
+
+    tried = []
+
+    async def try_(*args, **kwargs):
+        tried.append(args[0])
+        return None, None
+
+    monkeypatch.setattr(d.plan_cache, "key_of", lambda parsed: ("k", "1인 가구 중 70세 이상 비율"))
+    monkeypatch.setattr(d.plan_cache, "find", find)
+    monkeypatch.setattr(lookup, "_table", lambda t: {"tbl_nm": "1인가구(20세 이상, 일반가구)-시도"})
+    monkeypatch.setattr(d, "_try", try_)
+    trace: dict = {}
+    assert asyncio.run(d.cached_answer("서울 1인 가구 중 70세 이상 비율", BASE, trace)) is None
+    assert tried == [] and "20세 이상만 집계" in trace["dynamic"][0]["skip"]

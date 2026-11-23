@@ -265,6 +265,68 @@ def spec(indicator):
     return specs().get(name) if name else None
 
 
+# 조사마다 답에 붙이는 기준 (다른 조사의 공표값으로 답할 때)
+# 사용자가 무엇이 다른지 알 수 있게 쓴다: 누구를(외국인) · 어디서(주소지 · 사는 곳) · 언제 셌는지
+ALT_NOTES = {
+    "인구총조사": "인구총조사 기준입니다. 실제로 사는 곳에서 외국인까지 센 인구(11월 1일)라, "
+    "주소를 둔 곳에서 내국인만 센 주민등록인구와 값이 다릅니다",
+    "장래인구추계": "장래인구추계(중위 추계) 기준입니다. 인구총조사를 바탕으로 7월 1일 인구를 "
+    "추정한 값(외국인 포함)이라, 주소를 둔 곳에서 내국인만 센 주민등록인구와 값이 다릅니다",
+}
+
+
+def alt_spec(sp, survey):
+    """지표의 다른 조사 공표값 정의 (지표 사전의 alt_sources) → 조회 지표 정의. 없으면 None
+    예) "인구총조사 기준 영도구 중위연령": 주민등록 1세별 계산 대신 DT_1IN2030의 중위연령"""
+    alts = [a for a in sp.get("alt_sources") or [] if a.get("survey") == survey]
+    if not alts:
+        return None
+    base = INDICATORS.get(sp["name"], {})
+    out = {
+        "name": sp["name"],
+        "unit": sp.get("unit") or base.get("unit", ""),
+        "kind": sp.get("kind") or base.get("kind"),
+        "diff_unit": sp.get("diff_unit") or base.get("diff_unit"),
+        "method": "lookup",
+        "survey": survey,
+        "note": ALT_NOTES.get(survey, f"{survey} 공표값입니다"),
+        "sources": [{k: v for k, v in a.items() if k != "survey"} for a in alts],
+    }
+    if any(a.get("den_item_id") for a in alts):
+        # 비율이 공표되지 않아 그 조사의 연령별 인구로 나눴다 (인구총조사 고령인구 비율 등)
+        formula = base.get("formula") or sp.get("formula") or ""
+        out["formula"] = f"{formula} ({survey} 연령별 인구로 계산)".strip()
+        out["note"] = (
+            f"{survey} 연령별 인구로 계산했습니다 (비율은 공표되지 않음). "
+            + ALT_NOTES[survey].split(". ", 1)[1]
+        )
+    return out
+
+
+@lru_cache(maxsize=512)
+def _survey_of(tbl_id):
+    r = _rows("select survey_name from table_meta where tbl_id = ?", [tbl_id])
+    return r[0]["survey_name"] if r and r[0]["survey_name"] else None
+
+
+def source_surveys(sp):
+    """지표가 평소에 쓰는 표의 조사 이름들 (예: 합계출산율 → ["인구동향조사"])"""
+    names = []
+    for s in sp.get("sources") or []:
+        try:
+            name = _survey_of(s["table"])
+        except Exception:  # 표 목록을 읽지 못해도 답은 한다 (안내만 빠진다)
+            name = None
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def alt_surveys(sp):
+    """지표에 공표값이 따로 있는 조사 이름들"""
+    return list(dict.fromkeys(a["survey"] for a in sp.get("alt_sources") or []))
+
+
 def _alias_map():
     """지표 이름 → 별칭 목록 (계산·조회 지표 모두)"""
     return {name: ind.get("aliases", []) for name, ind in specs().items()}
@@ -297,6 +359,8 @@ def age_label(band):
         return f"{lo}세 이상"
     if lo % 10 == 0 and hi == lo + 9:
         return f"{lo}대"
+    if lo == hi:  # 한 살 ('1990년생' → 35세)
+        return f"{lo}세"
     return f"{lo}~{hi}세"
 
 
@@ -308,10 +372,15 @@ def _get_indicator(indicator, ages=None):
         lo, hi = ages[0]
         label = age_label(ages[0])
         upper = "" if hi is None else f" ~ {hi}세"
+        formula = (
+            f"주민등록인구 중 {lo}세 인구"
+            if lo == hi
+            else f"주민등록인구 중 {lo}세{upper or ' 이상'} 인구의 합"
+        )
         return f"{label} 인구", {
             "unit": "명",
             "kind": "count",
-            "formula": f"주민등록인구 중 {lo}세{upper or ' 이상'} 인구의 합",
+            "formula": formula,
             "calc": lambda c: c["band"],
             "band": (lo, hi),
         }
