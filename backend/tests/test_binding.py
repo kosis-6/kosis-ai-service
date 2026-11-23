@@ -310,3 +310,13 @@ def test_item_already_in_forced_cell_and_age_endpoints(monkeypatch) -> None:
     # '65살부터 72살까지'의 양 끝을 따로 뽑은 조건은 연령에서 이미 봤다 (V2-137)
     b = binding.bind("T", "65살부터 72살까지", {"ages": [[65, 72]]}, _slots(items=["65세", "72세"]))
     assert not any(u.cond == "item" for u in b.unbound)
+
+
+def test_count_condition_skips_age_cells(monkeypatch) -> None:
+    # '셋 이상'을 나이 칸 '3세 · 4세 · 5세'에 잇지 않는다 (DT_1YC1601)
+    items = Dim(
+        0, "항목", {"T13": "3자녀이상", "T24": "3세", "T25": "4세", "T26": "5세", "T27": "6세"}
+    )
+    _table(monkeypatch, [items])
+    b = binding.bind("T", "자녀 셋 이상", {}, _slots(items=["셋 이상"]))
+    assert not any(x.cond == "item" and set(x.codes) & {"T24", "T25", "T26"} for x in b.bound)

@@ -47,6 +47,7 @@ COUNT_ASK = re.compile(
     r"\s*(?P<op>이상|넘|초과|이하|미만)?(?!\s*(?:살|세|대|년|월|일|%|퍼센트))"
 )  # fmt: skip
 COUNT_CELL = re.compile(r"(\d+)\s*(?:명|자녀|인|개|가구|회)?\s*(이상)?")
+AGE_CELL = re.compile(r"\d+\s*(?:세|살|대)")  # '3세' · '20대'는 수가 아니라 나이 칸 (DT_1YC1601)
 MIN_COUNT_CELLS = 3  # 수로 된 칸이 이만큼 있는 분류만 수 조건으로 잇는다
 
 
@@ -133,7 +134,9 @@ def _count_cells(ask: tuple[int, str], d: di.Dim) -> list[str]:
     수로 된 칸이 적은 분류는 보지 않는다"""
     nums = {}
     for code, name in d.codes.items():
-        if (m := COUNT_CELL.search(name)) and not search.norm(name).endswith("계"):
+        if AGE_CELL.search(name) or search.norm(name).endswith("계"):
+            continue
+        if m := COUNT_CELL.search(name):
             nums[code] = (int(m[1]), bool(m[2]))
     if len(nums) < MIN_COUNT_CELLS:
         return []
