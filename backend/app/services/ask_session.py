@@ -68,6 +68,7 @@ from app.services import (
     question_clarify,
     table_guide,
     timeref,
+    understand_merged,
 )
 from app.services.hcx_client import HcxClient
 from app.services.josa import josa
@@ -2019,6 +2020,7 @@ async def handle(
     sid = session_id or new_id()
     steps = flow.start()  # 이 턴의 처리 흐름 (요청 기록 · 평가 CSV에 남긴다)
     calls = llm_calls.start()  # 이 턴의 LLM 호출 (단계 · 토큰 · 시간 · 다시 시도)
+    understand_merged.start()  # UNDERSTAND_MERGED=gemma: 질문 이해가 함께 뽑은 조건 추출 보관함
     async with _lock(sid):
         state, expired = await _load(sid)
         moved = state is not None and not same_owner(state, user_id)
