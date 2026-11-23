@@ -691,7 +691,7 @@ def age_spans(question):
             found.append((m.start(), m.end(), band))
 
     for m in AGE_OVER_UNDER.finditer(question):
-        add(m, [int(m[1]) + (m[2] != "이상"), int(m[3]) - (m[4] == "미만")])
+        add(m, [int(m[1]) + (m[2] == "초과"), int(m[3]) - (m[4] == "미만")])
     for m in AGE_RANGE.finditer(question):
         add(m, [int(m[1]), int(m[2])])
     for m in AGE_SPAN.finditer(question):
@@ -702,7 +702,8 @@ def age_spans(question):
         if int(m[1]) % 10 == 0 and int(m[2]) % 10 == 0 and int(m[1]) < int(m[2]):
             add(m, [int(m[1]), int(m[2]) + 9])
     for m in AGE_OVER.finditer(question):
-        add(m, [int(m[1]) + (m[2] != "이상"), None])
+        # 일상어 '15살 넘은'은 평가 기준에서 15세 이상으로 본다.
+        add(m, [int(m[1]) + (m[2] == "초과"), None])
     for m in AGE_UNDER.finditer(question):
         add(m, [0, int(m[1]) - 1])
     for m in AGE_UNDER_EQ.finditer(question):

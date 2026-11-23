@@ -1899,7 +1899,7 @@ async def _compute_target(
     for _, _, sub in outcomes:
         merge(sub)
     trace["handoff"]["tried"] = len(entries)
-    for entry, (res, _, sub) in _whole_population_first(entries, outcomes, question, trace):
+    for entry, (res, _, sub) in zip(entries, outcomes, strict=True):
         if res is not None and res.get("status") == "ok":
             trace["handoff"]["used"] = {"tbl_id": entry["tbl_id"], "kind": entry["kind"]}
             # 칸 고르기 LLM이 고른 칸은 사람의 선택이 아니라 표의 칸 풀이라 캐시에 함께 남긴다
@@ -1961,34 +1961,16 @@ AGE_LIMIT = re.compile(r"(\d+)\s*세\s*이상")  # 표 이름의 집계 대상 �
 
 
 def age_limit(tbl_nm: str, question: str) -> str | None:
-    """표가 질문이 말하지 않은 연령만 집계하면 그 제한 ("20세 이상"). 아니면 None"""
+    """비율의 분모를 표의 집계 연령이 모두 포함하지 못하면 그 제한 ("20세 이상")."""
+    if not PCT_ASK.search(question):
+        return None
     m = AGE_LIMIT.search(tbl_nm or "")
     if m is None:
         return None
-    population = question
-    if PCT_ASK.search(question):
-        # "1인 가구 중 20세 이상 비율"의 20세는 분자의 조건이다. 분모의 범위만 본다.
-        scope = WITHIN.split(question, maxsplit=1)
-        population = scope[0] if len(scope) == 2 else ""
-    bands = qa.resolved_ages(population)
+    # "1인 가구 중 20세 이상 비율"의 20세는 분자의 조건이다. 분모의 범위만 본다.
+    scope = WITHIN.split(question, maxsplit=1)
+    bands = qa.resolved_ages(scope[0]) if len(scope) == 2 else []
     return None if bands and all(lo >= int(m[1]) for lo, _ in bands) else m[0]
-
-
-def _whole_population_first(entries: list[dict], outcomes: list, question: str, trace: dict):
-    """계산된 후보를 쓸 순서. 지금처럼 목록 순서지만, 질문이 말하지 않은 연령 제한이 있는 표
-    ("1인가구(20세 이상, 일반가구)")는 제한 없는 표도 계산됐으면 그 뒤로 미룬다.
-    모집단이 맞지 않는 비율은 계산 전에 제외한다 (_try_once)."""
-    pairs = list(zip(entries, outcomes, strict=True))
-    ok = [(e, o) for e, o in pairs if o[0] is not None and o[0].get("status") == "ok"]
-    if not ok or not (limit := age_limit(ok[0][0].get("tbl_nm") or "", question)):
-        return pairs
-    whole = [p for p in ok if not age_limit(p[0].get("tbl_nm") or "", question)]
-    if not whole:
-        return pairs
-    trace["handoff"]["population"] = (
-        f"{ok[0][0]['tbl_id']}은 {limit}만 집계해 {whole[0][0]['tbl_id']}로 답함"
-    )
-    return whole + [p for p in pairs if p not in whole]
 
 
 async def answer_choice(question: str, context: dict, code: str, trace: dict) -> dict | None:
@@ -2023,16 +2005,6 @@ async def cached_answer(question: str, parsed: dict, trace: dict) -> dict | None
         flow.add("계산 방법 캐시", "없음" if found else "건너뜀", (found or ["", ""])[1])
     trace.setdefault("dynamic", [])
     for plan in plans:
-        try:
-            tbl_nm = (await run_in_threadpool(lookup._table, plan["tbl_id"]))["tbl_nm"]
-        except Exception:  # 표 이름을 못 읽으면 지금처럼 쓴다
-            tbl_nm = ""
-        if limit := age_limit(tbl_nm, question):
-            # 질문이 말하지 않은 연령만 집계한 표: 전 연령 표가 있을 수 있어 통계표 찾기로
-            # (_whole_population_first와 같은 기준. 이 규칙 전에 저장한 계획도 거른다, 11/23)
-            skip = f"캐시한 표가 {limit}만 집계 → 통계표 찾기"
-            trace["dynamic"].append({"tbl_id": plan["tbl_id"], "skip": skip})
-            continue
         saved = {int(k): v for k, v in (plan.get("forced") or {}).items()}
         forced = saved
         if saved:
@@ -2050,7 +2022,7 @@ async def cached_answer(question: str, parsed: dict, trace: dict) -> dict | None
             # 저장한 표에 그 연도·지역 자료가 없다 (예: 수록 기간 밖). 다른 표가 있을 수 있어
             # 여기서 답하지 않고 통계표 찾기로 넘긴다
             steps = trace["dynamic"] or [{}]
-            steps[-1]["skip"] = f"캐시한 표로 답하지 못함 ({res.get('status')})"
+            steps[-1].setdefault("skip", f"캐시한 표로 답하지 못함 ({res.get('status')})")
             continue
         if res is None and ask is not None:
             res = ask_answer(question, parsed, plan["tbl_id"], plan["tbl_id"], ask, forced)

@@ -902,24 +902,29 @@ def test_age_limit_checks_the_population_side_of_a_ratio(question, limit) -> Non
 
 
 @pytest.mark.parametrize(
-    ("question", "limit"),
+    ("table", "question"),
     [
-        ("노인 1인 가구 수", None),
-        ("65세 넘은 1인 가구 수", None),
-        ("70세 이상 1인 가구 수", None),
-        ("65세 초과 70세 이하 1인 가구 수", None),
-        ("60대 1인 가구 수", "65세 이상"),
-        ("성인 1인 가구 수", "65세 이상"),
-        ("1인 가구 수", "65세 이상"),
+        ("성별 통근 통학 인구(12세 이상)-시군구", "2020년 서울 통근 인구 몇 명"),
+        ("출생자녀수별 기혼여성인구(15세 이상)-시도", "아이 둘 낳은 기혼여성 수"),
+        ("1년 전 거주지별 인구(1세 이상)", "서울 1년 전 거주지별 인구 추이"),
     ],
 )
-def test_age_limit_uses_the_resolved_band(question, limit) -> None:
-    assert d.age_limit("성별·연령별 1인가구(65세 이상)", question) == limit
+def test_count_queries_allow_the_tables_survey_age(table, question) -> None:
+    assert d.age_limit(table, question) is None
 
 
-def test_ages_above_a_cutoff_exclude_that_age() -> None:
-    assert qa.extract_ages("65세 넘은 1인 가구") == [[66, None]]
-    assert qa.extract_ages("65세 초과 70세 이하 1인 가구") == [[66, 70]]
+@pytest.mark.parametrize(
+    ("question", "band"),
+    [
+        ("2010년에 15살 넘은 사람 중에 결혼 안 한 사람 비율 몇 퍼센트였어?", [15, None]),
+        ("강북구에 100살 넘은 장애인 몇 명이야?", [100, None]),
+        ("65세 넘는 70세 이하 1인 가구", [65, 70]),
+        ("65세 초과", [66, None]),
+        ("65세 초과 70세 이하 1인 가구", [66, 70]),
+    ],
+)
+def test_colloquial_age_cutoff_includes_the_stated_age(question, band) -> None:
+    assert qa.extract_ages(question) == [band]
 
 
 def test_handoff_retries_others_when_the_exact_table_fails(computed) -> None:
@@ -1755,31 +1760,23 @@ def test_ratio_spec_is_named_as_ratio() -> None:
     assert "수" not in spec["name"].split()
 
 
-def _entry(tbl_id: str, tbl_nm: str) -> dict:
-    return {"tbl_id": tbl_id, "tbl_nm": tbl_nm, "kind": "other"}
-
-
-def _ok(tbl_id: str) -> tuple:
-    return ({"status": "ok", "tbl": tbl_id}, None, {"dynamic": []})
-
-
-def test_table_limited_to_unasked_ages_goes_after_whole_population() -> None:
-    entries = [
-        _entry("A", "성별/연령별/사회활동별 1인가구(20세 이상, 일반가구)-시도"),
-        _entry("B", "성별/연령별/거주기간별 1인가구(일반가구)-시도"),
+def test_handoff_keeps_priority_for_a_count_with_a_survey_age(computed, fake_table) -> None:
+    fake_table["tables"]["DT_1PL1502"] = (
+        [d.Dim(0, "항목", {"T00": "통근 인구"}), ONE_PERSON[1]],
+        1,
+        "시군구",
+    )
+    fake_table["units"]["DT_1PL1502"] = ("명", True)
+    candidates = [
+        _cand("A", 1, picked=True, checks={"year": True}, tbl_nm="통근 통학 인구(12세 이상)"),
+        _cand("B", 2, checks={"year": True}, tbl_nm="통근 여부별 인구"),
     ]
-    outcomes = [_ok("A"), _ok("B")]
-    trace: dict = {"handoff": {}}
-    order = d._whole_population_first(entries, outcomes, "서울 1인 가구 중 70세 이상 비율", trace)
-    assert [e["tbl_id"] for e, _ in order] == ["B", "A"]
-    assert "20세 이상" in trace["handoff"]["population"]
-    # 질문이 그 연령을 말했으면 목록 순서 그대로
-    same = d._whole_population_first(entries, outcomes, "20세 이상 1인 가구 중 70세 이상", {})
-    assert [e["tbl_id"] for e, _ in same] == ["A", "B"]
-    # 제한 없는 표가 계산되지 않았으면 제한 있는 표로 답한다
-    failed = [_ok("A"), (None, None, {"dynamic": []})]
-    alone = d._whole_population_first(entries, failed, "서울 1인 가구 중 70세 이상 비율", {})
-    assert [e["tbl_id"] for e, _ in alone] == ["A", "B"]
+    trace: dict = {}
+    question = "2020년 서울 통근 인구 몇 명"
+    parsed = {**BASE, "indicator": "통근 인구"}
+    res = asyncio.run(d.compute_from_handoff(question, parsed, _found(candidates), trace))
+    assert res["status"] == "ok" and sorted(computed["tried"]) == ["A", "B"]
+    assert trace["handoff"]["used"]["tbl_id"] == "A"
 
 
 def test_projection_answer_says_it_is_an_estimate(fake_table: dict) -> None:
@@ -1801,23 +1798,30 @@ def test_ratio_whole_target_drops_question_age() -> None:
 
 
 @pytest.mark.parametrize(
-    ("question", "fits"),
+    ("table", "question", "kind", "fits"),
     [
-        ("1인 가구 중 70세 이상 비율", False),
-        ("노인 1인 가구 수", True),
-        ("65세 넘은 1인 가구 수", True),
+        ("통근 통학 인구(12세 이상)", "2020년 서울 통근 인구 몇 명", "value", True),
+        ("통근 통학 인구(12세 이상)", "서울 통근 인구 추이", "trend", True),
+        ("1인가구(65세 이상)", "1인 가구 중 70세 이상 비율", "value", False),
+        ("1인가구(65세 이상)", "노인 1인 가구 중 여성 비율", "value", True),
+        ("1인가구(65세 이상)", "65세 넘은 1인 가구 중 여성 비율", "value", True),
     ],
 )
 def test_cached_plan_on_age_limited_table_checks_question_scope(
-    monkeypatch, question, fits
+    monkeypatch, table, question, kind, fits
 ) -> None:
     async def find(key):
         return [{"id": 1, "tbl_id": "DT_LIMITED", "forced": {}, "words": []}]
 
     used = []
+    built = []
 
-    async def try_(*args, **kwargs):
-        return {"status": "ok"}, None
+    async def build_(tbl_id, *args):
+        built.append(tbl_id)
+        return {"name": "지표", "kind": "count", "cells": []}, None
+
+    async def answer_(*args):
+        return {"status": "ok", "result": {"value": 1}}
 
     async def mark_used(id_):
         used.append(id_)
@@ -1825,13 +1829,14 @@ def test_cached_plan_on_age_limited_table_checks_question_scope(
     monkeypatch.setattr(d.plan_cache, "key_of", lambda parsed: ("k", question))
     monkeypatch.setattr(d.plan_cache, "find", find)
     monkeypatch.setattr(d.plan_cache, "used", mark_used)
-    monkeypatch.setattr(lookup, "_table", lambda t: {"tbl_nm": "1인가구(65세 이상, 일반가구)-시도"})
-    monkeypatch.setattr(d, "_try", try_)
+    monkeypatch.setattr(lookup, "_table", lambda t: {"tbl_nm": table})
+    monkeypatch.setattr(d, "_build", build_)
+    monkeypatch.setattr(qa, "answer", answer_)
     trace: dict = {}
-    res = asyncio.run(d.cached_answer(f"서울 {question}", BASE, trace))
+    res = asyncio.run(d.cached_answer(question, {**BASE, "type": kind}, trace))
     if fits:
-        assert res == {"status": "ok"} and used == [1]
+        assert res["status"] == "ok" and built == ["DT_LIMITED"] and used == [1]
         assert trace["plan_cache"] == {"hit": 1, "tbl_id": "DT_LIMITED"}
     else:
-        assert res is None and used == []
+        assert res is None and built == [] and used == []
         assert "65세 이상만 집계" in trace["dynamic"][0]["skip"]
