@@ -1431,6 +1431,30 @@ def test_more_is_a_comparison() -> None:
     assert d._multi_op("남자애가 더 많이 태어났어 여자애가 더 많이 태어났어?") == "compare"
 
 
+@pytest.mark.parametrize(
+    ("label", "name"),
+    [
+        ("이주배경인구_계", "이주배경인구"),  # 전에는 '계'만 떼어 "이주배경인구_ 수"
+        ("다문화가구_가구원_계", "다문화가구 가구원"),
+        ("아내의 연령별: 계", "아내의 연령별"),
+        ("통학-계", "통학"),
+        ("주택이외의 거처_계", "주택이외의 거처"),
+        ("합계", "합계"),  # 합계 칸 자체는 그대로 (이름에서는 TOTAL_NAMES가 뺀다)
+    ],
+)
+def test_label_name_drops_total_tail_and_underscores(label: str, name: str) -> None:
+    assert d._label_name(label) == name
+
+
+def test_name_from_underscored_total_cell() -> None:
+    # "2023년 서울 이주배경인구 어때?": 질문 해석이 지표 표현을 비워 칸 이름으로 이름을 지었다
+    item = d.Dim(0, "항목", {"T10": "이주배경인구_계", "T20": "내국인(귀화)_계"})
+    plan = d.Plan(pick={0: "T10"}, matched={0: "T10"})
+    assert d._name({}, [item], plan, True, unit="명") == "이주배경인구 수"
+    unmatched = d.Plan(pick={0: "T10"}, matched={})  # 고른 칸 이름으로 짓는 경우도 같다
+    assert d._name({}, [item], unmatched, True, unit="명") == "이주배경인구 수"
+
+
 def test_name_drops_single_cell_item_and_unit_tail() -> None:
     # 항목이 하나뿐인 표의 항목 이름과 칸 끝의 단위 괄호는 이름에 쓰지 않는다 (11/20)
     item = d.Dim(0, "항목", {"T1": "출생사망혼인이혼"})

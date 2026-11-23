@@ -365,6 +365,16 @@ RANK_PARTS = re.compile(
 )
 REGION_RANK = re.compile(r"시도|시군구|지역|곳|어디|구별|도시|광역시")
 SUBTOTAL = re.compile(r"(계|합계|소계)$")
+# 칸 이름 끝의 합계 표시 ("통학-계", "이주배경인구_계", "아내의 연령별: 계")
+TOTAL_TAIL = re.compile(r"[\s\-·_:]*(계|합계|소계)$")
+
+
+def _label_name(label: str) -> str:
+    """칸 이름을 지표 이름에 쓰는 모양으로: 끝의 합계 표시를 떼고 단계를 나눈 밑줄은 띄운다
+    ("이주배경인구_계" → "이주배경인구", "다문화가구_가구원_계" → "다문화가구 가구원").
+    전에는 '계'만 떼어 "이주배경인구_ 수"로 답했다"""
+    name = TOTAL_TAIL.sub("", label) or label
+    return " ".join(name.replace("_", " ").split()) or label
 
 
 def _multi_op(question: str) -> str | None:
@@ -811,7 +821,7 @@ def _name(
         tail = re.compile(rf"\s*\(\s*{re.escape(unit)}\s*\)\s*$")
         words = [tail.sub("", w) or w for w in words]
     # "통학-계"처럼 이름 끝의 합계 표시는 떼고 쓴다 ("통학 인구"와 맞추고, 답에도 "통학")
-    words = [re.sub(r"[\s\-·]*(계|합계|소계)$", "", w) or w for w in words]
+    words = [_label_name(w) for w in words]
     words = [
         w for w in words if w not in TOTAL_NAMES
     ] or words  # 합계 칸("계")은 이름에 쓰지 않는다
@@ -1005,7 +1015,7 @@ def _parts_spec(spec: dict, src: dict, plan: Plan, dims: list[Dim], tbl_nm: str)
         src["by_sex"] = {s: _sex_override(plan, s) for s in ("계", "남", "여")}
     # 지표 이름: 연산하는 분류 말고 질문에서 고른 칸, 없으면 표 이름의 주제 ("통근 통학 인구")
     words = [
-        x.codes[plan.matched[x.no]]
+        _label_name(x.codes[plan.matched[x.no]])
         for x in dims
         if x.no in plan.matched and x.no != dim_no and plan.matched[x.no] != x.total()
     ]
@@ -1207,7 +1217,7 @@ def _ratio(spec, src, plan, dims, parsed, tbl_nm="", *, question=""):
     whole_label = population_label if age_dim and col == age_dim.col and population_label else None
     out = {
         **spec,
-        "name": _ratio_name(name, part),
+        "name": _ratio_name(name, _label_name(part)),
         "unit": "%",
         "kind": "ratio",
         "formula": f"{part} ÷ {whole_label or whole.get(den, '합계')} × 100",
