@@ -191,7 +191,11 @@ def test_default_value_shown_next_to_alt(monkeypatch: pytest.MonkeyPatch) -> Non
 
     monkeypatch.setattr(qa, "_compute", fake)
     r = qa.compute({"type": "value", "indicator": "중위연령", "asked": {"survey": "인구총조사"}})
-    assert r["notes"] == ["2025년 주민등록인구 기준으로는 56.8세입니다"]
+    # 연도를 말하지 않은 질문이라 가장 최근 자료 안내(_add_latest_note)가 뒤에 함께 붙는다
+    assert r["notes"] == [
+        "2025년 주민등록인구 기준으로는 56.8세입니다",
+        "가장 최근 자료인 2025년 기준으로 답했습니다",
+    ]
 
 
 @pytest.mark.parametrize(
