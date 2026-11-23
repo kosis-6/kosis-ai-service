@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 from app import main
 from app.core import stats_db
 from app.services import ask_session as s
-from app.services import dynamic_indicator, indicators, qa, table_guide
+from app.services import dynamic_indicator, indicators, lookup, qa, table_guide
 
 BASE = {
     "type": "trend",
@@ -34,7 +34,7 @@ def names(monkeypatch: pytest.MonkeyPatch) -> None:
     def no_db():
         pytest.fail("대화 단위 테스트에서 실제 통계 DB를 호출했습니다")
 
-    def resolve_region(name):
+    def resolve_region(name, year=None, sigungu=False):
         if name == "수원":
             return {"status": "ok", "display": "경기도 수원시"}
         if name == "고성":
@@ -48,6 +48,7 @@ def names(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(stats_db, "_engine", no_db)
     monkeypatch.setattr(indicators, "resolve_region", resolve_region)
+    monkeypatch.setattr(lookup, "_table", lambda table: {})
     known = {"출생아 수", "사망자 수", "합계출산율", "고령인구 비율"}
     monkeypatch.setattr(indicators, "canonical_name", lambda n: n if n in known else None)
     aliases = {**dict.fromkeys(known), "65세 이상 비율": "고령인구 비율"}
@@ -1619,6 +1620,39 @@ def test_turn_records_flow_with_final_answer(talk: Talk) -> None:
 ONE_PERSON = {**BASE, "type": "value", "indicator": "1인 가구", "term": "1인 가구",
               "regions": ["서울"], "year": 2020, "start_year": None, "end_year": None}  # fmt: skip
 RATIO_SPEC = {"name": "1인 가구 중 70세 이상 비율", "unit": "%", "kind": "ratio", "dynamic": True}
+
+
+def test_household_age_ratio_keeps_context_after_only_guiding_to_source(talk, monkeypatch):
+    table = {"tbl_nm": "성 및 연령별 1인가구 - 시군구", "start_year": 2015, "end_year": 2025}
+    monkeypatch.setattr(lookup, "_table", lambda tbl_id: table)
+    calls = []
+
+    async def try_table(tbl_id, org_id, question, parsed, trace, forced, slots):
+        calls.append((tbl_id, question))
+        if parsed["regions"] == ["서울"]:
+            return None, None  # 첫 조회는 표가 준비되지 않았다.
+        result = talk._result({**parsed, "dynamic_spec": RATIO_SPEC}, question)
+        result["result"].update(unit="%", tbl_id=tbl_id)
+        return result, None
+
+    monkeypatch.setattr(dynamic_indicator, "_try", try_table)
+    first = "2020년 서울 1인 가구 중 70세 이상 비율은?"
+    client = TestClient(main.app)
+    guide = client.post("/ask", json={"question": first}).json()
+    assert guide["status"] == "tables"
+    assert guide["tables"]["recommendations"][0]["tbl_id"] == "DT_1PL1502"
+    response = client.post(
+        "/ask", json={"question": "부산은?", "session_id": guide["session_id"]}
+    ).json()
+    assert response["status"] == "ok" and response["request_type"] == s.CHANGE
+    assert response["parsed"]["ages"] == [[70, None]]
+    assert response["parsed"]["regions"] == ["부산"] and response["parsed"]["year"] == 2020
+    assert response["result"]["unit"] == "%"
+    assert calls == [
+        ("DT_1PL1502", "2020년 서울 1인 가구 중 70세 이상 비율"),
+        ("DT_1PL1502", "2020년 부산 1인 가구 중 70세 이상 비율"),
+    ]
+    assert talk.asked == talk.extracted == talk.searched == []
 
 
 @pytest.mark.parametrize(
