@@ -785,6 +785,12 @@ def ratio_followup(question: str, state: dict) -> str | None:
     rest = AMONG.sub("", q).strip()
     if not term or not rest:
         return None
+    if gender := {"남": "남성", "여": "여성"}.get(c.get("sex")):
+        if not qa.GENDER_WORDS[c["sex"]].search(term):
+            term = f"{gender} {term}"
+    if (survey := (c.get("asked") or {}).get("survey")) and not qa.survey_said(q):
+        if not qa.survey_said(term):
+            term = f"{survey} 기준 {term}"
     where = ", ".join(c.get("regions") or []) or "전국"
     return " ".join(p for p in (period_text(c), where, f"{term} 중 {rest}") if p)
 

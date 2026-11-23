@@ -1628,6 +1628,14 @@ def test_ratio_follow_up_is_asked_with_last_conditions(talk: Talk) -> None:
     assert res["request_type"] == "change" and res["question"] == talk.asked[-1]
 
 
+def test_ratio_follow_up_keeps_population_sex_and_survey(talk: Talk) -> None:
+    talk.parsed = {**ONE_PERSON, "sex": "여", "asked": {"survey": "인구총조사"}}
+    talk.say("2020년 서울 인구총조사 기준 여성 1인 가구 수는?")
+    talk.say("그중 70세 이상 비율은?")
+    assert talk.extracted == []
+    assert talk.asked[-1] == "2020년 서울 인구총조사 기준 여성 1인 가구 중 70세 이상 비율은?"
+
+
 def test_ratio_follow_up_after_ratio_is_left_to_change_extraction(talk: Talk) -> None:
     talk.parsed = {**ONE_PERSON, "indicator": RATIO_SPEC["name"], "dynamic_spec": RATIO_SPEC}
     talk.say("2020년 서울 1인 가구 중 70세 이상 비율은?")

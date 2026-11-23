@@ -30,10 +30,13 @@
 
 import contextvars
 import os
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from decimal import Decimal
 from functools import lru_cache
 from typing import Any, NamedTuple
+
+from app.services import timeref
 
 MAX_REQUESTS = int(os.environ.get("PARTIAL_MAX_REQUESTS", "3"))
 YEARLY = ("A", "F")  # lookup.YEARLY와 같은 연 단위 시점 (A 연간, F 다년)
@@ -97,6 +100,16 @@ def register(table: Table) -> None:
         tables = {}
         _ACTIVE.set(tables)
     tables[table.tbl_id] = table
+
+
+@contextmanager
+def shared_tables():
+    """후보 계산을 시작하기 전에 만든 목록을 하위 작업과 공유한다."""
+    token = _ACTIVE.set(dict(_ACTIVE.get() or {}))
+    try:
+        yield
+    finally:
+        _ACTIVE.reset(token)
 
 
 # ---- 메타 → 칸 목록·지역 매핑 -------------------------------------------------------------------
@@ -205,10 +218,13 @@ def wanted(spec: dict) -> dict[int, set[str]]:
     return want
 
 
-def _asked_years(table: Table, parsed: dict) -> tuple[int, int]:
+def _asked_years(table: Table, spec: dict, parsed: dict) -> tuple[int, int]:
+    lo, hi = table.span
+    if not spec.get("parts_op") and parsed.get("type") == "trend":
+        return timeref.lookup_trend_years(parsed, lo, hi, parsed.get("year") or hi)
     years = [parsed[k] for k in ("year", "start_year", "end_year") if parsed.get(k)]
     if not years:
-        return table.span[1], table.span[1]  # 연도를 말하지 않으면 마지막 해 (_with_spec과 같음)
+        return hi, hi  # 시점 하나를 물었으면 마지막 해 (_with_spec과 같음)
     return min(years), max(years)
 
 
@@ -266,7 +282,7 @@ def requests_for(table: Table, spec: dict, parsed: dict) -> Fetch | None:
     """지표 정의를 계산하는 데 필요한 칸의 요청. 이미 보낸 요청은 뺀다.
     연 단위 기간 전체를 먼저 보고, 요청이 MAX_REQUESTS번을 넘으면 물은 연도만. 그래도 넘으면 None"""
     want = wanted(spec)
-    for years in (None, _asked_years(table, parsed)):
+    for years in (None, _asked_years(table, spec, parsed)):
         planned = _plan(table, want, years)
         if planned is not None and len(planned) <= MAX_REQUESTS:
             todo = [r for r in planned if request_key(r) not in table.asked]

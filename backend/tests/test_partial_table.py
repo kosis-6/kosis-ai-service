@@ -324,6 +324,62 @@ def test_big_table_answers_from_chosen_cells(kosis) -> None:
     assert "칸만 바로 받음 (요청 1번)" in steps[-1]["detail"]
 
 
+def test_projection_parts_comparison_says_it_is_an_estimate(kosis, monkeypatch) -> None:
+    monkeypatch.setattr(d, "is_projection", lambda t: True)
+    monkeypatch.setattr(lookup, "_projection", lambda t: True)
+    monkeypatch.setattr(indicators, "_data_years", lambda: (2015, 2017))
+    [(res, ask)], trace, _ = run_try(COMPARE, PARSED)
+    assert ask is None and res is not None and res["status"] == "ok", trace
+    assert res["answer"].splitlines()[0].endswith(d.PROJECTION_ANSWER)
+
+
+@pytest.mark.parametrize(
+    "period", [{"asked": {"recent": 3}}, {"start_year": 2018, "asked": {"since": True}}]
+)
+def test_partial_trend_fetches_the_whole_asked_period(kosis, monkeypatch, period) -> None:
+    monkeypatch.setattr(collect_all, "MAX_CELLS", 30)  # 지역 3 × 성별 3 × 기간 3
+    monkeypatch.setattr(partial_table, "MAX_REQUESTS", 1)
+    monkeypatch.setattr(lookup, "refresh_if_reloaded", lambda: None)
+    monkeypatch.setattr(indicators, "_data_years", lambda: (2015, 2020))
+    monkeypatch.setattr(indicators, "_change_notes", lambda *args: [])
+    parsed = {**PARSED, "type": "trend", "year": None, **period}
+    [(res, ask)], trace, _ = run_try("서울 고등학교 인구 추이", parsed)
+    assert ask is None and res is not None and res["status"] == "ok", trace
+    assert [(r["startPrdDe"], r["endPrdDe"]) for r in kosis["calls"]] == [("2018", "2020")]
+    assert [point["year"] for point in res["result"]["series"]] == [2018, 2019, 2020]
+
+
+def test_partial_handoff_passes_metadata_to_cell_picker(kosis, monkeypatch) -> None:
+    original = d.build
+
+    def build_without_rule_match(tbl_id, question, parsed, forced, slots):
+        if partial_table.active(tbl_id) is not None and not forced:
+            return None, "질문의 말과 맞는 칸이 없음"
+        return original(tbl_id, question, parsed, forced, slots)
+
+    async def pick(question, understanding, title, groups, step):
+        assert any(group.no == 3 for group in groups)
+        return d.cell_pick.Picked(forced={3: "03"})
+
+    async def remember(*args):
+        return None
+
+    monkeypatch.setattr(d, "build", build_without_rule_match)
+    monkeypatch.setattr(d.cell_pick, "choose", pick)
+    monkeypatch.setattr(d, "_remember", remember)
+    monkeypatch.setattr(lookup, "refresh_if_reloaded", lambda: None)
+    monkeypatch.setattr(indicators, "_data_years", lambda: (2015, 2020))
+    candidate = {"tbl_id": TBL, "org_id": "101", "picked": True, "checks": {"year": True}}
+    target = {"candidates": [candidate]}
+    found = {"handoff": {"status": "ok", "targets": [target]}}
+    trace = {}
+    parsed = {**PARSED, "type": "value"}
+    res = asyncio.run(d.compute_from_handoff("2018년 서울 고등학교 인구", parsed, found, trace))
+    assert res is not None and res["result"]["value"] == value(2018, "11", "0", "03"), trace
+    assert trace["dynamic"][-1]["by"] == "cell_llm"
+    assert kosis["metas"] == 1
+
+
 def test_same_table_again_reuses_received_cells(kosis) -> None:
     results, trace, _ = run_try(COMPARE, PARSED, times=2)
     assert [r[0]["status"] for r in results] == ["ok", "ok"]

@@ -97,6 +97,15 @@ def test_ratio_of_age_band_puts_ages_in_filters() -> None:
     assert "age_dim" not in src and spec["ages_in_filters"]
 
 
+def test_age_ratio_uses_population_sex_on_both_sides() -> None:
+    spec = build("서울 여성 1인 가구 중 70세 이상 비율", sex="여", ages=[[70, None]])
+    src = spec["sources"][0]
+    assert (src["item_id"], src["den_item_id"]) == ("T20", "T20")
+    assert src["filters"]["c2_id"] == ["075", "080", "085", "086"]
+    assert src["den_filters"]["c2_id"] == "000"
+    assert spec["name"].startswith("여성 ")
+
+
 def test_composition_by_named_dimension() -> None:
     spec = build("서울 1인 가구 연령별 구성", type="composition")
     src = spec["sources"][0]

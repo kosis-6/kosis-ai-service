@@ -92,6 +92,7 @@ MOVE_CONTEXT = re.compile(
 )
 TOTAL_SUFFIX = re.compile(r"(계|합계|소계|전체)$")  # 공백·기호를 뺀 이름 끝의 합계 표시
 PCT_ASK = re.compile(r"%|퍼센트|비율|비중|몇\s*프로")
+WITHIN = re.compile(r"\s+(?:중(?:에?서|에)?|가운데)\s+")
 NORM = re.compile(r"[\s·,.()\[\]{}<>\"'‘’“”_/-]")
 
 
@@ -812,11 +813,16 @@ def build(
     dims, region_dim, level = schema(tbl_id)
     if not dims or dims[0].no != 0:
         return None, "항목 정보가 없음"
-    future_after = None
+    projection = {}
     if is_projection(tbl_id):
         future_after = indicators._data_years()[1]  # 실적(주민등록인구) 자료의 마지막 해
         if not _asks_future(parsed, future_after):
             return None, "장래추계 표는 미래 연도를 물을 때만 씀"
+        projection = {
+            "future_after": future_after,
+            "note": f"{NOTE}. {PROJECTION_NOTE}",
+            "answer_note": PROJECTION_ANSWER,
+        }
     ignore_ages = False
     if parsed.get("ages") and parsed.get("age_group") and not _has_age_dim(dims, region_dim):
         # "노년부양비"의 노년처럼 말에서 짐작한 연령(qa.correct의 age_group)은 지표 이름의 일부일 수
@@ -827,7 +833,7 @@ def build(
     except Exception:  # 표 이름은 분류 안 순위에서만 쓴다
         tbl_nm = ""
     if PER_AVERAGE.search(question) and (avg := _per_average(tbl_id, dims, region_dim, level)):
-        return avg, None
+        return {**avg, **projection}, None
     try:
         # 칸만 받은 표는 값 전체를 볼 수 없어 아니라고 둔다 (캐시에 남지 않게 부르지도 않는다)
         couple = partial_table.active(tbl_id) is None and couple_counted(tbl_id)
@@ -893,6 +899,7 @@ def build(
         # 사전 지표 이름으로 답하면 사전 표에 없는 연도 등을 다른 표에서 꺼낸 것이다 (옛 연도)
         "note": OTHER_TABLE_NOTE if indicators.canonical_name(name) else NOTE,
         "sources": [src],
+        **projection,
     }
     kind = parsed.get("type")
     if plan.multi:
@@ -900,7 +907,7 @@ def build(
     if kind == "composition" or PCT_ASK.search(question):
         made = _composition(spec, src, plan, dims, question) if kind == "composition" else None
         if made is None:
-            made, why = _ratio(spec, src, plan, dims, parsed, tbl_nm)
+            made, why = _ratio(spec, src, plan, dims, parsed, tbl_nm, question=question)
             if made is None:
                 return None, why
         spec = made
@@ -924,10 +931,6 @@ def build(
         spec["fixed"]["ages"] = parsed.get("ages") or None
     if spec["kind"] == "composition":
         spec["fixed"]["type"] = "composition"
-    if future_after is not None:  # 다음 턴에서 과거 연도로 바꾸면 이 정의를 쓰지 않는다
-        spec["future_after"] = future_after
-        spec["note"] = f"{NOTE}. {PROJECTION_NOTE}"
-        spec["answer_note"] = PROJECTION_ANSWER  # 첫 문장 뒤 (qa._summary, parts_answer)
     if plan.defaults:
         spec["note"] += (
             f". 말하지 않은 구분은 합계·기본값으로 계산했습니다 ({', '.join(plan.defaults)})"
@@ -1045,14 +1048,30 @@ def _per_average(tbl_id: str, dims: list[Dim], region_dim: int | None, level: st
     }
 
 
-def _ratio(spec: dict, src: dict, plan: Plan, dims: list[Dim], parsed: dict, tbl_nm: str = ""):
+def _ratio(spec, src, plan, dims, parsed, tbl_nm="", *, question=""):
     """'~ 중 ~ 비율': 나눌 부분 하나 ÷ 같은 분류의 합계 × 100 → (정의, None) 또는 (None, 이유)"""
     sex = parsed.get("sex") or "계"
     parts = []  # (분류 열, 분자 코드들, 분모 코드, 이름)
+    population_sex = False
     if plan.sex_dim is not None and sex in ("남", "여"):
         d = plan.sex_dim
-        word = "남자" if sex == "남" else "여자"
-        parts.append((d.col, [d.sex_codes()[sex]], plan.pick[d.no], word))
+        scope = WITHIN.split(question, maxsplit=1)
+        population_sex = (
+            len(scope) == 2
+            and bool(qa.GENDER_WORDS[sex].search(scope[0]))
+            and not any(pattern.search(scope[1]) for pattern in qa.GENDER_WORDS.values())
+        )
+        if population_sex:
+            # "여성 1인 가구 중 70세 이상 비율": 분자와 분모 모두 여성 조건으로 계산한다.
+            override = _sex_override(plan, sex)
+            src = {
+                **src,
+                **override,
+                "filters": {**src.get("filters", {}), **override.get("filters", {})},
+            }
+        else:
+            word = "남자" if sex == "남" else "여자"
+            parts.append((d.col, [d.sex_codes()[sex]], plan.pick[d.no], word))
     if plan.age_dim is not None and parsed.get("ages"):
         d = plan.age_dim
         band = tuple(parsed["ages"][0])
@@ -1088,9 +1107,12 @@ def _ratio(spec: dict, src: dict, plan: Plan, dims: list[Dim], parsed: dict, tbl
         num_src["den_item_id"] = src["item_id"]
         num_src["den_filters"] = {**filters, col: den}
     whole = next(d.codes for d in dims if d.col == col)
+    name = spec["name"]
+    if population_sex and not qa.GENDER_WORDS[sex].search(name):
+        name = f"{'남성' if sex == '남' else '여성'} {name}"
     out = {
         **spec,
-        "name": _ratio_name(spec["name"], part),
+        "name": _ratio_name(name, part),
         "unit": "%",
         "kind": "ratio",
         "formula": f"{part} ÷ {whole.get(den, '합계')} × 100",
@@ -1720,17 +1742,18 @@ async def _compute_target(
         2. 칸 고르기 LLM은 순위대로 하나씩. 답은 '계산된 표 중 순위가 가장 앞인 것'이라, 규칙으로
            계산된 첫 표보다 뒤의 표는 LLM으로 계산돼도 쓰이지 않는다
            → 그 앞의 표만, 계산되면 멈춘다"""
-        outs = list(await asyncio.gather(*(attempt(entries[i], exact) for i in idx)))
-        first_ok = next((k for k, (res, _, _) in enumerate(outs) if is_ok(res)), len(outs))
-        for k in range(first_ok):
-            res, ask, sub = outs[k]
-            if not wants_llm(res, ask, sub):
-                continue
-            slots, notice = context(entries[idx[k]])
-            res, ask = await with_cell_llm(entries[idx[k]], q, sub, slots, notice)
-            outs[k] = (res, ask, sub)
-            if is_ok(res):
-                break
+        with partial_table.shared_tables():
+            outs = list(await asyncio.gather(*(attempt(entries[i], exact) for i in idx)))
+            first_ok = next((k for k, (res, _, _) in enumerate(outs) if is_ok(res)), len(outs))
+            for k in range(first_ok):
+                res, ask, sub = outs[k]
+                if not wants_llm(res, ask, sub):
+                    continue
+                slots, notice = context(entries[idx[k]])
+                res, ask = await with_cell_llm(entries[idx[k]], q, sub, slots, notice)
+                outs[k] = (res, ask, sub)
+                if is_ok(res):
+                    break
         return outs
 
     outcomes = await run_round(list(range(len(entries))), picked_exact)
@@ -2278,7 +2301,12 @@ async def _build_partial(
         spec, why = await run_in_threadpool(build, tbl_id, question, parsed, forced, slots)
         if spec is None:
             return None, why
-        fetch = partial_table.requests_for(part, spec, parsed)
+        planning = parsed
+        if parsed.get("type") == "trend" and not parsed.get("year") and not spec.get("parts_op"):
+            # qa._compute가 추이의 끝 연도를 정할 때 쓰는 기본 연도와 맞춘다.
+            _, latest = await run_in_threadpool(indicators._data_years)
+            planning = {**parsed, "year": latest}
+        fetch = partial_table.requests_for(part, spec, planning)
         if fetch is None:
             return None, f"{queued} · 칸이 많아 칸만 받지 못함"
         async with fetch_sem or contextlib.nullcontext():
