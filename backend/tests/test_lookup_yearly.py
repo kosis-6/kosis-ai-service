@@ -18,7 +18,7 @@ def test_item_years_reads_yearly_rows_only(monkeypatch) -> None:
         return [{"lo": 1, "hi": 2}]
 
     monkeypatch.setattr(lookup, "_rows", rows)
-    lookup._item_years.__wrapped__("DT_TEST", ("T1",))
+    lookup._item_years_db.__wrapped__("DT_TEST", ("T1",))
     assert lookup.YEARLY in seen[0]
 
 

@@ -20,6 +20,10 @@ KOSIS 코드(item_id, c2_id = "00" ...)를 catalog.stat_code의 키로 바꿔 �
 
 표 정보(키·코드·수록 기간·지역 칸)는 프로세스 메모리에 캐시한다. 적재 프로세스가 표를 새로 넣거나
 교체하면 refresh_if_reloaded()가 이를 알아채고 캐시를 비운다 (qa.compute가 질문마다 부름).
+
+적재 안 된 큰 표에서 칸만 받은 경우(partial_table.py): 칸 목록·지역 칸·수록 기간·값 합산은
+그 질문 안에서만 받은 칸을 읽는다. 표 키(_tbl_key)는 바꾸지 않아, 나머지 DB 조회는 지금처럼
+'적재 안 됨'으로 멈춘다.
 """
 
 import re
@@ -29,7 +33,7 @@ from functools import lru_cache
 
 from app.core.stats_db import StatsNotLoadedError, StatsTableMissing
 from app.core.stats_db import rows as _rows
-from app.services import analysis
+from app.services import analysis, partial_table
 from app.services import indicators as ind_mod
 from app.services.josa import josa
 
@@ -137,9 +141,16 @@ def _tbl_key(tbl_id):
     return r[0]["tbl_key"]
 
 
-@lru_cache
 def _codes(tbl_id, dim_no):
-    """분류 칸(0 = 항목, 1~5 = c1~c5)의 {KOSIS 코드: (코드 키, 이름)}"""
+    """분류 칸(0 = 항목, 1~5 = c1~c5)의 {KOSIS 코드: (코드 키, 이름)}
+    이 질문에서 칸만 받은 표(partial_table)면 그 메타의 칸 목록 (캐시에 넣지 않는다)"""
+    if (part := partial_table.active(tbl_id)) is not None:
+        return partial_table.codes(part, dim_no)
+    return _codes_db(tbl_id, dim_no)
+
+
+@lru_cache
+def _codes_db(tbl_id, dim_no):
     return {
         r["code"]: (r["code_key"], r["name"])
         for r in _rows(
@@ -169,16 +180,28 @@ def _projection(tbl_id):
     return bool(r and r[0]["is_projection_table"])
 
 
-@lru_cache
 def _region_dim(tbl_id):
     """지역이 들어 있는 분류 칸 번호. 지역 분류가 없는 표면 None"""
+    if (part := partial_table.active(tbl_id)) is not None:
+        return part.region_dim
+    return _region_dim_db(tbl_id)
+
+
+@lru_cache
+def _region_dim_db(tbl_id):
     r = _rows("select min(src_dim) as d from region_code_map where tbl_id = ?", [tbl_id])
     return r[0]["d"]
 
 
-@lru_cache
 def _item_years(tbl_id, item_ids):
     """항목의 실제 수록 기간 (표 안에서도 항목마다 다를 수 있음, 예: 합계출산율은 1993년부터)"""
+    if (part := partial_table.active(tbl_id)) is not None:
+        return partial_table.item_years(part, item_ids)
+    return _item_years_db(tbl_id, item_ids)
+
+
+@lru_cache
+def _item_years_db(tbl_id, item_ids):
     cond, keys = _in("item_key", tbl_id, 0, item_ids)
     r = _rows(
         "select min(period) as lo, max(period) as hi from stat_value"
@@ -217,8 +240,14 @@ def parse_age(text):
     return None
 
 
-@lru_cache
 def _dim_labels(tbl_id, dim):
+    if partial_table.active(tbl_id) is not None:
+        return _dim_labels_db.__wrapped__(tbl_id, dim)  # 칸만 받은 표는 캐시에 넣지 않는다
+    return _dim_labels_db(tbl_id, dim)
+
+
+@lru_cache
+def _dim_labels_db(tbl_id, dim):
     return tuple(sorted((code, name) for code, (_, name) in _codes(tbl_id, _dim_no(dim)).items()))
 
 
@@ -274,8 +303,13 @@ def _sum(src, codes, y0, y1, item_key, filters, age_codes, group_dim=None):
 
     지역 코드는 region_code_map으로 맞춘다. 같은 원래 코드가 연도에 따라 다른 기준 코드가 되므로
     (예: 부천 원미구 2015년 41195, 2024년 41192) 그 연도에 유효한 대응만 쓴다.
-    장래추계는 추계 당시 행정구역 기준이라 유효 연도를 보지 않는다."""
+    장래추계는 추계 당시 행정구역 기준이라 유효 연도를 보지 않는다.
+    이 질문에서 칸만 받은 표면 받은 행으로 같은 계산을 한다 (partial_table.sum_rows)"""
     tbl = src["table"]
+    if (part := partial_table.active(tbl)) is not None:
+        return partial_table.sum_rows(
+            part, src, codes, y0, y1, item_key, filters, age_codes, group_dim, _projection(tbl)
+        )
     conds, params = _conds(src, item_key, filters, age_codes)
     region_dim = _region_dim(tbl)
     if src.get("national_only") or region_dim is None:
@@ -865,11 +899,11 @@ def _labels():
 TABLE_CACHES = (
     _table,
     _tbl_key,
-    _codes,
+    _codes_db,
     _projection,
-    _region_dim,
-    _item_years,
-    _dim_labels,
+    _region_dim_db,
+    _item_years_db,
+    _dim_labels_db,
     _labels,
 )
 CHECK_EVERY = 30.0  # 초. 질문마다 DB를 보지 않도록 이 간격으로만 확인한다
