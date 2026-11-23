@@ -931,6 +931,28 @@ def _base_name(name):
     return re.sub(r"\((?:계|통합)\)$", "", name or "")
 
 
+def _change_groups():
+    """행정구역 개편 기록마다 함께 적힌 코드 묶음"""
+    return [
+        set(r["region_codes"].split(",")) for r in _rows("select region_codes from region_changes")
+    ]
+
+
+def _same_place(a, b):
+    """옛·새 코드가 이어지는 같은 지역인가.
+    이름이 같고(꼬리 무시) 같은 시도이거나 같은 개편 기록에 함께 적힌 코드
+    예) 원미구 41195·41192, 군위군 47720·27720, 광주 동구 29110·12210.
+    인천 동구 28140과 부산 동구 26170은 이름만 같은 다른 지역"""
+    if _base_name(a["region_name"]) != _base_name(b["region_name"]):
+        return False
+    if a["region_code"] == b["region_code"]:
+        return True
+    if a.get("sido_code") and a.get("sido_code") == b.get("sido_code"):
+        return True
+    pair = {a["region_code"], b["region_code"]}
+    return any(pair <= g for g in _change_groups())
+
+
 def resolve_region(name, year=None, sigungu=False):
     """지역 이름·별칭·코드 → 지역 정보
 
@@ -1032,13 +1054,13 @@ def resolve_region(name, year=None, sigungu=False):
         # 같은 지역의 옛 코드만 빠지면(부천 원미구) 그 해 코드로 고른다.
         # 다른 지역이 그 해에 없으면(2026년 광주: 광주광역시 2025년까지) 남은 지역(경기 광주시)으로
         # 말없이 답하지 않고 되묻는다. 없던 지역을 고르면 region_not_in_year 안내로 간다
-        names = {_base_name(r["region_name"]) for r in alive}
-        if alive and all(_base_name(r["region_name"]) in names for r in found):
-            found = alive
+        # 그 해에 없는 코드는 이어지는 지금 코드가 후보에 있을 때만 하나씩 뺀다
+        # (2026년 동구: 광주 동구 29110은 전남광주 동구 12210이 있어 빼고, 인천 동구는 남김)
+        found = [r for r in found if r in alive or not any(_same_place(r, a) for a in alive)]
 
     # 연도를 말하지 않았고 같은 지역의 옛·새 코드만 남았으면 지금 코드
     # ("창원시" → 창원시(통합) 48120, "원미구" → 2024년에 다시 생긴 41192). 다른 지역끼리면 되묻는다
-    if len(found) > 1 and year is None and len({_base_name(r["region_name"]) for r in found}) == 1:
+    if len(found) > 1 and year is None and all(_same_place(r, found[0]) for r in found):
         found = [r for r in found if r["valid_to"] is None] or found
 
     if not found:
