@@ -1527,9 +1527,12 @@ HOUSEHOLDS = [  # 통계청 '다문화가구 및 가구원': 가구를 센 칸
     ],
 )
 def test_household_question_skips_person_count_cells(
-    fake_table: dict, tbl_id: str, unit: str, question: str, expected_unit: str | None
+    fake_table: dict, monkeypatch, tbl_id: str, unit: str, question: str, expected_unit: str | None
 ) -> None:
-    fake_table["tables"][tbl_id] = (MEMBERS if tbl_id == "MEMBERS" else HOUSEHOLDS, 1, "시도")
+    members = tbl_id == "MEMBERS"
+    title = "읍면동별 다문화가구 현황" if members else "시도별 다문화가구(일반가구)-시도"
+    monkeypatch.setattr(lookup, "_table", lambda _: {"tbl_nm": title})
+    fake_table["tables"][tbl_id] = (MEMBERS if members else HOUSEHOLDS, 1, "시도")
     fake_table["units"][tbl_id] = (unit, True)
     parsed = {**BASE, "indicator": "", "term": ""}
     spec, why = d.build(tbl_id, question, parsed)
@@ -1538,6 +1541,57 @@ def test_household_question_skips_person_count_cells(
         assert spec["unit"] == expected_unit
     else:
         assert spec is None and "사람 수" in str(why)
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "성별/연령별/혼인상태별/세대구성별 인구(일반가구)-시군구",
+        "성, 연령 및 세대구성별 인구 - 시군구",
+        "성/혼인상태/연령/세대구성별 인구-시도",
+        "연령별/세대구성별 경력단절여성인구(20세이상, 일반가구)-시군구",
+    ],
+)
+def test_population_table_household_category_never_changes_people_to_households(
+    fake_table, monkeypatch, title
+) -> None:
+    tbl_id = "POPULATION"
+    dims = [d.Dim(0, "항목", {"T1": "비친족가구", "T2": "2세대가구"}), ONE_PERSON[1]]
+    fake_table["tables"][tbl_id] = (dims, 1, "시도")
+    fake_table["units"][tbl_id] = ("명", True)
+    monkeypatch.setattr(lookup, "_table", lambda _: {"tbl_nm": title})
+    parsed = {**BASE, "indicator": "", "term": ""}
+
+    spec, why = d.build(tbl_id, "2020년 인구총조사 기준 서울 비친족가구 수는?", parsed)
+    assert spec is None and "집계 대상은 사람 수" in why
+
+    spec, why = d.build(tbl_id, "2020년 서울 비친족가구 인구 수는?", parsed)
+    assert spec is not None, why
+    assert spec["unit"] == "명" and spec["sources"][0]["item_id"] == "T1"
+
+
+def test_household_table_uses_general_households_when_dwelling_is_unspecified(
+    fake_table, monkeypatch
+) -> None:
+    tbl_id = "DT_1JC1520"
+    items = d.Dim(0, "항목", {"T10": "일반가구", "T20": "주택_계", "T22": "주택_아파트"})
+    composition = d.Dim(2, "세대구성별", {"00": "계", "60": "비친족 가구"})
+    fake_table["tables"][tbl_id] = ([items, ONE_PERSON[1], composition], 1, "시도")
+    fake_table["units"][tbl_id] = ("가구", True)
+    monkeypatch.setattr(
+        lookup, "_table", lambda _: {"tbl_nm": "세대구성 및 거처의 종류별 가구(일반가구) - 시군구"}
+    )
+    parsed = {**BASE, "indicator": "", "term": ""}
+
+    for question, code in [
+        ("2020년 서울 비친족가구 수는?", "T10"),
+        ("2020년 서울 아파트 비친족가구 수는?", "T22"),
+    ]:
+        spec, why = d.build(tbl_id, question, parsed)
+        assert spec is not None, why
+        assert spec["unit"] == "가구"
+        assert spec["sources"][0]["item_id"] == code
+        assert spec["sources"][0]["filters"] == {"c2_id": "60"}
 
 
 def test_name_from_underscored_total_cell() -> None:

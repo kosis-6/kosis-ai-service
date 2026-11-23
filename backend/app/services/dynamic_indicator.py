@@ -98,8 +98,9 @@ HOUSEHOLD_ASK = re.compile(
     r"가구\s*(?:[은는이가을를]\s*)?(?:수|몇|얼마|[?.!]|$)"
     r"|가구\s*[은는이가을를](?=\s)|몇\s*가구"
 )
-PERSON_ASK = re.compile(r"가구원|몇\s*명|사람|인구|평균|구성비|%|퍼센트|비율|비중")
+PERSON_ASK = re.compile(r"가구원|몇\s*명|사람|인구(?!\s*총조사)|평균|구성비|%|퍼센트|비율|비중")
 HOUSEHOLD_CELL = re.compile(r"가구(?:\s*수)?$")
+POPULATION_TARGET = re.compile(r"인구(?:\s*수)?$")
 PERSON_UNIT_TAIL = re.compile(r"\s*\(\s*(?:천\s*)?명\s*\)$")
 HOUSEHOLD_UNITS = {"명": "가구", "천명": "천가구"}
 WITHIN = re.compile(r"\s+(?:중(?:에?서|에)?|가운데)\s+")
@@ -383,8 +384,17 @@ TOTAL_TAIL = re.compile(r"(?:[\s\-·_:]+계|(?<=[주인타])계|[\s\-·_:]*(?:�
 TERM_TOTAL = re.compile(r"[_\-:]\s*(?:계|합계|소계)(?=\s|$)")
 
 
-def counts_households(plan: "Plan", item: "Dim") -> bool:
-    """측정 항목의 대상이 가구인지 확인한다. 분류가 가구 유형이어도 사람을 세는 표가 있다."""
+def _table_target(title: str) -> str:
+    """분류와 지역 수준을 뺀 표의 집계 대상. '세대구성별 인구(일반가구)-시군구' → '인구'."""
+    title = re.sub(r"\([^()]*\)", "", title)
+    title = re.sub(r"(?:\s*[-–—_／/]\s*(?:시군구|시도|읍면동|전국)(?:별)?)+\s*$", "", title)
+    return title.rsplit("별", 1)[-1].strip()
+
+
+def counts_households(target: str, plan: "Plan", item: "Dim") -> bool:
+    """집계 대상과 선택한 항목 모두 가구인지 확인한다."""
+    if not HOUSEHOLD_CELL.search(target):
+        return False
     codes = plan.multi[1] if plan.multi and plan.multi[0] == item.no else [plan.pick[item.no]]
     return all(
         HOUSEHOLD_CELL.search(_label_name(PERSON_UNIT_TAIL.sub("", item.codes[c].strip())))
@@ -476,6 +486,7 @@ def choose(
         return None, "표에 연령 구분이 없음"
     skip = {region_dim} | ({plan.age_dim.no} if plan.age_dim else set())
     hits = _text_hits(question, dims, skip)
+    household_table = HOUSEHOLD_CELL.search(_table_target(tbl_nm))
     asks: list[Ask] = []
     ranked = _rank_dim(question, dims, region_dim, tbl_nm)
     if ranked is not None and len(leaves := _leaf_codes(ranked)) >= 2:
@@ -563,10 +574,11 @@ def choose(
             asks.append(Ask(d.no, d.name, [(c, d.codes[c]) for c in codes]))
         elif codes:
             plan.pick[d.no] = plan.matched[d.no] = codes[0]
-        elif d.total():
-            plan.pick[d.no] = d.total()
+        elif total := d.total() or (_item_whole(d, tbl_nm) if household_table else None):
+            # '세대구성 및 거처의 종류별 가구(일반가구)'의 일반가구는 거처 구분 전체다.
+            plan.pick[d.no] = total
             if not SAFE_TOTAL.search(_norm(d.name)):  # 합계의 뜻이 분명하지 않은 분류: 알린다
-                plan.defaults.append(f"{d.name}: {d.codes[d.total()]}")
+                plan.defaults.append(f"{d.name}: {d.codes[total]}")
         elif len(d.codes) == 1:
             plan.pick[d.no] = next(iter(d.codes))
         elif (default := d.default()) is not None:
@@ -914,8 +926,12 @@ def build(
         parsed, ignore_ages = {**parsed, "ages": None}, True
     try:
         tbl_nm = lookup._table(tbl_id)["tbl_nm"]
-    except Exception:  # 표 이름은 분류 안 순위에서만 쓴다
+    except Exception:
         tbl_nm = ""
+    target = _table_target(tbl_nm)
+    household_asked = HOUSEHOLD_ASK.search(question) and not PERSON_ASK.search(question)
+    if household_asked and POPULATION_TARGET.search(target):
+        return None, "가구 수를 물었는데 이 통계표의 집계 대상은 사람 수"
     if PER_AVERAGE.search(question) and (avg := _per_average(tbl_id, dims, region_dim, level)):
         return {**avg, **projection}, None
     try:
@@ -969,9 +985,9 @@ def build(
     counted = unit in COUNT_UNITS and whole
     display_unit = unit
     if counted and (household_unit := HOUSEHOLD_UNITS.get(unit)):
-        if counts_households(plan, dims[0]):
+        if counts_households(target, plan, dims[0]):
             display_unit = household_unit
-        elif HOUSEHOLD_ASK.search(question) and not PERSON_ASK.search(question):
+        elif household_asked:
             # 행안부 '다문화가구 현황'의 합계는 가구원(사람) 수다. 가구를 센 다른 표를 찾아본다.
             return None, "가구 수를 물었는데 고른 칸은 사람 수(단위 명)를 센 칸"
     strip_age = bool(

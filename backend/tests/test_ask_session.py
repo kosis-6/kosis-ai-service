@@ -1772,6 +1772,10 @@ def test_answer_to_region_only_question_keeps_the_region(talk: Talk, first, aske
         "2020년 전국 출생아 수는?",
         "우리나라 2020년 출생아 수는?",
         "우리 나라 2020년 출생아 수는?",
+        "2020년 국내 출생아 수는?",
+        "2020년 국내출생아 수는?",
+        "2020년 국내 인구 몇 명이야?",
+        "2020년 국내 합계출산율은?",
         "2020년 국내 전체 출생아 수는?",
     ],
 )
@@ -1783,7 +1787,7 @@ def test_answer_to_region_only_question_can_name_another_region(talk: Talk, ques
 
 
 @pytest.mark.parametrize(
-    "metric", ["국내이동자 수", "국내 이동자 수", "국내출생 다문화가구 자녀 수"]
+    "metric", ["국내이동자 수", "국내 이동자 수", "국내 인구이동 수", "국내출생 다문화가구 자녀 수"]
 )
 def test_region_only_reply_keeps_place_when_domestic_is_part_of_metric(talk: Talk, metric) -> None:
     talk.say("부산은?")
