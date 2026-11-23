@@ -36,15 +36,16 @@ def test_every_stat_value_query_filters_period_type() -> None:
 @pytest.mark.parametrize(
     ("region_code", "source_code", "region", "level", "expected"),
     [
+        (None, None, "전국", "전국", None),
         ("00", "total", "전국", "전국", 6792),
         ("11", "local1", "서울특별시", "시도", 2396),
         ("11110", "local1", "종로구", "시군구", 2396),
     ],
 )
-def test_value_uses_the_only_mapped_region(
+def test_value_uses_only_mapped_regions_when_region_axis_exists(
     monkeypatch, region_code, source_code, region, level, expected
 ) -> None:
-    # 합계와 상세 행을 함께 적재하고, 기준 지역 코드 하나만 매핑한다.
+    # 합계와 상세 행이 있는 표에 기준 지역 매핑이 없거나 하나만 있다.
     with closing(sqlite3.connect(":memory:")) as db:
         db.row_factory = sqlite3.Row
         db.executescript("""
@@ -66,10 +67,11 @@ def test_value_uses_the_only_mapped_region(
                 (7, 2018, 'A', 1, 11, 2396),
                 (7, 2018, 'A', 1, 12, 4396);
         """)
-        db.execute(
-            "insert into region_code_map values ('DT_TEST', 1, ?, ?, null, null)",
-            (source_code, region_code),
-        )
+        if region_code is not None:
+            db.execute(
+                "insert into region_code_map values ('DT_TEST', 1, ?, ?, null, null)",
+                (source_code, region_code),
+            )
 
         def rows(sql, params):
             return db.execute(sql.replace("::float8", ""), params).fetchall()
@@ -106,8 +108,8 @@ def test_value_uses_the_only_mapped_region(
         spec, why = dynamic_indicator.build("DT_TEST", f"2018년 {region} 인구", parsed)
         assert spec, why
         src = spec["sources"][0]
-        assert src["level"] == level and bool(src.get("national_only")) == (region_code == "00")
+        assert src["level"] == level and bool(src.get("national_only")) == (level == "전국")
         assert lookup.value(spec, region, 2018)["value"] == expected
-        if region_code != "00":
+        if level != "전국":
             assert lookup.value(spec, "전국", 2018)["value"] is None
             assert lookup.value(spec, "부산광역시", 2018)["value"] is None

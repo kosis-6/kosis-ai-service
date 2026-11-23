@@ -1955,18 +1955,29 @@ async def _compute_target(
 
 
 AGE_LIMIT = re.compile(r"(\d+)\s*세\s*이상")  # 표 이름의 집계 대상 연령 ("1인가구(20세 이상, …)")
+WHOLE_POPULATION = re.compile(
+    r"전\s*연령|모든\s*연령|연령\s*(?:제한|구분)\s*없이"
+    r"|\b전체\b(?!\s*(?:기간|연도|시점|지역|시도|시군구))"
+)
 
 
-def age_limit(tbl_nm: str, question: str) -> str | None:
-    """비율의 분모를 표의 집계 연령이 모두 포함하지 못하면 그 제한 ("20세 이상")."""
-    if not PCT_ASK.search(question):
+def _checks_population(question: str, kind: str | None) -> bool:
+    return kind == "composition" or bool(
+        PCT_ASK.search(question) or WHOLE_POPULATION.search(question)
+    )
+
+
+def age_limit(tbl_nm: str, question: str, kind: str | None = None) -> str | None:
+    """비율·구성비 또는 전체 집계에 필요한 연령을 표가 모두 담지 못하면 그 제한."""
+    if not _checks_population(question, kind):
         return None
     m = AGE_LIMIT.search(tbl_nm or "")
     if m is None:
         return None
     # "1인 가구 중 20세 이상 비율"의 20세는 분자의 조건이다. 분모의 범위만 본다.
     scope = WITHIN.split(question, maxsplit=1)
-    bands = qa.resolved_ages(scope[0]) if len(scope) == 2 else []
+    population = scope[0] if len(scope) == 2 else "" if PCT_ASK.search(question) else question
+    bands = qa.resolved_ages(population)
     return None if bands and all(lo >= int(m[1]) for lo, _ in bands) else m[0]
 
 
@@ -2112,15 +2123,15 @@ async def _try_once(
     fetch_sem: 적재 안 된 표를 KOSIS에서 동시에 받는 수 제한 (꾸러미로 여러 표를 계산할 때)"""
     step = {"tbl_id": tbl_id, **({"forced": forced} if forced else {})}
     trace["dynamic"].append(step)
-    if PCT_ASK.search(question):
+    if _checks_population(question, kind := parsed.get("type")):
         tbl_nm = (slots or {}).get("table_name")
         if not tbl_nm:
             try:
                 tbl_nm = (await run_in_threadpool(lookup._table, tbl_id))["tbl_nm"]
             except Exception:
                 tbl_nm = ""
-        if limit := age_limit(tbl_nm, question):
-            step["skip"] = f"{limit}만 집계해 질문의 비율 모집단과 다름"
+        if limit := age_limit(tbl_nm, question, kind):
+            step["skip"] = f"{limit}만 집계해 질문의 모집단과 다름"
             return population_limit_answer(parsed, tbl_id, org_id, tbl_nm, limit), None
     extra = {"fetch_sem": fetch_sem} if fetch_sem is not None else {}
     spec, why = await _build(tbl_id, org_id, question, parsed, step, forced, slots, **extra)
@@ -2271,7 +2282,7 @@ def population_limit_answer(
 ) -> dict:
     reason = (
         f"'{tbl_nm}' 표는 {limit}만 집계합니다. "
-        "질문의 모집단을 모두 포함하는 자료를 확인할 수 없어 비율을 계산할 수 없습니다."
+        "질문의 모집단을 모두 포함하는 자료를 확인할 수 없어 값을 계산할 수 없습니다."
     )
     result = {
         "status": "band_mismatch",

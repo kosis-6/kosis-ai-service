@@ -9,7 +9,8 @@ import asyncio
 import pytest
 
 from app.services import dynamic_indicator as d
-from app.services import indicators, lookup, qa
+from app.services import indicators, lookup, qa, search
+from app.services import slots as search_slots
 
 AGES = {
     "000": "합계",
@@ -856,9 +857,18 @@ def test_handoff_does_not_use_other_tables_when_review_is_exact(computed) -> Non
 
 @pytest.mark.parametrize("have_full_table", [True, False])
 @pytest.mark.parametrize("use_handoff", [True, False])
-def test_ratio_requires_the_requested_population(computed, have_full_table, use_handoff) -> None:
-    question = "2020년 서울 1인 가구 중 70세 이상 비율은?"
-    q = {**BASE, "ages": [[70, None]]}
+@pytest.mark.parametrize(
+    ("question", "kind", "ages"),
+    [
+        ("2020년 서울 1인 가구 중 70세 이상 비율은?", "value", [[70, None]]),
+        ("2020년 서울 전체 1인 가구 수", "value", None),
+        ("2020년 서울 전체 1인 가구 연령별 구성", "composition", None),
+    ],
+)
+def test_requires_the_requested_population(
+    computed, have_full_table, use_handoff, question, kind, ages
+) -> None:
+    q = {**BASE, "type": kind, "ages": ages}
     limited = _cand(
         "A",
         1,
@@ -895,10 +905,28 @@ def test_ratio_requires_the_requested_population(computed, have_full_table, use_
         ("노인 1인 가구 중 여성 비율", None),
         ("1인 가구 중 노인 비율", "20세 이상"),
         ("성인 1인 가구 중 여성 비율", "20세 이상"),
+        ("노인과 청년 1인 가구 중 여성 비율", "20세 이상"),
+        ("청년과 노인 1인 가구 중 여성 비율", "20세 이상"),
+        ("65세 이상과 청년 1인 가구 중 여성 비율", "20세 이상"),
     ],
 )
 def test_age_limit_checks_the_population_side_of_a_ratio(question, limit) -> None:
     assert d.age_limit("성별·연령별 1인가구(20세 이상, 일반가구)", question) == limit
+
+
+def test_named_age_in_a_list_does_not_widen_an_explicit_band() -> None:
+    assert qa.resolved_ages("70세 이상 노인과 청년 1인 가구") == [[70, None], [19, 34]]
+
+
+@pytest.mark.parametrize(("item", "minimum"), [("15살 넘은", 15), ("65세 초과", 66)])
+def test_search_and_calculation_agree_on_age_cutoff(item, minimum) -> None:
+    assert qa.extract_ages(item) == [[minimum, None]]
+    understood = search_slots.empty_slots(item)
+    understood["conditions"]["items"] = [item]
+    table = {"name_n": "혼인상태별인구", "meta_n": "", "age_cov": (minimum, None)}
+    assert search.check(table, understood)[f"item:{item}"]
+    table["age_cov"] = (minimum + 1, None)
+    assert not search.check(table, understood)[f"item:{item}"]
 
 
 @pytest.mark.parametrize(
@@ -1803,6 +1831,8 @@ def test_ratio_whole_target_drops_question_age() -> None:
         ("통근 통학 인구(12세 이상)", "2020년 서울 통근 인구 몇 명", "value", True),
         ("통근 통학 인구(12세 이상)", "서울 통근 인구 추이", "trend", True),
         ("1인가구(65세 이상)", "1인 가구 중 70세 이상 비율", "value", False),
+        ("1인가구(65세 이상)", "전체 1인 가구 수", "value", False),
+        ("1인가구(65세 이상)", "전체 1인 가구 연령별 구성", "composition", False),
         ("1인가구(65세 이상)", "노인 1인 가구 중 여성 비율", "value", True),
         ("1인가구(65세 이상)", "65세 넘은 1인 가구 중 여성 비율", "value", True),
     ],

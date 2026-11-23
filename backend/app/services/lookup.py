@@ -36,6 +36,7 @@ from app.core.stats_db import rows as _rows
 from app.services import analysis, partial_table
 from app.services import indicators as ind_mod
 from app.services.josa import josa
+from pipeline.region_map import find_region_dim
 
 LEVELS = {"전국": 0, "시도": 1, "시군구": 2}
 REGION_LEVEL = {"전국": "전국", "시도": "시도", "시군구": "시군구", "일반구": "시군구"}
@@ -190,7 +191,14 @@ def _region_dim(tbl_id):
 @lru_cache
 def _region_dim_db(tbl_id):
     r = _rows("select min(src_dim) as d from region_code_map where tbl_id = ?", [tbl_id])
-    return r[0]["d"]
+    if r[0]["d"] is not None:
+        return r[0]["d"]
+    # 매핑이 없는 표도 실제 지역 축이 있으면 지역 대응을 거쳐야 한다.
+    dims = _rows(
+        "select dim_no, name from stat_dimension where tbl_key = ? and dim_no > 0",
+        [_tbl_key(tbl_id)],
+    )
+    return find_region_dim(tbl_id, [(d["dim_no"], d["name"]) for d in dims])
 
 
 def _item_years(tbl_id, item_ids):
