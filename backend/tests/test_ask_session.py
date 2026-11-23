@@ -50,8 +50,11 @@ def names(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(indicators, "resolve_region", resolve_region)
     known = {"출생아 수", "사망자 수", "합계출산율", "고령인구 비율"}
     monkeypatch.setattr(indicators, "canonical_name", lambda n: n if n in known else None)
+    aliases = {**dict.fromkeys(known), "65세 이상 비율": "고령인구 비율"}
     monkeypatch.setattr(
-        indicators, "find_in_text", lambda t: next((n for n in known if n in t), None)
+        indicators,
+        "find_in_text",
+        lambda t: next((real or n for n, real in aliases.items() if n in t), None),
     )
     monkeypatch.setattr(indicators, "specs", lambda: dict.fromkeys(known, {}))
     monkeypatch.setattr(
@@ -1636,14 +1639,22 @@ def test_ratio_follow_up_keeps_population_sex_and_survey(talk: Talk) -> None:
     assert talk.asked[-1] == "2020년 서울 인구총조사 기준 여성 1인 가구 중 70세 이상 비율은?"
 
 
-def test_ratio_follow_up_keeps_the_previous_age_population(talk: Talk) -> None:
+@pytest.mark.parametrize("age", [65, 85])
+def test_ratio_follow_up_keeps_the_previous_age_population(talk: Talk, age: int) -> None:
     talk.parsed = {**ONE_PERSON, "sex": "여", "ages": [[70, None]]}
     talk.say("2020년 서울 70세 이상 여성 1인 가구 수는?")
-    talk.parsed = {**ONE_PERSON, "ages": [[85, None]], "cross": {"dynamic": "both"}}
-    result = talk.say("그중 85세 이상 비율은?")
-    assert talk.asked[-1] == "2020년 서울 여성 70세 이상 1인 가구 중 85세 이상 비율은?"
+    talk.parsed = {**ONE_PERSON, "ages": [[age, None]], "cross": {"dynamic": "both"}}
+    result = talk.say(f"그중 {age}세 이상 비율은?")
+    assert talk.extracted == []
+    assert talk.asked[-1] == f"2020년 서울 여성 70세 이상 1인 가구 중 {age}세 이상 비율은?"
     assert result["parsed"]["scoped_age_ratio"] and result["parsed"]["cross"] is None
     assert result["parsed"]["unsupported"]
+
+
+@pytest.mark.parametrize("question", ["65세 이상 비율은?", "그중 고령인구 비율은?"])
+def test_ratio_follow_up_respects_a_named_indicator(question: str) -> None:
+    state = {"conditions": {**ONE_PERSON, "ages": [[70, None]]}}
+    assert s.ratio_followup(question, state) is None
 
 
 def test_ratio_follow_up_after_ratio_is_left_to_change_extraction(talk: Talk) -> None:

@@ -776,13 +776,18 @@ def ratio_followup(question: str, state: dict) -> str | None:
     q = question.strip()
     if len(q) > REPLY_MAX_CHARS + 10 or not dynamic_indicator.PCT_ASK.search(q):
         return None
-    if c.get("type") not in ("value", "compare", "trend") or names_indicator(q, {}):
+    if c.get("type") not in ("value", "compare", "trend"):
+        return None
+    rest = AMONG.sub("", q).strip()
+    # "그중 65세 이상 비율"의 연령은 직전 집단을 나누는 조건이다.
+    # 연령을 빼고도 지표 이름이 남으면 새 지표로 처리한다.
+    indicator_text = dynamic_indicator._without_age_words(rest) if rest != q else q
+    if names_indicator(indicator_text, {}):
         return None
     spec = c.get("dynamic_spec") or indicators.spec(c.get("indicator") or "") or {}
     if spec.get("unit") == "%" or spec.get("kind") in ("ratio", "composition"):
         return None  # 직전 답이 이미 비율이면 변경 추출에 맡긴다
     term = re.sub(r"\s*수$", "", str(c.get("term") or c.get("indicator") or "")).strip()
-    rest = AMONG.sub("", q).strip()
     if not term or not rest:
         return None
     if ages := c.get("ages"):
