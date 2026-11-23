@@ -320,3 +320,41 @@ def test_count_condition_skips_age_cells(monkeypatch) -> None:
     _table(monkeypatch, [items])
     b = binding.bind("T", "자녀 셋 이상", {}, _slots(items=["셋 이상"]))
     assert not any(x.cond == "item" and set(x.codes) & {"T24", "T25", "T26"} for x in b.bound)
+
+
+def test_age_class_with_age_condition_is_that_age(monkeypatch) -> None:
+    # '스무 살 안 됐는데 혼자 사는 사람' + 연령별: 20세 미만 하나
+    # (연령 칸 모두의 비교가 아님, V2-144)
+    items = Dim(0, "항목", {"T00": "1인가구"})
+    age = Dim(2, "연령별", {"000": "합계", "024": "20세미만", "025": "20~24세", "030": "25~29세"})
+    _table(monkeypatch, [items, age])
+    slots = _slots(items=["20세 미만"], classes=["연령"])
+    b = binding.bind("T", "스무 살 안 됐는데 혼자 사는 사람", {}, slots)
+    plan = binding.retry_plan(b, "스무 살 안 됐는데 혼자 사는 사람", {})
+    assert plan is not None and plan.multi is None and plan.parsed["ages"] == [[0, 19]]
+
+
+def test_retry_plan_groups(monkeypatch) -> None:
+    items = Dim(0, "항목", {"T10": "가구_계", "T22": "3자녀", "T23": "4자녀", "T24": "5자녀 이상"})
+    _table(monkeypatch, [items])
+    b = binding.bind("T", "자녀 셋 이상 가구", {}, _slots(items=["셋 이상"]))
+    plan = binding.retry_plan(b, "자녀 셋 이상 가구", {})
+    assert plan.multi == (0, ["T22", "T23", "T24"], "sum") and plan.forced == {}
+    # 국적별 순위: 기타 · 미상은 뺀다
+    nation = Dim(1, "국적별", {"0": "계", "1": "미국", "2": "중국", "9": "기타 및 미상"})
+    _table(monkeypatch, [Dim(0, "항목", {"T3": "혼인"}), nation])
+    b = binding.bind("T", "국적별 혼인 상위 3", {"type": "rank"}, _slots(classes=["국적"]))
+    plan = binding.retry_plan(b, "국적별 혼인 상위 3", {"type": "rank"})
+    assert plan.multi == (1, ["1", "2"], "rank") and plan.forced == {0: "T3"}
+    # 표 전체가 여성: 질문 해석의 성별을 뺀다
+    married = Dim(0, "항목", {"T05": "출생자녀 3명", "T06": "출생자녀 4명", "T07": "출생자녀 5명"})
+    _table(monkeypatch, [married], name="출생자녀수별 기혼여성인구")
+    b = binding.bind("T", "셋 이상 낳은 기혼 여성", {"sex": "여"}, _slots(items=["셋 이상"]))
+    assert binding.retry_plan(b, "셋 이상 낳은 기혼 여성", {"sex": "여"}).parsed["sex"] is None
+    # 못 이었으면 다시 계산하지 않는다
+    b = binding.bind("T", "부부 불화", {}, _slots(items=["부부 불화"]))
+    assert binding.retry_plan(b, "부부 불화", {}) is None
+
+
+def test_compare_of_decimal_values_is_rounded() -> None:
+    assert d._decimals(51.93) == 2 and d._decimals(1438) == 0 and d._decimals(47.4) == 1

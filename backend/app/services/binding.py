@@ -251,6 +251,12 @@ def bind(
     # 나눠 보기 (~별)
     for cls in cond.get("classes") or []:
         d = _class_dim(cls, dims, region_dim, sex_dim, age_dim)
+        aged = any(x.cond == "age" or x.by == "age_range" for x in out.bound)
+        if d is not None and d is age_dim and aged:
+            # 연령 조건이 이미 있으면 '연령별'은 그 연령이다 ('스무 살 안 됐는데' + 연령별
+            # → 20세 미만 하나, 연령 칸 모두의 비교가 아니다, V2-144)
+            out.bound.append(Bound("class", cls, "age_range", d.no, note="연령 조건으로"))
+            continue
         if d is None:
             out.unbound.append(Unbound("class", cls, "그 분류가 없음"))
         else:
@@ -298,7 +304,13 @@ def _bind_topic(slots, parsed, sex, sex_dim, out: Binding) -> None:
     채우면 묻지 않은 표의 합계를 답하게 된다 ('아이 키우기 좋은 동네' → 출생아 수 합계).
     지금 계산의 "맞는 말이 없는 표는 쓰지 않는다"와 같은 기준이다. 주제 낱말이 표 이름에 있다는
     것만으로는 잇지 않는다 ('외국인 아내 · 남편 비교'가 외국인 남편 표 하나로 이어졌다, D-063)"""
-    if any(b.by in MATCHED_BY or (b.by == "table" and b.cond == "item") for b in out.bound):
+    # 통계표 찾기의 조건(찾는 값 · 나눠 보기)을 표의 연령 분류에 이은 것도 질문과 표를 잇는 말이다
+    # ('스무 살 안 됐는데' → 20세미만, V2-144)
+    linked = {"item", "class"}
+    if any(
+        b.by in MATCHED_BY or (b.by in ("table", "age_range") and b.cond in linked)
+        for b in out.bound
+    ):
         return
     if sex in ("남", "여") and sex_dim is not None:
         return
@@ -561,3 +573,61 @@ def shadow(
     except Exception:
         logger.exception("잇기 기록 실패: %s", tbl_id)
         return {"error": "잇기 실패"}
+
+
+# ---- 2단계: 잇기 결과로 다시 계산 -----------------------------------------------------------
+
+# 순위에서 빼는 칸 (V2-077 골든: 외국인 남편 국적별 상위 3에서 '기타 및 미상' 제외)
+RANK_SKIP = re.compile(r"기타|미상")
+
+
+@dataclass
+class Retry:
+    """잇기 결과를 지금 계산(build)에 넘기는 모양"""
+
+    forced: dict[int, str]  # 칸 하나로 정한 분류 (되묻기 · 칸 고르기 LLM과 같은 길)
+    multi: (
+        tuple[int, list[str], str] | None
+    )  # 칸 여럿으로 하는 한 분류 안의 연산 (합 · 비교 · 순위)
+    parsed: dict  # 표 전체가 만족한 조건은 뺀 질문 해석 (성별 '여' → 표 전체가 기혼여성)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"forced": self.forced, "multi": list(self.multi) if self.multi else None}
+
+
+def retry_plan(b: Binding, question: str, parsed: dict) -> Retry | None:
+    """모두 이은 잇기 결과 → 지금 계산에 넘길 칸. 한 분류 안의 연산이 둘 이상이면 None
+    (parts_answer는 분류 하나만 묶는다)"""
+    if b.status != BOUND:
+        return None
+    dims = {d.no: d for d in di.schema(b.tbl_id)[0]}
+    forced: dict[int, str] = {}
+    multi = None
+    q = dict(parsed)
+    for x in b.bound:
+        if x.by == "table" and x.cond == "sex":
+            q["sex"] = None  # 표 전체가 그 성별: 성별 분류를 찾지 않는다
+        if x.by in ("table", "value") and x.cond == "age":
+            q["ages"] = None  # 표 전체 · 칸 하나가 그 연령
+        if x.note == MISSED_AGE and (span := _age_span(x.value)):
+            q["ages"] = [list(span)]  # 질문 이해가 놓친 연령: 계산이 연령 칸으로 고른다
+        if x.dim is None or x.by in ("age_range", "region", "split"):
+            continue  # 연령 · 지역은 계산이 고르고, 남녀 따로는 choose가 같은 규칙으로 한다
+        if x.by == "dim":
+            d = dims[x.dim]
+            rank = parsed.get("type") == "rank" or bool(di.TOP_N.search(question))
+            codes = [c for c in di._leaf_codes(d) if not (rank and RANK_SKIP.search(d.codes[c]))]
+            group = (x.dim, codes, "rank" if rank else "compare")
+        elif len(x.codes) > 1:
+            group = (x.dim, list(x.codes), di._multi_op(question) or "sum")
+        else:
+            if forced.get(x.dim, x.codes[0]) != x.codes[0]:
+                return None  # 한 분류에 다른 칸 둘
+            forced[x.dim] = x.codes[0]
+            continue
+        if multi is not None and multi[0] != group[0]:
+            return None
+        multi = group
+    if multi is not None:
+        forced.pop(multi[0], None)
+    return Retry(forced, multi, q)

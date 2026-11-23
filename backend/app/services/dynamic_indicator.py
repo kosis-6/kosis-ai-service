@@ -399,9 +399,11 @@ def choose(
     forced: dict[int, str] | None = None,
     tbl_nm: str = "",
     couple: bool = False,
+    multi: tuple[int, list[str], str] | None = None,
 ):
     """(Plan, None) 또는 (None, 고르지 못한 이유: 문자열 또는 Ask)
     forced: 사용자가 되묻기에서 고른 칸 {분류 번호: 코드}
+    multi: 잇기(binding.retry_plan)가 정한 한 분류 안의 연산 (분류 번호, 칸들, 합 · 비교 · 순위)
     tbl_nm: 표 이름 (분류 안의 순위에서 '교통수단별'처럼 표 이름에만 있는 분류를 알아본다)
     couple: 남자 · 여자 칸으로 부부를 한 쪽씩 센 표 (couple_counted).
     성별을 말하지 않으면 남자 칸"""
@@ -425,6 +427,9 @@ def choose(
         # "교통수단 top3": 이 분류의 세부 칸끼리 순위 (지역 순위가 아니다)
         plan.multi, plan.multi_dim = (ranked.no, leaves, "rank"), ranked
         plan.pick[ranked.no] = plan.matched[ranked.no] = leaves[0]
+    if multi is not None and multi[1] and (md := next((d for d in dims if d.no == multi[0]), None)):
+        plan.multi, plan.multi_dim = (md.no, list(multi[1]), multi[2]), md
+        plan.pick[md.no] = plan.matched[md.no] = multi[1][0]
     for d in dims:
         if d.no in skip or (plan.multi and d.no == plan.multi[0]):
             continue
@@ -682,7 +687,9 @@ def uncovered(
     # 칸 고르기 LLM이 고른 칸으로 계산할 때는 조건 낱말 검사를 하지 않는다. LLM이
     # "질문과 뜻이 다르거나 더 넓은 칸으로 대신하지 않는다"는 지시로 조건까지 보고 칸을 골랐다
     # (11/18, 대상 검사와 같은 원칙)
-    for item in [] if slots.get("cells_by_llm") else cond.get("items") or []:
+    # 잇기로 다시 계산할 때도 같다: 잇기가 조건마다 칸을 이었다 (binding.py)
+    by_cells = slots.get("cells_by_llm") or slots.get("cells_by_binding")
+    for item in [] if by_cells else cond.get("items") or []:
         # 표 자체가 그 조건으로 만든 표면(표 이름에 그 낱말이 있다) 표가 이미 반영했다.
         # 예: '재혼' → 시도별 평균재혼연령 표는 재혼 칸 없이 아내 · 남편 칸으로 답한다.
         # 통계표 찾기의 조건 확인(search.check: 칸 값이나 표 이름에 있으면 ✔)과 같은 기준.
@@ -861,7 +868,8 @@ def build(
     except Exception:  # 확인하지 못하면 지금처럼 (성별 칸을 고르지 못함)
         logger.exception("부부 단위 표 확인 실패: %s", tbl_id)
         couple = False
-    plan, why = choose(question, parsed, dims, region_dim, forced, tbl_nm, couple)
+    multi = (slots or {}).get("binding_multi")  # 잇기로 다시 계산할 때만 (binding.retry_plan)
+    plan, why = choose(question, parsed, dims, region_dim, forced, tbl_nm, couple, multi)
     if seen is not None:
         seen["plan"] = plan
     _report_cells(slots, plan, dims, parsed, region_dim)
@@ -877,6 +885,9 @@ def build(
         # 아니면 질문의 연령 조건을 버리게 된다 ("노인 1인 가구" → 전 연령 1인 가구) → 계산하지 않음
         expr = _norm((parsed.get("age_group") or {}).get("expr") or "")
         names = [_norm(d.codes[plan.matched[d.no]]) for d in dims if d.no in plan.matched]
+        # 표 이름 · 대상에 있어도 그 표가 이미 그 연령의 표다 ('미성년' → 미성년 자녀가 있는 가구의
+        # 자녀수별 가구, V2-031). '노인 1인 가구'는 표 이름(1인가구)에 노인이 없어 지금처럼 막는다
+        names += [_norm(tbl_nm)] + [_norm(w) for w in (slots or {}).get("table_words") or [] if w]
         if not expr or not any(expr in n for n in names):
             return None, "질문의 연령 조건을 표의 칸에 반영할 수 없음"
     if why := uncovered(slots, plan, dims, parsed, region_dim):
@@ -1629,10 +1640,59 @@ async def _compute_target(
         res, ask = await _try(
             entry["tbl_id"], entry.get("org_id"), question, q_used, sub, {}, slots, notice, sem
         )
+        if wants_binding(entry, res, ask, sub):
+            res, ask = await with_binding(entry, q_used, sub, slots, notice)
         if llm and wants_llm(res, ask, sub):
             res, ask = await with_cell_llm(entry, q_used, sub, slots, notice)
         if sub["dynamic"]:
             sub["dynamic"][0]["kind"] = entry["kind"]
+        return res, ask
+
+    def wants_binding(entry: dict, res, ask, sub: dict) -> bool:
+        """규칙이 칸을 못 고른 '검토가 고른 표': 잇기 결과로 다시 계산해 본다 (BINDING_USE, 2단계).
+        다른 후보 표는 잇기가 '모두 이음'이어도 쓰지 않는다 (엉뚱한 표도 이어진다, 설계 6-3)"""
+        from app.core.config import get_settings
+
+        return (
+            get_settings().binding_use
+            and res is None
+            and ask is None
+            and entry.get("kind") == "picked"
+            and bool(sub["dynamic"])
+            and bool(sub["dynamic"][-1].get("skip"))
+        )
+
+    async def with_binding(entry: dict, q_used: dict, sub: dict, slots: dict, notice):
+        """잇기가 모든 조건을 이었으면 그 칸으로 다시 계산한다. 못 이었으면 (None, None)"""
+        from app.services import binding
+
+        tbl_id = entry["tbl_id"]
+        forced = {int(k): v for k, v in (sub["dynamic"][-1].get("forced") or {}).items()}
+        try:
+            b = await run_in_threadpool(binding.bind, tbl_id, question, q_used, slots, forced)
+            plan = await run_in_threadpool(binding.retry_plan, b, question, q_used)
+        except Exception:
+            logger.exception("잇기로 다시 계산할 칸 만들기 실패: %s", tbl_id)
+            return None, None
+        if plan is None:
+            sub["dynamic"][-1]["binding_skip"] = (
+                b.status if b.status != binding.BOUND else "연산 둘"
+            )
+            return None, None
+        slots_b = {**slots, "cells_by_binding": True, "binding_multi": plan.multi}
+        res, ask = await _try(
+            tbl_id,
+            entry.get("org_id"),
+            question,
+            plan.parsed,
+            sub,
+            plan.forced,
+            slots_b,
+            notice,
+            sem,
+        )
+        sub["dynamic"][-1]["by"] = "binding"
+        sub["dynamic"][-1]["binding_plan"] = plan.to_dict()
         return res, ask
 
     async def with_cell_llm(entry: dict, q_used: dict, sub: dict, slots: dict, notice):
@@ -1779,7 +1839,10 @@ async def _compute_target(
             by_llm = last.get("by") == "cell_llm"
             forced = (last.get("forced") or {}) if by_llm else {}
             words = (last.get("read_as") or []) if by_llm else []
-            await _remember(parsed, entry["tbl_id"], forced, res, words)
+            if last.get("by") != "binding":
+                # 잇기로 계산한 답은 남기지 않는다: 캐시는 칸 하나씩만 담아(한 분류 안의 연산 ·
+                # 표 전체가 만족한 조건이 빠진다) 다음 같은 질문에 다르게 쓰일 수 있다
+                await _remember(parsed, entry["tbl_id"], forced, res, words)
             return res
     for entry, (_, ask, _) in zip(entries, outcomes, strict=True):
         if ask is not None:  # 맞는 표에서 칸 하나만 못 정함: 그 칸을 묻는다
@@ -2011,6 +2074,14 @@ def _set_code(spec: dict, col: str, code: str) -> dict:
     return {**spec, "sources": [src]}
 
 
+def _decimals(v) -> int:
+    """소수 자릿수 (51.93 → 2, 1438 → 0)"""
+    text = repr(v)
+    return (
+        len(text.split(".")[1]) if isinstance(v, float) and "." in text and "e" not in text else 0
+    )
+
+
 def parts_answer(parsed: dict, spec: dict, question: str) -> dict:
     """한 분류 안의 칸들로 합·비교·순위를 계산해 답한다 (qa.answer와 같은 모양).
     칸마다 lookup.value로 DB 값을 꺼내 더하거나 비교·정렬한다 (숫자는 모두 DB 값)"""
@@ -2056,7 +2127,9 @@ def parts_answer(parsed: dict, spec: dict, question: str) -> dict:
             sorted(valid, key=lambda x: -x["value"])[0],
             sorted(valid, key=lambda x: x["value"])[0],
         )
-        diff = hi["value"] - lo["value"]
+        # 소수 값끼리 빼면 51.93 - 47.46 = 4.469999… 이 된다: 값의 자릿수로 반올림 (V2-057)
+        places = max(_decimals(hi["value"]), _decimals(lo["value"]))
+        diff = round(hi["value"] - lo["value"], places)
         times = f" ({round(hi['value'] / lo['value'], 2)}배)" if lo["value"] else ""
         # 칸이 곧 지표인 비교(주간 인구 vs 상주인구)는 주제를 붙이지 않는다
         about = f"{qa._josa(name, '은는')} " if op.get("subject", name) else ""
