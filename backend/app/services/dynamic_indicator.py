@@ -1320,11 +1320,14 @@ def to_parsed(understanding: dict, parsed: dict) -> tuple[dict, dict]:
         put("sex", cond["sex"])
     age = understanding.get("age")
     if age and age.get("lo") is not None:
-        put("ages", [[age["lo"], age.get("hi")]])
+        put("ages", age.get("bands") or [[age["lo"], age.get("hi")]])
         if age.get("basis"):
             q["age_group"] = {
                 "expr": age.get("expr"),
-                "range": indicators.age_label((age["lo"], age.get("hi"))),
+                "range": " · ".join(
+                    indicators.age_label(tuple(b))
+                    for b in (age.get("bands") or [[age["lo"], age.get("hi")]])
+                ),
                 "basis": age["basis"],
             }
     if not parsed.get("level") and cond.get("region_level") in ("시도", "시군구"):
@@ -1442,7 +1445,10 @@ def handoff_notice(entry: dict, understanding: dict, combine: dict, found_notice
     lines += list(entry.get("notes") or [])
     age = understanding.get("age") or {}
     if age.get("basis") and age.get("lo") is not None:
-        label = indicators.age_label((age["lo"], age.get("hi")))
+        label = " · ".join(
+            indicators.age_label(tuple(b))
+            for b in (age.get("bands") or [[age["lo"], age.get("hi")]])
+        )
         lines.append(f"'{age.get('expr')}'은(는) {label}으로 계산했습니다 ({age['basis']})")
     if oos := combine.get("out_of_scope"):
         lines.append(f"{', '.join(oos)}은(는) 인구 통계가 아니라 답하지 못했습니다")

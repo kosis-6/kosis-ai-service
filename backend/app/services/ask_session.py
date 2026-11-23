@@ -66,6 +66,7 @@ from app.services import (
     llm_calls,
     qa,
     question_clarify,
+    slots,
     table_guide,
     timeref,
     understand_merged,
@@ -203,6 +204,19 @@ def applied(conditions: dict, sources: dict[str, str]) -> list[dict[str, str]]:
     ]
 
 
+def _clear_period_questions(conditions: dict) -> None:
+    """기간 표현을 정리해도 사용자가 고른 조사 기준은 유지한다."""
+    asked = {
+        k: v
+        for k, v in (conditions.get("asked") or {}).items()
+        if k in ("survey", "survey_missing")
+    }
+    if asked:
+        conditions["asked"] = asked
+    else:
+        conditions.pop("asked", None)
+
+
 def effective(parsed: dict, result: dict) -> dict:
     """세션에 둘 조건: 해석 결과에서 기간을 실제로 답한 기간으로 맞춘다.
     "최근 5년"·"과거부터"는 자료의 마지막·첫 연도를 보고 계산할 때 정해진다. 그 기간을 적어 두어야
@@ -212,7 +226,7 @@ def effective(parsed: dict, result: dict) -> dict:
     if result.get("status") == "ok" and series:
         c["start_year"], c["end_year"] = series[0]["year"], series[-1]["year"]
         c["year"] = c["end_year"]
-        c.pop("asked", None)  # 기간 표현("최근 5년")은 연도로 바꿔 적었다
+        _clear_period_questions(c)  # 기간 표현은 실제 연도로 바꾸고 조사 기준은 유지한다
     elif result.get("status") == "ok" and result.get("year"):
         c["year"] = result["year"]
     if sex_not_split(parsed, result):
@@ -313,7 +327,7 @@ def apply_changes(conditions: dict, changes: dict) -> tuple[dict, set[str]]:
         c["year"], c["start_year"], c["end_year"] = year, None, None
         changed.add("period")
     if "period" in changed:
-        c.pop("asked", None)  # "최근 5년"·"과거부터" 같은 앞 질문의 기간 표현은 더는 맞지 않다
+        _clear_period_questions(c)
 
     if changes.get("sex") in ("계", "남", "여"):
         c["sex"] = changes["sex"]
@@ -368,7 +382,8 @@ CONTEXT_YEAR = [
     (re.compile(r"전년도|전년|(?:그|직)\s*전\s*해|이전\s*해|직전\s*연도|한\s*해\s*전"), -1),
     (re.compile(r"다음\s*해|이듬해|다음\s*연도|익년|한\s*해\s*(?:뒤|후)"), 1),
 ]
-FULL_YEAR = re.compile(r"(?:19|20)\d{2}(?!\d|\s*세대)\s*년?")  # "2030세대"는 연도가 아니다
+# "2030세대"·"2000명"은 연도가 아니다
+FULL_YEAR = re.compile(rf"(?:19|20)\d{{2}}{slots.NOT_YEAR_TAIL}")
 
 
 def follow_year(question: str, conditions: dict, today: date | None = None) -> int | None:
@@ -377,7 +392,7 @@ def follow_year(question: str, conditions: dict, today: date | None = None) -> i
       "작년", "올해", "3년 전" 오늘 기준 (timeref, 2026년이면 "작년" → 2025)
     "전년 대비"처럼 비교 기준으로 쓴 말, 연도를 숫자로 말한 경우, "작년부터"처럼 기간이면 None"""
     q = timeref.COMPARE_BASE.sub(" ", question)
-    if FULL_YEAR.search(q):
+    if FULL_YEAR.search(q) or slots.decades(q):
         return None
     base = conditions.get("end_year") or conditions.get("year")
     for pattern, step in CONTEXT_YEAR:
@@ -409,6 +424,7 @@ def names_indicator(question: str, parsed: dict) -> bool:
     질문에 지원 지표의 이름·별칭이 있거나, 질문에 있는 말을 지표로 적었으면 말한 것.
     "2015년부터 추이로 보여줘"처럼 기간·방식만 말하면 말하지 않은 것 (앞 지표를 이어받는다).
     HCX가 지표 없는 질문에 총인구를 채워 넣기도 해서, 지표 이름이 아니라 질문의 말을 본다"""
+    question = qa.without_survey(question)  # "인구총조사 기준으로"의 "인구"는 지표가 아니다
     if indicators.find_in_text(question):
         return True
     compact = question.replace(" ", "")
@@ -486,7 +502,30 @@ def inherit(
         for key in ("year", "start_year", "end_year"):
             p[key] = prev.get(key)
         s["period"] = "inherited"
+    if question:
+        survey_question = question
+        if not qa.survey_said(question) and s.get("indicator") == "inherited":
+            previous = prev.get("asked") or {}
+            if survey := previous.get("survey") or previous.get("survey_missing"):
+                survey_question = f"{survey} 기준 {question}"
+        qa.set_survey(survey_question, p)  # 이어받은 지표와 조사로 표시를 다시 정한다
     return p, s
+
+
+def survey_switch(question: str, conditions: dict) -> dict | None:
+    """조사만 바꿔 달라는 말이면 그 조사로 바꾼 조건, 아니면 None.
+    "인구총조사로 보면?" · "장래인구추계로는?" · "외국인 포함하면?" (지표 · 지역을 말하지 않음).
+    앞 지표에 그 조사의 표(alt_sources)가 없으면 None (새 질문으로 해석한다)"""
+    if not qa.survey_said(question) or not conditions.get("indicator"):
+        return None
+    rest = qa.without_survey(question)
+    if indicators.find_in_text(rest) or said_region(rest):
+        return None
+    switched = qa.set_survey(question, copy.deepcopy(conditions))
+    asked = switched.get("asked") or {}
+    # 앞 지표에 그 조사의 표가 없으면 기본 표로 다시 답하고 이유를 밝힌다
+    # ("서울 합계출산율" → "인구총조사로 보면?": 인구동향조사로만 공표된다)
+    return switched if asked.get("survey") or asked.get("survey_missing") else None
 
 
 def said_region(question: str) -> bool:
@@ -1260,6 +1299,12 @@ async def _turn(
 
     if await asyncio.to_thread(complete_question, question):
         return await _new(question, state)
+
+    if switched := await asyncio.to_thread(survey_switch, question, state["conditions"]):
+        # "인구총조사로 보면?" · "외국인 포함하면?": 앞 조건 그대로 그 조사의 표로 다시 답한다
+        res = await _answer(switched)
+        res["request_type"] = CHANGE
+        return res, state["sources"], None
 
     has_last = bool((state.get("last") or {}).get("answer"))
     view = chart_request(question) if has_last else None

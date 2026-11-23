@@ -828,6 +828,8 @@ def test_new_question_without_indicator_inherits_it() -> None:
         ("2018년은?", None),  # 숫자로 말한 연도는 HCX가 그대로 적는다
         ("작년부터 보여줘", None),  # 기간
         ("부산은?", None),
+        ("작년 인구가 2000명 이하인 곳은?", 2025),  # '2000명'은 연도가 아니다
+        ("작년 인구가 2000 명 이하인 곳은?", 2025),
     ],
 )
 def test_follow_year(question, year) -> None:

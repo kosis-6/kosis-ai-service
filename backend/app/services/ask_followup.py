@@ -34,10 +34,11 @@ CENSUS_EVERY = 5  # 인구총조사 주기 (기간 안내를 줄일 때)
 
 
 def has_explicit_year(question: str) -> bool:
-    """연도나 상대 시점("2010년", "'95년", "작년", "5년 전", "최근 5년")이 있는가"""
+    """연도나 상대 시점("2010년", "'95년", "1990년대", "작년", "5년 전", "최근 5년")이 있는가"""
     return bool(
         slots.YEAR.search(question)
         or slots.short_years(question)
+        or slots.decades(question)
         or timeref.resolve(question)
         or timeref.RECENT_N_YEARS.search(question)
         or timeref.N_YEARS_AGO.search(question)
@@ -154,7 +155,9 @@ def merge(pending: str, reply: str) -> str | None:
 
 def _only_years(reply: str) -> bool:
     """연도 표현과 조사만 있는 답인가 ("2000년이랑", "2000년, 2010년", "작년", "5년 전")"""
-    rest = slots.YEAR.sub(" ", reply)
+    rest = slots.DECADE.sub(" ", reply)  # "1990년대" (연도보다 먼저: '년대'의 '년')
+    rest = slots.SHORT_DECADE.sub(" ", rest)
+    rest = slots.YEAR.sub(" ", rest)
     rest = slots.SHORT_YEAR.sub(" ", rest).replace("'", " ")
     rest = timeref.RECENT_N_YEARS.sub(" ", rest)
     rest = timeref.N_YEARS_AGO.sub(" ", rest)

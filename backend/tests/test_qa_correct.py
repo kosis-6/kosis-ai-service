@@ -863,8 +863,6 @@ def test_generation_population_is_total_population(question: str) -> None:
         ("노인 비율 제일 높은 지역 다섯 군데", "고령인구 비율%", "고령인구 비율"),
         ("광주랑 울산 중 여자 1명이 평생 낳는 아이 수가 더 많은 곳?", "합계출산율", "합계출산율"),
         ("요즘 사람들은 애를 몇 명씩 낳아?", "출생아 수", "합계출산율"),
-        ("노원구가 강남구보다 사람이 많아 적어?", "총인구", "총인구"),
-        ("부산에서 사람 제일 많이 사는 구 세 곳", "총인구", "총인구"),
         ("북구에 사는 이십대는 얼마나 돼?", "총인구", "총인구"),
         ("대전하고 충청남도 어르신 수 합쳐 줘", "고령인구 수", "총인구"),
     ],
@@ -874,6 +872,17 @@ def test_spelled_out_indicators(question: str, llm, expected: str) -> None:
     assert p["indicator"] == expected
     # 근거 없는 지표로 보고 통계표 찾기로 넘기지 않는다 (이 파일은 별칭을 줄여 둬서 None일 수 있다)
     assert p["grounded"] is not False
+
+
+@pytest.mark.parametrize(
+    "question",
+    ["노원구가 강남구보다 사람이 많아 적어?", "부산에서 사람 제일 많이 사는 구 세 곳"],
+)
+def test_people_count_is_grounded_without_other_population_modifier(question: str) -> None:
+    """#202에서 합친 일반 인구 질문 보정을 유지한다."""
+    p = qa.correct(question, parsed(indicator="총인구", regions=["서울"]), TODAY)
+    assert p["indicator"] == "총인구"
+    assert p["grounded"] is True
 
 
 @pytest.mark.parametrize(

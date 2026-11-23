@@ -59,12 +59,56 @@ for _name, _aliases in SIDO.items():
     if _name.endswith(("특별시", "광역시", "특별자치시")) and _aliases[0] != "광주":
         SIDO_ALIAS.setdefault(_aliases[0] + "시", _name)
 
-# "2030세대"·"2030 세대"는 20~39세(agegroup.py)이지 2030년이 아니다
-YEAR = re.compile(r"(?<!\d)((?:19|20)\d{2})(?!\d|\s*세대)")
+# 네 자리 수가 연도가 아닌 경우 (단위·범위·견주는 말이 뒤따르는 수)
+#   "2030세대"·"2030 세대"     20~39세 (agegroup.py)
+#   '2000명'·'2000가구가'      단위가 붙고 낱말이 끝난다
+#                              ('2018평창'·'2020건강검진'은 낱말이 이어져 연도)
+#   '2000만 명'·'2000여 곳'    만·천·여 뒤에 단위 ('2020만 보여줘'·'2020여성'은 연도)
+#   '2000 명 이하'             띄어 쓴 '명'은 낱말이 끝날 때만 ('2020 명절'은 연도), 다른 단위는
+#                              뒤에 견주는 말이 올 때만 ('2000 가구 넘는'. '2020 가구 수'는 연도)
+#   '2000~3000명'              범위 끝이 단위로 끝난다 ('2000~2020년'은 연도)
+#   '2000 이하'·'2000이상'     연도는 '이전·이후'라 하지 '이하·이상'이라 하지 않는다
+#   '2000km'·'2000%'
+COUNT_UNIT = r"(?:명|가구|개월|개|건|원|곳|채|톤|평|달러|회|번|위|배|시간|일|마리|권|호)"
+LATIN_UNIT = r"(?:%|㎡|㎢|km|kg|ha|m²)"
+COMPARE_WORD = r"(?:이상|이하|미만|초과|이내|넘|정도|가량|남짓|안팎|내외|쯤|보다|가까이)"
+# 단위 뒤에 붙는 말. 두 글자 조사를 먼저 본다 ('명이나'가 '명이'+'나'로 끊기지 않게)
+COUNT_SUFFIX = r"(?:당|씩|짜리|규모|수준|대|째)"
+COUNT_JOSA = r"(?:이나|에서|으로|에게|까지|부터|보다|[이을은의도가인를에만로과와])"
+UNIT_END = rf"(?:{COUNT_SUFFIX}?{COUNT_JOSA}?(?![가-힣])|{COMPARE_WORD})"
+COUNT_PREFIX = r"(?:[만천여]\s*){0,2}"  # '2000만', '2000여', '2000여만'
+ATTACHED_COUNT = rf"(?:{COUNT_PREFIX}{COUNT_UNIT}{UNIT_END}|\s*{LATIN_UNIT}|여(?![가-힣]))"
+SPACED_COUNT = (
+    rf"\s+{COUNT_PREFIX}"
+    rf"(?:명{UNIT_END}|{COUNT_UNIT}(?:이|을|은|가|를)?\s*{COMPARE_WORD})"
+)
+COUNT_RANGE = rf"\s*(?:~|-|에서|부터)\s*\d[\d,]*\s*{COUNT_PREFIX}(?:{COUNT_UNIT}|{LATIN_UNIT})"
+BARE_COMPARE = r"\s*(?:이상|이하|미만|초과|넘)"
+# '1990년대'는 기간(decades), '1990년생'은 출생 연도라 조회 연도가 아니다 ('2000년 대비'는 연도)
+COHORT_TAIL = r"\s*년(?:대(?!비)|생)"  # 붙여 쓴 것만 ('2000년 대구'·'2020년 생산량'은 연도)
+NOT_YEAR_TAIL = (
+    rf"(?!\d|\s*세대|{ATTACHED_COUNT}|{SPACED_COUNT}|{COUNT_RANGE}|{BARE_COMPARE}|{COHORT_TAIL})"
+)
+YEAR = re.compile(rf"(?<!\d)((?:19|20)\d{{2}}){NOT_YEAR_TAIL}")
 # '95년', "'05년도". '10년 전', '20년간', '90년생', '80년대', '10년 넘게'는 연도가 아니다
 SHORT_YEAR = re.compile(
     r"(?<![\d~])'?(\d{2})\s*년(?!\s*(?:전|후|뒤|간|동안|생|대|째|만|마다|이상|이하|이내|미만|차|넘|넘게|넘는|넘은|가까이|정도|쯤|남짓))"
 )
+# 연대: '1990년대' → 1990~1999, "'90년대"·'90년대' → 1990~1999 ('1990년대생'은 출생 연대)
+# '초반·중반·후반'은 연대의 앞·가운데·뒤 ('2000년대 초반' → 2000~2003)
+# '1990년대 초등학생'·'1990년대 말레이시아'의 초·말은 아니다 (뒤에 조사만 올 수 있다)
+DECADE_PART = (
+    r"(?:\s*(초반|중반|후반|말기|초|말)"
+    r"(?=$|[^가-힣]|에|의|부터|까지|은|는|도|을|를|이|가|과|와|쯤|무렵))?"
+)
+DECADE = re.compile(rf"(?<!\d)((?:19|20)\d0)\s*년대(?!비|생){DECADE_PART}")
+SHORT_DECADE = re.compile(rf"(?<![\d~])'?(\d0)\s*년대(?!비|생){DECADE_PART}")
+DECADE_PARTS = {
+    "초반": (0, 3), "초": (0, 3), "중반": (4, 6), "후반": (7, 9), "말": (7, 9), "말기": (7, 9),
+}  # fmt: skip
+# 출생 연도: '1990년생', "'90년생", '1990년대생'
+BIRTH_YEAR = re.compile(r"(?<!\d)((?:19|20)\d{2})\s*년(대)?생")
+SHORT_BIRTH_YEAR = re.compile(r"(?<![\d~])'?(\d{2})\s*년(대)?생")
 SHORT_YEAR_PIVOT = 50  # 50 미만은 20xx, 이상은 19xx ('45년' → 2045 추계, '95년' → 1995)
 PROJECTION = re.compile(r"앞으로|예측|전망|미래|추계|장래|될까|될지|예상")
 # '귀화한 사람 말고', '외국인 빼고', '서울 제외하고'
@@ -157,6 +201,8 @@ def empty_slots(question: str) -> dict[str, Any]:
         "age": None,
         "search_query": None,  # HCX 재작성 검색어 (임베딩 평균용)
         "time_ref": None,  # 상대시점 ('작년' → {"expr": "작년", "year": 2025, "open_end": False})
+        "decades": [],  # 연대 기간 ('1990년대' → [[1990, 1999]])
+        "birth_years": [],  # 출생 연도 ('1990년생' → [1990]). 조회 연도가 아니다
     }
 
 
@@ -255,7 +301,12 @@ def correct(question: str, slots: dict[str, Any]) -> dict[str, Any]:
 
     # 연도: 질문에 쓰인 연도만 인정한다 (네 자리, '95년' 같은 두 자리)
     today = date.today()
-    years = sorted({int(y) for y in YEAR.findall(question)} | short_years(question))
+    spans = decades(question, today)
+    years = sorted(
+        {int(y) for y in YEAR.findall(question)}
+        | short_years(question)
+        | {y for span in spans for y in span}
+    )
     slots["time_ref"] = None
     if not years and (
         ref := timeref.recent_period(question, today) or timeref.resolve(question, today)
@@ -269,6 +320,8 @@ def correct(question: str, slots: dict[str, Any]) -> dict[str, Any]:
     else:
         fix("year", years[0] if years else None, "질문의 연도")
         fix("year_end", years[-1] if len(years) > 1 else None, "질문의 기간")
+    slots["decades"] = [list(span) for span in spans]
+    slots["birth_years"] = sorted(birth_years(question))
     # 장래 추계: 올해 이후 연도이거나 예측 표현
     slots["projection"] = bool(PROJECTION.search(question) or (years and years[-1] > today.year))
     # 빼 달라는 대상: 규칙(negated_words) + HCX exclude 중 질문에 그 낱말이 있고
@@ -293,6 +346,16 @@ def correct(question: str, slots: dict[str, Any]) -> dict[str, Any]:
     slots["age"] = (
         {"expr": age.expr, "lo": age.lo, "hi": age.hi, "basis": age.basis} if age else None
     )
+    # 출생 연도('1990년생')는 나이 조건: 물은 연도(기간이면 끝), 없으면 올해 기준 만 나이
+    ref = c["year_end"] or c["year"] or today.year
+    if not age and (born := birth_spans(question)) and (bands := birth_ages(born, ref)):
+        slots["age"] = {
+            "expr": birth_expr(question),
+            "lo": bands[0][0],
+            "hi": bands[-1][1],
+            "bands": [list(b) for b in bands],
+            "basis": f"{ref}년 기준 만 나이",
+        }
 
     # 성별: 한 성별만 말했으면 그 성별, 남녀로 나눠 보려면 성별 분류, 말이 없으면 null
     if HOUSEHOLDER_SEX.search(question) and "가구주 성별" not in c["classes"]:
@@ -401,6 +464,69 @@ def short_years(question: str) -> set[int]:
         (2000 if int(yy) < SHORT_YEAR_PIVOT else 1900) + int(yy)
         for yy in SHORT_YEAR.findall(question)
     }
+
+
+def _full_year(yy: str) -> int:
+    return (2000 if int(yy) < SHORT_YEAR_PIVOT else 1900) + int(yy)
+
+
+def decades(question: str, today: date | None = None) -> list[tuple[int, int]]:
+    """질문의 연대 → (시작, 끝) 기간. '1990년대' → (1990, 1999), '2000년대 초반' → (2000, 2003).
+    지금 지나는 연대는 올해까지 ('2020년대' → 2020~올해). 장래 추계로 읽지 않게"""
+    today = today or date.today()
+    found = [(int(y), part) for y, part in DECADE.findall(question)]
+    rest = DECADE.sub(" ", question)
+    found += [(_full_year(yy), part) for yy, part in SHORT_DECADE.findall(rest)]
+    spans = set()
+    for decade, part in found:
+        lo, hi = DECADE_PARTS.get(part, (0, 9))
+        start, end = decade + lo, decade + hi
+        if start <= today.year < end:
+            end = today.year
+        spans.add((start, end))
+    return sorted(spans)
+
+
+def birth_spans(question: str) -> list[tuple[int, int]]:
+    """출생 연도 범위 ('1990년생' → (1990, 1990), '1990년대생' → (1990, 1999), "'90년생" → 1990)"""
+    found = [(int(y), bool(dae)) for y, dae in BIRTH_YEAR.findall(question)]
+    rest = BIRTH_YEAR.sub(" ", question)
+    found += [(_full_year(yy), bool(dae)) for yy, dae in SHORT_BIRTH_YEAR.findall(rest)]
+    return sorted({(y, y + 9 if dae else y) for y, dae in found})
+
+
+def birth_years(question: str) -> set[int]:
+    """출생 연도 ('1990년생' → {1990}, '1990년대생' → {1990..1999}). 조회 연도가 아니다"""
+    return {y for lo, hi in birth_spans(question) for y in range(lo, hi + 1)}
+
+
+def birth_age(spans: list[tuple[int, int]], ref_year: int) -> tuple[int, int] | None:
+    """출생 연도 범위 → ref_year 기준 만 나이 구간 (연말 기준: 1990년생은 2025년에 35세).
+    ref_year에 아직 태어나지 않았으면 None"""
+    bands = birth_ages(spans, ref_year)
+    return bands[0] if len(bands) == 1 else None
+
+
+def birth_ages(spans: list[tuple[int, int]], ref_year: int) -> list[tuple[int, int]]:
+    """떨어진 출생연도 사이에 물어보지 않은 사람을 포함하지 않는다."""
+    bands = sorted((max(0, ref_year - hi), ref_year - lo) for lo, hi in spans if lo <= ref_year)
+    merged = []
+    for lo, hi in bands:
+        if merged and lo <= merged[-1][1] + 1:
+            merged[-1] = (merged[-1][0], max(hi, merged[-1][1]))
+        else:
+            merged.append((lo, hi))
+    return merged
+
+
+def birth_expr(question: str) -> str:
+    """질문에 쓴 출생 연도 표현 ('1990년생', '90년대생')"""
+    found = BIRTH_YEAR.search(question) or SHORT_BIRTH_YEAR.search(question)
+    return found.group(0).strip() if found else ""
+
+
+def age_label(lo: int, hi: int) -> str:
+    return f"{lo}세" if lo == hi else f"{lo}~{hi}세"
 
 
 NEG_AFTER = re.compile(NEGATION_WORDS + r"|빼|제외")
