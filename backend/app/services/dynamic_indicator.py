@@ -1379,6 +1379,7 @@ async def answer(question: str, parsed: dict, found: dict, trace: dict) -> dict 
             return None
     steps = trace.setdefault("dynamic", [])
     slots, first_ask = found.get("parsed") or {}, None
+    population_mismatch = None
     for card in recs:
         tbl_id = card.get("tbl_id")
         if not tbl_id:
@@ -1391,15 +1392,25 @@ async def answer(question: str, parsed: dict, found: dict, trace: dict) -> dict 
             )
             continue
         res, ask = await _try(
-            tbl_id, card.get("org_id"), question, parsed, trace, {}, slots, found.get("notice")
+            tbl_id,
+            card.get("org_id"),
+            question,
+            parsed,
+            trace,
+            {},
+            {**slots, "table_name": card.get("tbl_nm")},
+            found.get("notice"),
         )
         if res is not None:
+            if (res.get("result") or {}).get("population_limit"):
+                population_mismatch = population_mismatch or res
+                continue
             await _remember(parsed, tbl_id, {}, res)
             return res
         if ask is not None and first_ask is None:
             first_ask = (card, ask)
     if first_ask is None:
-        return None
+        return population_mismatch
     card, ask = first_ask
     return ask_answer(question, parsed, card["tbl_id"], card.get("tbl_nm") or card["tbl_id"], ask)
 
@@ -1725,6 +1736,7 @@ async def _compute_target(
             # 탐색 쪽 trust_exact(48a7e37)와 같은 기준. 질문은 "해외 유학생", 표는 "유학생 현황"처럼
             # 낱말이 글자로 겹치지 않아도 뜻으로 맞는 표를 막았다
             "check_target": (entry.get("review") or {}).get("match") != "exact",
+            "table_name": entry.get("tbl_nm"),
             "table_words": [entry.get("tbl_nm"), entry.get("target")],
         }
         return slots, handoff_notice(entry, u, h.get("combine") or {}, found.get("notice"))
@@ -1903,6 +1915,10 @@ async def _compute_target(
             name = entry.get("tbl_nm") or entry["tbl_id"]
             return ask_answer(question, q, entry["tbl_id"], name, ask)
 
+    for res, _, _ in outcomes:
+        if res and (res.get("result") or {}).get("population_limit"):
+            return res  # 맞는 모집단이 없으면 다른 기준의 비율 대신 범위를 안내한다.
+
     if multi:
         # 지표가 여럿이면 지표마다 대안 LLM을 부르지 않는다 (HCX · Gemma 호출이 지표 수만큼 는다)
         for entry, (res, _, _) in zip(entries, outcomes, strict=True):
@@ -1947,7 +1963,16 @@ AGE_LIMIT = re.compile(r"(\d+)\s*세\s*이상")  # 표 이름의 집계 대상 �
 def age_limit(tbl_nm: str, question: str) -> str | None:
     """표가 질문이 말하지 않은 연령만 집계하면 그 제한 ("20세 이상"). 아니면 None"""
     m = AGE_LIMIT.search(tbl_nm or "")
-    if m is None or re.search(rf"{m[1]}\s*(세|살)\s*이상", question):
+    if m is None:
+        return None
+    if PCT_ASK.search(question):
+        # "1인 가구 중 20세 이상 비율"의 20세는 분자의 조건이다. 분모의 범위만 본다.
+        scope = WITHIN.split(question, maxsplit=1)
+        population = qa.extract_ages(scope[0]) if len(scope) == 2 else []
+        if population and all(lo >= int(m[1]) for lo, _ in population):
+            return None
+        return m[0]
+    if re.search(rf"{m[1]}\s*(세|살)\s*이상", question):
         return None
     return m[0]
 
@@ -1955,14 +1980,14 @@ def age_limit(tbl_nm: str, question: str) -> str | None:
 def _whole_population_first(entries: list[dict], outcomes: list, question: str, trace: dict):
     """계산된 후보를 쓸 순서. 지금처럼 목록 순서지만, 질문이 말하지 않은 연령 제한이 있는 표
     ("1인가구(20세 이상, 일반가구)")는 제한 없는 표도 계산됐으면 그 뒤로 미룬다.
-    "1인 가구 중 70세 이상 비율"을 20세 이상 1인 가구로 나눠 답했다 (11/23)"""
+    모집단이 맞지 않는 비율은 계산 전에 제외한다 (_try_once)."""
     pairs = list(zip(entries, outcomes, strict=True))
     ok = [(e, o) for e, o in pairs if o[0] is not None and o[0].get("status") == "ok"]
     if not ok or not (limit := age_limit(ok[0][0].get("tbl_nm") or "", question)):
         return pairs
     whole = [p for p in ok if not age_limit(p[0].get("tbl_nm") or "", question)]
     if not whole:
-        return pairs  # 제한 있는 표뿐: 그 표로 답한다 (이름·집계 대상 주의에 모집단이 드러난다)
+        return pairs
     trace["handoff"]["population"] = (
         f"{ok[0][0]['tbl_id']}은 {limit}만 집계해 {whole[0][0]['tbl_id']}로 답함"
     )
@@ -2121,6 +2146,16 @@ async def _try_once(
     fetch_sem: 적재 안 된 표를 KOSIS에서 동시에 받는 수 제한 (꾸러미로 여러 표를 계산할 때)"""
     step = {"tbl_id": tbl_id, **({"forced": forced} if forced else {})}
     trace["dynamic"].append(step)
+    if PCT_ASK.search(question):
+        tbl_nm = (slots or {}).get("table_name")
+        if not tbl_nm:
+            try:
+                tbl_nm = (await run_in_threadpool(lookup._table, tbl_id))["tbl_nm"]
+            except Exception:
+                tbl_nm = ""
+        if limit := age_limit(tbl_nm, question):
+            step["skip"] = f"{limit}만 집계해 질문의 비율 모집단과 다름"
+            return population_limit_answer(parsed, tbl_id, org_id, tbl_nm, limit), None
     extra = {"fetch_sem": fetch_sem} if fetch_sem is not None else {}
     spec, why = await _build(tbl_id, org_id, question, parsed, step, forced, slots, **extra)
     if isinstance(why, BandMiss):
@@ -2260,6 +2295,33 @@ def parts_answer(parsed: dict, spec: dict, question: str) -> dict:
         "answer": "\n".join([text, "", *lines, *tail]),
         "parsed": {**parsed, "dynamic_spec": spec, "indicator": name},
         "result": result,
+        "sources": qa.sources(result),
+        "trace": {},
+    }
+
+
+def population_limit_answer(
+    parsed: dict, tbl_id: str, org_id: str | None, tbl_nm: str, limit: str
+) -> dict:
+    reason = (
+        f"'{tbl_nm}' 표는 {limit}만 집계합니다. "
+        "질문의 모집단을 모두 포함하는 자료를 확인할 수 없어 비율을 계산할 수 없습니다."
+    )
+    result = {
+        "status": "band_mismatch",
+        "reason": reason,
+        "population_limit": limit,
+        "source": tbl_nm,
+        "basis": f"{limit} 집계",
+        "tbl_id": tbl_id,
+        "url": indicators.KOSIS_URL.format(org_id=org_id, tbl_id=tbl_id) if org_id else None,
+        "method": "dynamic",
+    }
+    return {
+        "status": result["status"],
+        "answer": reason,
+        "result": result,
+        "parsed": parsed,
         "sources": qa.sources(result),
         "trace": {},
     }

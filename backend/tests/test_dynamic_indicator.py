@@ -850,6 +850,50 @@ def test_handoff_does_not_use_other_tables_when_review_is_exact(computed) -> Non
     assert trace["dynamic"][1]["skip"] == d.EXACT_SKIP
 
 
+@pytest.mark.parametrize("have_full_table", [True, False])
+@pytest.mark.parametrize("use_handoff", [True, False])
+def test_ratio_requires_the_requested_population(computed, have_full_table, use_handoff) -> None:
+    question = "2020년 서울 1인 가구 중 70세 이상 비율은?"
+    q = {**BASE, "ages": [[70, None]]}
+    limited = _cand(
+        "A",
+        1,
+        picked=True,
+        checks={"year": True},
+        review={"match": "exact"},
+        tbl_nm="성별·연령별 1인가구(20세 이상, 일반가구)",
+    )
+    cands = [limited]
+    if have_full_table:
+        cands.append(_cand("B", 2, checks={"year": True}, tbl_nm="성 및 연령별 1인가구"))
+    trace = {}
+    if use_handoff:
+        res = asyncio.run(d.compute_from_handoff(question, q, _found(cands), trace))
+    else:
+        res = asyncio.run(d.answer(question, q, {"status": "ok", "recommendations": cands}, trace))
+    assert res is not None
+    if have_full_table:
+        assert res["status"] == "ok"
+        assert computed["tried"] == ["B"]
+    else:
+        assert res["status"] == "band_mismatch" and "value" not in res["result"]
+        assert "20세 이상만 집계" in res["answer"] and res["sources"][0]["tbl_id"] == "A"
+        assert computed["tried"] == []
+
+
+@pytest.mark.parametrize(
+    ("question", "limit"),
+    [
+        ("1인 가구 중 20세 이상 비율", "20세 이상"),
+        ("18세 이상 1인 가구 중 70세 이상 비율", "20세 이상"),
+        ("20세 이상 1인 가구 중 70세 이상 비율", None),
+        ("70세 이상 1인 가구 중 여성 비율", None),
+    ],
+)
+def test_age_limit_checks_the_population_side_of_a_ratio(question, limit) -> None:
+    assert d.age_limit("성별·연령별 1인가구(20세 이상, 일반가구)", question) == limit
+
+
 def test_handoff_retries_others_when_the_exact_table_fails(computed) -> None:
     # 고른 표(모두 충족)가 계산되지 않으면 그 이유로 건너뛴 후보를 다시 계산한다 (11/20 D-020).
     # ✘ 후보는 그대로 건너뛴다
