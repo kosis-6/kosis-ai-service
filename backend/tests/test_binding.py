@@ -257,3 +257,44 @@ def test_ratio_questions_are_not_compared(monkeypatch) -> None:
     _table(monkeypatch, [items])
     rec = binding.shadow("T", "1인 가구 비율", {}, _slots(), None, False)
     assert rec["vs_current"] == binding.NOT_COMPARED
+
+
+def test_all_leaf_cells_mean_the_total(monkeypatch) -> None:
+    # '출퇴근하거나 학교 다닌' = 통근 + 통학 → 통근·통학여부 계 (지금 계산의 choose와 같다, D-015)
+    items = Dim(0, "항목", {"1": "전철 지하철", "2": "시내버스"})
+    kind = Dim(2, "통근·통학여부별", {"0": "계", "1": "통근", "2": "통학"})
+    _table(monkeypatch, [items, kind])
+    q = "2010년에 지하철 타고 통근하거나 통학한 사람"
+    b = binding.bind("T", q, {}, _slots(items=["지하철"]))
+    assert _by(b, "item").codes == ["1"]
+    assert _by(b, "word").by == "total" and _by(b, "word").codes == ["0"]
+
+
+def test_short_cell_inside_long_condition_is_not_linked(monkeypatch) -> None:
+    # '부부 및 미혼 형제자매' 안의 '미혼'은 혼인상태 칸이 아니다 (D-144)
+    items = Dim(0, "항목", {"T12": "1세대가구-부부+미혼형제자매"})
+    marry = Dim(3, "혼인상태별", {"0": "합계", "1": "미혼", "2": "유배우"})
+    _table(monkeypatch, [items, marry])
+    b = binding.bind(
+        "T", "부부랑 미혼 형제자매가 같이 사는 집", {}, _slots(items=["부부 및 미혼 형제자매"])
+    )
+    assert not any(x.cond == "item" and x.dim == 3 for x in b.bound)
+    # 조건의 낱말이 모두 든 칸이 하나뿐이면 그 칸 ('및'은 잇는 말)
+    assert _by(b, "item").codes == ["T12"]
+    assert binding._related("지하철", "전철 지하철")
+
+
+def test_age_condition_missed_by_understanding_shows_as_differ(monkeypatch) -> None:
+    # 질문 이해가 '85세 넘은'을 놓치고 통계표 찾기만 조건으로 뽑음: 표에 연령 분류가 있으면 잇고,
+    # 연령 없이 계산한 지금 계산과는 '다름' (D-144)
+    items = Dim(0, "항목", {"T12": "1세대가구-부부+미혼형제자매"})
+    age = Dim(4, "연령별", {"000": "합계", "1": "80~84세", "2": "85세이상", "3": "20~24세"})
+    _table(monkeypatch, [items, age])
+    q = "85세 넘은 분 중에 부부랑 미혼 형제자매가 같이 사는 집"
+    b = binding.bind("T", q, {}, _slots(items=["85세 이상"]), forced={0: "T12"})
+    assert b.status == binding.BOUND and _by(b, "item").by == "age_range"
+    got = binding.compare(b, d.Plan(pick={0: "T12"}), ok=True)
+    assert got["vs_current"] == binding.DIFFER
+    assert got["diff"] == [
+        {"dim": "연령별", "current": ["연령 조건 없음"], "binding": ["85세 이상"]}
+    ]

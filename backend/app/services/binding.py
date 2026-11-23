@@ -29,6 +29,7 @@ from app.services import dynamic_indicator as di
 logger = logging.getLogger(__name__)
 
 BOUND, PARTIAL = "bound", "partial"
+MISSED_AGE = "질문 이해에 없는 연령"
 
 # 수 조건 ('딱 셋', '셋 이상', '3명 이상'). 나이(살 · 세 · 대)는 연령 조건이라 뺀다
 NATIVE_COUNT = {
@@ -141,10 +142,18 @@ def _count_cells(ask: tuple[int, str], d: di.Dim) -> list[str]:
     return [c for c, (v, open_) in nums.items() if ok(v, open_)]
 
 
+# 조건 낱말과 칸 이름이 서로를 담을 때, 짧은 쪽이 긴 쪽의 이만큼은 돼야 같은 것으로 본다.
+# '부부 및 미혼 형제자매'(9자) 안의 '미혼'(2자) 칸에 잇지 않는다 (D-144).
+# '지하철' ↔ '전철 지하철'(3/5)은 잇는다
+MIN_OVERLAP = 0.5
+
+
 def _related(word: str, name: str) -> bool:
-    """조건 낱말과 칸 이름이 같은 것을 가리키나 (한쪽이 다른 쪽을 담음)"""
+    """조건 낱말과 칸 이름이 같은 것을 가리키나 (한쪽이 다른 쪽을 담고, 길이가 크게 다르지 않음)"""
     a, b = search.norm(word), search.norm(name)
-    return len(a) >= 2 and len(b) >= 2 and (a in b or b in a)
+    if len(a) < 2 or len(b) < 2 or not (a in b or b in a):
+        return False
+    return min(len(a), len(b)) / max(len(a), len(b)) >= MIN_OVERLAP
 
 
 def bind(
@@ -224,7 +233,7 @@ def bind(
 
     # 찾는 값 (통계표 찾기의 items)
     for item in cond.get("items") or []:
-        if b := _bind_item(item, dims, skip, hits, titles, age, out):
+        if b := _bind_item(item, dims, skip, hits, titles, age, age_dim, out):
             out.bound.append(b)
             used |= {(b.dim, c) for c in b.codes if b.dim is not None}
         elif b is None:
@@ -253,6 +262,12 @@ def bind(
         codes = [c for c in hits.get(d.no, []) if (d.no, c) not in used]
         if d is sex_dim:
             _bind_sex_default(d, codes, couple, age, out)
+        elif len(codes) > 1 and d.total() and set(codes) == set(di._leaf_codes(d)):
+            # 세부 칸을 모두 말함 ('출퇴근하거나 학교 다닌' = 통근 + 통학) → 그 분류의 합계
+            # (지금 계산의 choose와 같다)
+            total = d.total()
+            names = " · ".join(d.codes[c] for c in codes)
+            out.bound.append(Bound("word", names, "total", d.no, [total], [d.codes[total]]))
         elif len(codes) == 1 or (codes and multi):
             names = [d.codes[c] for c in codes]
             out.bound.append(Bound("word", " · ".join(names), "value", d.no, codes, names))
@@ -299,7 +314,7 @@ def _age_label(age: tuple) -> str:
     return f"{lo}세 이상" if hi is None else f"{lo}~{hi}세"
 
 
-def _bind_item(item, dims, skip, hits, titles, age, out) -> "Bound | None | bool":
+def _bind_item(item, dims, skip, hits, titles, age, age_dim, out) -> "Bound | None | bool":
     """찾는 값 하나 → Bound. 연령 조건과 같은 말이면 False (연령에서 이미 봄). 못 이으면 None"""
     key = search.norm(item)
     # 1. 질문에 이름이 나온 칸 중 이 낱말을 가리키는 칸
@@ -316,6 +331,21 @@ def _bind_item(item, dims, skip, hits, titles, age, out) -> "Bound | None | bool
             if found := _count_cells(ask, d):
                 names = [d.codes[c] for c in found]
                 return Bound("item", item, "value", d.no, found, names, note="수 범위")
+    # 2-2. 조건의 낱말이 모두 든 칸이 하나뿐 (수 조건 다음: '자녀가 딱 셋'을 '자녀가 있는 가구_계'에
+    # 잇지 않게) ('부부 및 미혼 형제자매' → 1세대가구-부부+미혼형제자매)
+    words = _words(item)
+    if len(words) >= 2:
+        cover = [
+            (d.no, c)
+            for d in dims
+            if d.no not in skip
+            for c, n in d.codes.items()
+            if all(w in search.norm(n) for w in words)
+        ]
+        if len(cover) == 1:
+            no, code = cover[0]
+            name = next(x for x in dims if x.no == no).codes[code]
+            return Bound("item", item, "value", no, [code], [name], note="낱말 모두 포함")
     # 3. 낱말 줄기 ('가구수' ↔ '가구_계')
     for d in dims:
         if d.no in skip:
@@ -327,12 +357,25 @@ def _bind_item(item, dims, skip, hits, titles, age, out) -> "Bound | None | bool
     if (span := _age_span(item)) is not None:
         if age == span:
             return False  # 질문 이해가 같은 연령을 이미 넘겼다 (연령에서 봄)
+        if age is None and age_dim is not None:
+            # 질문 이해가 놓친 연령을 통계표 찾기가 조건으로 뽑았다 ('85세 넘은 분', D-144).
+            # 지금 계산은 이 연령 없이 전체 연령으로 답했다 → compare가 '다름'으로 드러낸다
+            return Bound("item", item, "age_range", age_dim.no, note=MISSED_AGE)
         if span == _age_span(titles[0]):
             return Bound("item", item, "table", note="표 이름의 연령 범위")
     # 5. 표 자체가 그 조건으로 만든 표 ('재혼' → 평균재혼연령)
     if len(key) >= 2 and any(key in t for t in titles):
         return Bound("item", item, "table", note="표 이름")
     return None
+
+
+JOINERS = {"및", "와", "과", "랑", "이랑", "하고", "또는", "그리고", "중", "의"}
+
+
+def _words(text: str) -> list[str]:
+    """조건을 낱말로 ('부부 및 미혼 형제자매' → 부부 · 미혼 · 형제자매). 잇는 말은 뺀다"""
+    parts = re.split(r"[^0-9A-Za-z가-힣]+", text or "")
+    return [search.norm(p) for p in parts if len(search.norm(p)) >= 2 and p not in JOINERS]
 
 
 def _class_dim(cls, dims, region_dim, sex_dim, age_dim) -> "di.Dim | None":
@@ -452,7 +495,11 @@ def compare(b: Binding, plan: "di.Plan | None", ok: bool) -> dict[str, Any]:
         return {"vs_current": ONLY_CURRENT}
     cur, mine = current_picks(plan), b.picks()
     dims = {d.no: d for d in di.schema(b.tbl_id)[0]}
-    diff = []
+    diff = [
+        {"dim": dims[x.dim].name, "current": ["연령 조건 없음"], "binding": [x.value]}
+        for x in b.bound
+        if x.note == MISSED_AGE and x.dim in dims
+    ]
     for no in sorted(set(cur) | set(mine)):
         if no not in cur or no not in mine or set(cur[no]) == set(mine[no]):
             continue  # 한쪽만 정한 분류(연령 · 지역 등 계산이 고르는 분류)는 견주지 않는다
