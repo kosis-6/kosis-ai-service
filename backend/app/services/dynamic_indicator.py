@@ -32,9 +32,11 @@ lookup.py(값·비교·추이·순위·구성비)가 한다. 그래서 숫자는
 """
 
 import asyncio
+import contextlib
 import contextvars
 import logging
 import re
+import time
 import unicodedata
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -50,6 +52,7 @@ from app.services import (
     indicators,
     load_queue,
     lookup,
+    partial_table,
     plan_cache,
     qa,
     search,
@@ -154,7 +157,14 @@ class Plan:
 
 def schema(tbl_id: str) -> tuple[list[Dim], int | None, str]:
     """(분류 목록, 지역 분류 번호, 지역 수준). 적재 안 된 표면 StatsTableMissing
-    칸 이름·지역 칸은 lookup의 표 정보 캐시를 쓴다 (표를 다시 적재하면 함께 비워진다)"""
+    칸 이름·지역 칸은 lookup의 표 정보 캐시를 쓴다 (표를 다시 적재하면 함께 비워진다)
+    이 질문에서 칸만 받은 표면 그 메타의 칸 목록 (partial_table.py)"""
+    if (part := partial_table.active(tbl_id)) is not None:
+        dims = [
+            Dim(n, name, {c: nm for c, (_, nm) in sorted(codes.items())})
+            for n, (name, codes) in sorted(part.dims.items())
+        ]
+        return dims, part.region_dim, partial_table.level(part)
     key = lookup._tbl_key(tbl_id)
     names = {
         r["dim_no"]: r["name"]
@@ -216,6 +226,8 @@ def _unit(
     조출생률(천명당) · 이혼건수(건) …). 항목만 보면 행이 가장 많은 '천명당'이 붙었다
     ("11,798천명당", 11/20).
     고른 칸으로 좁힌 행이 없으면 항목만으로 본다"""
+    if (part := partial_table.active(tbl_id)) is not None:
+        return partial_table.unit_of(part, item, cells)
     conds, params = [], []
     for n, codes in {0: [item], **(cells or {})}.items():
         cond, keys = lookup._in("v.item_key" if n == 0 else f"v.c{n}", tbl_id, n, codes)
@@ -815,7 +827,8 @@ def build(
     if PER_AVERAGE.search(question) and (avg := _per_average(tbl_id, dims, region_dim, level)):
         return avg, None
     try:
-        couple = couple_counted(tbl_id)
+        # 칸만 받은 표는 값 전체를 볼 수 없어 아니라고 둔다 (캐시에 남지 않게 부르지도 않는다)
+        couple = partial_table.active(tbl_id) is None and couple_counted(tbl_id)
     except Exception:  # 확인하지 못하면 지금처럼 (성별 칸을 고르지 못함)
         logger.exception("부부 단위 표 확인 실패: %s", tbl_id)
         couple = False
@@ -1097,7 +1110,10 @@ def part_within_whole(src: dict, col: str, num: list[str], den: str) -> str | No
     같은 표·같은 분류라도 칸이 서로 포함 관계가 아닐 수 있다 (예: 묶음 칸과 세부 칸이 함께 있는
     분류를 더하면 두 번 센다, 분모로 고른 칸이 합계가 아니다). 그러면 비율이 100%를 넘거나
     틀린 값이 된다.
-    나머지 분류는 정의와 같이 고정한다 (연령을 따로 고르면 연령 합계)"""
+    나머지 분류는 정의와 같이 고정한다 (연령을 따로 고르면 연령 합계)
+    칸만 받은 표는 모든 지역·연도를 볼 수 없어 하지 않는다 (적재 뒤 계산, 캐시에 남기지 않음)"""
+    if partial_table.active(src["table"]) is not None:
+        return partial_table.CHECK_REASON
     fixed = {k: v for k, v in (src.get("filters") or {}).items() if k != col}
     if src.get("age_dim") and f"{src['age_dim']}_id" != col:
         fixed[f"{src['age_dim']}_id"] = src["age_total"]
@@ -1207,7 +1223,8 @@ async def answer(question: str, parsed: dict, found: dict, trace: dict) -> dict 
       - 통계표 찾기의 주의(판 메모·기준)는 답의 주의에 붙인다
     어느 표로도 계산하지 못했는데 앞 표에서 칸 하나만 정하지 못했으면(예: 분류에 합계가 없음)
     그 칸을 되묻는다 (status clarify_question).
-    적재 안 된 작은 표는 바로 받아 넣는다 (table_cache.fetch_now).
+    적재 안 된 작은 표는 바로 받아 넣는다 (table_cache.fetch_now). 큰 표는 대기열에 넣고
+    답에 필요한 칸만 받아 이 질문에만 쓴다 (_build_partial).
     시도한 표와 결과는 trace["dynamic"]에 남긴다 (요청 기록)."""
     recs = (found.get("recommendations") or [])[:MAX_TABLES]
     if found.get("together"):
@@ -1896,6 +1913,8 @@ async def _try(
         outcome = "되묻기" if ask is not None else "못 함"
     how = "칸 고르기 LLM" if step.get("by") == "cell_llm" else "규칙"
     parts = [tbl_id, f"칸={step['cells']} ({how})" if step.get("cells") else ""]
+    if got := step.get("partial"):  # 적재 안 된 큰 표에서 칸만 받아 계산 (채점·요청 기록에서 센다)
+        parts.append(f"칸만 바로 받음 (요청 {got['requests']}번)")
     parts.append(step.get("skip") or "")
     flow.add("표 칸으로 계산", outcome, " · ".join(p for p in parts if p))
     return res, ask
@@ -2137,8 +2156,15 @@ def has_values(result: dict) -> bool:
     return False
 
 
+PARTIAL_OUTCOMES = ("too_big", "busy")  # 표 전체를 바로 받지 못해 칸만 받아 보는 경우
+
+
 async def _build(tbl_id, org_id, question, parsed, step, forced=None, slots=None, fetch_sem=None):
     """fetch_sem: 후보 여러 개를 동시에 계산할 때 KOSIS에서 받는 일을 동시에 몇 개까지 할지"""
+    if partial_table.active(tbl_id) is not None:  # 이 질문에서 이미 칸만 받은 표 (칸 고르기 LLM)
+        return await _build_partial(
+            tbl_id, org_id, question, parsed, step, forced, slots, fetch_sem
+        )
     try:
         return await run_in_threadpool(build, tbl_id, question, parsed, forced, slots)
     except StatsTableMissing:
@@ -2146,7 +2172,8 @@ async def _build(tbl_id, org_id, question, parsed, step, forced=None, slots=None
     except Exception:
         logger.exception("동적 지표 계획 만들기 실패: %s", tbl_id)
         return None, "오류"
-    # 적재 안 된 표: 작은 표는 지금 받아 넣는다. 못 받으면 대기열에 넣고 이번에는 표 안내
+    # 적재 안 된 표: 작은 표는 지금 받아 넣는다. 못 받으면 대기열에 넣고,
+    # 큰 표는 답에 필요한 칸만 받아 계산해 본다 (_build_partial). 그것도 못 하면 이번에는 표 안내
     try:
         org_id = org_id or (await load_queue.table_info(tbl_id))["org_id"]
         if fetch_sem is None:
@@ -2156,7 +2183,12 @@ async def _build(tbl_id, org_id, question, parsed, step, forced=None, slots=None
                 outcome = await table_cache.fetch_now(tbl_id, org_id, step)
         if outcome != "loaded":
             await load_queue.enqueue(tbl_id, "question")
-            return None, f"적재 안 됨 ({outcome}, 대기열에 넣음)"
+            queued = f"적재 안 됨 ({outcome}, 대기열에 넣음)"
+            if outcome in PARTIAL_OUTCOMES and table_cache.PARTIAL_FETCH:
+                return await _build_partial(
+                    tbl_id, org_id, question, parsed, step, forced, slots, fetch_sem, queued
+                )
+            return None, queued
     except Exception:
         logger.exception("동적 지표 표 받기 실패: %s", tbl_id)
         return None, "표를 받지 못함"
@@ -2165,6 +2197,47 @@ async def _build(tbl_id, org_id, question, parsed, step, forced=None, slots=None
     except Exception:
         logger.exception("동적 지표 계획 만들기 실패: %s", tbl_id)
         return None, "오류"
+
+
+async def _build_partial(
+    tbl_id, org_id, question, parsed, step, forced=None, slots=None, fetch_sem=None, queued=""
+):
+    """적재 안 된 큰 표: 메타로 칸을 고르고, 고른 칸만 KOSIS에서 받아 정의를 만든다
+    (partial_table.py). 받은 값은 이 질문에서만 쓰고, 표 전체 적재는 대기열이 맡는다 (_build가 넣음)
+
+    1차 build(값 없이 칸만 고름) → 고른 칸만 요청 → 2차 build(받은 값으로 단위 등을 정함).
+    칸을 고르지 못하면 그 이유를 그대로 돌려준다 (되묻기 · 칸 고르기 LLM이 지금처럼 이어 간다).
+    비율처럼 표 전체로 검증해야 하는 계산은 build가 멈춘다 (partial_table.CHECK_REASON)
+    step["partial"]: 이번에 보낸 요청 수, 받아 둔 행 수, 걸린 시간 (ms)"""
+    start = time.perf_counter()
+    queued = queued or "적재 안 됨"
+    try:
+        part = partial_table.active(tbl_id)
+        if part is None:
+            org_id = org_id or (await load_queue.table_info(tbl_id))["org_id"]
+            meta = await table_cache.table_meta(tbl_id, org_id)
+            part = await run_in_threadpool(partial_table.from_meta, tbl_id, org_id, meta)
+            partial_table.register(part)
+        spec, why = await run_in_threadpool(build, tbl_id, question, parsed, forced, slots)
+        if spec is None:
+            return None, why
+        fetch = partial_table.requests_for(part, spec, parsed)
+        if fetch is None:
+            return None, f"{queued} · 칸이 많아 칸만 받지 못함"
+        async with fetch_sem or contextlib.nullcontext():
+            sent = await table_cache.fetch_cells(part, fetch)
+        spec, why = await run_in_threadpool(build, tbl_id, question, parsed, forced, slots)
+    except partial_table.Unsupported as e:
+        return None, f"{queued} · 칸만 받지 못함 ({e})"
+    except Exception as e:  # noqa: BLE001 - 칸만 받기가 실패해도 지금처럼 표 안내로 끝낸다
+        from app.services.kosis_client import mask_key
+
+        step["partial_error"] = mask_key(f"{type(e).__name__}: {e}")[:300]
+        logger.warning("%s: 칸만 받기 실패: %s", tbl_id, step["partial_error"])
+        return None, f"{queued} · 칸만 받기 실패"
+    ms = round((time.perf_counter() - start) * 1000)
+    step["partial"] = {"requests": sent, "rows": len(part.rows), "ms": ms}
+    return spec, why
 
 
 def _with_spec(parsed: dict, spec: dict) -> dict:
