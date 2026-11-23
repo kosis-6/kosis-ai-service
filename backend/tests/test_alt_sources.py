@@ -9,6 +9,81 @@ import pytest
 from app.services import ask_session, indicators, qa
 
 
+@pytest.fixture(autouse=True)
+def no_statistics_db(monkeypatch: pytest.MonkeyPatch) -> None:
+    """조사 선택·계산 경로를 검증하며 지역과 통계 원자료는 읽지 않는다."""
+    monkeypatch.setattr(qa, "_full_region_names", lambda *a: None)
+    monkeypatch.setattr(qa, "_ground_regions", lambda *a: None)
+    monkeypatch.setattr(indicators, "find_regions", lambda *a: [])
+    monkeypatch.setattr(indicators, "_data_years", lambda: (1990, 2025))
+    monkeypatch.setattr(qa.lookup, "refresh_if_reloaded", lambda: None)
+    monkeypatch.setattr(qa, "_lookup_span", lambda *a: (1990, 2025))
+    monkeypatch.setattr(
+        indicators,
+        "_survey_of",
+        lambda table: "인구총조사" if table.startswith(("DT_1IN", "DT_1PM")) else "인구동향조사",
+    )
+
+
+def test_year_change_keeps_survey():
+    previous = parsed(year=2025, asked={"survey": "인구총조사", "recent": 5})
+    changed, _ = ask_session.apply_changes(previous, {"year": 2020})
+    assert changed["year"] == 2020
+    assert changed["asked"] == {"survey": "인구총조사"}
+    assert previous["asked"]["recent"] == 5
+
+
+def test_saved_trend_keeps_survey():
+    previous = parsed(type="trend", asked={"survey": "인구총조사", "recent": 5})
+    saved = ask_session.effective(
+        previous,
+        {"status": "ok", "series": [{"year": 2020, "value": 1}, {"year": 2025, "value": 2}]},
+    )
+    assert saved["asked"] == {"survey": "인구총조사"}
+    assert (saved["start_year"], saved["end_year"]) == (2020, 2025)
+
+
+def test_inherited_indicator_keeps_survey_without_repeating_it():
+    previous = parsed(asked={"survey": "인구총조사"})
+    inherited, _ = ask_session.inherit(
+        parsed(indicator=None, regions=["서울"]),
+        {"indicator": "default", "regions": "user", "period": "default"},
+        previous,
+        {"indicator": "user", "regions": "user", "period": "default"},
+        "서울은?",
+    )
+    assert inherited["indicator"] == "중위연령"
+    assert inherited["asked"]["survey"] == "인구총조사"
+
+
+@pytest.mark.parametrize("name", ["고령인구 비율", "유소년인구 비율", "생산연령인구 비율"])
+def test_census_ratio_uses_same_sex_in_numerator_and_denominator(name, monkeypatch):
+    selected = []
+
+    def value(spec, region, year, sex, ages):
+        source = qa.lookup._effective(spec["sources"][0], sex)
+        selected.append((sex, source["item_id"], source["den_item_id"]))
+        return {"status": "ok", "indicator": name, "value": 20.2, "year": year}
+
+    monkeypatch.setattr(qa.lookup, "value", value)
+    monkeypatch.setattr(indicators, "value", lambda *a: {"status": "missing_data"})
+    result = qa.compute(
+        parsed(
+            indicator=name, regions=["서울"], year=2025, sex="여", asked={"survey": "인구총조사"}
+        )
+    )
+    assert result["status"] == "ok"
+    assert selected == [("여", "T02", "T02")]
+
+
+def test_unavailable_survey_sex_is_not_silently_total():
+    result = qa.compute(
+        parsed(indicator="중위연령", year=2025, sex="여", asked={"survey": "인구총조사"})
+    )
+    assert result["status"] == "unknown_indicator"
+    assert "성별" in result["reason"]
+
+
 def parsed(**kw):
     base = {"type": "value", "indicator": "중위연령", "regions": ["영도구"], "sex": "계"}
     return {**base, **kw}

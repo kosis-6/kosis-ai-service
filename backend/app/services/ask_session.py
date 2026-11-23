@@ -203,6 +203,19 @@ def applied(conditions: dict, sources: dict[str, str]) -> list[dict[str, str]]:
     ]
 
 
+def _clear_period_questions(conditions: dict) -> None:
+    """기간 표현을 정리해도 사용자가 고른 조사 기준은 유지한다."""
+    asked = {
+        k: v
+        for k, v in (conditions.get("asked") or {}).items()
+        if k in ("survey", "survey_missing")
+    }
+    if asked:
+        conditions["asked"] = asked
+    else:
+        conditions.pop("asked", None)
+
+
 def effective(parsed: dict, result: dict) -> dict:
     """세션에 둘 조건: 해석 결과에서 기간을 실제로 답한 기간으로 맞춘다.
     "최근 5년"·"과거부터"는 자료의 마지막·첫 연도를 보고 계산할 때 정해진다. 그 기간을 적어 두어야
@@ -212,7 +225,7 @@ def effective(parsed: dict, result: dict) -> dict:
     if result.get("status") == "ok" and series:
         c["start_year"], c["end_year"] = series[0]["year"], series[-1]["year"]
         c["year"] = c["end_year"]
-        c.pop("asked", None)  # 기간 표현("최근 5년")은 연도로 바꿔 적었다
+        _clear_period_questions(c)  # 기간 표현은 실제 연도로 바꾸고 조사 기준은 유지한다
     elif result.get("status") == "ok" and result.get("year"):
         c["year"] = result["year"]
     if sex_not_split(parsed, result):
@@ -313,7 +326,7 @@ def apply_changes(conditions: dict, changes: dict) -> tuple[dict, set[str]]:
         c["year"], c["start_year"], c["end_year"] = year, None, None
         changed.add("period")
     if "period" in changed:
-        c.pop("asked", None)  # "최근 5년"·"과거부터" 같은 앞 질문의 기간 표현은 더는 맞지 않다
+        _clear_period_questions(c)
 
     if changes.get("sex") in ("계", "남", "여"):
         c["sex"] = changes["sex"]
@@ -488,7 +501,12 @@ def inherit(
             p[key] = prev.get(key)
         s["period"] = "inherited"
     if question:
-        qa.set_survey(question, p)  # 이어받은 지표로 조사 표시를 다시 정한다
+        survey_question = question
+        if not qa.survey_said(question) and s.get("indicator") == "inherited":
+            previous = prev.get("asked") or {}
+            if survey := previous.get("survey") or previous.get("survey_missing"):
+                survey_question = f"{survey} 기준 {question}"
+        qa.set_survey(survey_question, p)  # 이어받은 지표와 조사로 표시를 다시 정한다
     return p, s
 
 

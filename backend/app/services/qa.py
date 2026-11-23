@@ -2051,6 +2051,13 @@ def _compute(q):
     if survey and not dyn and (alt := indicators.alt_spec(sp, survey)):
         # 질문이 말한 조사의 공표값으로 (주민등록인구로 계산하지 않는다). 그 조사에 없는 지역 수준
         # (장래인구추계는 시도까지) · 연도는 조회 단계가 "○○ 단위까지만 자료가 있습니다"로 알린다
+        if sex in ("남", "여") and not any(s.get("by_sex") for s in alt["sources"]):
+            return {
+                "status": "unknown_indicator",
+                "indicator": alt["name"],
+                "reason": f"{survey} {alt['name']} 자료는 성별로 나뉘어 있지 않아 "
+                "질문한 성별의 값을 낼 수 없습니다.",
+            }
         sp = alt
         if not any(s.get("age_dim") for s in alt["sources"]):
             ages = (
