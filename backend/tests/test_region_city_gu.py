@@ -4,6 +4,8 @@ import pytest
 
 from app.services import indicators
 
+pytestmark = pytest.mark.needs_data  # regions 테이블을 읽음 (CI에는 DB 없음)
+
 
 @pytest.mark.parametrize(
     ("question", "year", "name", "code_prefix"),
