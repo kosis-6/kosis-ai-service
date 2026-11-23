@@ -36,6 +36,12 @@ class Settings(BaseSettings):
     # (실험 2-A, app/services/understand_merged.py).
     # off(기본): 지금 그대로. gemma: 합친 프롬프트로 Gemma 1회, 실패하면 지금 방식(HCX)으로 넘어간다
     understand_merged: Literal["off", "gemma"] = "off"
+    # 답이 나간 뒤 Gemma 1회가 그 답이 질문에 맞는지 판정하고, 틀렸다고 보면 한 번 다시 계산한다
+    # (app/services/answer_judge.py, ask_session._judged). 사전 지표로 답했으면 통계표 찾기로,
+    # 통계표에서 계산했으면 그 표를 빼고 다음 후보로. 다시 한 답이 판정을 통과할 때만 바꾼다.
+    # 함께 켜지는 것: 조건이 모두 맞고 2위와 점수 차가 큰 1위 표는 검토(llm_pick)를 건너뛴다.
+    # 기본은 끔 (ANSWER_JUDGE=true 로 켠다). GEMMA_BASE_URL 이 없으면 켜도 판정하지 않는다
+    answer_judge: bool = False
 
     # 통계표 찾기(조건 추출·계획·최종 검토)에 쓰는 LLM (app/services/search_llm.py)
     # auto(기본): GEMMA_BASE_URL이 있으면 Gemma 4 31B, 없으면 HCX-007

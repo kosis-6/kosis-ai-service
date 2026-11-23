@@ -47,6 +47,7 @@ import copy
 import json
 import logging
 import re
+from contextvars import ContextVar
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from uuid import uuid4
@@ -57,6 +58,7 @@ from starlette.concurrency import run_in_threadpool
 
 from app.prompts.qa import FOLLOW_SYSTEM
 from app.services import (
+    answer_judge,
     answer_summary,
     ask_followup,
     charts,
@@ -1695,7 +1697,7 @@ async def _attach_tables(res: dict, state: dict | None, question: str, user_id: 
             await _attach_cards(res, asked)
             return
         try:
-            found = await table_guide.find_tables(searched, sid, None, user_id)
+            found = _keep(await table_guide.find_tables(searched, sid, None, user_id))
         except Exception:
             logger.exception("통계표 찾기 실패")
             return
@@ -1815,7 +1817,7 @@ async def _search_after(
     trace = res.setdefault("trace", {})
     parsed = res.get("parsed") or {}
     try:
-        found = await table_guide.find_tables(searched or asked, sid, None, user_id)
+        found = _keep(await table_guide.find_tables(searched or asked, sid, None, user_id))
         computed = await dynamic_indicator.compute_from_handoff(
             searched or asked, parsed, found, trace
         )
@@ -2132,6 +2134,123 @@ DICTIONARY_ANSWERED = (
 # ("1인 가구가 가장 많은 시도의 통근 인구"를 총인구로 읽고 "어느 지역인지"를 물었다)
 
 
+# 이 턴의 통계표 찾기 결과 (답 판정이 다시 계산할 때 다시 찾지 않게). handle 이 턴마다 비운다
+_found_now: ContextVar[dict | None] = ContextVar("ask_found_now", default=None)
+
+
+def _keep(found: dict) -> dict:
+    _found_now.set(found)
+    return found
+
+
+def judgeable(res: dict) -> bool:
+    """판정할 답: 새 질문(또는 되묻기에 답해 완성된 질문)에 값으로 답한 것.
+    조건만 바꾼 이어 묻기는 그 말만으로는 질문 전체를 알 수 없어 판정하지 않는다"""
+    return (
+        res.get("status") == "ok"
+        and res.get("request_type") in (NEW, REPLY)
+        and not res.get("clarification")
+        and (res.get("result") or {}).get("status") == "ok"
+    )
+
+
+def without_tables(found: dict, used: set[str]) -> dict | None:
+    """찾은 후보에서 이미 답에 쓴 표를 뺀 꾸러미 (다음 후보로 다시 계산할 때).
+    지표가 여럿인 질문이거나, 쓴 표가 후보에 없거나, 남는 후보가 없으면 None"""
+    targets = (found.get("handoff") or {}).get("targets") or []
+    if len(targets) != 1:
+        return None
+    cands = targets[0].get("candidates") or []
+    rest = [{**c, "picked": False, "review": None} for c in cands if c.get("tbl_id") not in used]
+    if not rest or len(rest) == len(cands):
+        return None
+    out = copy.deepcopy(found)
+    out["handoff"]["targets"][0]["candidates"] = rest
+    return out
+
+
+async def _recompute(
+    res: dict, state: dict | None, asked: str, user_id: int | None
+) -> tuple[dict | None, str]:
+    """판정이 틀렸다고 본 답을 다른 방법으로 한 번 다시 계산한 답 → (답, 방법). 못 하면 (None, 방법)
+    통계표에서 계산한 답   그 표를 빼고 다음 후보로
+    사전 지표로 답한 답    원래 질문 그대로 통계표 찾기로 (검색어를 새로 쓰지 않는다:
+                          11/22 Gemma 가 새로 쓴 검색어는 정답 표 1위를 42 → 29로 줄였다)"""
+    parsed = res.get("parsed") or {}
+    sid = res.get("search_session") or (state or {}).get("search_session")
+    sid = sid or table_guide.new_search_session()
+    found = _found_now.get()
+    trace: dict = {}
+    if parsed.get("dynamic_spec"):
+        how = "다음 후보 표"
+        used = {s.get("tbl_id") for s in res.get("sources") or [] if s.get("tbl_id")}
+        if found is None:
+            found = await table_guide.find_tables(asked, sid, None, user_id)
+        found = without_tables(found, used)
+        if found is None:
+            return None, how
+    elif indicators.spec(parsed.get("indicator") or ""):
+        how = "통계표 찾기로"
+        if found is None:
+            found = await table_guide.find_tables(asked, sid, None, user_id)
+    else:
+        return None, "다시 계산할 방법 없음"
+    base = {**parsed, "dynamic_spec": None}
+    computed = await dynamic_indicator.compute_from_handoff(asked, base, found, trace)
+    if not computed or computed.get("status") != "ok" or computed.get("clarification"):
+        return None, how
+    again = dict(computed)
+    again.setdefault("trace", trace)
+    again["search_session"] = sid
+    return again, how
+
+
+async def _judged(res: dict, state: dict | None, question: str, user_id: int | None) -> None:
+    """답 판정 (ANSWER_JUDGE=true): 이 답이 질문에 맞는지 Gemma 가 보고, 틀렸다고 보면 한 번 다시
+    계산한다. 다시 한 답이 판정을 통과할 때만 바꾸고, 아니면 처음 답을 그대로 낸다 (11/22 판정은
+    맞는 답 107 중 12를 잘못 막았다. 그때 잃는 것을 줄인다). '답할 수 없는 질문' 판정은 기록만
+    한다 (답변 불가는 따로 구현한다). 판정 내용은 trace["answer_judge"]"""
+    if not answer_judge.enabled() or not judgeable(res):
+        return
+    asked = res.get("question") or question
+    first = await answer_judge.verdict(asked, res.get("parsed"), res.get("result"))
+    if first is None:
+        return
+    record: dict = {"first": first}
+    res.setdefault("trace", {})["answer_judge"] = record
+    flow.add("답 판정", first["verdict"], f"{first['reason']} · {first['missing']}")
+    if first["verdict"] != "retry":
+        return
+    try:
+        again, how = await _recompute(res, state, asked, user_id)
+    except Exception:
+        logger.exception("답 판정 뒤 다시 계산 실패 → 처음 답 그대로")
+        record["retry"] = {"error": True}
+        return
+    record["retry"] = {"how": how, "computed": again is not None}
+    if again is None:
+        flow.add("다시 계산", "실패", f"{how}: 계산하지 못해 처음 답 그대로")
+        return
+    second = await answer_judge.verdict(asked, again.get("parsed"), again.get("result"))
+    record["second"] = second
+    if not second or second["verdict"] != "ok":
+        why = f"{second['reason']} · {second['missing']}" if second else "판정하지 못함"
+        flow.add("다시 계산", "버림", f"{how}: 다시 한 답도 판정에 걸려 처음 답 그대로 ({why})")
+        return
+    record["replaced"] = {
+        "indicator": (res.get("parsed") or {}).get("indicator"),
+        "answer": lead(res.get("answer") or ""),
+    }
+    flow.add("다시 계산", "ok", f"{how}: {lead(again.get('answer') or '')}")
+    kind = res.get("request_type")
+    res.clear()
+    res.update(again)
+    res["trace"]["answer_judge"] = record
+    res["chart"] = charts.build(res.get("result"))
+    await _attach_cards(res, asked)
+    res["request_type"], res["question"] = kind, asked
+
+
 def ungrounded(res: dict) -> bool:
     """사전 지표로 답했지만 질문에 그 지표의 이름·별칭이 없는 새 질문 (qa.correct의 grounded)"""
     parsed = res.get("parsed") or {}
@@ -2168,7 +2287,7 @@ async def _dynamic_instead(res: dict, state: dict | None, asked: str, user_id: i
     try:
         computed = await dynamic_indicator.cached_answer(asked, parsed, trace)
         if computed is None:
-            found = await table_guide.find_tables(asked, sid, None, user_id)
+            found = _keep(await table_guide.find_tables(asked, sid, None, user_id))
             computed = await dynamic_indicator.compute_from_handoff(asked, parsed, found, trace)
     except Exception:
         logger.exception("근거 없는 지표의 바로 계산 실패")
@@ -2287,9 +2406,11 @@ async def handle(
             sid = new_id()
         if moved:  # 다른 계정이 시작한 대화: 그 조건·답을 이어받지 않고 새 대화로 답한다
             sid, state, expired = new_id(), None, False
+        _found_now.set(None)
         res, sources, notice = await _turn(state, question, selections, user_id)
         await _attach_tables(res, state, question, user_id)
         await refusal.finalize(res, question)
+        await _judged(res, state, question, user_id)
         if "summary" not in res:  # 직전 답을 다시 쓴 응답(_reuse)은 그 요약을 이미 들고 있다
             res["summary"] = _summary(res.get("result"))
         if sex_not_split(res.get("parsed") or {}, res.get("result") or {}):
