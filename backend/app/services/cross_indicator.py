@@ -423,9 +423,9 @@ def compute(q: dict, run) -> dict:
         and (not q.get("year"))
     ):
         years = {p.get("year") for p in parts}
-        if len(years) > 1 or any(p.get("as_of") for p in parts):
+        if len({(p.get("year"), p.get("as_of")) for p in parts}) > 1:
             # 연도를 말하지 않아 두 지표가 각자 최신 연도로 답했다: 둘 다 있는 해로 맞춘다
-            # (최신 달 값으로 답한 것도 연간 값과 섞지 않는다)
+            # (최신 달 값으로 답한 것도 연간 값과 섞지 않는다. 둘 다 같은 달 값이면 그대로 둔다)
             year = min(y for y in years if y is not None)
             if any(p.get("as_of") for p in parts):
                 year = min(year, indicators._data_years()[1])

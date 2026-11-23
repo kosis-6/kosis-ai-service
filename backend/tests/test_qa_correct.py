@@ -1504,6 +1504,66 @@ def test_indicators_aligned_to_common_year_and_summed(monkeypatch: pytest.Monkey
     assert [m["value"] for m in r["members"]] == [285234, 5637]
 
 
+def _count(name: str, value: int, year: int, as_of: str | None = None) -> dict:
+    out = {"status": "ok", "indicator": name, "unit": "명", "kind": "count", "region": "가시"}
+    return {**out, "year": year, "value": value, **({"as_of": as_of} if as_of else {})}
+
+
+def test_sum_needs_every_asked_indicator(monkeypatch: pytest.MonkeyPatch) -> None:
+    """합계를 물었는데 한 지표가 계산되지 않으면 남은 값만 '합계'로 내지 않는다"""
+
+    def fake(q):
+        if q["indicator"] == "총인구":
+            return {"status": "missing_data", "reason": "자료 없음"}
+        return _count("등록외국인 수", 7, 2025)
+
+    monkeypatch.setattr(qa, "compute", fake)
+    q = {"type": "value", "indicators": ["총인구", "등록외국인 수"], "aggregate": "sum",
+         "regions": ["가시"]}  # fmt: skip
+    r = qa._compute(q)
+    assert "members" not in r and " + " not in (r.get("indicator") or "")
+    notes = [n for leaf in qa._leaves(r) for n in leaf.get("notes", [])]
+    assert any("총인구" in n and "뺐습니다" in n for n in notes)
+
+
+def test_common_year_keeps_values_of_the_same_month() -> None:
+    """둘 다 같은 달 값이면 같은 시점이다: 연간 마지막 해로 되돌리지 않는다"""
+    month = "2026년 10월 말"
+    same = [_count("총인구", 10, 2026, month), _count("고령인구", 2, 2026, month)]
+    assert qa._common_year(same) is None
+    assert qa._common_year([_count("가", 1, 2025), _count("나", 2, 2025)]) is None
+    assert qa._common_year([_count("가", 1, 2025), _count("나", 2, 2024)]) == 2024
+
+
+def test_common_year_for_a_month_value_and_an_annual_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(qa.indicators, "_data_years", lambda: (2008, 2025))
+    mixed = [_count("총인구", 10, 2026, "2026년 10월 말"), _count("등록외국인 수", 2, 2025)]
+    assert qa._common_year(mixed) == 2025
+    # 기준 달이 서로 다른 월별 값끼리도 연간 마지막 해로 (달을 지정해 받는 길이 아직 없다)
+    months = [_count("가", 1, 2026, "2026년 5월 말"), _count("나", 2, 2026, "2026년 10월 말")]
+    assert qa._common_year(months) == 2025
+
+
+def test_default_value_next_to_alt_is_of_the_same_year(monkeypatch: pytest.MonkeyPatch) -> None:
+    """다른 조사 값 옆의 주민등록인구 값은 그 해 값이다: 연도를 말하지 않아 켜진 latest 를 넘기면
+    최신 달 값을 구해 놓고 "2025년 주민등록인구 기준"이라고 적게 된다"""
+    seen = []
+
+    def fake(q):
+        asked = q.get("asked") or {}
+        if asked.get("survey"):
+            return {"status": "ok", "value": 55.2, "unit": "세", "year": 2025, "notes": []}
+        seen.append((asked.get("latest"), q.get("year")))
+        return {"status": "ok", "value": 56.8, "unit": "세", "year": 2025}
+
+    monkeypatch.setattr(qa, "_compute", fake)
+    q = {"type": "value", "indicator": "중위연령"}
+    qa.compute({**q, "asked": {"survey": "인구총조사", "latest": True}})
+    assert seen == [(None, 2025)]
+
+
 def test_sum_indicators_refuses_mixed_periods_or_rates() -> None:
     one = {"status": "ok", "unit": "명", "kind": "count", "region": "춘천시", "value": 1}
     assert qa._sum_indicators([{**one, "year": 2025}, {**one, "year": 2024}], {}) is None

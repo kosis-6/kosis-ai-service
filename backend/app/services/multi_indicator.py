@@ -170,12 +170,10 @@ def common_year(question: str, parsed: dict, ok) -> int | None:
     rows = [_value(r) for _, r in ok]
     if len(rows) < 2 or not all(rows) or not all(r.get("year") for r in rows):
         return None
-    years = [r["year"] for r in rows]
-    monthly = any(r.get("as_of") for r in rows)
-    if len(set(years)) <= 1 and not monthly:
-        return None
-    year = min(years)
-    if monthly:
+    if len({(r["year"], r.get("as_of")) for r in rows}) <= 1:
+        return None  # 연도와 기준 달이 모두 같다 (둘 다 2026년 10월 말이면 그대로 둔다)
+    year = min(r["year"] for r in rows)
+    if any(r.get("as_of") for r in rows):
         year = min(year, indicators._data_years()[1])
     return year
 

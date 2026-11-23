@@ -241,6 +241,18 @@ def test_latest_month_value_is_aligned_to_the_last_annual_year(world, monkeypatc
     assert all(not p.get("as_of") for p in res["result"]["split"])
 
 
+def test_values_of_the_same_month_are_not_realigned(world) -> None:
+    # 둘 다 2026년 10월 말 값이면 같은 시점: 2025년으로 되돌리지 않는다
+    month = "2026년 10월 말"
+    world["values"] = {
+        "주민": _by_year("주민", {2026: 110, 2025: 100}, as_of=month),
+        "어르신": _by_year("어르신", {2026: 21, 2025: 20}, as_of=month),
+    }
+    res, trace = run("서울 주민과 어르신", _found([_target("주민"), _target("어르신")]), NO_YEAR)
+    assert [(p["year"], p["value"]) for p in res["result"]["split"]] == [(2026, 110), (2026, 21)]
+    assert "aligned" not in trace["multi"] and "맞췄습니다" not in res["answer"]
+
+
 def test_alignment_keeps_first_values_when_recompute_fails(world) -> None:
     # 한 지표가 맞춘 해에는 값이 없다: 처음 값 그대로 (답을 잃지 않는다)
     world["values"] = {

@@ -2080,7 +2080,9 @@ def _add_default_value(q, result):
     ("인구총조사 기준 영도구 중위연령 55.2세" + "주민등록인구 기준으로는 56.8세입니다")"""
     if result.get("status") != "ok" or result.get("value") is None or q.get("type") != "value":
         return
-    asked = {k: v for k, v in (q.get("asked") or {}).items() if k != "survey"}
+    # latest 도 뺀다: 켜져 있으면 주민등록인구 계산이 넘긴 연도 대신 최신 달 값을 써서
+    # 2026년 값에 "2025년 주민등록인구 기준"이라고 적게 된다
+    asked = {k: v for k, v in (q.get("asked") or {}).items() if k not in ("survey", "latest")}
     other = _compute({**q, "asked": asked, "year": result.get("year")})
     if other.get("status") != "ok" or other.get("value") is None:
         return
@@ -2152,8 +2154,11 @@ def _compute(q):
             ok = [p for p in parts if p.get("status") == "ok"]
             if not ok:
                 return parts[0]
-        if q.get("aggregate") == "sum" and kind == "value" and (total := _sum_indicators(ok, q)):
-            return total
+        # 합계는 물은 지표가 모두 계산됐을 때만: 하나라도 빠지면 남은 값만 '합계'로 나간다
+        whole = len(ok) == len(parts)
+        if q.get("aggregate") == "sum" and kind == "value" and whole:
+            if total := _sum_indicators(ok, q):
+                return total
         result = _combine(ok, by="indicator")
         if (q.get("asked") or {}).get("birth_pair"):
             ok[0].setdefault("notes", []).insert(0, BIRTH_PAIR_NOTE)
@@ -2704,9 +2709,12 @@ def _combine(parts, by=None):
 
 
 def _common_year(parts):
-    """지표마다 최신 시점이 다르면 모두 있는 해 (최신 달 값은 연간 마지막 해로 본다). 같으면 None"""
+    """지표마다 최신 시점이 다르면 모두 있는 해 (최신 달 값은 연간 마지막 해로 본다). 같으면 None.
+    연도와 기준 달이 모두 같으면 같은 시점이다 (둘 다 2026년 10월 말이면 그대로 둔다).
+    기준 달이 서로 다른 월별 값끼리도 연간 마지막 해로 간다: 둘 다 있는 가장 최근 달로 맞추려면
+    달을 지정해 받는 길이 필요하다 (지금 월별 자료는 주민등록인구뿐이라 달이 갈리지 않는다)"""
     leaves = [r for p in parts for r in _leaves(p)]
-    if len({r.get("year") for r in leaves}) <= 1 and not any(r.get("as_of") for r in leaves):
+    if len({(r.get("year"), r.get("as_of")) for r in leaves}) <= 1:
         return None
     years = [r["year"] for r in leaves if r.get("year")]
     if any(r.get("as_of") for r in leaves):
