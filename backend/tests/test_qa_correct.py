@@ -1108,7 +1108,31 @@ def test_sex_split_sentence_compares_sexes(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(qa, "summary", lambda p: "")
     part = {"status": "ok", "indicator": "총인구", "unit": "명", "kind": "count"}
     r = {"split": [{**part, "sex": "남", "value": 100}, {**part, "sex": "여", "value": 130}]}
-    assert qa._split_text(r).strip() == "여성이 30명 더 많습니다."
+    assert qa._split_text(r).strip() == "여성이 30명 더 많습니다 (1.3배)."
+
+
+def test_times_is_left_out_when_a_ratio_has_no_meaning() -> None:
+    assert qa._times(28.46, 20.43) == " (1.39배)"
+    assert qa._times(100, 0) == ""  # 0으로 나눌 수 없다
+    assert qa._times(50, -20) == ""  # 순이동처럼 음수가 되는 값
+    assert qa._times(None, 3) == ""
+
+
+def test_region_compare_lists_the_ratio_next_to_the_gap() -> None:
+    r = {
+        "status": "ok",
+        "indicator": "혼인 건수",
+        "unit": "건",
+        "kind": "count",
+        "year": 2024,
+        "sex": "계",
+        "values": [{"region": "가", "value": 300}, {"region": "나", "value": 200}],
+        "highest": "가",
+        "lowest": "나",
+        "gap": 100,
+        "gap_unit": "건",
+    }
+    assert "차이: 100건 (1.5배)" in qa.render(r)
 
 
 # ---- 상대 기간: 표현 · 종류 · N만 알아보고 연도는 규칙표(timeref.period)가 센다 ----

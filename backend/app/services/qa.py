@@ -3309,6 +3309,14 @@ def _region_trend_end(r):
     )
 
 
+def _times(high, low) -> str:
+    """두 값의 배수 문구 " (1.39배)". 큰 값 ÷ 작은 값, 둘째 자리까지.
+    작은 값이 0 이하이거나 값이 없으면 빈 문자열 (순이동처럼 음수가 되는 지표는 배수가 뜻이 없다)"""
+    if high is None or low is None or low <= 0 or high <= 0:
+        return ""
+    return f" ({round(high / low, 2):g}배)"
+
+
 def _split_text(r):
     """남녀·연령 구간·지역을 따로 계산한 결과의 문장. 값 조회 둘이면 어느 쪽이 높은지도"""
     parts = r["split"]
@@ -3331,7 +3339,8 @@ def _split_text(r):
             if same and {a.get("sex"), b.get("sex")} == {"남", "여"}:
                 # 같은 지표를 남녀로 나눈 경우 ("서울 남녀 인구 비교"): 성별로 견준다
                 who = {"남": "남성", "여": "여성"}[hi["sex"]]
-            text += f" {_josa(who, '이가')} {_val(gap, unit, full=True)} 더 {word}."
+            times = _times(*sorted(vals, reverse=True))
+            text += f" {_josa(who, '이가')} {_val(gap, unit, full=True)} 더 {word}{times}."
     return text
 
 
@@ -3430,9 +3439,11 @@ def _body(r):
         lines = [f"{_when(r)} {name} ({r['sex']}, 높은 순)"]
         lines += [f"- {v['region']}: {_num(v['value'], unit)}" for v in r["values"]]
         if r.get("gap") is not None:
+            found = [v["value"] for v in r["values"] if v.get("value") is not None]
+            times = _times(max(found), min(found)) if len(found) > 1 else ""
             lines.append(
                 f"- 가장 높은 {r['highest']}와 가장 낮은 {r['lowest']}의 차이: "
-                f"{_num(r['gap'], r['gap_unit'])}"
+                f"{_num(r['gap'], r['gap_unit'])}{times}"
             )
         return lines
     if "ranking" in r:  # 순위
