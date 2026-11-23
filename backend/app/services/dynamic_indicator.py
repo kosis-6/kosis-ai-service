@@ -93,6 +93,11 @@ MOVE_CONTEXT = re.compile(
 )
 TOTAL_SUFFIX = re.compile(r"(계|합계|소계|전체)$")  # 공백·기호를 뺀 이름 끝의 합계 표시
 PCT_ASK = re.compile(r"%|퍼센트|비율|비중|몇\s*프로")
+# 가구 수를 묻는 말 ("다문화가구 수는?", "몇 가구"). "다문화가구 자녀 수"는 사람을 묻는다
+HOUSEHOLD_ASK = re.compile(r"가구\s*(?:수|는|가|를|은|이|$|\?)|몇\s*가구")
+PERSON_ASK = re.compile(r"가구원|몇\s*명|사람|인구|평균|구성비|%|퍼센트|비율|비중")
+HOUSEHOLD_CELL = re.compile(r"가구(?!원|주)|세대(?!원|주)")
+PERSON_UNITS = {"명", "천명"}
 WITHIN = re.compile(r"\s+(?:중(?:에?서|에)?|가운데)\s+")
 NORM = re.compile(r"[\s·,.()\[\]{}<>\"'‘’“”_/-]")
 
@@ -327,7 +332,9 @@ def _word_hits(question: str, d: Dim) -> list[str]:
         w = _norm(JOSA_TAIL.sub("", token))
         if len(w) >= 2 and w not in GENERIC_WORDS and not w.isdigit():
             words.append(w)
-    whole = {d.total()} | {c for c, n in d.codes.items() if TOTAL_SUFFIX.search(_norm(n))}
+    whole = {d.total()} | {
+        c for c, n in d.codes.items() if is_subtotal(n) or _norm(n).endswith("전체")
+    }  # "중국계"(출신)는 합계가 아니라 고를 수 있는 칸이다
     cells = [(c, _norm(n)) for c, n in d.codes.items() if c not in whole]
     out: list[str] = []
     for w in words:
@@ -364,17 +371,42 @@ RANK_PARTS = re.compile(
     re.I,
 )
 REGION_RANK = re.compile(r"시도|시군구|지역|곳|어디|구별|도시|광역시")
-SUBTOTAL = re.compile(r"(계|합계|소계)$")
-# 칸 이름 끝의 합계 표시 ("통학-계", "이주배경인구_계", "아내의 연령별: 계")
-TOTAL_TAIL = re.compile(r"[\s\-·_:]*(계|합계|소계)$")
+# 칸 이름 끝의 합계 · 소계 표시. '계'는 구분자 뒤("통학-계", "이주배경인구_계", "연령별: 계")나
+# 소계 이름 꼴("아시아주계", "외국인계", "기타계") 뒤에서만 본다. "중국계", "일본계"(출신),
+# "승계"는 낱말의 일부다
+TOTAL_TAIL = re.compile(r"(?:[\s\-·_:]+계|(?<=[주인타])계|[\s\-·_:]*(?:합계|소계|총계))$")
+# 질문의 지표 표현 속 원자료 합계 표시 ("이주배경인구_계 수"의 "_계")
+TERM_TOTAL = re.compile(r"[_\-:]\s*(?:계|합계|소계)(?=\s|$)")
+
+
+def counts_households(plan: "Plan", dims: list["Dim"], region_dim: int | None) -> bool:
+    """고른 칸 이름에 가구 · 세대가 있는가 ("일반가구-계", "경력단절여성이 있는 가구").
+    KOSIS 단위가 '명'이어도 이런 칸은 가구를 센다. 칸이 하나뿐인 분류(표 전체 이름)는 보지 않는다"""
+    return any(
+        HOUSEHOLD_CELL.search(d.codes[plan.pick[d.no]])
+        for d in dims
+        if d.no in plan.pick and d.no != region_dim and len(d.codes) > 1
+    )
+
+
+def is_subtotal(label: str) -> bool:
+    """합계 · 소계 칸 이름인가 ("통학-계", "아시아주계"). "중국계"는 아니다"""
+    return bool(TOTAL_TAIL.search(label.strip()))
 
 
 def _label_name(label: str) -> str:
     """칸 이름을 지표 이름에 쓰는 모양으로: 끝의 합계 표시를 떼고 단계를 나눈 밑줄은 띄운다
     ("이주배경인구_계" → "이주배경인구", "다문화가구_가구원_계" → "다문화가구 가구원").
     전에는 '계'만 떼어 "이주배경인구_ 수"로 답했다"""
-    name = TOTAL_TAIL.sub("", label) or label
+    name = TOTAL_TAIL.sub("", label.strip()) or label
     return " ".join(name.replace("_", " ").split()) or label
+
+
+def _term_name(term: str) -> str:
+    """질문에서 읽은 지표 표현을 이름으로: 원자료의 합계 표시를 뗀다
+    ("이주배경인구_계 수" → "이주배경인구 수"). 조회에 쓰는 칸은 그대로다"""
+    name = TERM_TOTAL.sub("", term)
+    return " ".join(name.replace("_", " ").split()) or term
 
 
 def _multi_op(question: str) -> str | None:
@@ -386,8 +418,8 @@ def _multi_op(question: str) -> str | None:
 
 
 def _leaf_codes(d: Dim) -> list[str]:
-    """합계·소계("-계")를 뺀 세부 칸들"""
-    return [c for c, n in d.codes.items() if c != d.total() and not SUBTOTAL.search(_norm(n))]
+    """합계·소계("-계", "아시아주계")를 뺀 세부 칸들. "중국계"는 세부 칸이다"""
+    return [c for c, n in d.codes.items() if c != d.total() and not is_subtotal(n)]
 
 
 def _rank_dim(question: str, dims: list[Dim], region_dim: int | None, tbl_nm: str) -> Dim | None:
@@ -832,8 +864,10 @@ def _name(
             continue
         if indicators.find_regions(str(term)):  # "전국 평균 가구원 수"처럼 지역까지 담은 표현
             continue
-        if all(_norm(w) in _norm(term) for w in words):
-            return _without_age_words(str(term)) if strip_age else str(term)
+        # 질문의 표현도 원자료 합계 표시("이주배경인구_계 수")는 떼고 쓴다
+        named = _term_name(str(term))
+        if all(_norm(w) in _norm(named) for w in words):
+            return _without_age_words(named) if strip_age else named
     name = " ".join(words)
     return f"{name} 수" if counted and not name.endswith("수") else name
 
@@ -930,6 +964,11 @@ def build(
     unit, whole = _unit(tbl_id, plan.pick[0], _unit_cells(plan, dims, region_dim))
     unit = unit or ""
     counted = unit in COUNT_UNITS and whole
+    if counted and unit in PERSON_UNITS and not counts_households(plan, dims, region_dim):
+        if HOUSEHOLD_ASK.search(question) and not PERSON_ASK.search(question):
+            # 행안부 '다문화가구 현황'의 합계는 가구원(사람) 수다. 가구 수 질문에 "187,239명"으로
+            # 답했다 → 이 표는 건너뛰고 가구를 센 다른 표로 계산한다
+            return None, "가구 수를 물었는데 고른 칸은 사람 수(단위 명)를 센 칸"
     strip_age = bool(
         plan.age_dim
         and parsed.get("ages")

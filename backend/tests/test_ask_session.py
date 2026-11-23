@@ -1765,10 +1765,15 @@ def test_answer_to_region_only_question_keeps_the_region(talk: Talk, first, aske
     assert talk.asked[-1] != "부산 2021년 출생아 수는?"
 
 
-def test_answer_to_region_only_question_can_name_another_region(talk: Talk) -> None:
+@pytest.mark.parametrize(
+    "question",
+    ["2020년 서울 출생아 수는?", "2020년 전국 출생아 수는?", "우리나라 2020년 출생아 수는?"],
+)
+def test_answer_to_region_only_question_can_name_another_region(talk: Talk, question) -> None:
+    # 다른 지역이나 전국을 말하면 앞의 지역을 붙이지 않는다 ("부산 2020년 전국 …"이 되었다)
     talk.say("부산은?")
-    talk.say("2020년 서울 출생아 수는?")  # 다른 지역을 말하면 그 지역으로 묻는다
-    assert talk.asked == ["2020년 서울 출생아 수는?"]
+    talk.say(question)
+    assert talk.asked == [question]
 
 
 def test_region_only_question_keeps_waiting_after_small_talk(talk: Talk) -> None:

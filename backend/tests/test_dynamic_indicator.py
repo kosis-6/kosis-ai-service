@@ -1439,11 +1439,85 @@ def test_more_is_a_comparison() -> None:
         ("아내의 연령별: 계", "아내의 연령별"),
         ("통학-계", "통학"),
         ("주택이외의 거처_계", "주택이외의 거처"),
+        ("남자 계", "남자"),
+        ("아시아주계", "아시아주"),  # 소계 이름 꼴 (대륙 · 내외국인 · 기타)
+        ("외국인계", "외국인"),
+        ("기타계", "기타"),
+        ("중국계", "중국계"),  # 출신을 뜻하는 '계'는 낱말의 일부다 (전에는 "중국")
+        ("일본계", "일본계"),
+        ("중국_한국계", "중국 한국계"),
+        ("연금 지급·증액 및 1세대 연금 자녀 승계", "연금 지급·증액 및 1세대 연금 자녀 승계"),
         ("합계", "합계"),  # 합계 칸 자체는 그대로 (이름에서는 TOTAL_NAMES가 뺀다)
     ],
 )
 def test_label_name_drops_total_tail_and_underscores(label: str, name: str) -> None:
     assert d._label_name(label) == name
+
+
+def test_descent_cells_are_not_subtotals() -> None:
+    # 순위 · 합의 세부 칸에서 "중국계"를 소계로 빼지 않는다. 소계(아시아주계, -계)는 뺀다
+    codes = {"0": "계", "1": "아시아주계", "2": "중국", "3": "중국계", "4": "통학-계"}
+    nat = d.Dim(2, "국적별", codes)
+    assert d._leaf_codes(nat) == ["2", "3"]
+    assert d.is_subtotal("아시아주계") and d.is_subtotal("일반가구-계")
+    assert not d.is_subtotal("중국계") and not d.is_subtotal("자녀 승계")
+
+
+@pytest.mark.parametrize(
+    ("term", "name"),
+    [
+        ("이주배경인구_계 수", "이주배경인구 수"),
+        ("이주배경인구_계", "이주배경인구"),
+        ("다문화가구_가구원_계 수", "다문화가구 가구원 수"),
+        ("이주배경인구 수", "이주배경인구 수"),
+        ("중국_한국계 인구", "중국 한국계 인구"),  # 출신의 '계'는 그대로
+    ],
+)
+def test_question_term_drops_raw_total_marks(term: str, name: str) -> None:
+    # 질문에서 읽은 지표 표현을 이름으로 쓸 때도 원자료 합계 표시를 뗀다. 조회 칸은 그대로다
+    item = d.Dim(0, "항목", {"T10": "이주배경인구_계", "T20": "다문화가구_가구원_계"})
+    code = "T20" if "가구원" in term else "T10"
+    if "중국" in term:
+        item = d.Dim(0, "항목", {"T30": "중국_한국계", "T40": "일본계"})
+        code = "T30"
+    plan = d.Plan(pick={0: code}, matched={0: code})
+    assert d._name({"term": term}, [item], plan, True, unit="명") == name
+    assert plan.pick == {0: code}
+
+
+MEMBERS = [  # 행안부 '읍면동별 다문화가구 현황': 가구원(사람)을 센 표
+    d.Dim(0, "항목", {"T001": "다문화가구 현황"}),
+    d.Dim(1, "행정구역(읍면동)별", {"00": "전국", "11": "서울특별시"}),
+    d.Dim(2, "다문화가구별", {"A01": "합계", "A02": "한국인배우자", "A04": "자녀"}),
+]
+HOUSEHOLDS = [  # 통계청 '다문화가구 및 가구원': 가구를 센 칸
+    d.Dim(0, "항목", {"T1": "다문화가구_계", "T2": "다문화가구원_계"}),
+    d.Dim(1, "행정구역별(시군구)", {"00": "전국", "11": "서울특별시"}),
+]
+
+
+@pytest.mark.parametrize(
+    ("tbl_id", "unit", "question", "ok"),
+    [
+        ("MEMBERS", "명", "2020년 서울 다문화가구 수는?", False),  # 가구 수인데 사람 수
+        ("MEMBERS", "명", "2020년 서울 다문화가구 자녀 수는?", True),  # 사람을 묻는다
+        ("MEMBERS", "명", "2020년 서울 다문화가구는 몇 명이야?", True),
+        ("HOUSEHOLDS", "가구", "2020년 서울 다문화가구 수는?", True),
+        # KOSIS 단위가 '명'이어도 칸 이름이 가구면 가구를 센 칸이다 (DT_1PQ2012 등)
+        ("HOUSEHOLDS", "명", "2020년 서울 다문화가구 수는?", True),
+    ],
+)
+def test_household_question_skips_person_count_cells(
+    fake_table: dict, tbl_id: str, unit: str, question: str, ok: bool
+) -> None:
+    fake_table["tables"][tbl_id] = (MEMBERS if tbl_id == "MEMBERS" else HOUSEHOLDS, 1, "시도")
+    fake_table["units"][tbl_id] = (unit, True)
+    parsed = {**BASE, "indicator": "", "term": ""}
+    spec, why = d.build(tbl_id, question, parsed)
+    if ok:
+        assert spec is not None, why
+    else:
+        assert spec is None and "사람 수" in str(why)
 
 
 def test_name_from_underscored_total_cell() -> None:

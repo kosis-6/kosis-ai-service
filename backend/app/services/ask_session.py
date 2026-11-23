@@ -818,9 +818,9 @@ def _ask_indicator(regions: list[str], rest: str) -> dict:
 
 def with_asked_place(question: str, place: str) -> str | None:
     """지역을 말하고 볼 통계를 되물은 뒤의 말에 그 지역을 붙인다 ("2020년 출생아 수는?" →
-    "부산 2020년 출생아 수는?"). 말에 지역이 있으면 새 질문이라 None.
-    DB의 지역 이름을 읽으므로 스레드에서 부른다"""
-    if indicators.find_regions(question):
+    "부산 2020년 출생아 수는?"). 말에 지역이나 전국 범위("전국", "우리나라")가 있으면 새 질문이라
+    None. DB의 지역 이름을 읽으므로 스레드에서 부른다"""
+    if indicators.find_regions(question) or qa.NATIONWIDE.search(question):
         return None
     return f"{place} {question.strip()}"
 
