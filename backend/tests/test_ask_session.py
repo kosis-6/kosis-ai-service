@@ -1787,7 +1787,15 @@ def test_answer_to_region_only_question_can_name_another_region(talk: Talk, ques
 
 
 @pytest.mark.parametrize(
-    "metric", ["국내이동자 수", "국내 이동자 수", "국내 인구이동 수", "국내출생 다문화가구 자녀 수"]
+    "metric",
+    [
+        "국내이동자 수",
+        "국내 이동자 수",
+        "국내 인구이동 수",
+        "국내출생 다문화가구 자녀 수",
+        "다문화가구 자녀 중 국내에서 태어난 자녀 수",
+        "국내에서 태어난 다문화가구 자녀 수",
+    ],
 )
 def test_region_only_reply_keeps_place_when_domestic_is_part_of_metric(talk: Talk, metric) -> None:
     talk.say("부산은?")

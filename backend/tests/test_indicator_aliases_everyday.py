@@ -6,7 +6,7 @@ indicators.find_in_text 는 띄어쓰기를 뺀 문장에 별칭 글자가 들�
 
 import pytest
 
-from app.services import indicators
+from app.services import indicators, qa
 
 
 def names(question):
@@ -22,6 +22,14 @@ def names(question):
         ("작년 여자 한 명이 애 몇 명 낳았어", "합계출산율"),
         ("작년 서울에서 애 몇 명 낳았어?", "출생아 수"),
         ("작년에 서울에서 아기 몇 명 태어났어", "출생아 수"),
+        ("2024년 국내출생 다문화가구 자녀 수는?", "다문화가구 국내출생 자녀 수"),
+        ("부산 다문화가구 자녀 중 국내에서 태어난 자녀는 몇 명?", "다문화가구 국내출생 자녀 수"),
+        (
+            "2024년 부산 다문화가구 자녀 중 국내에서 태어난 자녀 비율은?",
+            "다문화가구 국내출생 자녀 비율",
+        ),
+        ("2024년 전국 다문화가구 국내출생 자녀는 몇 퍼센트야?", "다문화가구 국내출생 자녀 비율"),
+        ("2024년 부산 다문화 출생아 수는?", "다문화 출생아 수"),
         ("작년 서울 결혼 몇 건이야", "혼인 건수"),
         ("작년 서울 돌아가신 분 몇 명이야", "사망자 수"),
         ("서울 노인 대 아이 비율", "노령화지수"),
@@ -50,3 +58,47 @@ def test_alias_found(q, expected):
 )
 def test_alias_not_found(q, wrong):
     assert wrong not in names(q), (q, names(q))
+
+
+@pytest.mark.needs_data
+@pytest.mark.parametrize(
+    ("question", "indicator", "expected_table", "expected_value", "expected_unit"),
+    [
+        (
+            "부산 2024년 국내출생 다문화가구 자녀 수는?",
+            "다문화가구 국내출생 자녀 수",
+            "DT_110025_A045_A",
+            13084,
+            "명",
+        ),
+        (
+            "2024년 부산 다문화가구 자녀 중 국내에서 태어난 자녀 비율은?",
+            "다문화가구 국내출생 자녀 비율",
+            "DT_110025_A045_A",
+            96.26,
+            "%",
+        ),
+        ("2024년 부산 다문화 출생아 수는?", "다문화 출생아 수", "DT_1BB0006", 596, "명"),
+    ],
+)
+def test_domestic_born_children_and_births_use_different_tables(
+    question, indicator, expected_table, expected_value, expected_unit
+):
+    parsed = qa.correct(
+        question,
+        {
+            "type": "value",
+            "indicator": "다문화 출생아 수",
+            "regions": ["부산"],
+            "year": 2024,
+            "sex": "계",
+        },
+    )
+    assert parsed["indicator"] == indicator and parsed["grounded"]
+    result = qa.compute(parsed)
+    assert result["status"] == "ok"
+    assert (result["tbl_id"], result["value"], result["unit"]) == (
+        expected_table,
+        expected_value,
+        expected_unit,
+    )
