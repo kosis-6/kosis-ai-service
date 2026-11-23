@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     # 질문 이해 결과를 서버 메모리에 1시간 남겨, 글자까지 같은 질문이면 HCX를 다시 부르지 않는다
     # (app/services/qa.py UNDERSTAND_CACHE). 평가로 질문 이해 효과를 잴 때는 QUESTION_CACHE=false
     question_cache: bool = True
+    # 질문 이해(HCX) + 조건 추출(Gemma)을 Gemma 한 번으로
+    # (실험 2-A, app/services/understand_merged.py).
+    # off(기본): 지금 그대로. gemma: 합친 프롬프트로 Gemma 1회, 실패하면 지금 방식(HCX)으로 넘어간다
+    understand_merged: Literal["off", "gemma"] = "off"
 
     # 통계표 찾기(조건 추출·계획·최종 검토)에 쓰는 LLM (app/services/search_llm.py)
     # auto(기본): GEMMA_BASE_URL이 있으면 Gemma 4 31B, 없으면 HCX-007

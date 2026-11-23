@@ -25,7 +25,7 @@ from datetime import date
 from typing import Any
 
 from app.prompts.search import SLOT_SYSTEM, SLOT_SYSTEM_GEMMA
-from app.services import agegroup, llm_calls, search_llm, synonyms, timeref
+from app.services import agegroup, llm_calls, search_llm, synonyms, timeref, understand_merged
 from app.services.hcx_client import HcxError
 
 MODEL = "HCX-007"
@@ -68,11 +68,15 @@ SHORT_YEAR = re.compile(
 SHORT_YEAR_PIVOT = 50  # 50 미만은 20xx, 이상은 19xx ('45년' → 2045 추계, '95년' → 1995)
 PROJECTION = re.compile(r"앞으로|예측|전망|미래|추계|장래|될까|될지|예상")
 # '귀화한 사람 말고', '외국인 빼고', '서울 제외하고'
-NEGATION_WORDS = r"(?:말고|빼고|빼면|뺀|제외하고|제외한|제외하면|제외|제하고|아닌|아니고|아니라|이외의|이외에|외의)"
+NEGATION_WORDS = (
+    r"(?:말고|빼고|빼면|뺀|제외하고|제외한|제외하면|제외|제하고|아닌|아니고|아니라|"
+    r"이외의|이외에|외의)"
+)
 NEGATION = re.compile(
     r"([가-힣A-Za-z0-9]+(?:\s+[가-힣A-Za-z0-9]+)?)\s*(?:은|는|을|를|이|가)?\s*" + NEGATION_WORDS
 )
-# 나열한 것을 한꺼번에 빼는 말: '서울이랑 부산 말고', '서울, 부산, 대구 빼고', '귀화자나 결혼이민자 말고'
+# 나열한 것을 한꺼번에 빼는 말: '서울이랑 부산 말고', '서울, 부산, 대구 빼고',
+# '귀화자나 결혼이민자 말고'
 NEG_LINK = r"(?:이랑|랑|하고|과|와|이나|나|및|또는)"
 NEG_LINK_WORDS = {"및", "또는", "그리고", "혹은"}  # 띄어 쓰는 잇는 말
 NEG_CLAUSE_WORDS = {"단", "다만", "하지만", "그런데", "근데", "대신"}  # 앞 문장과 끊는 말
@@ -192,6 +196,11 @@ def _json_object(text: str) -> dict[str, Any] | None:
 
 async def extract(question: str, trace: dict[str, Any] | None = None) -> dict[str, Any]:
     """질문 → 슬롯. trace(dict)를 주면 HCX 원본 출력을 담는다 (요청 로그용)"""
+    if (kept := understand_merged.take(question)) is not None:
+        # UNDERSTAND_MERGED=gemma: 질문 이해가 같은 질문의 조건 추출까지 Gemma 한 번으로 해 두었다
+        if trace is not None:
+            trace["hcx_raw"] = ["(질문 이해에서 함께 뽑음)"]
+        return kept
     raws = []
     parsed = None
     try:
@@ -262,12 +271,22 @@ def correct(question: str, slots: dict[str, Any]) -> dict[str, Any]:
         fix("year_end", years[-1] if len(years) > 1 else None, "질문의 기간")
     # 장래 추계: 올해 이후 연도이거나 예측 표현
     slots["projection"] = bool(PROJECTION.search(question) or (years and years[-1] > today.year))
-    # 빼 달라는 대상: 규칙(negated_words) + HCX exclude 중 질문에 그 낱말이 있고 뒤에 빼는 말이 오는 것
+    # 빼 달라는 대상: 규칙(negated_words) + HCX exclude 중 질문에 그 낱말이 있고
+    # 뒤에 빼는 말이 오는 것
     rule_words = negated_words(question)
     llm_words = [w for w in slots.get("llm_exclude") or [] if llm_excluded_ok(question, w)]
-    slots["exclude"] = list(dict.fromkeys(rule_words + [w for w in llm_words if not _covered(w, rule_words)]))
+    slots["exclude"] = list(
+        dict.fromkeys(rule_words + [w for w in llm_words if not _covered(w, rule_words)])
+    )
     if dropped := [w for w in slots.get("llm_exclude") or [] if w not in llm_words]:
-        fixes.append({"key": "exclude", "from": dropped, "to": None, "reason": "질문에 없거나 빼는 말이 뒤따르지 않음"})
+        fixes.append(
+            {
+                "key": "exclude",
+                "from": dropped,
+                "to": None,
+                "reason": "질문에 없거나 빼는 말이 뒤따르지 않음",
+            }
+        )
     # 연령 집단 이름("노인", "청년")은 법령·통계 정의 사전으로 구간을 정한다. 숫자 구간이 있으면
     # 그쪽이 우선
     age = agegroup.resolve(question)
@@ -447,7 +466,8 @@ def negated_words(question: str) -> list[str]:
             if w not in NEGATION_SKIP and len(w) >= 2
             # 숫자는 빼는 대상이 아니다 ('65세 이상 말고'). 단 '1인가구'·'2인 가구'는 낱말이다
             and (not re.search(r"\d", w) or re.fullmatch(r"\d+인[가-힣]*", w))
-            # 빼는 말 뒤에 같은 낱말이 또 나오면 공통 수식어다 ('외국인 남편 말고 외국인 아내'의 '외국인')
+            # 빼는 말 뒤에 같은 낱말이 또 나오면 공통 수식어다
+            # ('외국인 남편 말고 외국인 아내'의 '외국인')
             and w.rstrip("은는을를이가") not in after
         ]  # fmt: skip
     return list(dict.fromkeys(words))

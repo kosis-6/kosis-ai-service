@@ -637,10 +637,18 @@ def uncovered(
     # 칸 고르기 LLM이 고른 칸의 말로 바꿔 읽은 질문 낱말
     # (예: 결혼 → 혼인). 칸 이름에 반영된 것으로 본다
     read = [_norm(a) for a, _ in slots.get("read_as") or [] if len(_norm(a)) >= 2]
+    # 표 이름 · 표의 대상 (넘기기 꾸러미로 계산할 때만 있다)
+    titles = [_norm(w) for w in slots.get("table_words") or [] if w]
     # 칸 고르기 LLM이 고른 칸으로 계산할 때는 조건 낱말 검사를 하지 않는다. LLM이
     # "질문과 뜻이 다르거나 더 넓은 칸으로 대신하지 않는다"는 지시로 조건까지 보고 칸을 골랐다
     # (11/18, 대상 검사와 같은 원칙)
     for item in [] if slots.get("cells_by_llm") else cond.get("items") or []:
+        # 표 자체가 그 조건으로 만든 표면(표 이름에 그 낱말이 있다) 표가 이미 반영했다.
+        # 예: '재혼' → 시도별 평균재혼연령 표는 재혼 칸 없이 아내 · 남편 칸으로 답한다.
+        # 통계표 찾기의 조건 확인(search.check: 칸 값이나 표 이름에 있으면 ✔)과 같은 기준.
+        # 표 이름에 없는 조건('미혼 1인 가구'의 미혼 → 1인가구 표)은 지금처럼 칸에서 찾는다
+        if len(word := _norm(item)) >= 2 and any(word in t for t in titles):
+            continue
         if not _item_left(item, names, read, plan, parsed):
             continue
         if miss := _band_miss([item], dims, region_dim):
