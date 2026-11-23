@@ -477,7 +477,8 @@ def _base(name, ind, status="ok", **extra):
 
 def _display(reg):
     """답·되묻기에 보이는 지역 이름: "경상남도 창원시", "경기도 부천시 원미구"
-    regions.path는 "경기도 > 원미구"처럼 시가 빠져 있어 쓰지 않는다 (path는 표 지역 잇기에 쓰이므로 그대로 둔다)"""
+    regions.path는 "경기도 > 원미구"처럼 시가 빠져 있어 쓰지 않는다
+    (path는 표 지역 잇기에 쓰이므로 그대로 둔다)"""
     name = _base_name(reg["region_name"])
     if reg["kind"] in ("전국", "시도") or not reg.get("sido_name"):
         return name
@@ -925,7 +926,8 @@ def find_regions(text):
 
 
 def _base_name(name):
-    """비교용 지역 이름: "창원시(통합)" → "창원시", "포항시(계)" → "포항시" (load_area.SUFFIX와 같은 꼬리)"""
+    """비교용 지역 이름: "창원시(통합)" → "창원시", "포항시(계)" → "포항시"
+    (load_area.SUFFIX와 같은 꼬리)"""
     return re.sub(r"\((?:계|통합)\)$", "", name or "")
 
 
@@ -982,7 +984,8 @@ def resolve_region(name, year=None, sigungu=False):
                     )
 
     # "부천 원미구", "수원시 영통구", "경기 부천 원미구": 앞말이 시면 그 시 안의 일반구에서 찾는다.
-    # 일반구 코드는 앞 4자리가 시 코드와 같다 (수원시 41110 → 영통구 41117, 부천시 41190 → 원미구 41192)
+    # 일반구 코드는 앞 4자리가 시 코드와 같다
+    # (수원시 41110 → 영통구 41117, 부천시 41190 → 원미구 41192)
     if not found and len(parts) >= 2:
         city = resolve_region(" ".join(parts[:-1]), year=year)
         if city["status"] == "ok" and city["kind"] == "시군구":
