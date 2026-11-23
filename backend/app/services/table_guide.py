@@ -197,6 +197,38 @@ def tables_answer(found: dict, refused: dict | None = None) -> dict:
     }
 
 
+# 범위 밖 말을 꾸민 인구 집단 → 대신 볼 수 있는 인구 통계 ("청년 실업률" → 청년 인구)
+GROUP_INSTEAD = {
+    "청년": "청년 인구",
+    "노인": "노인 인구",
+    "어르신": "노인 인구",
+    "고령": "고령인구 비율",
+    "외국인": "외국인 주민 수",
+    "여성": "여성 인구",
+    "남성": "남성 인구",
+}
+
+
+def out_of_scope_text(word: str, question: str) -> str:
+    """LLM 전에 거절할 때의 안내: 무엇이 범위 밖인지, 대신 볼 수 있는 인구 통계
+    (전에는 "질문에 맞는 통계표를 찾지 못했습니다. 다시 질문해 주세요"뿐이었다)"""
+    from app.services import indicators
+    from app.services.josa import josa
+
+    quoted = f"'{word}'"
+    text = f"{josa(quoted, '은는')} 제공 범위(KOSIS 인구 분야 통계)에 없는 통계라 답할 수 없습니다."
+    group = next((g for g in GROUP_INSTEAD if g in question), None)
+    if group is None:
+        return f"{text} 인구 · 가구 · 출생 · 사망 · 혼인 · 인구 이동 통계로 질문해 주세요."
+    try:
+        region = next(iter(indicators.find_regions(question)), "서울")
+    except Exception:  # noqa: BLE001 - 지역 목록을 못 읽어도 안내는 한다
+        region = "서울"
+    instead = GROUP_INSTEAD[group]
+    told = josa(f"'{instead}'", "은는")
+    return f"{text} 대신 {told} 볼 수 있습니다. 예) {region} {josa(instead, '은는')}?"
+
+
 async def off_domain_early(question: str) -> dict | None:
     """LLM 없이 거를 수 있는 범위 밖 질문이면 거절 응답 (tables_answer 모양). 아니면 None.
     질문 이해(HCX) 전에 부른다 (ask_session._new)"""
@@ -206,8 +238,13 @@ async def off_domain_early(question: str) -> dict | None:
     words = [m.group(0) for rx in (OFF_DOMAIN, OFF_DOMAIN_EARLY) for m in rx.finditer(question)]
     if not words:
         return None
-    if POPULATION_SIGNAL.search(question) or indicators.find_in_text(question):
-        return None  # 안전장치 2: 인구 통계를 묻는 질문일 수 있다
+    # 안전장치 2: 인구 통계를 묻는 질문일 수 있다. 범위 밖 말과 그 바로 앞 꾸밈말은 빼고 본다
+    # ("청년 실업률"의 청년은 실업률을 꾸밀 뿐이라, 지역을 되물은 뒤 표를 못 찾고 끝났다 11/23)
+    rest = question
+    for word in words:
+        rest = re.sub(rf"\S*\s*{re.escape(word)}", " ", rest)
+    if POPULATION_SIGNAL.search(rest) or indicators.find_in_text(question):
+        return None
     tables = await search.load_tables()
     catalog = [t["name_n"] + t["meta_n"] + t["path_n"] for t in tables]
     for word in words:
@@ -217,7 +254,7 @@ async def off_domain_early(question: str) -> dict | None:
         found = {
             "session_id": None,
             "status": "out_of_scope",
-            "answer": search_answer.STATUS_MESSAGES["out_of_scope"],
+            "answer": out_of_scope_text(word, question),
             "parsed": {},
             "clarify": None,
             "recommendations": [],

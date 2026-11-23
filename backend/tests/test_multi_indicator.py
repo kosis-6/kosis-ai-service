@@ -425,3 +425,17 @@ def test_ratio_of_different_surveys_still_divides(world, surveys) -> None:
     found = _found([_target("인구"), _target("외국인")], "ratio")
     res, _ = run("2020년 서울 인구 중 외국인 비율", found)
     assert res["result"]["value"] == 5.0
+
+
+def test_ratio_whole_side_does_not_take_question_age() -> None:
+    # "1인 가구 중 70세 이상 비율": 분모 "전체 1인 가구"에도 70세 이상을 붙여 100%가 됐다 (11/23)
+    parsed = {"indicator": "1인 가구 중 70세 이상 비율", "type": "value", "ages": [[70, None]]}
+    whole = {"span": "전체 1인 가구", "unsaid_age": True}
+    part = {"span": "70세 이상 1인 가구", "unsaid_age": False}
+    assert multi_indicator.target_parsed(parsed, whole)["ages"] is None
+    assert multi_indicator.target_parsed(parsed, part)["ages"] == [[70, None]]
+    assert multi_indicator.says_age("70세 이상 1인 가구")
+    assert multi_indicator.says_age("노인 1인 가구")
+    assert not multi_indicator.says_age("전체 1인 가구")
+    assert multi_indicator.without_unsaid_age(parsed, "전체 1인 가구")["ages"] is None
+    assert multi_indicator.without_unsaid_age(parsed, "70세 이상 1인 가구") is parsed

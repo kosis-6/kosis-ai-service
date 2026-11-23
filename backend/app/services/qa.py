@@ -2614,18 +2614,7 @@ def _lookup_trend(q, sp, region, year, sex, ages):
     "몇 년 연속"처럼 기간이 없으면 수록 기간 전체"""
     asked = q.get("asked") or {}
     lo, hi = _lookup_span(sp, region, sex)
-    end = min(q.get("end_year") or year or hi, hi)
-    if asked.get("since"):
-        end = hi
-    if asked.get("recent"):  # HCX가 준 기간 대신 자료 마지막 연도 기준 N개년
-        end = hi
-        start = end - asked["recent"] + 1
-    elif (asked.get("streak") or asked.get("from_start")) and not q.get("start_year"):
-        start = lo
-    elif asked.get("these_days") and not q.get("start_year"):
-        start = end - 4  # "요즘" → 최근 5개 해
-    else:
-        start = q.get("start_year") or end - 5
+    start, end = timeref.lookup_trend_years(q, lo, hi, year or hi)
     notes = []
     if end < lo:  # 물은 기간 전체가 수록 기간보다 앞 (예: 1970~1980년, 자료는 1990년부터)
         return {
