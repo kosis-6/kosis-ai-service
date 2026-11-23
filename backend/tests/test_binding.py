@@ -298,3 +298,15 @@ def test_age_condition_missed_by_understanding_shows_as_differ(monkeypatch) -> N
     assert got["diff"] == [
         {"dim": "연령별", "current": ["연령 조건 없음"], "binding": ["85세 이상"]}
     ]
+
+
+def test_item_already_in_forced_cell_and_age_endpoints(monkeypatch) -> None:
+    items = Dim(0, "항목", {"T10": "내국인(15세이상)-계", "T14": "내국인-이혼", "T24": "남자-이혼"})
+    age = Dim(2, "연령별", {"000": "합계", "1": "60~64세", "2": "65~69세", "3": "70~74세"})
+    _table(monkeypatch, [items, age])
+    # 칸 고르기 LLM이 고른 '내국인-이혼'이 '이혼' 조건을 담는다 (V2-016)
+    b = binding.bind("T", "이혼한 상태인 사람", {}, _slots(items=["이혼"]), forced={0: "T14"})
+    assert b.status == binding.BOUND and _by(b, "item").by == "forced"
+    # '65살부터 72살까지'의 양 끝을 따로 뽑은 조건은 연령에서 이미 봤다 (V2-137)
+    b = binding.bind("T", "65살부터 72살까지", {"ages": [[65, 72]]}, _slots(items=["65세", "72세"]))
+    assert not any(u.cond == "item" for u in b.unbound)

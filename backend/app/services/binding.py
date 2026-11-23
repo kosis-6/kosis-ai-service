@@ -107,8 +107,14 @@ def _age_text(text: str) -> str:
 
 
 def _age_span(text: str) -> tuple[int, int | None] | None:
-    a = agegroup.span(_age_text(text))
-    return (a.lo, a.hi) if a else None
+    """연령 표현 → (시작, 끝). 끝이 None이면 이상. 나이 하나('65세')는 (65, 65)"""
+    t = _age_text(text)
+    if a := agegroup.span(t):
+        return a.lo, a.hi
+    if one := agegroup.single_age(t):
+        n = int(one.removesuffix("세"))
+        return n, n
+    return None
 
 
 def _count_ask(text: str) -> tuple[int, str] | None:
@@ -309,6 +315,13 @@ def _age_cells(age: tuple, dims: list, region_dim: int | None) -> tuple[int, lis
     return None
 
 
+def _within(span: tuple, age: tuple) -> bool:
+    """연령 구간 span이 age 안에 드나 (끝이 None이면 이상)"""
+    lo, hi = age
+    s_lo, s_hi = span
+    return lo <= s_lo and (hi is None or (s_hi is not None and s_hi <= hi))
+
+
 def _age_label(age: tuple) -> str:
     lo, hi = age
     return f"{lo}세 이상" if hi is None else f"{lo}~{hi}세"
@@ -317,6 +330,12 @@ def _age_label(age: tuple) -> str:
 def _bind_item(item, dims, skip, hits, titles, age, age_dim, out) -> "Bound | None | bool":
     """찾는 값 하나 → Bound. 연령 조건과 같은 말이면 False (연령에서 이미 봄). 못 이으면 None"""
     key = search.norm(item)
+    # 0. 되묻기 · 칸 고르기 LLM이 고른 칸이 이미 이 조건을 담음 ('이혼' → 내국인-이혼, V2-016).
+    # 지금 계산의 조건 반영 검사(_item_left: 고른 칸 이름에 낱말이 있으면 반영)와 같다
+    words = _words(item) or ([key] if len(key) >= 2 else [])
+    for b in out.bound:
+        if b.by == "forced" and words and all(w in search.norm(b.names[0]) for w in words):
+            return Bound("item", item, "forced", b.dim, list(b.codes), list(b.names))
     # 1. 질문에 이름이 나온 칸 중 이 낱말을 가리키는 칸
     for no, codes in hits.items():
         d = next(x for x in dims if x.no == no)
@@ -355,8 +374,10 @@ def _bind_item(item, dims, skip, hits, titles, age, age_dim, out) -> "Bound | No
             return Bound("item", item, "value", d.no, same, [d.codes[same[0]]], note="낱말 줄기")
     # 4. 연령 표현 ('65살 이상'): 연령 조건으로 본다
     if (span := _age_span(item)) is not None:
-        if age == span:
-            return False  # 질문 이해가 같은 연령을 이미 넘겼다 (연령에서 봄)
+        if age is not None and _within(span, age):
+            # 질문 이해가 넘긴 연령에 들어 있다 (연령에서 봄). 통계표 찾기는 '65살부터 72살까지'의
+            # 양 끝을 '65세' · '72세' 조건으로 따로 뽑기도 한다 (V2-137)
+            return False
         if age is None and age_dim is not None:
             # 질문 이해가 놓친 연령을 통계표 찾기가 조건으로 뽑았다 ('85세 넘은 분', D-144).
             # 지금 계산은 이 연령 없이 전체 연령으로 답했다 → compare가 '다름'으로 드러낸다
