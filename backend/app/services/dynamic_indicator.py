@@ -149,6 +149,9 @@ class Plan:
     multi: tuple[int, list[str], str] | None = None
     multi_dim: Dim | None = None  # 순위의 분류 (항목 안의 분류면 표 이름의 말로 부른다)
     couple: bool = False  # 부부를 한 쪽씩 센 표의 성별 칸으로 답함 (남녀를 더하면 두 번 센다)
+    # 성별 합계 칸이 없고 한 칸으로 답할 수 없어 남 · 여를 따로 보여 준다 {"남": 이름표, "여": 이름표}.
+    # 이때 pick의 성별 칸은 자리만 채운 남자 칸이다 (_build가 '계' 없는 by_sex를 만든다)
+    split_sex: dict[str, str] | None = None
 
 
 # ---- 표의 칸 목록 ----------------------------------------------------------------
@@ -458,7 +461,16 @@ def choose(
                 and (husband := _couple_code(d) or (d.sex_codes()["남"] if couple else None))
             ):
                 if parsed.get("ages"):
-                    return None, f"{d.name}에서 칸을 고르지 못함"  # 연령별이면 남편 · 아내가 다르다
+                    # 연령별이면 남편 · 아내 나이가 달라 한 쪽 칸으로 답할 수 없고, 더하면 같은
+                    # 부부를 두 번 센다 ("1975년 서울 30대 혼인": 남편 13,257 · 아내 3,367)
+                    # → 남편 쪽 · 아내 쪽을 따로 보여 준다
+                    plan.pick[d.no] = husband
+                    plan.split_sex = {"남": "남편", "여": "아내"}
+                    plan.defaults.append(
+                        f"{d.name}: 남편 · 아내 따로 (부부 단위 건수라 연령은 남편 · 아내 나이가 다름)"
+                    )
+                    plan.couple = True
+                    continue
                 # 남편 · 아내만 있는 분류, 또는 남자 · 여자로 부부를 한 쪽씩 센 표 (couple_counted):
                 # 부부 단위 건수라 연령을 나누지 않으면 남편 쪽 칸이 전체 건수다
                 plan.pick[d.no] = husband
@@ -468,7 +480,12 @@ def choose(
             if len(others) > 1:
                 asks.append(Ask(d.no, d.name, [(c, d.codes[c]) for c in others]))
             elif base is None:
-                return None, f"{d.name}에서 칸을 고르지 못함"
+                # 성별 합계 칸이 없는 사람 수 표 ("서울 기혼자 수", 항목이 남자 · 여자뿐):
+                # 남 · 여를 따로 보여 준다 (지표 사전의 needs_split과 같다)
+                male, female = d.sex_codes()["남"], d.sex_codes()["여"]
+                plan.pick[d.no] = male
+                plan.split_sex = {"남": d.codes[male], "여": d.codes[female]}
+                plan.defaults.append(f"{d.name}: {d.codes[male]} · {d.codes[female]} 따로")
             else:
                 plan.pick[d.no] = base
                 if others:
@@ -894,6 +911,10 @@ def build(
         **({"couple": True} if plan.couple else {}),
     }
     kind = parsed.get("type")
+    if plan.split_sex and (plan.multi or kind == "composition" or PCT_ASK.search(question)):
+        # 한 분류 안의 연산 · 구성비 · 비율은 남녀를 나눠 계산하지 않는다: 자리만 채운 남자 칸
+        # 값이 답이 되지 않게 지금처럼 고르지 못한 것으로 둔다
+        return None, f"{plan.sex_dim.name}에서 칸을 고르지 못함"
     if plan.multi:
         return _parts_spec(spec, src, plan, dims, tbl_nm)
     if kind == "composition" or PCT_ASK.search(question):
@@ -904,7 +925,13 @@ def build(
                 return None, why
         spec = made
     else:
-        if plan.sex_dim is not None:
+        if plan.split_sex:
+            # '계' 없이 남 · 여만 둔다 → qa.compute가 lookup.needs_split으로 둘 다 계산한다
+            src["by_sex"] = {
+                s: {**_sex_override(plan, s), "label": label}
+                for s, label in plan.split_sex.items()
+            }
+        elif plan.sex_dim is not None:
             src["by_sex"] = {s: _sex_override(plan, s) for s in ("계", "남", "여")}
         if plan.age_dim is not None and parsed.get("ages") and not ignore_ages:
             # 연령 구간을 더해 답한다: 더한 값이 연령 합계를 넘지 않는지 (겹치는 묶음 칸)
