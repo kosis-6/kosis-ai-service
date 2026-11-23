@@ -78,12 +78,28 @@ def test_user_text_has_today_question_and_summary() -> None:
     result = {"status": "ok", "indicator": "출생아 수", "year": 2025}
     text = answer_judge.user_text("작년 출생아 수", parsed, result, date(2026, 3, 2))
     lines = text.split("\n")
-    assert lines[0].startswith("오늘: 2026-03-02 (올해 2026년.")
+    assert lines[0] == "오늘: 2026-03-02 (올해 2026년)"
     assert lines[1:4] == [
         "질문: 작년 출생아 수",
         "질문에서 읽은 시점: '작년' → 2025년",
         "결과: 답함",
     ]
+
+
+def test_user_text_tells_the_data_time_the_answer_used() -> None:
+    """연도를 말하지 않아 올해 월별 값으로 답한 경우: 답의 안내 문장을 그대로 넘겨
+    판정이 '2025년까지인데 2026년을 썼다'고 막지 않게 한다"""
+    result = {
+        "status": "ok",
+        "indicator": "총인구",
+        "year": 2026,
+        "as_of": "2026년 10월",
+        "notes": ["가장 최근 자료인 2026년 10월 기준으로 답했습니다", "주민등록인구 기준"],
+    }
+    text = answer_judge.user_text("서울 인구", {}, result, date(2026, 11, 23))
+    assert "실제로 쓴 자료 시점: 가장 최근 자료인 2026년 10월 기준으로 답했습니다" in text
+    assert "주민등록인구 기준" not in text.split("결과: 답함")[0]  # 시점이 아닌 안내는 넣지 않는다
+    assert answer_judge.data_used({"status": "ok", "notes": []}) == ""
 
 
 def test_verdict_is_none_when_the_llm_fails(monkeypatch: pytest.MonkeyPatch) -> None:

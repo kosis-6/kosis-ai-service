@@ -20,7 +20,7 @@ from typing import Any
 
 from app.core.config import get_settings
 from app.prompts.answer_judge import REASONS, SYSTEM
-from app.services import llm_calls, llm_json, search_llm, timeref
+from app.services import llm_calls, llm_json, search_llm
 
 logger = logging.getLogger(__name__)
 
@@ -160,15 +160,36 @@ def user_text(
     if not summary:
         return None
     today = today or date.today()
+    # '오늘' 줄에 자료가 어디까지 있는지를 고정 문구로 적지 않는다. 연도를 말하지 않은 질문은
+    # 가장 최근 자료(주민등록인구는 올해 월별 값)로 답하므로(11/23 최신 자료 규칙), "연간 통계는
+    # 2025년까지"라고 적으면 올해 월별 값으로 맞게 답한 것을 "기간이 다름"으로 막았다. 대신 답이
+    # 실제로 쓴 자료 시점을 답의 안내 문장(notes)에서 그대로 옮긴다
     lines = [
-        f"오늘: {today.isoformat()} (올해 {today.year}년. 연간 통계는 대개 "
-        f"{timeref.data_end(today)}년까지 있고, 주민등록인구는 올해 월별 값도 있음)",
+        f"오늘: {today.isoformat()} (올해 {today.year}년)",
         f"질문: {question}",
     ]
     if read := time_read(parsed, result):
         lines.append(f"질문에서 읽은 시점: {read}")
+    if used := data_used(result):
+        lines.append(f"실제로 쓴 자료 시점: {used}")
     lines += ["결과: 답함", summary]
     return "\n".join(lines)
+
+
+# 답의 안내 문장 중 자료 시점을 밝히는 것 (qa._add_latest_note · _add_data_end_note 가 붙인다)
+DATA_TIME_NOTE = ("가장 최근", "자료가 ", "최신 달", "연간 자료")
+
+
+def data_used(result: dict[str, Any] | None) -> str:
+    """답이 실제로 쓴 자료 시점 한 줄 ("가장 최근 자료인 2026년 10월 기준으로 답했습니다").
+    판정은 자료가 어디까지 있는지 모르므로 이 줄을 그대로 믿는다. 없으면 빈 문자열"""
+    seen: list[str] = []
+    for p in leaves(result or {}):
+        for n in p.get("notes") or []:
+            n = str(n)
+            if any(k in n for k in DATA_TIME_NOTE) and n not in seen:
+                seen.append(n)
+    return " / ".join(seen)
 
 
 @llm_calls.staged("answer_judge")
