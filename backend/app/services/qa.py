@@ -248,7 +248,6 @@ NO_REGION_TYPES = {"rank", "other", "parse_error"}
 # 연령 구간: "20대", "6~11세", "65세 이상", "15세 미만" (뒤에 '광역시'가 오는 "5대 광역시"는 제외)
 # "세" 대신 "살"도 쓴다 ("19~34살", "100살 이상", "15살 안 된")
 AGE_RANGE = re.compile(r"(?:만\s*)?(\d+)\s*(?:세|살)?\s*[~\-]\s*(\d+)\s*(?:세|살)")
-AGE_OVER = re.compile(r"(?:만\s*)?(\d+)\s*(?:세|살)\s*이상")
 AGE_UNDER = re.compile(r"(?:만\s*)?(\d+)\s*(?:세|살)\s*(?:미만|도?\s*안\s*(?:된|되는))")
 AGE_UNDER_EQ = re.compile(r"(?:만\s*)?(\d+)\s*(?:세|살)\s*이하")
 # 말로 이은 구간: "62살에서 67살 사이", "33세부터 38세까지", "62세와 67세 사이"
@@ -256,10 +255,6 @@ AGE_UNDER_EQ = re.compile(r"(?:만\s*)?(\d+)\s*(?:세|살)\s*이하")
 AGE_SPAN = re.compile(
     r"(?:만\s*)?(\d{1,3})\s*(?:세|살)?\s*"
     r"(?:(?:에서|부터)\s*(?:만\s*)?(\d{1,3})\s*(?:세|살)|(?:와|과|하고)\s*(?:만\s*)?(\d{1,3})\s*(?:세|살)\s*사이)"
-)
-# "65세 이상 70세 미만", "65살 이상 69살 이하"
-AGE_OVER_UNDER = re.compile(
-    r"(?:만\s*)?(\d{1,3})\s*(?:세|살)\s*이상\s*(?:만\s*)?(\d{1,3})\s*(?:세|살)\s*(미만|이하)"
 )
 # "60대 이상", "20~30대", "20대 후반", "20대부터 30대까지"
 AGE_DECADE_SPAN = re.compile(r"(\d+)\s*대\s*(?:에서|부터)\s*(\d+)\s*대(?!\s*(광역시|도시))")
@@ -670,6 +665,28 @@ def extract_ages(question):
     return bands
 
 
+AGE_LIST_JOIN = re.compile(r"(?:[·,]|이랑|하고|또는|및|랑|[과와])\s*$")
+
+
+def resolved_ages(question: str) -> list[list[int | None]]:
+    """나열한 연령 집단을 모두 읽고, 같은 집단 안에서는 숫자 범위를 우선한다."""
+    text = agegroup.native_to_digits(question)
+    spans = [(a, b, tuple(band), True) for a, b, band in age_spans(text)]
+    spans += [(a, b, (ref.lo, ref.hi), False) for a, b, ref in agegroup.spans(text)]
+    groups = [[]]
+    end = 0
+    for start, stop, band, numeric in sorted(spans, key=lambda span: span[0]):
+        if groups[-1] and AGE_LIST_JOIN.search(text[end:start]):
+            groups.append([])
+        groups[-1].append((band, numeric))
+        end = max(end, stop)
+    bands = {}
+    for group in groups:
+        use_numeric = any(numeric for _, numeric in group)
+        bands.update(dict.fromkeys(band for band, numeric in group if numeric == use_numeric))
+    return [list(band) for band in bands]
+
+
 def age_spans(question):
     """질문 속 숫자 연령 구간 → [(시작 위치, 끝 위치, [시작, 끝 또는 None]), ...] (나온 순서)"""
     found, covered = [], []
@@ -680,8 +697,8 @@ def age_spans(question):
             covered.append(m.span())
             found.append((m.start(), m.end(), band))
 
-    for m in AGE_OVER_UNDER.finditer(question):
-        add(m, [int(m[1]), int(m[2]) - (m[3] == "미만")])
+    for m in agegroup.AGE_OVER_UNDER.finditer(question):
+        add(m, [agegroup.lower_age(m[1], m[2]), int(m[3]) - (m[4] == "미만")])
     for m in AGE_RANGE.finditer(question):
         add(m, [int(m[1]), int(m[2])])
     for m in AGE_SPAN.finditer(question):
@@ -691,8 +708,8 @@ def age_spans(question):
     for m in AGE_DECADE_SPAN.finditer(question):
         if int(m[1]) % 10 == 0 and int(m[2]) % 10 == 0 and int(m[1]) < int(m[2]):
             add(m, [int(m[1]), int(m[2]) + 9])
-    for m in AGE_OVER.finditer(question):
-        add(m, [int(m[1]), None])
+    for m in agegroup.AGE_OVER.finditer(question):
+        add(m, [agegroup.lower_age(m[1], m[2]), None])
     for m in AGE_UNDER.finditer(question):
         add(m, [0, int(m[1]) - 1])
     for m in AGE_UNDER_EQ.finditer(question):
@@ -966,7 +983,7 @@ def correct(question, parsed, today=None):
         fix("level", "시군구", "지역 수준 정리")
     if sub := find_sub_area(question):
         parsed["sub_area"] = list(sub)
-    merged = _merge_regions(parsed.get("regions") or [])
+    merged = _merge_regions(parsed.get("regions") or [], question)
     if merged != (parsed.get("regions") or []):
         fix("regions", merged, "시도와 시군구를 한 지역으로")
     regions = [r for r in parsed.get("regions") or [] if r not in NATIONAL_NAMES]
@@ -1473,17 +1490,33 @@ def _full_region_names(question, parsed, fix):
         fix("regions", out, "질문의 정식 지역 이름")
 
 
-def _merge_regions(regions):
-    """["서울", "중구"] → ["서울 중구"]: 시도 바로 뒤에 그 시도 안의 시군구가 오면 한 지역"""
+def _merge_regions(regions, question=None):
+    """["서울", "중구"] → ["서울 중구"]: 시도 바로 뒤에 그 시도 안의 시군구가 오면 한 지역
+    ["부천", "원미구"] → ["부천 원미구"]: 시 바로 뒤에 그 시의 일반구가 질문에 붙어 나오면 한 지역
+    ("부천과 원미구 비교"처럼 떨어져 있으면 두 지역)"""
     out = []
     for name in regions:
-        if out and indicators.resolve_region(out[-1]).get("kind") == "시도":
-            both = indicators.resolve_region(f"{out[-1]} {name}")
-            if both["status"] == "ok" and both["kind"] != "시도":
-                out[-1] = f"{out[-1]} {name}"
-                continue
+        if out:
+            kind = indicators.resolve_region(out[-1]).get("kind")
+            if kind in ("시도", "시군구"):
+                both = indicators.resolve_region(f"{out[-1]} {name}")
+                ok = both["status"] == "ok" and both["kind"] != "시도"
+                if kind == "시군구":
+                    ok = ok and both["kind"] == "일반구" and _next_to(question, out[-1], name)
+                if ok:
+                    out[-1] = f"{out[-1]} {name}"
+                    continue
         out.append(name)
     return out
+
+
+def _next_to(question, city, gu):
+    """질문에서 시 이름 바로 뒤에 구 이름이 오는가 ("부천 원미구", "부천시 원미구")"""
+    if question is None:
+        return True
+    stem = re.sub(r"시$", "", indicators._norm(city.split()[-1]))
+    pattern = re.escape(stem) + "시?" + re.escape(indicators._norm(gu))
+    return re.search(pattern, indicators._norm(question)) is not None
 
 
 # 연령 집단으로 정의한 계산 지표 → (필요한 연령 구간들, 묻는 말). 질문에 그 집단(이름·숫자 구간)과
@@ -1502,7 +1535,7 @@ OTHER_UNITS = re.compile(r"가구|세대|몇\s*(곳|개|건|집)")
 # HCX가 지표 칸에 적은 말에서 지우면 "연령 구간 인구"만 남는지 볼 때 지우는 말
 POPULATION_WORDS = re.compile(r"인구|인원|사람|수|명|분|몇|들|[\s()·,~\-]")
 AGE_PATTERNS = (
-    AGE_OVER_UNDER, AGE_RANGE, AGE_SPAN, AGE_OVER, AGE_UNDER, AGE_UNDER_EQ,
+    agegroup.AGE_OVER_UNDER, AGE_RANGE, AGE_SPAN, agegroup.AGE_OVER, AGE_UNDER, AGE_UNDER_EQ,
     AGE_DECADE_SPAN, AGE_DECADE_RANGE, AGE_DECADE_OVER, AGE_DECADE_PART, AGE_DECADE,
 )  # fmt: skip
 

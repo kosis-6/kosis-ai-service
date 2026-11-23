@@ -1621,13 +1621,24 @@ ONE_PERSON = {**BASE, "type": "value", "indicator": "1인 가구", "term": "1인
 RATIO_SPEC = {"name": "1인 가구 중 70세 이상 비율", "unit": "%", "kind": "ratio", "dynamic": True}
 
 
-def test_ratio_follow_up_is_asked_with_last_conditions(talk: Talk) -> None:
+@pytest.mark.parametrize(
+    ("question", "part"),
+    [
+        ("그중 여성 비율은?", "여성 비율은?"),
+        ("그중 여성 인구 비율은?", "여성 비율은?"),
+        ("그중 여성 인구는 몇 퍼센트야?", "여성 몇 퍼센트야?"),
+        ("그중 일흔 살 이상 여성 인구 비율은?", "70세 이상 여성 비율은?"),
+    ],
+)
+def test_ratio_follow_up_is_asked_with_last_conditions(
+    talk: Talk, question: str, part: str
+) -> None:
     # "그중 여성 비율은?": 성별 변경으로만 읽어 여성 1인 가구 수로 답했다
     talk.parsed = dict(ONE_PERSON)
     talk.say("2020년 서울 1인 가구 수는?")
-    res = talk.say("그중 여성 비율은?", request_type="change", changes={"sex": "여"})
+    res = talk.say(question, request_type="change", changes={"sex": "여"})
     assert talk.extracted == []  # 변경 추출을 부르지 않는다
-    assert talk.asked[-1] == "2020년 서울 1인 가구 중 여성 비율은?"
+    assert talk.asked[-1] == f"2020년 서울 1인 가구 중 {part}"
     assert res["request_type"] == "change" and res["question"] == talk.asked[-1]
 
 
@@ -1651,7 +1662,15 @@ def test_ratio_follow_up_keeps_the_previous_age_population(talk: Talk, age: int)
     assert result["parsed"]["unsupported"]
 
 
-@pytest.mark.parametrize("question", ["65세 이상 비율은?", "그중 고령인구 비율은?"])
+@pytest.mark.parametrize(
+    "question",
+    [
+        "65세 이상 비율은?",
+        "그중 고령인구 비율은?",
+        "그중 여성 취업 인구 비율은?",
+        "여성 인구 비율은?",
+    ],
+)
 def test_ratio_follow_up_respects_a_named_indicator(question: str) -> None:
     state = {"conditions": {**ONE_PERSON, "ages": [[70, None]]}}
     assert s.ratio_followup(question, state) is None
@@ -1753,3 +1772,67 @@ def test_changed_conditions_search_with_rebuilt_question(talk: Talk) -> None:
     talk.say("부산은?")
     assert talk.answered[-1]["regions"] == ["부산"]
     assert talk.searched[0][0] == "2020년 부산 1인 가구 중 70세 이상 비율"
+
+
+def test_follow_up_retries_search_when_saved_definition_cannot_read_region(talk, monkeypatch):
+    stale = {"name": "1인 가구", "sources": [{"table": "T", "national_only": True}]}
+    talk.parsed = {**ONE_PERSON, "regions": ["전국"], "dynamic_spec": stale}
+    talk.say("2020년 전국 1인 가구 수는?")
+
+    async def missing_data(parsed, trace=None):
+        return {**await talk._answer(parsed, trace), "status": "missing_data"}
+
+    async def compute(question, parsed, found, trace):
+        fresh = {**stale, "sources": [{"table": "T", "level": "시도"}]}
+        return talk._result({**parsed, "dynamic_spec": fresh})
+
+    monkeypatch.setattr(qa, "answer", missing_data)
+    monkeypatch.setattr(dynamic_indicator, "compute_from_handoff", compute)
+    talk.searched.clear()
+    res = talk.say("부산은?")
+    assert talk.searched[0][0] == "2020년 부산 1인 가구"
+    assert res["status"] == "ok" and res["request_type"] == s.CHANGE
+    assert res["parsed"]["dynamic_spec"]["sources"][0]["level"] == "시도"
+
+
+@pytest.mark.parametrize("term", ["1인 가구", "남성 노인 1인 가구"])
+def test_changed_sex_search_keeps_age_and_uses_new_sex(talk: Talk, term: str) -> None:
+    talk.parsed = {
+        **ONE_PERSON,
+        "regions": ["부산"],
+        "term": term,
+        "ages": [[65, None]],
+        "sex": "남",
+    }
+    talk.say("2020년 부산 남성 노인 1인 가구 수는?")
+    talk.store[talk.sid][0]["conditions"]["indicator"] = "반려동물 수"
+    talk.searched.clear()
+    talk.say("여자는?", request_type="change", changes={"sex": "여"})
+    age = "노인" if "노인" in term else "65세 이상"
+    assert talk.searched[0][0] == f"2020년 부산 여성 {age} 1인 가구"
+
+
+@pytest.mark.parametrize(
+    ("term", "conditions", "expected"),
+    [
+        ("남성 인구", {"sex": "여"}, "여성 인구"),  # 반대 성별은 바꾼다
+        ("여성 인구 비율", {"sex": "남"}, "여성 인구 비율"),  # 성별 비율 지표는 그대로
+        ("고령인구 비율", {"sex": "여"}, "여성 고령인구 비율"),
+        ("남구 인구", {"sex": "여"}, "여성 남구 인구"),  # 지역 이름 속 '남'은 성별이 아니다
+        ("인구", {"sex": "남", "ages": [[65, None]]}, "남성 65세 이상 인구"),
+        ("노인 인구", {"ages": [[65, None]]}, "노인 인구"),  # 연령 집단 이름이 이미 있다
+        ("인구", {"sex": "계"}, "인구"),
+    ],
+)
+def test_with_demographics(term, conditions, expected):
+    assert s._with_demographics(term, conditions) == expected
+
+
+@pytest.mark.parametrize("term", ["남성 1인 가구", "남성1인가구"])
+def test_switching_to_all_sexes_removes_stale_filter_from_search(term):
+    prev = {**ONE_PERSON, "term": term, "sex": "남"}
+    changed, _ = s.apply_changes(prev, {"sex": "계"})
+    assert "남성" not in s.inherited_question(changed)
+    changed, _ = s.apply_changes(prev, {"sex": "여"})
+    assert "남성" not in s.inherited_question(changed)
+    assert "여성" in s.inherited_question(changed)
