@@ -466,6 +466,19 @@ SURVEY_ASK = [
         ),
     ),
 ]
+# "애를 얼마나 낳아" · "아이 몇 명 낳아" · "출산 얼마나 해": 합계출산율로도 출생아 수로도 읽힌다
+BIRTH_HOW_MANY = re.compile(
+    r"(?:애|아이|아기|애기)(?:들)?(?:을|를)?\s*(?:얼마나|몇\s*명(?:씩)?)\s*(?:을|를)?\s*낳"
+    r"|출산(?:을)?\s*(?:얼마나|많이)"
+)
+TFR_MEANING = "합계출산율은 여자 한 명이 평생(15~49세) 낳을 것으로 예상되는 아이 수입니다"
+BIRTH_PAIR_NOTE = (
+    f"{TFR_MEANING}. '얼마나 낳는지'는 합계출산율로 답하고, "
+    "그해 태어난 아이 수(출생아 수)를 함께 보여 드립니다"
+)
+BIRTH_PER_WOMAN = re.compile(r"한\s*명(?:이|당)|평생")
+# 뜻이 분명한 말: "여자 한 명이" · "평생"(합계출산율), "태어났" · "낳았"(출생아 수)
+BIRTH_CLEAR = re.compile(r"한\s*명(?:이|당)|평생|태어|낳았|낳은")
 LEVEL_CITY = re.compile(r"전국\s*(의\s*)?시\s*(중|가운데)|시\s*단위")
 ASCENDING = re.compile(r"꼴찌|최하위|가장\s*(낮|적)|제일\s*(낮|적)")
 # 높은 순으로 물음 ("초혼연령 높은 시도 3곳", "인구 많은 순서로", "상위 3곳"). 질문 해석이 추론 없이
@@ -1113,6 +1126,31 @@ def correct(question, parsed, today=None):
     names = asked_indicators(question)
     if len(names) > 1 and parsed.get("type") in ("value", "trend", "compare"):
         parsed["indicators"] = names  # 지표마다 따로 계산한다 (compute)
+    elif (
+        BIRTH_PER_WOMAN.search(question)
+        and re.search(r"낳", question)
+        and parsed.get("indicator") in (None, "합계출산율", "출생아 수", "조출생률")
+    ):
+        # "여자 한 명이 애를 몇 명 낳아?": 별칭("한 명이 애 몇 명")과 조사 하나 차이로 못 잡았다
+        if parsed.get("indicator") != "합계출산율":
+            fix("indicator", "합계출산율", "'한 명이 몇 명 낳는지'는 합계출산율")
+        parsed["term"] = "합계출산율"
+        parsed["grounded"] = True
+        parsed.setdefault("asked", {})["birth_explain"] = True
+    elif BIRTH_HOW_MANY.search(question) and not BIRTH_CLEAR.search(question):
+        # "요즘 애를 얼마나 낳아?": 한 사람이 몇 명 낳는지(합계출산율)로도, 몇 명 태어났는지
+        # (출생아 수)로도 읽힌다. HCX가 그때그때 둘 중 하나를 골랐다 (D-096: 1차 합계출산율 ·
+        # 2차 출생아 수). 합계출산율로 답하고 출생아 수를 함께 보여 준다
+        if parsed.get("indicator") in (None, "합계출산율", "출생아 수", "조출생률"):
+            fix("indicator", "합계출산율", "'얼마나 낳아'는 합계출산율 + 출생아 수")
+            parsed["term"] = "합계출산율"
+            parsed["grounded"] = True
+            parsed.pop("unsupported", None)
+            if parsed.get("type") in (None, "other", "parse_error"):
+                fix("type", "value", "'얼마나 낳아'")
+            if parsed.get("type") in ("value", "trend", "compare"):
+                parsed["indicators"] = ["합계출산율", "출생아 수"]
+                parsed.setdefault("asked", {})["birth_pair"] = True
 
     _cross(question, parsed, fix)
     _change_rank(question, parsed, fix)
@@ -1834,6 +1872,19 @@ MAX_TREND_REGIONS = 20
 MAX_INDICATORS = 3  # 한 질문에서 함께 답하는 지표 수
 
 
+def basis_note(sp, term):
+    """기준이 여럿인 말(지표 사전의 basis_terms)로 물었으면 기본 기준과 다른 기준 안내.
+    아니면 None"""
+    terms = {indicators._norm(t) for t in sp.get("basis_terms") or []}
+    return sp.get("basis_note") if indicators._norm(term) in terms else None
+
+
+def age_basis_note(group):
+    """연령 집단 이름의 기준 한 줄 ("'청년'은 19~34세로 계산했습니다 (청년기본법 19~34세 · …)")"""
+    basis = group["basis"].replace(" (", " · ").replace(")", "")
+    return f"{josa(repr_q(group['expr']), '은는')} {ro(group['range'])} 계산했습니다 ({basis})"
+
+
 # 계산 지표 중 남녀로 나눠 볼 수 없는 것 (성비는 그 자체가 남녀 비교, 세대·면적은 성별이 없다)
 NO_SEX_SPLIT = frozenset({"성비", "세대당 인구", "인구밀도"})
 
@@ -1861,6 +1912,11 @@ def compute(q):
         return _combine([compute({**q, "sex": s, "split_sex": False}) for s in ("남", "여")])
     result = _compute(q)
     asked = q.get("asked") or {}
+    if asked.get("birth_explain") and result.get("status") == "ok":
+        # "여자 한 명이 애를 몇 명 낳아?"를 합계출산율로 답했다: 그 뜻을 밝힌다
+        for r in _leaves(result):
+            if TFR_MEANING not in r.setdefault("notes", []):
+                r["notes"].insert(0, TFR_MEANING)
     if result.get("status") == "out_of_range" and asked.get("latest") and not q.get("year"):
         retry = _compute({**q, "asked": {**asked, "latest": False}})
         if retry.get("status") == "ok":
@@ -1940,6 +1996,8 @@ def _compute(q):
         if not ok:
             return parts[0]
         result = _combine(ok, by="indicator")
+        if (q.get("asked") or {}).get("birth_pair"):
+            ok[0].setdefault("notes", []).insert(0, BIRTH_PAIR_NOTE)
         missed = [n for n, p in zip(names, parts, strict=False) if p.get("status") != "ok"]
         if missed:
             ok[0].setdefault("notes", []).append(
@@ -2105,9 +2163,20 @@ def _compute(q):
         result.setdefault("asked_year", q.get("end_year") or year)
     term = q.get("term")
     if result.get("status") == "ok" and term and indicators.canonical_name(term) == sp["name"]:
-        if indicators._norm(term) != indicators._norm(sp["name"]):  # 예: 합계출생율 → 합계출산율
+        if note := basis_note(sp, term):
+            # 기준이 여럿인 말("이혼율", "외국인 수"): 되묻지 않고 기본 기준으로 답하고
+            # 다른 기준을 안내
+            for r in _leaves(result):
+                r["notes"] = [note] + r.get("notes", [])
+        elif indicators._norm(term) != indicators._norm(sp["name"]):  # 예: 합계출생율 → 합계출산율
             for r in _leaves(result):
                 note = f"{josa(repr_q(term), '을를')} {ro(sp['name'])} 보고 답했습니다"
+                r["notes"] = [note] + r.get("notes", [])
+    if result.get("status") == "ok" and (group := q.get("age_group")) and group.get("basis"):
+        # "청년" · "노인"처럼 정의로 정한 연령 구간: 어느 기준으로 계산했는지 밝힌다
+        note = age_basis_note(group)
+        for r in _leaves(result):
+            if note not in r.get("notes", []):
                 r["notes"] = [note] + r.get("notes", [])
     if (group := q.get("group")) and result.get("status") == "ok" and "values" in result:
         # 묶음 비교·순위는 정의가 갈릴 수 있어 (예: 5대 광역시에 울산 포함 여부) 포함 지역을 밝힌다
