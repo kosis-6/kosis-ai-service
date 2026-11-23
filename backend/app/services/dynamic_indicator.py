@@ -73,6 +73,8 @@ SAFE_TOTAL = re.compile(
 NOTE = "지표 사전에 없는 값을 통계표에서 바로 계산했습니다. 공식 지표 정의와 다를 수 있습니다"
 OTHER_TABLE_NOTE = "지표 사전의 표에 없는 값이라 같은 통계의 다른 통계표에서 바로 꺼냈습니다"
 PROJECTION_NOTE = "장래추계 표의 추계값입니다(실적 아님). 다음 추계 때 바뀔 수 있습니다"
+# 추계 표로 답할 때 첫 문장 바로 뒤에 붙인다 (※ 주의만으로는 확정 수치처럼 읽혔다, 11/23)
+PROJECTION_ANSWER = "장래추계에 따른 예상값으로, 실제 통계가 아닙니다."
 TOTAL_NAMES = {"계", "합계", "전체", "총계", "소계", "총", "전국"}
 # 혼인 · 이혼 표는 성별을 남편 · 아내로 적는다 ("이혼하는 남자 평균 나이" → 남편)
 SEX_NAMES = {"남": {"남자", "남", "남성", "남편"}, "여": {"여자", "여", "여성", "아내"}}
@@ -925,6 +927,7 @@ def build(
     if future_after is not None:  # 다음 턴에서 과거 연도로 바꾸면 이 정의를 쓰지 않는다
         spec["future_after"] = future_after
         spec["note"] = f"{NOTE}. {PROJECTION_NOTE}"
+        spec["answer_note"] = PROJECTION_ANSWER  # 첫 문장 뒤 (qa._summary, parts_answer)
     if plan.defaults:
         spec["note"] += (
             f". 말하지 않은 구분은 합계·기본값으로 계산했습니다 ({', '.join(plan.defaults)})"
@@ -1087,6 +1090,7 @@ def _ratio(spec: dict, src: dict, plan: Plan, dims: list[Dim], parsed: dict, tbl
     whole = next(d.codes for d in dims if d.col == col)
     out = {
         **spec,
+        "name": _ratio_name(spec["name"], part),
         "unit": "%",
         "kind": "ratio",
         "formula": f"{part} ÷ {whole.get(den, '합계')} × 100",
@@ -1096,6 +1100,17 @@ def _ratio(spec: dict, src: dict, plan: Plan, dims: list[Dim], parsed: dict, tbl
         # 연령 구간을 분자 칸에 넣었다 (qa.compute가 연령을 다시 넘기지 않음)
         out["ages_in_filters"] = True
     return out, None
+
+
+def _ratio_name(name: str, part: str) -> str:
+    """비율 지표 이름: "{대상} 중 {부분} 비율". 값 정의의 이름("1인가구(20세이상 인구) 수")을 그대로
+    쓰면 "… 수는 13.27%"가 됐다 (11/23). 이름이 이미 비율이면 그대로 둔다.
+    대상은 값 정의 이름에서 끝의 '수'와 부분 칸 이름을 뺀 것 ("1인가구 여자 수" → "1인가구")"""
+    if re.search(r"비율|비중|%", name):
+        return name
+    subject = re.sub(r"\s*수$", "", name)
+    subject = " ".join(w for w in subject.split() if _norm(w) != _norm(part)) or subject
+    return f"{subject} 중 {part} 비율"
 
 
 CHECKS = MemoryCache(
@@ -1517,6 +1532,8 @@ def _target_understanding(u: dict, target: dict) -> dict:
             cond[key] = own[key]
     cond["items"], cond["classes"] = [], []
     out = {**u, "conditions": cond}
+    if target.get("unsaid_age") and not own.get("age_text"):
+        out["age"] = None  # 비율의 전체 쪽: 질문의 연령은 부분 쪽 말의 것 (multi_indicator)
     if text := own.get("age_text"):
         bands = qa.extract_ages(str(text))
         if bands:
@@ -1732,7 +1749,7 @@ async def _compute_target(
     for _, _, sub in outcomes:
         merge(sub)
     trace["handoff"]["tried"] = len(entries)
-    for entry, (res, _, sub) in zip(entries, outcomes, strict=True):
+    for entry, (res, _, sub) in _whole_population_first(entries, outcomes, question, trace):
         if res is not None and res.get("status") == "ok":
             trace["handoff"]["used"] = {"tbl_id": entry["tbl_id"], "kind": entry["kind"]}
             # 칸 고르기 LLM이 고른 칸은 사람의 선택이 아니라 표의 칸 풀이라 캐시에 함께 남긴다
@@ -1786,6 +1803,34 @@ async def _compute_target(
     return None
 
 
+AGE_LIMIT = re.compile(r"(\d+)\s*세\s*이상")  # 표 이름의 집계 대상 연령 ("1인가구(20세 이상, …)")
+
+
+def age_limit(tbl_nm: str, question: str) -> str | None:
+    """표가 질문이 말하지 않은 연령만 집계하면 그 제한 ("20세 이상"). 아니면 None"""
+    m = AGE_LIMIT.search(tbl_nm or "")
+    if m is None or re.search(rf"{m[1]}\s*(세|살)\s*이상", question):
+        return None
+    return m[0]
+
+
+def _whole_population_first(entries: list[dict], outcomes: list, question: str, trace: dict):
+    """계산된 후보를 쓸 순서. 지금처럼 목록 순서지만, 질문이 말하지 않은 연령 제한이 있는 표
+    ("1인가구(20세 이상, 일반가구)")는 제한 없는 표도 계산됐으면 그 뒤로 미룬다.
+    "1인 가구 중 70세 이상 비율"을 20세 이상 1인 가구로 나눠 답했다 (11/23)"""
+    pairs = list(zip(entries, outcomes, strict=True))
+    ok = [(e, o) for e, o in pairs if o[0] is not None and o[0].get("status") == "ok"]
+    if not ok or not (limit := age_limit(ok[0][0].get("tbl_nm") or "", question)):
+        return pairs
+    whole = [p for p in ok if not age_limit(p[0].get("tbl_nm") or "", question)]
+    if not whole:
+        return pairs  # 제한 있는 표뿐: 그 표로 답한다 (이름·집계 대상 주의에 모집단이 드러난다)
+    trace["handoff"]["population"] = (
+        f"{ok[0][0]['tbl_id']}은 {limit}만 집계해 {whole[0][0]['tbl_id']}로 답함"
+    )
+    return whole + [p for p in pairs if p not in whole]
+
+
 async def answer_choice(question: str, context: dict, code: str, trace: dict) -> dict | None:
     """되묻기에서 고른 칸으로 같은 표를 다시 계산한다 (질문 해석 HCX는 다시 부르지 않는다).
     다른 분류도 정하지 못했으면 그것을 이어서 묻는다. 못 하면 None"""
@@ -1818,6 +1863,16 @@ async def cached_answer(question: str, parsed: dict, trace: dict) -> dict | None
         flow.add("계산 방법 캐시", "없음" if found else "건너뜀", (found or ["", ""])[1])
     trace.setdefault("dynamic", [])
     for plan in plans:
+        try:
+            tbl_nm = (await run_in_threadpool(lookup._table, plan["tbl_id"]))["tbl_nm"]
+        except Exception:  # 표 이름을 못 읽으면 지금처럼 쓴다
+            tbl_nm = ""
+        if limit := age_limit(tbl_nm, question):
+            # 질문이 말하지 않은 연령만 집계한 표: 전 연령 표가 있을 수 있어 통계표 찾기로
+            # (_whole_population_first와 같은 기준. 이 규칙 전에 저장한 계획도 거른다, 11/23)
+            skip = f"캐시한 표가 {limit}만 집계 → 통계표 찾기"
+            trace["dynamic"].append({"tbl_id": plan["tbl_id"], "skip": skip})
+            continue
         saved = {int(k): v for k, v in (plan.get("forced") or {}).items()}
         forced = saved
         if saved:
@@ -2045,6 +2100,8 @@ def parts_answer(parsed: dict, spec: dict, question: str) -> dict:
         )
         lines = [f"{i}. {x['label']}: {val(x['value'])}" for i, x in enumerate(top, 1)]
         value = top[0]["value"]
+    if spec.get("answer_note"):  # 추계 표: 예상값이라는 것을 첫 문장 바로 뒤에 (qa._summary와 같음)
+        text += " " + spec["answer_note"]
     result = {
         "status": "ok",
         "method": "dynamic",

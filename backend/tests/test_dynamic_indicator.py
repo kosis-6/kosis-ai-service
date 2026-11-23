@@ -1578,3 +1578,86 @@ def test_item_in_table_name_is_covered(items, words, why) -> None:
         slots["table_words"] = words
     plan = d.Plan(pick={0: "W"})
     assert d.uncovered(slots, plan, REMARRY, {"type": "trend"}) == why
+
+
+# ---- 실제 테스트 오류 (11/23): 비율 이름 · 모집단 · 추계 문구 --------------------------------
+
+
+def test_ratio_name_says_whole_part_and_ratio() -> None:
+    # 값 정의 이름("… 수")을 비율에 그대로 쓰면 "… 수는 13.27%"가 됐다
+    assert d._ratio_name("1인가구(20세이상 인구) 수", "70세 이상") == (
+        "1인가구(20세이상 인구) 중 70세 이상 비율"
+    )
+    assert d._ratio_name("1인가구 여자 수", "여자") == "1인가구 중 여자 비율"
+    assert d._ratio_name("1인 가구 중 70세 이상 비율", "70세 이상") == "1인 가구 중 70세 이상 비율"
+
+
+def test_ratio_spec_is_named_as_ratio() -> None:
+    spec = build("서울 1인 가구 중 여성 비율", indicator="2020년 서울", sex="여")
+    assert spec["kind"] == "ratio" and spec["name"].endswith("비율")
+    assert "수" not in spec["name"].split()
+
+
+def _entry(tbl_id: str, tbl_nm: str) -> dict:
+    return {"tbl_id": tbl_id, "tbl_nm": tbl_nm, "kind": "other"}
+
+
+def _ok(tbl_id: str) -> tuple:
+    return ({"status": "ok", "tbl": tbl_id}, None, {"dynamic": []})
+
+
+def test_table_limited_to_unasked_ages_goes_after_whole_population() -> None:
+    entries = [
+        _entry("A", "성별/연령별/사회활동별 1인가구(20세 이상, 일반가구)-시도"),
+        _entry("B", "성별/연령별/거주기간별 1인가구(일반가구)-시도"),
+    ]
+    outcomes = [_ok("A"), _ok("B")]
+    trace: dict = {"handoff": {}}
+    order = d._whole_population_first(entries, outcomes, "서울 1인 가구 중 70세 이상 비율", trace)
+    assert [e["tbl_id"] for e, _ in order] == ["B", "A"]
+    assert "20세 이상" in trace["handoff"]["population"]
+    # 질문이 그 연령을 말했으면 목록 순서 그대로
+    same = d._whole_population_first(entries, outcomes, "20세 이상 1인 가구 중 70세 이상", {})
+    assert [e["tbl_id"] for e, _ in same] == ["A", "B"]
+    # 제한 없는 표가 계산되지 않았으면 제한 있는 표로 답한다
+    failed = [_ok("A"), (None, None, {"dynamic": []})]
+    alone = d._whole_population_first(entries, failed, "서울 1인 가구 중 70세 이상 비율", {})
+    assert [e["tbl_id"] for e, _ in alone] == ["A", "B"]
+
+
+def test_projection_answer_says_it_is_an_estimate(fake_table: dict) -> None:
+    fake_table["projection"].add("DT_1PL1502")
+    spec = build("2040년 서울 1인 가구 수", year=2040)
+    assert spec["answer_note"] == d.PROJECTION_ANSWER
+    # 첫 문장 바로 뒤에 붙는다 (qa._summary)
+    result = {"status": "ok", "indicator": "1인 가구", "unit": "가구", "value": 1842002}
+    result.update(year=2040, region="서울특별시", answer_note=spec["answer_note"])
+    text = qa.summary(result)
+    assert text.endswith("1,842,002가구입니다. " + d.PROJECTION_ANSWER)
+
+
+def test_ratio_whole_target_drops_question_age() -> None:
+    u = {"conditions": {"region": "서울"}, "age": {"expr": "70세 이상", "lo": 70, "hi": None}}
+    assert d._target_understanding(u, {"span": "전체 1인 가구", "unsaid_age": True})["age"] is None
+    kept = d._target_understanding(u, {"span": "70세 이상 1인 가구"})
+    assert kept["age"]["lo"] == 70
+
+
+def test_cached_plan_on_age_limited_table_goes_to_table_search(monkeypatch) -> None:
+    # 이 규칙 전에 20세 이상 표로 저장한 계획이 통계표 찾기보다 먼저 쓰이지 않게 한다
+    async def find(key):
+        return [{"id": 1, "tbl_id": "DT_LIMITED", "forced": {}, "words": []}]
+
+    tried = []
+
+    async def try_(*args, **kwargs):
+        tried.append(args[0])
+        return None, None
+
+    monkeypatch.setattr(d.plan_cache, "key_of", lambda parsed: ("k", "1인 가구 중 70세 이상 비율"))
+    monkeypatch.setattr(d.plan_cache, "find", find)
+    monkeypatch.setattr(lookup, "_table", lambda t: {"tbl_nm": "1인가구(20세 이상, 일반가구)-시도"})
+    monkeypatch.setattr(d, "_try", try_)
+    trace: dict = {}
+    assert asyncio.run(d.cached_answer("서울 1인 가구 중 70세 이상 비율", BASE, trace)) is None
+    assert tried == [] and "20세 이상만 집계" in trace["dynamic"][0]["skip"]
