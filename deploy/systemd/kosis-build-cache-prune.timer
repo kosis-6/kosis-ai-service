@@ -1,0 +1,9 @@
+[Unit]
+Description=Prune Docker build cache weekly on the KOSIS production host
+
+[Timer]
+OnCalendar=Sun *-*-* 04:00:00 Asia/Seoul
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -66,6 +66,7 @@ from app.services import (
     flow,
     indicators,
     llm_calls,
+    lookup,
     multi_indicator,
     qa,
     question_clarify,
@@ -1173,6 +1174,83 @@ async def _answer(conditions: dict, trace: dict | None = None) -> dict:
     return res
 
 
+HOUSEHOLD_AGE_TABLE = "DT_1PL1502"  # 인구총조사 성 및 연령별 1인가구 - 시군구
+HOUSEHOLD_AGE_RATIO = re.compile(
+    r"^\s*(?P<year>(?:19|20)\d{2})\s*년\s+(?P<region>.+?)\s+"
+    r"(?:전체\s*)?1\s*인\s*가구(?:\s*수)?\s*(?:중(?:에서|에)?|가운데)\s*"
+    r"(?P<age>.+?)\s*(?:의\s*)?(?:비율|비중)(?:은|이|는)?"
+    r"(?:\s*(?:얼마|몇\s*퍼센트)(?:야|예요)?)?\s*[?.!]*\s*$"
+)
+
+
+async def _household_age_ratio(question: str) -> dict | None:
+    """지역·연도와 나이가 명시된 1인 가구 비율은 같은 인구총조사 표에서 나눈다."""
+    match = HOUSEHOLD_AGE_RATIO.fullmatch(question)
+    if not match:
+        return None
+    age = qa.agegroup.native_to_digits(match["age"].strip())
+    spans = qa.age_spans(age)
+    if len(spans) != 1 or spans[0][:2] != (0, len(age)):
+        return None  # '70세 이상 여성'처럼 조건이 더 붙은 질문은 일반 해석에 맡긴다.
+    band = spans[0][2]
+    region, year = match["region"].strip(), int(match["year"])
+    try:
+        table = await run_in_threadpool(lookup._table, HOUSEHOLD_AGE_TABLE)
+        start, end = table.get("start_year"), table.get("end_year")
+        if start is None or end is None or not start <= year <= end:
+            return None  # 이 표 수록 기간 밖의 질문에는 다른 조사·추계 자료를 찾는다.
+        resolved = await run_in_threadpool(indicators.resolve_region, region, year, sigungu=True)
+    except Exception:
+        logger.exception("인구총조사 1인 가구 비율의 표·지역 확인 실패")
+        return None
+    if resolved["status"] != "ok":
+        return None
+
+    term = f"1인 가구 중 {indicators.age_label(band)} 비율"
+    parsed = {
+        "type": "value", "indicator": term, "term": term, "regions": [region],
+        "year": year, "ages": [band], "sex": "계",
+    }  # fmt: skip
+    canonical = inherited_question(parsed)
+    trace: dict = {"dynamic": []}
+    try:
+        res, _ = await dynamic_indicator._try(
+            HOUSEHOLD_AGE_TABLE,
+            "101",
+            canonical,
+            parsed,
+            trace,
+            {},
+            {"table_name": table["tbl_nm"]},
+        )
+    except Exception:
+        logger.exception("인구총조사 1인 가구 비율 계산 실패")
+        res = None
+    if res is not None:
+        res["chart"] = charts.build(res.get("result"))
+        return res
+
+    found = {
+        "status": "ok",
+        "answer": (
+            "해당 비율의 분자와 분모는 인구총조사의 "
+            "성 및 연령별 1인 가구 표에서 확인할 수 있습니다."
+        ),
+    }
+    res = table_guide.tables_answer(found, {"parsed": parsed})
+    res["trace"] = trace
+    res["sources"] = [
+        {
+            "name": f"인구총조사, {table['tbl_nm']} ({HOUSEHOLD_AGE_TABLE})",
+            "tbl_id": HOUSEHOLD_AGE_TABLE,
+            "basis": "인구총조사",
+            "url": indicators.KOSIS_URL.format(org_id="101", tbl_id=HOUSEHOLD_AGE_TABLE),
+        }
+    ]
+    await _attach_cards(res, canonical)
+    return res
+
+
 async def _new(
     question: str, state: dict | None, *, scoped_age_ratio: bool = False
 ) -> tuple[dict, dict, str | None]:
@@ -1180,6 +1258,10 @@ async def _new(
     → (응답, 출처, 알림)"""
     kept: dict[str, Any] = {}
     prev = state["conditions"] if state and state.get("conditions") else None
+
+    if census := await _household_age_ratio(question):
+        census.update(request_type=NEW, question=question)
+        return census, sources_of(question, census["parsed"]), None
 
     def adjust(parsed: dict) -> dict:
         kept["original"] = parsed
@@ -1460,6 +1542,11 @@ async def _turn(
         early["request_type"], early["question"] = NEW, question
         return early, {}, None
     usable = bool(state and (state.get("conditions") or {}).get("type") not in NO_CONDITIONS)
+    region_only = None
+    if usable and (state.get("last") or {}).get("status") == TABLES:
+        # 표 안내 뒤에는 명확한 지역 변경에만 지난 수치 질문을 이어 쓴다.
+        region_only = await asyncio.to_thread(region_only_changes, question, state["conditions"])
+        usable = region_only is not None
     if not usable and summary_request(question):
         # 이어 갈 조건이 없을 때(첫 말, 통계표만 안내한 뒤)의 "요약해줘": 질문으로 해석하지 않는다
         # (HCX가 통계 질문으로 읽어 "통계표를 찾지 못했습니다"로 답하던 문제)
@@ -1470,7 +1557,9 @@ async def _turn(
     if not usable:
         return await _new(question, None)
 
-    if await asyncio.to_thread(complete_question, question):
+    if HOUSEHOLD_AGE_RATIO.fullmatch(question) or await asyncio.to_thread(
+        complete_question, question
+    ):
         return await _new(question, state)
 
     if switched := await asyncio.to_thread(survey_switch, question, state["conditions"]):
@@ -1508,7 +1597,9 @@ async def _turn(
     if view is None and not (has_last and summary_request(question)):
         trace: dict = {}
         split = await asyncio.to_thread(region_split_changes, question, state["conditions"])
-        region_only = await asyncio.to_thread(region_only_changes, question, state["conditions"])
+        region_only = region_only or await asyncio.to_thread(
+            region_only_changes, question, state["conditions"]
+        )
         if composition_request(question):  # "구성비로 보여줘": 보는 방식만 바꾼다
             delta = parse_delta('{"request_type": "change", "changes": {"type": "composition"}}')
         elif split:  # "구별로 보여줘": 보던 시도 안의 시군구 순위로
@@ -1542,7 +1633,11 @@ async def _turn(
         if delta["request_type"] == CHANGE:
             conditions, changed = apply_changes(state["conditions"], delta["changes"])
             if changed:
-                res = await _answer(conditions, trace)
+                res = None
+                if "regions" in changed and (state.get("last") or {}).get("status") == TABLES:
+                    res = await _household_age_ratio(inherited_question(conditions))
+                if res is None:
+                    res = await _answer(conditions, trace)
                 res["request_type"] = CHANGE
                 status = res.get("status")
                 retry_region = (
@@ -1617,13 +1712,20 @@ def next_state(state: dict | None, question: str, res: dict, sources: dict) -> d
     if res.get("request_type") in (UNCLEAR, CHAT):
         return {**prev, "recent": recent, "turn_no": turn_no}
     if res.get("status") in (TABLES, *table_guide.REFUSED):
-        # 수치 없이 표만 안내했다 (또는 범위 밖이라 표도 없다): 수치 조건은 이어 가지 않는다
-        # (다음 "서울도 같이"는 새 질문).
+        # 수치 질문이 표 안내로 끝나도 다음 '부산은?'에 쓸 질문 조건을 보존한다.
+        # 범위 밖 응답이나 표 자체를 찾는 질문은 이어 갈 수치 조건이 없다.
+        parsed = res.get("parsed") or {}
+        numeric = (
+            res.get("status") == TABLES
+            and res.get("request_type") in (NEW, CHANGE, REPLY)
+            and parsed.get("type") not in NO_CONDITIONS
+            and (parsed.get("term") or parsed.get("indicator"))
+        )
         # 표 선택지를 물었으면 다음 말을 그 답으로 읽는다
         found = res.get("tables")
         return {
-            "conditions": {},
-            "sources": {},
+            "conditions": effective(parsed, {}) if numeric else {},
+            "sources": sources if numeric else {},
             "last": {
                 "status": res.get("status"),
                 "answer": res.get("answer") or "",
@@ -2308,7 +2410,12 @@ async def handle(
         after["user_id"] = user_id  # 이 대화의 주인 (same_owner). 손님이면 None
         res.setdefault("question", question)
         res["session_id"] = sid
-        res["applied"] = applied(after.get("conditions") or {}, after.get("sources") or {})
+        # 표 안내는 수치를 계산한 조건으로 표시하지 않는다. 세션에는 다음 질문을 위해 남긴다.
+        res["applied"] = (
+            []
+            if res.get("status") == TABLES
+            else applied(after.get("conditions") or {}, after.get("sources") or {})
+        )
         res["notice"] = notice
         first_line = (res.get("answer") or "").strip().split("\n")[0][:80]
         flow.add("최종 답", res.get("status"), f"{res.get('request_type') or ''} · {first_line}")
