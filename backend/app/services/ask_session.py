@@ -781,9 +781,14 @@ def _with_demographics(term: str, conditions: dict) -> str:
     sex = conditions.get("sex")
     if gender := {"남": "남성", "여": "여성"}.get(sex):
         if not qa.GENDER_WORDS[sex].search(term):
-            if not dynamic_indicator.PCT_ASK.search(term):
-                old = qa.GENDER_WORDS["남" if sex == "여" else "여"].pattern
-                term = re.sub(rf"(?<![가-힣])(?:{old})\s+", "", term, count=1)
+            other = qa.GENDER_WORDS["남" if sex == "여" else "여"]
+            if dynamic_indicator.PCT_ASK.search(term):
+                # "여성 인구 비율"처럼 반대 성별의 비율을 묻는 지표면 성별을 붙이지 않는다
+                # ("남성 여성 인구 비율"이 되지 않게)
+                if other.search(term):
+                    return term
+            else:
+                term = re.sub(rf"(?<![가-힣])(?:{other.pattern})\s+", "", term, count=1)
             term = f"{gender} {term}"
     return term
 

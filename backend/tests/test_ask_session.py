@@ -1779,3 +1779,19 @@ def test_changed_sex_search_keeps_age_and_uses_new_sex(talk: Talk, term: str) ->
     talk.say("여자는?", request_type="change", changes={"sex": "여"})
     age = "노인" if "노인" in term else "65세 이상"
     assert talk.searched[0][0] == f"2020년 부산 여성 {age} 1인 가구"
+
+
+@pytest.mark.parametrize(
+    ("term", "conditions", "expected"),
+    [
+        ("남성 인구", {"sex": "여"}, "여성 인구"),  # 반대 성별은 바꾼다
+        ("여성 인구 비율", {"sex": "남"}, "여성 인구 비율"),  # 성별 비율 지표는 그대로
+        ("고령인구 비율", {"sex": "여"}, "여성 고령인구 비율"),
+        ("남구 인구", {"sex": "여"}, "여성 남구 인구"),  # 지역 이름 속 '남'은 성별이 아니다
+        ("인구", {"sex": "남", "ages": [[65, None]]}, "남성 65세 이상 인구"),
+        ("노인 인구", {"ages": [[65, None]]}, "노인 인구"),  # 연령 집단 이름이 이미 있다
+        ("인구", {"sex": "계"}, "인구"),
+    ],
+)
+def test_with_demographics(term, conditions, expected):
+    assert s._with_demographics(term, conditions) == expected
