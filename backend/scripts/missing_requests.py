@@ -20,6 +20,7 @@ REASONS = {
     "out_of_range": "수록 기간 밖 연도",
     "region_not_in_year": "그 연도에 없던 지역",
     "missing_data": "값이 비어 있음",
+    "no_region_level": "없는 지역 단위",
 }
 # 지원하지 않는 지표의 구분: 수집한 표에 관련 자료가 있는지 (qa.compute가 기록)
 GAPS = {"not_implemented": "미구현 (수집한 표에 있음)", "not_collected": "수집 안 함"}

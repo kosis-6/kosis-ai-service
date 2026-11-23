@@ -1766,6 +1766,16 @@ async def _compute_target(
         merge(sub)
     trace["handoff"]["tried"] = len(entries)
     for entry, (res, _, sub) in zip(entries, outcomes, strict=True):
+        hidden = next((s for s in sub["dynamic"] if s.get("flag") == "X"), None)
+        if hidden and not is_ok(res):
+            # 질문의 조건에 맞는 칸을 찾았는데 값이 비밀보호(X)다. 순위가 뒤인 표의 값으로 답하지
+            # 않는다: 뒤의 표는 조건 하나를 버린 더 넓은 값이기 쉽다 (부부 + 친척 가구 → 1세대
+            # 가구 계). 값이 비어 있다고 알린다
+            trace["handoff"]["used"] = {"tbl_id": entry["tbl_id"], "kind": entry["kind"]}
+            trace["handoff"]["suppressed"] = entry["tbl_id"]
+            return await run_in_threadpool(
+                suppressed_answer, q, entry["tbl_id"], hidden.get("cells") or ""
+            )
         if res is not None and res.get("status") == "ok":
             trace["handoff"]["used"] = {"tbl_id": entry["tbl_id"], "kind": entry["kind"]}
             # 칸 고르기 LLM이 고른 칸은 사람의 선택이 아니라 표의 칸 풀이라 캐시에 함께 남긴다
@@ -1978,10 +1988,14 @@ async def _try_once(
             return res, None
         step["skip"] = res.get("answer", "")[:60]
         return None, None
+    flags: list = []
+    lookup.EMPTY_FLAGS.set(flags)  # 값이 빈 칸의 결측 기호 (표 하나의 계산마다 새로)
     res = await qa.answer(_with_spec(parsed, spec), trace, question)
     step["status"] = res["status"]
     if res["status"] == "ok" and not has_values(res.get("result") or {}):
         step["skip"] = "값이 없음 (비공개·결측)"
+        if "X" in flags:  # 칸은 있는데 비밀보호로 공표하지 않은 값 (결측 '-'와 구분)
+            step["flag"] = "X"
         return None, None
     if res["status"] in ("ok", "out_of_range", "band_mismatch"):
         # 기간 밖·구간 불일치도 맞는 표를 찾은 뒤의 안내라 답으로 쓴다 (볼 수 있는 기간·구간을 알림)
@@ -2120,6 +2134,35 @@ def band_answer(parsed: dict, tbl_id: str, miss: BandMiss) -> dict:
     }
     return {
         "status": "band_mismatch",
+        "answer": f"{qa.summary(result)}\n\n{qa.render(result)}".strip(),
+        "parsed": parsed,
+        "result": result,
+        "sources": qa.sources(result),
+        "trace": {},
+    }
+
+
+def suppressed_answer(parsed: dict, tbl_id: str, cells: str) -> dict:
+    """값이 비어 있음 응답 (band_answer와 같은 모양): 질문의 조건에 맞는 칸은 있는데 그 값이
+    비밀보호 기호(X)라 공표되지 않았다. 숫자 없이 그 사실과 표를 안내한다"""
+    tbl = lookup._table(tbl_id)
+    where = f" ({cells})" if cells else ""
+    result = {
+        "status": "missing_data",
+        "indicator": tbl["tbl_nm"],
+        "reason": f"'{tbl['tbl_nm']}' 표에서 질문한 조건의 칸{where}은 값이 'X'로 표시되어 "
+        "알 수 없습니다. 값이 아주 작아(5 미만 등) 개인이 드러날 수 있을 때 통계 작성 기관이 "
+        "공표하지 않는 칸입니다(비밀보호).",
+        "guide": "대신 더 넓은 구분(합계, 더 넓은 연령 구간, 시도 단위)의 값은 확인할 수 있습니다.",
+        "suppressed": True,
+        "source": f"{tbl['org_nm']}, {tbl['tbl_nm']} ({tbl_id})",
+        "basis": tbl["basis"] or "KOSIS 공표 값",
+        "tbl_id": tbl_id,
+        "url": indicators.kosis_url(tbl_id),
+        "method": "dynamic",
+    }
+    return {
+        "status": "missing_data",
         "answer": f"{qa.summary(result)}\n\n{qa.render(result)}".strip(),
         "parsed": parsed,
         "result": result,

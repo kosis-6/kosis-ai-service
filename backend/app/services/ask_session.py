@@ -66,6 +66,7 @@ from app.services import (
     llm_calls,
     qa,
     question_clarify,
+    refusal,
     slots,
     table_guide,
     timeref,
@@ -1056,7 +1057,12 @@ async def _new(question: str, state: dict | None) -> tuple[dict, dict, str | Non
     res = await qa.ask(question, adjust=adjust)
     sources = kept.get("sources") or sources_of(question, res.get("parsed") or {})
     notice = inherited_notice(res.get("parsed") or {}, sources)
-    if res.get("status") in {"out_of_range", "region_not_in_year", "missing_data"}:
+    if res.get("status") in {
+        "out_of_range",
+        "region_not_in_year",
+        "missing_data",
+        "no_region_level",
+    }:
         inherited = res.get("parsed") or {}
         for conditions, retry_sources, dropped in without_inherited(
             inherited, kept.get("original") or {}, sources
@@ -1249,8 +1255,10 @@ async def _turn(
     if scope := question_clarify.stated_scope(question):
         # 범위를 이미 말한 이사 건수 질문: 되묻지 않고, 순이동으로 바꿔 답하지도 않는다
         return await _movement(question, scope, user_id)
-    if question_clarify.VAGUE_REGION.search(question) or question_clarify.MOVE_COUNT.search(
-        question
+    if (
+        question_clarify.VAGUE_REGION.search(question)
+        or question_clarify.MOVE_COUNT.search(question)
+        or question_clarify.too_many_regions(question)
     ):
         regions = await asyncio.to_thread(indicators.find_regions, question)
         if clarification := question_clarify.detect(question, regions):
@@ -1286,6 +1294,13 @@ async def _turn(
 
     if reply := chat_reply(question):
         return _chat_answer(state, reply), {}, None
+    if early := refusal.early_answer(question):
+        # 절차 · 추천 · 사용법처럼 말투만으로 통계 질문이 아닌 것: 질문 이해(HCX)를 부르지 않는다
+        flow.add("통계 질문 검사", early["status"], "통계 수치를 묻는 질문이 아님 (질문 이해 전)")
+        if early["status"] == "chat":
+            return _chat_answer(state, early["answer"]), {}, None
+        early["request_type"], early["question"] = NEW, question
+        return early, {}, None
     usable = bool(state and (state.get("conditions") or {}).get("type") not in NO_CONDITIONS)
     if not usable and summary_request(question):
         # 이어 갈 조건이 없을 때(첫 말, 통계표만 안내한 뒤)의 "요약해줘": 질문으로 해석하지 않는다
@@ -1541,6 +1556,14 @@ def searchable_after(res: dict) -> bool:
     """사전 지표가 자료가 없어 답하지 못한 새 질문 (table_guide.SEARCH_AFTER).
     추계값 제안(suggestion)이 이미 있으면 그대로 둔다 (수록 기간 밖 미래 연도 → 장래추계)"""
     result = res.get("result") or {}
+    if result.get("final"):
+        return False  # 어느 표로 가도 같은 사유 (그 지역이 생기기 전의 해)
+    if (
+        res.get("status") == "out_of_range"
+        and (res.get("parsed") or {}).get("year") == date.today().year
+    ):
+        # 올해의 연간 값은 아직 공표 전이다. 장래추계 표로 넘어가 가정을 되묻지 않는다
+        return False
     return (
         res.get("status") in table_guide.SEARCH_AFTER
         # 되묻기에 답한 턴(REPLY)도: 원래 질문과 받은 지역을 합친 질문이다 ("우리 시 결혼 건수" →
@@ -1890,7 +1913,14 @@ async def _attach_cards(res: dict, asked: str) -> None:
 
 # 사전 지표로 답했거나 그 지표의 자료 사정을 안내한 상태. 근거 없는 지표면 둘 다 질문과 맞지 않는다
 # (예: "2020년 서울 1인 가구 수"를 미혼 인구로 읽고 "미혼 인구 자료는 2022~2025년만 있습니다")
-DICTIONARY_ANSWERED = ("ok", "out_of_range", "missing_data", "region_not_in_year", "missing_region")
+DICTIONARY_ANSWERED = (
+    "ok",
+    "out_of_range",
+    "missing_data",
+    "no_region_level",
+    "region_not_in_year",
+    "missing_region",
+)
 # missing_region: 근거 없는 지표로 지역을 되묻기보다 통계표 찾기가 낫다
 # ("1인 가구가 가장 많은 시도의 통근 인구"를 총인구로 읽고 "어느 지역인지"를 물었다)
 
@@ -2052,6 +2082,7 @@ async def handle(
             sid, state, expired = new_id(), None, False
         res, sources, notice = await _turn(state, question, selections, user_id)
         await _attach_tables(res, state, question, user_id)
+        await refusal.finalize(res, question)
         if "summary" not in res:  # 직전 답을 다시 쓴 응답(_reuse)은 그 요약을 이미 들고 있다
             res["summary"] = _summary(res.get("result"))
         if sex_not_split(res.get("parsed") or {}, res.get("result") or {}):

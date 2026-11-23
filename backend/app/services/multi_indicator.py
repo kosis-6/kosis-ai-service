@@ -334,10 +334,10 @@ async def _intersect(question, parsed, found, targets, trace) -> dict | None:
         )
         recs = found.get("recommendations") or []
         out = {
-            "status": "missing_data",
+            "status": "no_joint_table",
             "answer": text,
             "parsed": {**parsed, "indicators": names},
-            "result": {"status": "missing_data", "reason": text},
+            "result": {"status": "no_joint_table", "reason": text},
             "sources": [],
             "trace": trace,
         }

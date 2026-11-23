@@ -25,6 +25,7 @@ KOSIS 코드(item_id, c2_id = "00" ...)를 catalog.stat_code의 키로 바꿔 �
 import re
 import threading
 import time
+from contextvars import ContextVar
 from functools import lru_cache
 
 from app.core.stats_db import StatsNotLoadedError, StatsTableMissing
@@ -269,6 +270,11 @@ def _conds(src, item_key, filters, age_codes):
     return conds, params
 
 
+# 값이 빈 칸의 결측 기호('X' 비밀보호, '-' 해당 없음)를 모으는 곳. 바로 계산이 표 하나를 계산하기
+# 전에 빈 목록을 넣어 두면 _sum이 채운다 (dynamic_indicator._try). 넣어 두지 않으면 모으지 않는다
+EMPTY_FLAGS: ContextVar[list | None] = ContextVar("empty_flags", default=None)
+
+
 def _sum(src, codes, y0, y1, item_key, filters, age_codes, group_dim=None):
     """조건에 맞는 행의 합 {(연도, 지역 코드[, 분류 코드]): 값}. 모두 결측이면 None
 
@@ -297,7 +303,8 @@ def _sum(src, codes, y0, y1, item_key, filters, age_codes, group_dim=None):
     groups = "1, 2, 3" if group_dim else "1, 2"
     rows = _rows(
         f"""
-        select v.period as year, {rc} as rc{part}, sum(v.value)::float8 as v, count(v.value) as n
+        select v.period as year, {rc} as rc{part}, sum(v.value)::float8 as v, count(v.value) as n,
+               max(v.flag) filter (where v.value is null) as flag
         from stat_value v{region_sql}
         where v.tbl_key = ? and v.{YEARLY} and v.period between ? and ?
               and {" and ".join(conds)}
@@ -312,6 +319,8 @@ def _sum(src, codes, y0, y1, item_key, filters, age_codes, group_dim=None):
     def key(r):
         return (r["year"], r["rc"], code_of[r["part"]]) if group_dim else (r["year"], r["rc"])
 
+    if (flags := EMPTY_FLAGS.get()) is not None:
+        flags += [r["flag"] for r in rows if not r["n"] and r.get("flag")]
     return {key(r): (r["v"] if r["n"] else None) for r in rows}
 
 
@@ -355,6 +364,8 @@ def _resolve(spec, names, year):
         reg = ind_mod.resolve_region(name, year, sigungu=sigungu)
         if reg["status"] != "ok":
             return {**reg, "indicator": spec["name"]}
+        if (bad := ind_mod.not_yet_founded(reg, year, spec["name"])) is not None:
+            return bad
         regs.append(ind_mod.in_year(reg, year))
     return regs
 
@@ -373,9 +384,10 @@ def _pick(spec, level, y0, y1, sex):
     if not fits:
         top = max((s["level"] for s in spec["sources"]), key=LEVELS.get)
         return None, {
-            "status": "missing_data",
+            "status": "no_region_level",
             "indicator": spec["name"],
             "reason": f"{josa(spec['name'], '은는')} {top} 단위까지만 자료가 있습니다.",
+            "level": top,
         }
     for s in fits:
         lo, hi = _years(s)

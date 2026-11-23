@@ -35,7 +35,8 @@ SEARCH_INSTEAD = {"unknown_indicator", "not_supported_question", "parse_error"}
 #   out_of_range        사전의 표 수록 기간 밖 (추계값 제안 suggestion이 있으면 넘기지 않는다)
 #   region_not_in_year  그해에 없던 지역 (행정구역 개편)
 # 되묻기(지역 · 연도), 지역을 모름, 표 받는 중, 계산 오류는 넘기지 않는다 (2026-11-18 세진 결정)
-SEARCH_AFTER = {"missing_data", "out_of_range", "region_not_in_year"}
+#   no_region_level     그 지역 단위 자료가 사전의 표에 없음 ("시도 단위까지만")
+SEARCH_AFTER = {"missing_data", "no_region_level", "out_of_range", "region_not_in_year"}
 # 통계표 찾기도 답하지 못한 상태: 제공 범위(인구 분야) 밖, 통계 질문이 아님.
 # /ask 응답의 status도 이 값으로 둔다 (표 안내 "tables"와 구분해 거절로 센다)
 REFUSED = ("out_of_scope", "not_statistics")

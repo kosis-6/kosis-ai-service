@@ -780,8 +780,58 @@ def _mark_monthly(out, code, sex, year):
     return out
 
 
+# 새로 생긴 지역의 출범 · 설치 연도. 그 전의 자료는 어느 표에도 없다.
+# regions.valid_from은 쓰지 않는다: 통합(창원시) · 이름 바꿈(당진군 → 당진시, 남구 → 미추홀구) ·
+# 출장소 코드처럼 그 전에도 같은 곳의 자료가 있는 경우가 섞여 있다
+FOUNDED = {"세종특별자치시": 2012, "계룡시": 2003, "증평군": 2003}
+
+
+def founded_year(reg) -> int | None:
+    """그 지역이 새로 생긴 해 (FOUNDED에 없으면 None)"""
+    return FOUNDED.get(reg.get("region_name"))
+
+
+def not_yet_founded(reg, year, indicator) -> dict | None:
+    """그 지역이 생기기 전의 해를 물었으면 '그해에 없던 지역' 안내 (조회 지표용, lookup._resolve)"""
+    born = founded_year(reg)
+    if born is None or year is None or year >= born:
+        return None
+    where = _display(reg)
+    return {
+        "status": "region_not_in_year",
+        "indicator": indicator,
+        "region": where,
+        "reason": f"{josa(where, '은는')} {born}년에 생긴 지역이라 {year}년 자료가 없습니다.",
+        "guide": f"{born}년부터의 연도로 다시 질문해 주세요.",
+        "available_from": born,
+        "final": True,
+    }
+
+
+def _not_yet(name, ind, reg, y1):
+    """물은 기간이 모두 그 지역이 생기기 전이면 '그해에 없던 지역' 안내, 아니면 None.
+    수록 기간보다 먼저 본다: "1980년 세종시 인구"는 자료가 2008년부터라서가 아니라 세종시가
+    2012년에 생겨서 없는 것이고, 어느 표로 가도 같다 (final: 다른 통계표를 찾아보지 않는다)"""
+    born = founded_year(reg)
+    if born is None or y1 >= born:
+        return None
+    return _base(
+        name,
+        ind,
+        "region_not_in_year",
+        region=_display(reg),
+        reason=f"{josa(_display(reg), '은는')} {born}년에 생긴 지역이라 {y1}년 자료가 없습니다.",
+        guide=f"{born}년부터의 연도로 다시 질문해 주세요.",
+        available_from=born,
+        final=True,
+        notes=_change_notes(reg["region_code"]),
+    )
+
+
 def _check(name, ind, reg, y0, y1):
     """수록 기간·지역 유효 기간 확인. 문제가 있으면 안내용 dict, 없으면 None"""
+    if (out := _not_yet(name, ind, reg, y1)) is not None:
+        return out
     lo, hi, month_ok = _years_of(ind)
     # 연간 자료 다음 해는 같은 표의 최신 달 값으로 답한다 (_components). 기간은 맞는 것으로 보되
     # 아래 지역 유효 기간 확인은 그대로 한다 (예: 2023년에 생긴 군위군을 2020년부터 물으면 안내)
@@ -807,11 +857,14 @@ def _check(name, ind, reg, y0, y1):
             # 속한 시도의 추계값을 대신 보여 준다 (예: 2040년 해운대구 → 2040년 부산광역시)
             proj = projection(name, reg["sido_code"], y1)
             if proj["status"] == "ok":
+                # sub_future: 연도를 콕 집어 물었으면 '없는 연도', "~될까"처럼 짐작을 물었으면
+                # '예측 질문'이다. 질문의 말투는 여기서 모르므로 qa.compute가 가른다
                 out.update(
                     status="prediction_question",
                     reason=f"{_display(reg)}의 {y1}년 값은 아직 없는 미래 값이고, "
                     "장래인구추계는 시도 단위까지만 있어 답할 수 없습니다.",
                     suggestion=proj,
+                    sub_future=True,
                 )
         return out
     vf, vt = reg.get("valid_from"), reg.get("valid_to")
@@ -907,6 +960,8 @@ def find_regions(text):
     taken, found = [], []
     for name in _region_names():
         for m in re.finditer(re.escape(name), s):
+            if m.start() and s[m.start() - 1].isdigit():
+                continue  # "30대 전체"의 '대전': 앞에 숫자가 붙은 것은 연령대 · 수량이다
             if not any(a < m.end() and m.start() < b for a, b in taken):
                 taken.append((m.start(), m.end()))
                 found.append((m.start(), name))

@@ -324,7 +324,7 @@ def test_intersect_of_one_group_has_no_number(world) -> None:
     # 한 집단이 두 특성을 함께 가진 값은 두 표의 숫자로 만들 수 없다
     found = _found([_target("노인 1인 가구"), _target("연금 수급자")], "intersect")
     res, _ = run("2020년 서울 노인 1인 가구 중 연금 수급자 수", found)
-    assert res["status"] == "missing_data" and "value" not in res["result"]
+    assert res["status"] == "no_joint_table" and "value" not in res["result"]
     assert "함께 만족하는 대상을 따로 집계한 통계표를 찾지 못했습니다" in res["answer"]
     assert res["tables"]["recommendations"][0]["tbl_id"] == "T1"
     assert world["asked"] == []
