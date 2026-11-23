@@ -924,7 +924,6 @@ def test_school_going_is_commute_only_with_movement() -> None:
     assert "고등학교" in words and "통학" not in words
 
 
-
 def test_handoff_drops_guessed_year() -> None:
     # 질문 이해가 연도 없는 질문에 올해를 짐작해 넣었고(종류 other라 qa.correct가 안 지움)
     # 탐색 해석은 연도가 없다 → 지워서 표의 마지막 해로 계산한다

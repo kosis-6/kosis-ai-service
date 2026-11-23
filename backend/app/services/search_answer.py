@@ -109,7 +109,9 @@ def recommendation(
 
 # 성별 합계 칸이 없는 표의 안내. 부부 단위 건수 표(혼인 · 이혼)에는 맞지 않는다: 남편 · 아내 값을
 # 더하면 두 번 센다 (dynamic_indicator가 남편 쪽 칸으로 답할 때 이 문장을 뺀다)
-NO_TOTAL_NOTE = "이 표에는 남녀 합계가 없습니다. 인원·건수는 남녀 값을 더해 보고, 비율은 성별로만 제공됩니다."
+NO_TOTAL_NOTE = (
+    "이 표에는 남녀 합계가 없습니다. 인원·건수는 남녀 값을 더해 보고, 비율은 성별로만 제공됩니다."
+)
 
 
 def notes(t: dict[str, Any], family: list[dict[str, Any]]) -> list[str]:

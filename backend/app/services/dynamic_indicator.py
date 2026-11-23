@@ -149,8 +149,9 @@ class Plan:
     multi: tuple[int, list[str], str] | None = None
     multi_dim: Dim | None = None  # 순위의 분류 (항목 안의 분류면 표 이름의 말로 부른다)
     couple: bool = False  # 부부를 한 쪽씩 센 표의 성별 칸으로 답함 (남녀를 더하면 두 번 센다)
-    # 성별 합계 칸이 없고 한 칸으로 답할 수 없어 남 · 여를 따로 보여 준다 {"남": 이름표, "여": 이름표}.
-    # 이때 pick의 성별 칸은 자리만 채운 남자 칸이다 (_build가 '계' 없는 by_sex를 만든다)
+    # 성별 합계 칸이 없고 한 칸으로 답할 수 없어 남 · 여를 따로 보여 준다
+    # {"남": 이름표, "여": 이름표}. 이때 pick의 성별 칸은 자리만 채운 남자 칸이다
+    # (_build가 '계' 없는 by_sex를 만든다)
     split_sex: dict[str, str] | None = None
 
 
@@ -467,7 +468,8 @@ def choose(
                     plan.pick[d.no] = husband
                     plan.split_sex = {"남": "남편", "여": "아내"}
                     plan.defaults.append(
-                        f"{d.name}: 남편 · 아내 따로 (부부 단위 건수라 연령은 남편 · 아내 나이가 다름)"
+                        f"{d.name}: 남편 · 아내 따로"
+                        " (부부 단위 건수라 연령은 남편 · 아내 나이가 다름)"
                     )
                     plan.couple = True
                     continue
@@ -928,8 +930,7 @@ def build(
         if plan.split_sex:
             # '계' 없이 남 · 여만 둔다 → qa.compute가 lookup.needs_split으로 둘 다 계산한다
             src["by_sex"] = {
-                s: {**_sex_override(plan, s), "label": label}
-                for s, label in plan.split_sex.items()
+                s: {**_sex_override(plan, s), "label": label} for s, label in plan.split_sex.items()
             }
         elif plan.sex_dim is not None:
             src["by_sex"] = {s: _sex_override(plan, s) for s in ("계", "남", "여")}
