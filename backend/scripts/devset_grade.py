@@ -82,8 +82,14 @@ def action_of(res: dict) -> str:
         return CLARIFY
     if status == "ok":
         return ANSWER
-    suggestion = (res.get("result") or {}).get("suggestion") or {}
-    if status == "out_of_range" and suggestion.get("status") == "ok":
+    result = res.get("result") or {}
+    suggestion = result.get("suggestion") or {}
+    # sub_future: 시군구의 미래 연도를 물어 속한 시도의 추계값을 참고로 보여 준 것은 답이 아니다
+    if (
+        status == "out_of_range"
+        and suggestion.get("status") == "ok"
+        and not result.get("sub_future")
+    ):
         return ANSWER
     return REFUSE
 

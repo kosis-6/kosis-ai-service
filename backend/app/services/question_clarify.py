@@ -5,7 +5,35 @@ import re
 VAGUE_REGION = re.compile(
     r"우리\s*(?:동네|지역|구(?=에서|의|는|에|\s|$|[?.])|시(?=에서|의|는|에|\s|$|[?.]))"
     r"|내가\s*사는\s*(?:곳|지역)"
+    # "여기 인구 얼마나 돼?", "이 동네 1인 가구 비율": 지금 있는 곳을 가리키는 말
+    r"|(?:^|\s)(?:여기|이곳|이\s*동네|이\s*지역)(?:는|은|에는?|에서|서|의|\s)"
+    # "특정 시군구에서 가장 많은 …": 지역 자리를 비워 둔 질문
+    r"|특정\s*(?:읍면동|시군구|시도|지역|동네)"
 )
+# "시군구별 ○○은 어떻게 변했어?": 시군구(약 250곳)마다의 추이는 한 번에 보여 줄 수 없어 어느
+# 시군구인지 좁혀 묻는다 (11/23 세진). 순위 · 조건으로 거르는 질문("시군구별 ○○이 가장 높은 곳",
+# "○○ 이상인 시군구를 찾아")은 답이 몇 곳으로 줄어들므로 묻지 않는다. 시도별(17곳)도 묻지 않는다
+EACH_SIGUNGU = re.compile(r"(?:전국\s*)?(?:각\s*)?시\s*군\s*구\s*(?:별|마다)(?:로)?")
+TREND_WORDS = re.compile(r"추이|변화|변했|변해|바뀌|달라졌|늘었|줄었")
+NARROWING_WORDS = re.compile(
+    r"가장|제일|상위|하위|순위|top|찾|어디|어느|곳[은이을]|이상|이하|넘는|넘은|미만|초과|"
+    r"높은|낮은|많은|적은|큰|작은",
+    re.IGNORECASE,
+)
+
+
+WHOLE_COUNTRY = ("전체", "전국", "우리나라", "대한민국", "한국")
+
+
+def too_many_regions(question: str) -> bool:
+    """시군구마다의 추이를 거르는 조건 없이 물었는가"""
+    return bool(
+        EACH_SIGUNGU.search(question)
+        and TREND_WORDS.search(question)
+        and not NARROWING_WORDS.search(question)
+    )
+
+
 # 출발 지역을 말한 이사 질문만 다룬다. '수원으로 이사 온' 질문을 전출로 바꾸지 않는다.
 MOVE_COUNT = re.compile(r"에서\s*.{0,25}이사(?!\s*(?:온|오는|오신))")
 MOVE_SPECIFIC = re.compile(
@@ -30,6 +58,14 @@ def detect(question: str, regions: list[str]) -> dict | None:
         return {
             "kind": "local_region",
             "prompt": "어느 지역을 말씀하시나요? 시·군·구 이름을 알려 주세요 (예: 수원시).",
+            "options": [],
+        }
+    # "30대 전체 인구"의 '전체'처럼 전국을 가리키는 말은 지역을 정한 것이 아니다
+    if too_many_regions(question) and not [r for r in regions if r not in WHOLE_COUNTRY]:
+        return {
+            "kind": "local_region",
+            "prompt": "시군구별 추이는 지역이 많아 한 번에 보여 드리기 어렵습니다. "
+            "어느 시군구를 볼까요? (예: 수원시)",
             "options": [],
         }
     # 범위를 이미 말했거나("이사 나간") 전국이면(지역 밖이 없음) 묻지 않는다
@@ -116,4 +152,6 @@ def bare_region(reply: str) -> str | None:
 
 
 def merge_region(question: str, region: str) -> str:
-    return VAGUE_REGION.sub(region, question)
+    if VAGUE_REGION.search(question):
+        return VAGUE_REGION.sub(region, question)
+    return EACH_SIGUNGU.sub(region, question, count=1)  # "시군구별 ○○" → "수원시 ○○"

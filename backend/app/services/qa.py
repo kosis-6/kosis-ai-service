@@ -528,7 +528,8 @@ CAUSAL = re.compile(r"효과가?\s*(있|없|컸)|효과적|원인|왜\s|영향�
 # ("체중 3.2kg 출생아 수" → 전국 출생아 수, "결혼 1년 반 만에 이혼한 건수" → 전체 이혼 건수)
 UNSUPPORTED_MEASURE = re.compile(
     r"\d+(?:\.\d+)?\s*(?:kg|킬로그램|킬로|키로|그램)|\d+(?:\.\d+)?\s*(?:cm|센티)|"
-    r"\d+\s*년\s*반|\d+\s*개월|(?:결혼|혼인|동거|거주|근속|재직)\s*기간|체중|몸무게|키가"
+    r"\d+\s*년\s*반|\d+\s*개월|(?:결혼|혼인|동거|거주|근속|재직)\s*기간|체중|몸무게|키가|"
+    r"임신\s*(?:기간|주수|\d+\s*주)|\d+\s*주\s*(?:차|에서|부터|\s*~|\s*사이|\s*만에|\s*미만|\s*이상)"
 )
 # 앞으로를 묻는 질문 ("출산율이 앞으로 오를까?").
 # 미래 연도를 말했으면 장래추계로 답하므로 따로 본다
@@ -536,6 +537,27 @@ PREDICT = re.compile(
     r"앞으로|향후|미래에?|전망|예측|예상(?!보다)|"
     r"(오를|내릴|늘|줄|늘어날|줄어들|증가할|감소할|떨어질|올라갈|내려갈|회복할|반등할)\s*(까|지)"
 )
+# 짐작을 묻는 말투: "~ㄹ까"(될까 · 태어날까 · 오를까), "~ㄹ 것 같아". "몇 명일까"(지금 값)는 뺀다
+GUESS_TAIL = re.compile(r"(?:것|거)\s*같|(?:될|할)\s*(?:거|것)\s*래")
+# 앞으로를 가리키는 말 (미래 연도는 따로 본다)
+FUTURE_WORDS = re.compile(r"내년|내후년|앞으로|향후|장차|\d+\s*년\s*(?:뒤|후)")
+# 값이 아니라 방향을 묻는 말 ("더 많이 태어날까", "다시 오를까", "계속 줄까")
+DIRECTION_WORDS = re.compile(r"더\s|다시|계속|여전히")
+
+
+def asks_guess(question: str) -> bool:
+    """짐작을 묻는 말투인가. 받침 ㄹ + '까'는 글자 코드로 본다 (될 · 날 · 를 · 늘 · 줄 …)"""
+    if GUESS_TAIL.search(question):
+        return True
+    for i, ch in enumerate(question):
+        if ch != "까" or i == 0:
+            continue
+        prev = question[i - 1]
+        if "가" <= prev <= "힣" and (ord(prev) - 0xAC00) % 28 == 8 and prev not in "일":
+            return True
+    return False
+
+
 # "가장 많이 빠져나간 시군구", "합계출산율이 가장 높은 시도" → 순위
 RANK_ASK = re.compile(
     r"(가장|제일|꼴찌|최하위)\S*\s*(\S+\s*){0,3}?(시군구|시도|지역|곳|구|시)(는|가|은|이|를|\s|$|\?)"
@@ -1736,12 +1758,23 @@ def _read_question(question, parsed, fix):
         kind = "causal"
     if (m := UNSUPPORTED_MEASURE.search(question)) and kind not in ("other", "parse_error"):
         parsed["unsupported_condition"] = m[0].strip()
+    guess = asks_guess(question)
+    if guess:
+        parsed["guess"] = True  # 시군구의 미래 값을 '없는 연도'와 '예측'으로 가를 때 쓴다
     if PREDICT.search(question) and kind not in ("other", "parse_error"):
         # 미래 연도를 말했으면 장래추계로 답한다 (예: "2040년 서울 인구는 몇 명이 될까?")
         lo, hi = indicators._data_years()
         years = [y for y in (parsed.get("year"), parsed.get("end_year")) if y]
         if not any(y > hi for y in years):
             parsed["prediction"] = True
+    if (
+        guess
+        and kind not in ("other", "parse_error")
+        and FUTURE_WORDS.search(question)
+        and DIRECTION_WORDS.search(question)
+    ):
+        # "내년엔 아기가 더 많이 태어날까?": 미래 연도가 있어도 값이 아니라 늘지 줄지를 묻는다
+        parsed["prediction"] = True
     if (m := SPAN.search(question)) and kind in ("value", "trend", "causal"):
         start, end = sorted((int(m[1]), int(m[3])))  # "2023년이랑 2020년"도 앞선 해부터
         if kind == "value":
@@ -2054,6 +2087,10 @@ def compute(q):
             if not reason.startswith(survey):
                 result["reason"] = f"{survey} {reason}"
     _add_latest_note(q, result)
+    if result.get("sub_future") and not q.get("guess"):
+        # 시군구의 미래 연도를 콕 집어 물었다 ("2030년 ○○시 인구 알려줘"): 짐작을 물은 것이 아니라
+        # 아직 없는 연도를 물은 것이다. 속한 시도의 추계값은 그대로 참고로 보여 준다
+        result["status"] = "out_of_range"
     return result
 
 
@@ -2925,6 +2962,8 @@ REFUSAL_GUIDE = {
     "out_of_range": "수록 기간 안의 연도로 다시 질문해 주세요.",
     "region_not_in_year": "그 지역이 있던 연도로 다시 질문해 주세요.",
     "missing_data": "다른 연도나 지역으로 질문해 주세요.",
+    "no_region_level": "자료가 있는 지역 단위로 다시 질문해 주세요.",
+    "no_joint_table": "조건을 하나씩 나눠 질문해 주세요.",
     "data_loading": (
         "몇 분 뒤 다시 질문해 주세요. 그 전에는 아래 KOSIS 통계표에서 직접 볼 수 있습니다."
     ),
@@ -3691,6 +3730,7 @@ DATA_GAP = {
     "out_of_range",
     "region_not_in_year",
     "missing_data",
+    "no_region_level",
     "data_loading",
 }
 REQUESTS_DIR = Path(__file__).resolve().parents[2] / "data" / "requests"
