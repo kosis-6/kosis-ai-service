@@ -476,9 +476,21 @@ def _base(name, ind, status="ok", **extra):
 
 
 def _display(reg):
+    """답·되묻기에 보이는 지역 이름: "경상남도 창원시", "경기도 부천시 원미구"
+    regions.path는 "경기도 > 원미구"처럼 시가 빠져 있어 쓰지 않는다
+    (path는 표 지역 잇기에 쓰이므로 그대로 둔다)"""
+    name = _base_name(reg["region_name"])
     if reg["kind"] in ("전국", "시도") or not reg.get("sido_name"):
-        return reg["region_name"]
-    return f"{reg['sido_name']} {reg['region_name']}"
+        return name
+    if reg["kind"] == "일반구":
+        # 일반구 코드 앞 4자리 = 시 코드 앞 4자리 (부천시 41190 → 원미구 41192)
+        city = _rows(
+            "select region_name from regions where kind = '시군구' and region_code = ?",
+            [reg["region_code"][:4] + "0"],
+        )
+        if city:
+            return f"{reg['sido_name']} {_base_name(city[0]['region_name'])} {name}"
+    return f"{reg['sido_name']} {name}"
 
 
 def _change_notes(region_code, y0=None, y1=None):
@@ -968,6 +980,34 @@ def find_regions(text):
     return [name for _, name in sorted(found)]
 
 
+def _base_name(name):
+    """비교용 지역 이름: "창원시(통합)" → "창원시", "포항시(계)" → "포항시"
+    (load_area.SUFFIX와 같은 꼬리)"""
+    return re.sub(r"\((?:계|통합)\)$", "", name or "")
+
+
+def _change_groups():
+    """행정구역 개편 기록마다 함께 적힌 코드 묶음"""
+    return [
+        set(r["region_codes"].split(",")) for r in _rows("select region_codes from region_changes")
+    ]
+
+
+def _same_place(a, b):
+    """옛·새 코드가 이어지는 같은 지역인가.
+    이름이 같고(꼬리 무시) 같은 시도이거나 같은 개편 기록에 함께 적힌 코드
+    예) 원미구 41195·41192, 군위군 47720·27720, 광주 동구 29110·12210.
+    인천 동구 28140과 부산 동구 26170은 이름만 같은 다른 지역"""
+    if _base_name(a["region_name"]) != _base_name(b["region_name"]):
+        return False
+    if a["region_code"] == b["region_code"]:
+        return True
+    if a.get("sido_code") and a.get("sido_code") == b.get("sido_code"):
+        return True
+    pair = {a["region_code"], b["region_code"]}
+    return any(pair <= g for g in _change_groups())
+
+
 def resolve_region(name, year=None, sigungu=False):
     """지역 이름·별칭·코드 → 지역 정보
 
@@ -990,7 +1030,11 @@ def resolve_region(name, year=None, sigungu=False):
         select distinct r.region_code, r.region_name, r.kind, r.sido_code, r.sido_name,
                         r.valid_from, r.valid_to
         from regions r left join region_aliases a using (region_code)
-        where (replace(a.alias, ' ', '') = ? or r.region_code = ?) {extra}
+        where (? in (replace(a.alias, ' ', ''),
+                     case when r.region_name like '%(통합)' or r.region_name like '%(계)'
+                          then replace(replace(replace(r.region_name, '(통합)', ''), '(계)', ''),
+                                       ' ', '') end)
+               or r.region_code = ?) {extra}
         order by r.region_code
     """
     key = _norm(name)
@@ -1015,6 +1059,19 @@ def resolve_region(name, year=None, sigungu=False):
                         sql.format(extra="and r.sido_code = ?"),
                         [rest + suffix, rest + suffix, sido["region_code"]],
                     )
+
+    # "부천 원미구", "수원시 영통구", "경기 부천 원미구": 앞말이 시면 그 시 안의 일반구에서 찾는다.
+    # 일반구 코드는 앞 4자리가 시 코드와 같다
+    # (수원시 41110 → 영통구 41117, 부천시 41190 → 원미구 41192)
+    if not found and len(parts) >= 2:
+        city = resolve_region(" ".join(parts[:-1]), year=year)
+        if city["status"] == "ok" and city["kind"] == "시군구":
+            gu = _norm(parts[-1])
+            in_city = "and r.kind = '일반구' and substr(r.region_code, 1, 4) = ?"
+            prefix = city["region_code"][:4]
+            found = _rows(sql.format(extra=in_city), [gu, gu, prefix])
+            if not found and not gu.endswith("구"):
+                found = _rows(sql.format(extra=in_city), [gu + "구", gu + "구", prefix])
 
     if sigungu and len(found) == 1 and found[0]["kind"] == "시도":
         short = _norm(name)
@@ -1043,12 +1100,23 @@ def resolve_region(name, year=None, sigungu=False):
                 found = found + same
 
     if len(found) > 1 and year is not None:
-        found = [
+        alive = [
             r
             for r in found
             if (r["valid_from"] is None or year >= r["valid_from"])
             and (r["valid_to"] is None or year <= r["valid_to"])
-        ] or found
+        ]
+        # 같은 지역의 옛 코드만 빠지면(부천 원미구) 그 해 코드로 고른다.
+        # 다른 지역이 그 해에 없으면(2026년 광주: 광주광역시 2025년까지) 남은 지역(경기 광주시)으로
+        # 말없이 답하지 않고 되묻는다. 없던 지역을 고르면 region_not_in_year 안내로 간다
+        # 그 해에 없는 코드는 이어지는 지금 코드가 후보에 있을 때만 하나씩 뺀다
+        # (2026년 동구: 광주 동구 29110은 전남광주 동구 12210이 있어 빼고, 인천 동구는 남김)
+        found = [r for r in found if r in alive or not any(_same_place(r, a) for a in alive)]
+
+    # 연도를 말하지 않았고 같은 지역의 옛·새 코드만 남았으면 지금 코드
+    # ("창원시" → 창원시(통합) 48120, "원미구" → 2024년에 다시 생긴 41192). 다른 지역끼리면 되묻는다
+    if len(found) > 1 and year is None and all(_same_place(r, found[0]) for r in found):
+        found = [r for r in found if r["valid_to"] is None] or found
 
     if not found:
         return {

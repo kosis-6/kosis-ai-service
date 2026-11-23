@@ -223,7 +223,21 @@ def resolve_all(question: str) -> list[AgeRef]:
     return out
 
 
+AGE_LOWER_BOUND = r"이상|초과|넘(?:은|는)"
+AGE_OVER = re.compile(rf"(?:만\s*)?(\d+)\s*(?:세|살)\s*({AGE_LOWER_BOUND})")
+AGE_OVER_UNDER = re.compile(
+    rf"(?:만\s*)?(\d{{1,3}})\s*(?:세|살)\s*({AGE_LOWER_BOUND})\s*"
+    r"(?:만\s*)?(\d{1,3})\s*(?:세|살)\s*(미만|이하)"
+)
+
+
+def lower_age(age: str, bound: str) -> int:
+    """평가 기준의 '15살 넘은'은 15세 이상, 명시적인 '초과'만 다음 나이부터다."""
+    return int(age) + (bound == "초과")
+
+
 AGE_SPANS = [
+    (AGE_OVER_UNDER, lambda m: (lower_age(m[1], m[2]), int(m[3]) - (m[4] == "미만"))),
     (re.compile(r"(\d+)\s*대\s*이상"), lambda m: (int(m[1]), None)),
     (re.compile(r"(\d+)\s*[~\-]\s*(\d+)\s*대"), lambda m: (int(m[1]), int(m[2]) + 9)),
     # "20대 초반" = 20~23세, "중반" = 24~26세, "후반" = 27~29세
@@ -231,7 +245,7 @@ AGE_SPANS = [
     (re.compile(r"(\d+)\s*대\s*중반"), lambda m: (int(m[1]) + 4, int(m[1]) + 6)),
     (re.compile(r"(\d+)\s*대\s*후반"), lambda m: (int(m[1]) + 7, int(m[1]) + 9)),
     (re.compile(r"(\d+)\s*대(?!\s*(광역시|도시))"), lambda m: (int(m[1]), int(m[1]) + 9)),
-    (re.compile(r"(\d+)\s*세\s*이상"), lambda m: (int(m[1]), None)),
+    (AGE_OVER, lambda m: (lower_age(m[1], m[2]), None)),
     (re.compile(r"(\d+)\s*[~\-]\s*(\d+)\s*세"), lambda m: (int(m[1]), int(m[2]))),
     # 미만은 그 나이를 빼고(15세 미만 = 0~14세), 이하는 넣는다(15세 이하 = 0~15세)
     (re.compile(r"(\d+)\s*세\s*미만"), lambda m: (0, int(m[1]) - 1)),

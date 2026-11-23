@@ -20,6 +20,8 @@ HCX가 다시 지어낼 수 있다. 숫자는 매 턴 DB에서 다시 계산한�
   1. 되묻는 중이면 → 이번 말이 그 답인지 규칙으로 본다 (연도 / 지역 후보). 답이면 이어서 처리
   2. 이어 갈 조건이 없으면 → 새 질문 (지금까지의 해석 경로 qa.ask 그대로)
   3. "막대그래프로"·"요약해줘" → 규칙으로 알아보고 HCX·계산 없이 직전 답으로 답한다
+     "부산은?"(지역만 바꾸기)·"그중 여성 비율은?"(직전 대상 안의 비율)도 규칙으로 읽는다
+     (HCX 변경 추출이 실행마다 달라 다른 표를 안내하거나 비율 대신 수로 답했다, 11/23)
   4. 그 밖 → HCX에 바뀐 것만 묻는다 (FOLLOW_SYSTEM)
        change   조건을 고쳐 다시 계산 (qa.answer). HCX 호출은 이 한 번
        chart / summary   3과 같다
@@ -64,6 +66,7 @@ from app.services import (
     flow,
     indicators,
     llm_calls,
+    multi_indicator,
     qa,
     question_clarify,
     refusal,
@@ -238,6 +241,9 @@ def effective(parsed: dict, result: dict) -> dict:
 def sex_not_split(parsed: dict, result: dict) -> bool:
     """남자·여자만 보자고 했는데 성별로 나뉜 자료가 없어 전체 값으로 답했는가"""
     leaves = qa._leaves(result) if result.get("status") == "ok" else []
+    spec = parsed.get("dynamic_spec") or {}
+    if spec.get("kind") == "ratio" and (spec.get("fixed") or {}).get("sex") == parsed.get("sex"):
+        return False  # "1인 가구 중 여성 비율": 성별은 비율의 분자에 들어 있다 (11/23)
     return (
         parsed.get("sex") in ("남", "여")
         and bool(leaves)
@@ -274,6 +280,11 @@ def _year(value: Any) -> int | None:
     except (TypeError, ValueError):
         return None
     return year if 1900 <= year <= 2100 else None
+
+
+def _without_gender(term: str, sex: str) -> str:
+    word = qa.GENDER_WORDS[sex].pattern
+    return re.sub(rf"(?<![가-힣])(?:{word})\s*", "", term, count=1).strip()
 
 
 def apply_changes(conditions: dict, changes: dict) -> tuple[dict, set[str]]:
@@ -331,6 +342,11 @@ def apply_changes(conditions: dict, changes: dict) -> tuple[dict, set[str]]:
         _clear_period_questions(c)
 
     if changes.get("sex") in ("계", "남", "여"):
+        old_sex = c.get("sex")
+        if changes["sex"] == "계" and old_sex in ("남", "여"):
+            term = c.get("term") or c.get("indicator") or ""
+            if not dynamic_indicator.PCT_ASK.search(term):
+                c["term"] = _without_gender(term, old_sex)
         c["sex"] = changes["sex"]
         changed.add("sex")
 
@@ -426,8 +442,8 @@ def names_indicator(question: str, parsed: dict) -> bool:
     "2015년부터 추이로 보여줘"처럼 기간·방식만 말하면 말하지 않은 것 (앞 지표를 이어받는다).
     HCX가 지표 없는 질문에 총인구를 채워 넣기도 해서, 지표 이름이 아니라 질문의 말을 본다"""
     question = qa.without_survey(question)  # "인구총조사 기준으로"의 "인구"는 지표가 아니다
-    if indicators.find_in_text(question):
-        return True
+    if indicators.find_in_text(question) or PEOPLE_WORDS.search(question):
+        return True  # 사람 · 인구 · 주민: 총인구를 물었다 ("사람이 많아 적어?", 11/23)
     compact = question.replace(" ", "")
     words = [parsed.get("term"), parsed.get("indicator")]
     return any(w and w.strip() not in VIEW_WORDS and w.replace(" ", "") in compact for w in words)
@@ -462,7 +478,9 @@ def inherit(
     if kind in NO_CONDITIONS or prev.get("type") in NO_CONDITIONS:
         return p, s
     if question and prev.get("indicator") and not names_indicator(question, p):
-        for key in ("indicator", "term", "ages", "age_group", "by"):
+        # 표에서 바로 계산한 지표면 그 정의(dynamic_spec)도: 같은 표로 다시 계산한다
+        # (정의를 두고 가면 새 말 글자로 통계표를 다시 찾아 다른 표를 안내했다, 11/23)
+        for key in ("indicator", "term", "ages", "age_group", "by", "dynamic_spec"):
             if prev.get(key) is not None:
                 p[key] = copy.deepcopy(prev[key])
         p.pop("unsupported", None)
@@ -724,6 +742,127 @@ def region_split_changes(question: str, conditions: dict) -> dict | None:
     if BY_SIDO.search(q):
         return {**changes, "level": "시도", "sido": None}
     return None
+
+
+# 지역 이름을 뺀 나머지가 이것뿐이면 지역만 바꾸는 말 ("부산은?", "서울도?", "대구랑 부산은 어때?")
+REGION_ONLY_REST = re.compile(
+    r"[\s,·와과랑하고및]*(?:광역시|특별시|특별자치시|특별자치도|시|도|군|구)?\s*"
+    r"(?:의\s*경우(?:에)?|쪽|에서|에선)?\s*(?:은|는|도|이면|면)?\s*요?\s*"
+    r"(?:어때요?|어떤가요?|어떻게\s*돼요?)?\s*[?.!~]*\s*"
+)
+ALSO = re.compile(r"^\s*도\s*요?\s*(?:어때요?)?\s*[?.!~]*\s*$")  # 지역 이름을 뺀 나머지가 "도?"
+
+
+def region_only_changes(question: str, conditions: dict) -> dict | None:
+    """지역만 바꾸는 짧은 말이면 지역 변경, 아니면 None. HCX 변경 추출은 이 말을 실행마다 다르게
+    읽어, 새 질문으로 보면 "부산은?" 글자로 통계표를 찾아 관련 없는 표를 안내했다 (11/23).
+    순위를 보던 중이면 HCX에 맡긴다 ("부산은?"이 '부산은 몇 위?'일 수 있다)"""
+    q = question.strip()
+    if len(q) > REPLY_MAX_CHARS or conditions.get("type") in ("rank", None):
+        return None
+    if indicators.find_in_text(q) or ask_followup.has_explicit_year(q):
+        return None
+    regions = indicators.find_regions(q)
+    if not regions:
+        return None
+    rest = q
+    for name in sorted(regions, key=len, reverse=True):
+        rest = rest.replace(name, " ")
+    if not REGION_ONLY_REST.fullmatch(rest):
+        return None
+    if len(regions) > 1 and not re.search(r"랑|와|과|하고|및|,|·", rest):
+        return None  # "서울 강남구는?"은 두 곳이 아니라 한 곳이다
+    return {"regions": {"op": "add" if ALSO.match(rest) else "set", "value": regions}}
+
+
+# 후속 말의 '그중' 같은 앞말 (직전 답의 대상 안에서 묻는다)
+AMONG = re.compile(r"^\s*(?:그\s*중에?서?|이\s*중에?서?|그\s*가운데|그\s*안에서|거기서|여기서)\s*")
+GROUP_NOUN_BEFORE_RATIO = (
+    r"(?:인구|사람들?|주민들?)\s*(?:[의은는이가]\s*)?"
+    r"(?=비율|비중|(?:몇\s*)?(?:%|퍼센트|프로))"
+)
+GENERIC_GROUP_RATIO = re.compile(rf"^(?:남성|여성|남자|여자)?\s*{GROUP_NOUN_BEFORE_RATIO}")
+
+
+def _with_demographics(term: str, conditions: dict) -> str:
+    """지표 표현에 아직 없는 연령과 성별을 붙인다."""
+    if ages := conditions.get("ages"):
+        said_ages = qa.resolved_ages(term)
+        missing = [indicators.age_label(band) for band in ages if list(band) not in said_ages]
+        term = " ".join([*missing, term]).strip()
+    sex = conditions.get("sex")
+    if gender := {"남": "남성", "여": "여성"}.get(sex):
+        if not qa.GENDER_WORDS[sex].search(term):
+            other = "남" if sex == "여" else "여"
+            if dynamic_indicator.PCT_ASK.search(term):
+                # "여성 인구 비율"처럼 반대 성별의 비율을 묻는 지표면 성별을 붙이지 않는다
+                # ("남성 여성 인구 비율"이 되지 않게)
+                if qa.GENDER_WORDS[other].search(term):
+                    return term
+            else:
+                term = _without_gender(term, other)
+            term = f"{gender} {term}"
+    return term
+
+
+def ratio_followup(question: str, state: dict) -> str | None:
+    """직전 값의 대상 안에서 비율을 묻는 말("그중 여성 비율은?")이면 직전 조건으로 만든 새 질문,
+    아니면 None. 변경 추출은 이 말을 성별 변경으로만 읽어 여성 1인 가구 수로 답했다 (11/23).
+    만든 질문은 새 질문 경로로 계산한다 (분자 · 분모를 고르고 분자 ≤ 분모를 검증한다)"""
+    c = state.get("conditions") or {}
+    q = question.strip()
+    if len(q) > REPLY_MAX_CHARS + 10 or not dynamic_indicator.PCT_ASK.search(q):
+        return None
+    if c.get("type") not in ("value", "compare", "trend"):
+        return None
+    rest = AMONG.sub("", q).strip()
+    # "그중 65세 이상 비율"의 연령은 직전 집단을 나누는 조건이다.
+    # 연령을 빼고도 지표 이름이 남으면 새 지표로 처리한다.
+    indicator_text = q
+    if rest != q:
+        rest = qa.agegroup.native_to_digits(rest)
+        indicator_text = dynamic_indicator._without_age_words(rest)
+        if GENERIC_GROUP_RATIO.match(indicator_text):
+            # "그중 여성 인구 비율"의 인구는 직전 집단을 가리킨다.
+            rest = " ".join(re.sub(GROUP_NOUN_BEFORE_RATIO, " ", rest, count=1).split())
+            indicator_text = dynamic_indicator._without_age_words(rest)
+    if names_indicator(indicator_text, {}):
+        return None
+    spec = c.get("dynamic_spec") or indicators.spec(c.get("indicator") or "") or {}
+    if spec.get("unit") == "%" or spec.get("kind") in ("ratio", "composition"):
+        return None  # 직전 답이 이미 비율이면 변경 추출에 맡긴다
+    term = re.sub(r"\s*수$", "", str(c.get("term") or c.get("indicator") or "")).strip()
+    if not term or not rest:
+        return None
+    term = _with_demographics(term, c)
+    if (survey := (c.get("asked") or {}).get("survey")) and not qa.survey_said(q):
+        if not qa.survey_said(term):
+            term = f"{survey} 기준 {term}"
+    where = ", ".join(c.get("regions") or []) or "전국"
+    return " ".join(p for p in (period_text(c), where, f"{term} 중 {rest}") if p)
+
+
+# 사람 수를 묻는 일상어: 지원 지표 이름이 따로 없으면 총인구를 말한 것으로 본다
+PEOPLE_WORDS = re.compile(r"사람|인구|주민")
+
+
+def asks_other_people(question: str, conditions: dict) -> bool:
+    """지금 지표가 총인구가 아닌데 말이 사람 수를 묻는가 ("노원구가 강남구보다 사람이 많아 적어?").
+    변경 추출은 지역 변경으로 읽어 앞 지표(1인 가구)를 그대로 썼다 (11/23) → 새 질문으로 본다"""
+    q = qa.without_survey(question)
+    if not PEOPLE_WORDS.search(q) or indicators.find_in_text(q):
+        return False
+    current = [str(conditions.get(k) or "") for k in ("indicator", "term")]
+    if conditions.get("indicator") == "총인구":
+        return False
+    return not any(w and w.replace(" ", "") in q.replace(" ", "") for w in current)
+
+
+def inherited_question(parsed: dict) -> str:
+    """이어받은 조건으로 만든 통계표 찾기용 질문 ("2020년 부산 1인 가구 중 70세 이상 비율")"""
+    where = ", ".join(parsed.get("regions") or [])
+    what = parsed.get("term") or parsed.get("indicator") or ""
+    return " ".join(p for p in (period_text(parsed), where, _with_demographics(what, parsed)) if p)
 
 
 def summary_request(question: str) -> bool:
@@ -1034,7 +1173,9 @@ async def _answer(conditions: dict, trace: dict | None = None) -> dict:
     return res
 
 
-async def _new(question: str, state: dict | None) -> tuple[dict, dict, str | None]:
+async def _new(
+    question: str, state: dict | None, *, scoped_age_ratio: bool = False
+) -> tuple[dict, dict, str | None]:
     """새 질문: 지금까지의 해석 경로 그대로. 앞 조건이 있으면 말하지 않은 것을 이어받는다
     → (응답, 출처, 알림)"""
     kept: dict[str, Any] = {}
@@ -1047,6 +1188,12 @@ async def _new(question: str, state: dict | None) -> tuple[dict, dict, str | Non
             parsed, kept["sources"] = inherit(
                 parsed, kept["sources"], prev, state["sources"], question
             )
+        if scoped_age_ratio:
+            # 직전 연령으로 제한한 비율은 전 연령 공표 비율이나 독립된 두 값으로 대체할 수 없다.
+            parsed.update(unsupported=True, cross=None, indicators=None, dynamic_spec=None)
+            parsed["scoped_age_ratio"] = True
+            if parsed.get("type") not in ("trend", "compare"):
+                parsed["type"] = "value"
         return parsed
 
     if refused := await table_guide.off_domain_early(question):
@@ -1057,6 +1204,10 @@ async def _new(question: str, state: dict | None) -> tuple[dict, dict, str | Non
     res = await qa.ask(question, adjust=adjust)
     sources = kept.get("sources") or sources_of(question, res.get("parsed") or {})
     notice = inherited_notice(res.get("parsed") or {}, sources)
+    if sources.get("indicator") == "inherited" and not scoped_age_ratio:
+        # 지표를 이어받은 짧은 말("부산은 어때?")로 통계표를 찾으면 그 글자에 걸린 다른 표가 나온다.
+        # 표를 찾을 때는 이어받은 조건으로 만든 질문을 쓴다 (_attach_tables, 11/23)
+        res["search_question"] = inherited_question(res.get("parsed") or {})
     if res.get("status") in {
         "out_of_range",
         "region_not_in_year",
@@ -1262,6 +1413,13 @@ async def _turn(
     ):
         regions = await asyncio.to_thread(indicators.find_regions, question)
         if clarification := question_clarify.detect(question, regions):
+            if refused := await table_guide.off_domain_early(question):
+                # 범위 밖 주제("우리 동네 청년 실업률")는 지역을 묻지 않고 바로 알린다.
+                # 전에는 지역을 물은 뒤에야 통계표를 못 찾았다고 답했다 (11/23)
+                why = "인구 통계에 없는 주제 (되묻기 전에 거절)"
+                flow.add("범위 검사", refused.get("status"), why)
+                refused["request_type"], refused["question"] = NEW, question
+                return refused, {}, None
             return _clarification_answer(question, clarification), {}, None
     if (state or {}).get("search_session") and (
         selections
@@ -1338,15 +1496,33 @@ async def _turn(
         # "왜 줄어든 거야?": 원인은 판단하지 않는다고 알리고 직전 답의 요약을 다시 준다
         text = f"{NO_CAUSE}\n{answer_summary.text(state['last']['summary'])}"
         return _reuse(state, text, state["last"].get("chart"), SUMMARY), state["sources"], None
+    if view is None and (asked := await asyncio.to_thread(ratio_followup, question, state)):
+        # "그중 여성 비율은?": 직전 조건으로 만든 질문("2020년 서울 1인 가구 중 여성 비율은?")을
+        # 새 질문으로 계산한다 (분자 · 분모 고르기와 검증은 새 질문 경로가 한다)
+        flow.add("비율 후속 질문", "새 질문으로", asked)
+        res, sources, notice = await _new(
+            asked, state, scoped_age_ratio=bool(state["conditions"].get("ages"))
+        )
+        res["request_type"], res["question"] = CHANGE, asked
+        return res, sources, notice
     if view is None and not (has_last and summary_request(question)):
         trace: dict = {}
         split = await asyncio.to_thread(region_split_changes, question, state["conditions"])
+        region_only = await asyncio.to_thread(region_only_changes, question, state["conditions"])
         if composition_request(question):  # "구성비로 보여줘": 보는 방식만 바꾼다
             delta = parse_delta('{"request_type": "change", "changes": {"type": "composition"}}')
         elif split:  # "구별로 보여줘": 보던 시도 안의 시군구 순위로
             delta = {"request_type": CHANGE, "changes": split, "chart": None, "unclear": None}
+        elif region_only:  # "부산은?": 지역만 바꾼다 (HCX 변경 추출 없이)
+            delta = {"request_type": CHANGE, "changes": region_only, "chart": None, "unclear": None}
         else:
             delta = await extract(state, question, trace)
+            if (
+                delta["request_type"] == CHANGE
+                and "indicator" not in delta["changes"]
+                and await asyncio.to_thread(asks_other_people, question, state["conditions"])
+            ):
+                delta["request_type"] = NEW  # 사람 수를 묻는 새 질문: 앞 지표를 이어받지 않는다
         year = follow_year(question, state["conditions"])
         if year and not names_indicator(question, {}) and delta["request_type"] != NEW:
             # 상대 시점은 HCX가 아니라 코드가 푼다 ("작년은?"을 2020년의 다음 해로 읽던 문제).
@@ -1368,6 +1544,16 @@ async def _turn(
             if changed:
                 res = await _answer(conditions, trace)
                 res["request_type"] = CHANGE
+                status = res.get("status")
+                retry_region = (
+                    status == "missing_data"
+                    and "regions" in changed
+                    and conditions.get("dynamic_spec")
+                )
+                if status in table_guide.SEARCH_INSTEAD or retry_region:
+                    # 바꾼 조건으로 바로 계산하지 못해 통계표 찾기로 간다 (두 값을 나눈 답 등).
+                    # 말 글자("부산은?")가 아니라 바꾼 조건으로 만든 질문으로 찾는다 (11/23)
+                    res["search_question"] = inherited_question(conditions)
                 sources = {**state["sources"], **{k: "user" for k in changed if k in LABELS}}
                 return res, sources, None
             delta["request_type"] = NEW
@@ -1489,6 +1675,8 @@ async def _attach_tables(res: dict, state: dict | None, question: str, user_id: 
     ):
         return
     asked = res.get("question") or question
+    # 지표를 이어받은 새 질문이면 이어받은 조건으로 만든 질문으로 표를 찾는다 (_new)
+    searched = res.get("search_question") or asked
     if res.get("status") == qa.CROSS_DYNAMIC:
         if await _cross_dynamic(res, state, asked, user_id):
             return
@@ -1497,7 +1685,7 @@ async def _attach_tables(res: dict, state: dict | None, question: str, user_id: 
         sid = (state or {}).get("search_session") or table_guide.new_search_session()
         kind, trace, parsed = res.get("request_type"), res.get("trace") or {}, res.get("parsed")
         # 전에 바로 계산한 지표면 통계표 찾기 없이 그 표로 계산한다 (계산 방법 캐시)
-        computed = await dynamic_indicator.cached_answer(asked, parsed or {}, trace)
+        computed = await dynamic_indicator.cached_answer(searched, parsed or {}, trace)
         if computed is not None:
             res.clear()
             res.update(computed)
@@ -1507,7 +1695,7 @@ async def _attach_tables(res: dict, state: dict | None, question: str, user_id: 
             await _attach_cards(res, asked)
             return
         try:
-            found = await table_guide.find_tables(asked, sid, None, user_id)
+            found = await table_guide.find_tables(searched, sid, None, user_id)
         except Exception:
             logger.exception("통계표 찾기 실패")
             return
@@ -1515,7 +1703,7 @@ async def _attach_tables(res: dict, state: dict | None, question: str, user_id: 
             # 넘기기 꾸러미(found["handoff"])의 후보 5개를
             # 동시에 계산해 고른다. 꾸러미가 없으면 예전 방식
             computed = await dynamic_indicator.compute_from_handoff(
-                asked, parsed or {}, found, trace
+                searched, parsed or {}, found, trace
             )
         except Exception:
             logger.exception("동적 지표 계산 실패")
@@ -1528,7 +1716,11 @@ async def _attach_tables(res: dict, state: dict | None, question: str, user_id: 
             await _attach_cards(res, asked)
             return
         try:
-            pair = cross_indicator.detect_partial(asked, both=True)
+            pair = (
+                None
+                if (parsed or {}).get("scoped_age_ratio")
+                else cross_indicator.detect_partial(asked, both=True)
+            )
         except Exception:
             logger.exception("두 값 나누기 감지 실패")
             pair = None
@@ -1547,7 +1739,7 @@ async def _attach_tables(res: dict, state: dict | None, question: str, user_id: 
         return
     if ungrounded(res) and await _dynamic_instead(res, state, asked, user_id):
         return
-    if searchable_after(res) and await _search_after(res, state, asked, user_id):
+    if searchable_after(res) and await _search_after(res, state, asked, user_id, searched):
         return
     await _attach_cards(res, asked)
 
@@ -1556,19 +1748,24 @@ def searchable_after(res: dict) -> bool:
     """사전 지표가 자료가 없어 답하지 못한 새 질문 (table_guide.SEARCH_AFTER).
     추계값 제안(suggestion)이 이미 있으면 그대로 둔다 (수록 기간 밖 미래 연도 → 장래추계)"""
     result = res.get("result") or {}
+    kind, status = res.get("request_type"), res.get("status")
     if result.get("final"):
         return False  # 어느 표로 가도 같은 사유 (그 지역이 생기기 전의 해)
-    if (
-        res.get("status") == "out_of_range"
-        and (res.get("parsed") or {}).get("year") == date.today().year
-    ):
+    if status == "out_of_range" and (res.get("parsed") or {}).get("year") == date.today().year:
         # 올해의 연간 값은 아직 공표 전이다. 장래추계 표로 넘어가 가정을 되묻지 않는다
         return False
+    if (
+        kind == CHANGE
+        and status == "missing_data"
+        and res.get("search_question")
+        and (res.get("parsed") or {}).get("dynamic_spec")
+    ):
+        return True  # 저장된 계산 정의로 지역을 조회할 수 없어 바꾼 조건으로 표를 다시 찾는다.
     return (
-        res.get("status") in table_guide.SEARCH_AFTER
+        status in table_guide.SEARCH_AFTER
         # 되묻기에 답한 턴(REPLY)도: 원래 질문과 받은 지역을 합친 질문이다 ("우리 시 결혼 건수" →
         # "창원시" → 사전은 시도까지만이라 끝났다. 시군구 표가 따로 있다)
-        and res.get("request_type") in (NEW, REPLY)
+        and kind in (NEW, REPLY)
         and not (result.get("suggestion") or {}).get("status") == "ok"
     )
 
@@ -1605,7 +1802,9 @@ def _year_found_elsewhere(res: dict, found: dict) -> str | None:
     return f"{have}, {when} 아래 통계표에 있습니다."
 
 
-async def _search_after(res: dict, state: dict | None, asked: str, user_id: int | None) -> bool:
+async def _search_after(
+    res: dict, state: dict | None, asked: str, user_id: int | None, searched: str | None = None
+) -> bool:
     """사전이 자료가 없어 답하지 못한 지표를 다른 통계표에서 찾아 계산한다. res를 바꿨으면 True
 
       바로 계산됨 · 대안 제안 · 칸 되묻기   그 답
@@ -1616,8 +1815,10 @@ async def _search_after(res: dict, state: dict | None, asked: str, user_id: int 
     trace = res.setdefault("trace", {})
     parsed = res.get("parsed") or {}
     try:
-        found = await table_guide.find_tables(asked, sid, None, user_id)
-        computed = await dynamic_indicator.compute_from_handoff(asked, parsed, found, trace)
+        found = await table_guide.find_tables(searched or asked, sid, None, user_id)
+        computed = await dynamic_indicator.compute_from_handoff(
+            searched or asked, parsed, found, trace
+        )
     except Exception:
         logger.exception("사전에 자료가 없는 지표의 통계표 찾기 · 계산 실패")
         return False
@@ -1697,7 +1898,7 @@ async def _dynamic_side(
     성공하면 캐시에 남아 다음 연도 · 지역은 통계표 찾기 없이 계산된다)"""
     sub_q = _side_question(parsed, phrase, kind)
     sub_parsed = {
-        **parsed,
+        **multi_indicator.without_unsaid_age(parsed, phrase),  # 연령은 그 말을 한 쪽에만
         "type": kind,
         "cross": None,
         "indicators": None,
@@ -1782,7 +1983,13 @@ async def _same_table_side(
             return None
         tables = [src["table"] for src in spec.get("sources") or []]
     sub_q = _side_question(parsed, phrase, kind)
-    sub_parsed = {**parsed, "type": kind, "indicator": phrase, "term": phrase, "dynamic_spec": None}
+    sub_parsed = {
+        **multi_indicator.without_unsaid_age(parsed, phrase),
+        "type": kind,
+        "indicator": phrase,
+        "term": phrase,
+        "dynamic_spec": None,
+    }
     if kind == "rank":
         sub_parsed["top"] = None
     items = _leftover_words(phrase)

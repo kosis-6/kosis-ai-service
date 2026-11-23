@@ -52,6 +52,19 @@ RECENT_N_YEARS = re.compile(
 )
 
 
+def lookup_trend_years(q: dict, lo: int, hi: int, year: int) -> tuple[int, int]:
+    """조회 지표의 추이 시작·끝. 시작이 수록 기간 이전이면 호출부에서 조정한다."""
+    asked = q.get("asked") or {}
+    if recent := asked.get("recent"):
+        return hi - recent + 1, hi
+    end = hi if asked.get("since") else min(q.get("end_year") or year, hi)
+    if start := q.get("start_year"):
+        return start, end
+    if asked.get("streak") or asked.get("from_start"):
+        return lo, end
+    return end - (4 if asked.get("these_days") else 5), end
+
+
 @dataclass
 class TimeRef:
     expr: str  # 질문에 쓰인 표현 ("작년", "2년 전부터")

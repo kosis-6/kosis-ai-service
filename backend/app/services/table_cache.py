@@ -5,7 +5,10 @@
   작은 표   KOSIS 요청이 INLINE_MAX_REQUESTS번 이하 → 이 요청 안에서 받고(collect_table)
             검증·적재(load_table + 적재 후 단계)한 뒤 "loaded"를 돌려준다. 질문 처리는 다시 계산한다
   큰 표     그보다 많음 → 받지 않고 "too_big". 질문 처리가 적재 대기열(app.load_jobs)에 넣고
-            적재 프로세스(pipeline/load_worker.py)가 뒤에서 받는다
+            적재 프로세스(pipeline/load_worker.py)가 뒤에서 받는다.
+            그동안 동적 지표는 답에 필요한 칸만 받아 그 질문에만 쓴다 (partial_table.py).
+            칸 고르기에 쓰는 메타는 여기서 받은 것을 잠깐 보관해 다시 쓰고(table_meta),
+            칸 요청도 같은 분당 제한·시간 제한 안에서 보낸다 (fetch_cells). 값은 DB에 넣지 않는다
 
 남은 1,640개 표 중 약 91%가 작은 표다 (카탈로그 예상 크기 기준, 2026-11-11).
 실측: 요청 1번 표 받기 + 적재 약 1초, 3~7번 약 2~5초 (요청 하나 0.2초 안팎, 간격은 LIMITER가 맞춤).
@@ -21,7 +24,8 @@
 
 설정 (환경변수)
   INLINE_MAX_REQUESTS   이 요청 수 이하면 바로 받는다 (기본 8, 0이면 끄고 항상 대기열)
-  INLINE_TIMEOUT        바로 받기를 기다리는 최대 초 (기본 20)
+  INLINE_TIMEOUT        바로 받기를 기다리는 최대 초 (기본 20). 칸만 받기에도 쓴다
+  PARTIAL_FETCH         0이면 큰 표에서 칸만 받기를 끈다 (기본 1)
 """
 
 import asyncio
@@ -31,10 +35,13 @@ import os
 import time
 from typing import Literal
 
+from app.services.memory_cache import MISSING, MemoryCache
+
 logger = logging.getLogger("table_cache")
 
 INLINE_MAX_REQUESTS = int(os.environ.get("INLINE_MAX_REQUESTS", "8"))
 INLINE_TIMEOUT = float(os.environ.get("INLINE_TIMEOUT", "20"))
+PARTIAL_FETCH = os.environ.get("PARTIAL_FETCH", "1") != "0"
 PER_MINUTE = 90  # 메타 요청까지 포함한 서비스 몫 (적재 프로세스 100회와 합쳐 200회 아래)
 BURST = 12  # 쉬고 있었으면 이만큼은 바로 보낸다 (표 하나: 메타 3 + 데이터 최대 8 = 11)
 PER_TABLE = 4  # 표 하나 안에서 동시에 보내는 요청 수
@@ -191,6 +198,7 @@ async def _download(tbl_id: str, org_id: str, trace: dict, table_dir, delta: boo
     for _ in range(3):  # 메타 요청 3번(TBL·ITM·PRD)도 분당 호출 수에 넣는다
         await limiter.wait()
     meta = await fetch_meta(client, org_id, tbl_id, pause=0)
+    _METAS.set(tbl_id, meta)  # 큰 표면 칸만 받기가 이 메타로 칸을 고른다 (table_meta)
     if delta:
         lasts, _ = await asyncio.to_thread(load_worker._with_pg, load_worker._db_state_of, tbl_id)
         periods = refresh_check.delta_periods(meta["periods"], lasts)
@@ -210,6 +218,54 @@ async def _download(tbl_id: str, org_id: str, trace: dict, table_dir, delta: boo
         meta=meta, limiter=limiter, pause=0,
     )  # fmt: skip
     return True
+
+
+# ---- 칸만 받기 (큰 표, partial_table.py) -----------------------------------------------------
+
+# 바로 받으려다 큰 표라 멈춘 표의 메타. 같은 질문의 칸만 받기가 다시 받지 않게 잠깐 둔다
+_METAS = MemoryCache("table_metas", maxsize=64, ttl=600)
+
+
+async def table_meta(tbl_id: str, org_id: str) -> dict:
+    """표의 메타 (collect_kosis.fetch_meta). 바로 받기가 받아 둔 것이 있으면 그것을 쓴다"""
+    from app.services.kosis_client import KosisClient
+    from scripts.collect_kosis import fetch_meta
+
+    meta = _METAS.get(tbl_id)
+    if meta is not MISSING:
+        return meta
+    limiter = _rate_limiter()
+    for _ in range(3):  # 메타 요청 3번(TBL·ITM·PRD)
+        await limiter.wait()
+    meta = await asyncio.wait_for(
+        fetch_meta(KosisClient(timeout=INLINE_TIMEOUT), org_id, tbl_id, pause=0), INLINE_TIMEOUT
+    )
+    _METAS.set(tbl_id, meta)
+    return meta
+
+
+async def fetch_cells(table, fetch) -> int:
+    """칸만 받은 표(partial_table.Table)에 고른 칸의 요청(partial_table.Fetch)을 보내 값을 더한다.
+    분당 제한(LIMITER)·INLINE_TIMEOUT 안에서 보내고, 하나라도 실패하면 아무것도 더하지 않는다.
+    반환: 보낸 요청 수"""
+    from app.services import partial_table
+    from app.services.kosis_client import KosisClient
+    from scripts.collect_all import DATA_PATH
+    from scripts.collect_kosis import call
+
+    client = KosisClient(timeout=INLINE_TIMEOUT)
+    limiter = _rate_limiter()
+
+    async def one(params: dict) -> list:
+        await limiter.wait()
+        query = {"method": "getList", "orgId": table.org_id, "tblId": table.tbl_id, **params}
+        return await call(client, DATA_PATH, query, pause=0)
+
+    got = await asyncio.wait_for(asyncio.gather(*(one(p) for p in fetch.requests)), INLINE_TIMEOUT)
+    for params, records in zip(fetch.requests, got, strict=True):
+        partial_table.add_records(table, params, records)
+    partial_table.done(table, fetch)
+    return len(fetch.requests)
 
 
 # ---- 최신 갱신 확인 ("최근·최신" 질문) -----------------------------------------------------

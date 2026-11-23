@@ -9,7 +9,8 @@ import asyncio
 import pytest
 
 from app.services import dynamic_indicator as d
-from app.services import indicators, lookup, qa
+from app.services import indicators, lookup, qa, search
+from app.services import slots as search_slots
 
 AGES = {
     "000": "합계",
@@ -95,6 +96,43 @@ def test_ratio_of_age_band_puts_ages_in_filters() -> None:
     assert src["filters"]["c2_id"] == ["075", "080", "085", "086"]
     assert src["den_filters"]["c2_id"] == "000" and src["den_item_id"] == "T00"
     assert "age_dim" not in src and spec["ages_in_filters"]
+
+
+def test_age_ratio_uses_population_sex_on_both_sides() -> None:
+    spec = build("서울 여성 1인 가구 중 70세 이상 비율", sex="여", ages=[[70, None]])
+    src = spec["sources"][0]
+    assert (src["item_id"], src["den_item_id"]) == ("T20", "T20")
+    assert src["filters"]["c2_id"] == ["075", "080", "085", "086"]
+    assert src["den_filters"]["c2_id"] == "000"
+    assert spec["name"].startswith("여성 ")
+
+
+@pytest.mark.parametrize(
+    ("asked_age", "expected"),
+    [(85, "086"), (65, ["075", "080", "085", "086"])],
+)
+def test_age_ratio_uses_subgroup_as_denominator(asked_age, expected) -> None:
+    spec = build(
+        f"서울 70세 이상 여성 1인 가구 중 {asked_age}세 이상 비율",
+        sex="여",
+        ages=[[70, None], [asked_age, None]],
+    )
+    src = spec["sources"][0]
+    assert (src["item_id"], src["den_item_id"]) == ("T20", "T20")
+    assert src["filters"]["c2_id"] == expected
+    assert src["den_filters"]["c2_id"] == ["075", "080", "085", "086"]
+    assert "÷ 70세 이상" in spec["formula"]
+
+
+@pytest.mark.parametrize(("age", "lo"), [("70세 이상", 70), ("노인", 65)])
+def test_sex_ratio_keeps_age_filter_on_both_sides(age, lo) -> None:
+    spec = build(f"서울 {age} 1인 가구 중 여성 비율", sex="여", ages=[[lo, None]])
+    src = spec["sources"][0]
+    assert (src["item_id"], src["den_item_id"]) == ("T20", "T00")
+    expected = ["075", "080", "085", "086"]
+    if lo == 65:
+        expected.insert(0, "070")
+    assert src["filters"]["c2_id"] == src["den_filters"]["c2_id"] == expected
 
 
 def test_composition_by_named_dimension() -> None:
@@ -815,6 +853,106 @@ def test_handoff_does_not_use_other_tables_when_review_is_exact(computed) -> Non
     assert res["status"] == "ok" and trace["handoff"]["used"]["tbl_id"] == "A"
     assert computed["tried"] == ["A"]
     assert trace["dynamic"][1]["skip"] == d.EXACT_SKIP
+
+
+@pytest.mark.parametrize("have_full_table", [True, False])
+@pytest.mark.parametrize("use_handoff", [True, False])
+@pytest.mark.parametrize(
+    ("question", "kind", "ages"),
+    [
+        ("2020년 서울 1인 가구 중 70세 이상 비율은?", "value", [[70, None]]),
+        ("2020년 서울 전체 1인 가구 수", "value", None),
+        ("2020년 서울 전체 1인 가구 연령별 구성", "composition", None),
+    ],
+)
+def test_requires_the_requested_population(
+    computed, have_full_table, use_handoff, question, kind, ages
+) -> None:
+    q = {**BASE, "type": kind, "ages": ages}
+    limited = _cand(
+        "A",
+        1,
+        picked=True,
+        checks={"year": True},
+        review={"match": "exact"},
+        tbl_nm="성별·연령별 1인가구(20세 이상, 일반가구)",
+    )
+    cands = [limited]
+    if have_full_table:
+        cands.append(_cand("B", 2, checks={"year": True}, tbl_nm="성 및 연령별 1인가구"))
+    trace = {}
+    if use_handoff:
+        res = asyncio.run(d.compute_from_handoff(question, q, _found(cands), trace))
+    else:
+        res = asyncio.run(d.answer(question, q, {"status": "ok", "recommendations": cands}, trace))
+    assert res is not None
+    if have_full_table:
+        assert res["status"] == "ok"
+        assert computed["tried"] == ["B"]
+    else:
+        assert res["status"] == "band_mismatch" and "value" not in res["result"]
+        assert "20세 이상만 집계" in res["answer"] and res["sources"][0]["tbl_id"] == "A"
+        assert computed["tried"] == []
+
+
+@pytest.mark.parametrize(
+    ("question", "limit"),
+    [
+        ("1인 가구 중 20세 이상 비율", "20세 이상"),
+        ("18세 이상 1인 가구 중 70세 이상 비율", "20세 이상"),
+        ("20세 이상 1인 가구 중 70세 이상 비율", None),
+        ("70세 이상 1인 가구 중 여성 비율", None),
+        ("노인 1인 가구 중 여성 비율", None),
+        ("1인 가구 중 노인 비율", "20세 이상"),
+        ("성인 1인 가구 중 여성 비율", "20세 이상"),
+        ("노인과 청년 1인 가구 중 여성 비율", "20세 이상"),
+        ("청년과 노인 1인 가구 중 여성 비율", "20세 이상"),
+        ("65세 이상과 청년 1인 가구 중 여성 비율", "20세 이상"),
+    ],
+)
+def test_age_limit_checks_the_population_side_of_a_ratio(question, limit) -> None:
+    assert d.age_limit("성별·연령별 1인가구(20세 이상, 일반가구)", question) == limit
+
+
+def test_named_age_in_a_list_does_not_widen_an_explicit_band() -> None:
+    assert qa.resolved_ages("70세 이상 노인과 청년 1인 가구") == [[70, None], [19, 34]]
+
+
+@pytest.mark.parametrize(("item", "minimum"), [("15살 넘은", 15), ("65세 초과", 66)])
+def test_search_and_calculation_agree_on_age_cutoff(item, minimum) -> None:
+    assert qa.extract_ages(item) == [[minimum, None]]
+    understood = search_slots.empty_slots(item)
+    understood["conditions"]["items"] = [item]
+    table = {"name_n": "혼인상태별인구", "meta_n": "", "age_cov": (minimum, None)}
+    assert search.check(table, understood)[f"item:{item}"]
+    table["age_cov"] = (minimum + 1, None)
+    assert not search.check(table, understood)[f"item:{item}"]
+
+
+@pytest.mark.parametrize(
+    ("table", "question"),
+    [
+        ("성별 통근 통학 인구(12세 이상)-시군구", "2020년 서울 통근 인구 몇 명"),
+        ("출생자녀수별 기혼여성인구(15세 이상)-시도", "아이 둘 낳은 기혼여성 수"),
+        ("1년 전 거주지별 인구(1세 이상)", "서울 1년 전 거주지별 인구 추이"),
+    ],
+)
+def test_count_queries_allow_the_tables_survey_age(table, question) -> None:
+    assert d.age_limit(table, question) is None
+
+
+@pytest.mark.parametrize(
+    ("question", "band"),
+    [
+        ("2010년에 15살 넘은 사람 중에 결혼 안 한 사람 비율 몇 퍼센트였어?", [15, None]),
+        ("강북구에 100살 넘은 장애인 몇 명이야?", [100, None]),
+        ("65세 넘는 70세 이하 1인 가구", [65, 70]),
+        ("65세 초과", [66, None]),
+        ("65세 초과 70세 이하 1인 가구", [66, 70]),
+    ],
+)
+def test_colloquial_age_cutoff_includes_the_stated_age(question, band) -> None:
+    assert qa.extract_ages(question) == [band]
 
 
 def test_handoff_retries_others_when_the_exact_table_fails(computed) -> None:
@@ -1630,3 +1768,105 @@ def test_item_in_table_name_is_covered(items, words, why) -> None:
         slots["table_words"] = words
     plan = d.Plan(pick={0: "W"})
     assert d.uncovered(slots, plan, REMARRY, {"type": "trend"}) == why
+
+
+# ---- 실제 테스트 오류 (11/23): 비율 이름 · 모집단 · 추계 문구 --------------------------------
+
+
+def test_ratio_name_says_whole_part_and_ratio() -> None:
+    # 값 정의 이름("… 수")을 비율에 그대로 쓰면 "… 수는 13.27%"가 됐다
+    assert d._ratio_name("1인가구(20세이상 인구) 수", "70세 이상") == (
+        "1인가구(20세이상 인구) 중 70세 이상 비율"
+    )
+    assert d._ratio_name("1인가구 여자 수", "여자") == "1인가구 중 여자 비율"
+    assert d._ratio_name("1인 가구 중 70세 이상 비율", "70세 이상") == "1인 가구 중 70세 이상 비율"
+
+
+def test_ratio_spec_is_named_as_ratio() -> None:
+    spec = build("서울 1인 가구 중 여성 비율", indicator="2020년 서울", sex="여")
+    assert spec["kind"] == "ratio" and spec["name"].endswith("비율")
+    assert "수" not in spec["name"].split()
+
+
+def test_handoff_keeps_priority_for_a_count_with_a_survey_age(computed, fake_table) -> None:
+    fake_table["tables"]["DT_1PL1502"] = (
+        [d.Dim(0, "항목", {"T00": "통근 인구"}), ONE_PERSON[1]],
+        1,
+        "시군구",
+    )
+    fake_table["units"]["DT_1PL1502"] = ("명", True)
+    candidates = [
+        _cand("A", 1, picked=True, checks={"year": True}, tbl_nm="통근 통학 인구(12세 이상)"),
+        _cand("B", 2, checks={"year": True}, tbl_nm="통근 여부별 인구"),
+    ]
+    trace: dict = {}
+    question = "2020년 서울 통근 인구 몇 명"
+    parsed = {**BASE, "indicator": "통근 인구"}
+    res = asyncio.run(d.compute_from_handoff(question, parsed, _found(candidates), trace))
+    assert res["status"] == "ok" and sorted(computed["tried"]) == ["A", "B"]
+    assert trace["handoff"]["used"]["tbl_id"] == "A"
+
+
+def test_projection_answer_says_it_is_an_estimate(fake_table: dict) -> None:
+    fake_table["projection"].add("DT_1PL1502")
+    spec = build("2040년 서울 1인 가구 수", year=2040)
+    assert spec["answer_note"] == d.PROJECTION_ANSWER
+    # 첫 문장 바로 뒤에 붙는다 (qa._summary)
+    result = {"status": "ok", "indicator": "1인 가구", "unit": "가구", "value": 1842002}
+    result.update(year=2040, region="서울특별시", answer_note=spec["answer_note"])
+    text = qa.summary(result)
+    assert text.endswith("1,842,002가구입니다. " + d.PROJECTION_ANSWER)
+
+
+def test_ratio_whole_target_drops_question_age() -> None:
+    u = {"conditions": {"region": "서울"}, "age": {"expr": "70세 이상", "lo": 70, "hi": None}}
+    assert d._target_understanding(u, {"span": "전체 1인 가구", "unsaid_age": True})["age"] is None
+    kept = d._target_understanding(u, {"span": "70세 이상 1인 가구"})
+    assert kept["age"]["lo"] == 70
+
+
+@pytest.mark.parametrize(
+    ("table", "question", "kind", "fits"),
+    [
+        ("통근 통학 인구(12세 이상)", "2020년 서울 통근 인구 몇 명", "value", True),
+        ("통근 통학 인구(12세 이상)", "서울 통근 인구 추이", "trend", True),
+        ("1인가구(65세 이상)", "1인 가구 중 70세 이상 비율", "value", False),
+        ("1인가구(65세 이상)", "전체 1인 가구 수", "value", False),
+        ("1인가구(65세 이상)", "전체 1인 가구 연령별 구성", "composition", False),
+        ("1인가구(65세 이상)", "노인 1인 가구 중 여성 비율", "value", True),
+        ("1인가구(65세 이상)", "65세 넘은 1인 가구 중 여성 비율", "value", True),
+    ],
+)
+def test_cached_plan_on_age_limited_table_checks_question_scope(
+    monkeypatch, table, question, kind, fits
+) -> None:
+    async def find(key):
+        return [{"id": 1, "tbl_id": "DT_LIMITED", "forced": {}, "words": []}]
+
+    used = []
+    built = []
+
+    async def build_(tbl_id, *args):
+        built.append(tbl_id)
+        return {"name": "지표", "kind": "count", "cells": []}, None
+
+    async def answer_(*args):
+        return {"status": "ok", "result": {"value": 1}}
+
+    async def mark_used(id_):
+        used.append(id_)
+
+    monkeypatch.setattr(d.plan_cache, "key_of", lambda parsed: ("k", question))
+    monkeypatch.setattr(d.plan_cache, "find", find)
+    monkeypatch.setattr(d.plan_cache, "used", mark_used)
+    monkeypatch.setattr(lookup, "_table", lambda t: {"tbl_nm": table})
+    monkeypatch.setattr(d, "_build", build_)
+    monkeypatch.setattr(qa, "answer", answer_)
+    trace: dict = {}
+    res = asyncio.run(d.cached_answer(question, {**BASE, "type": kind}, trace))
+    if fits:
+        assert res["status"] == "ok" and built == ["DT_LIMITED"] and used == [1]
+        assert trace["plan_cache"] == {"hit": 1, "tbl_id": "DT_LIMITED"}
+    else:
+        assert res is None and built == [] and used == []
+        assert "65세 이상만 집계" in trace["dynamic"][0]["skip"]
