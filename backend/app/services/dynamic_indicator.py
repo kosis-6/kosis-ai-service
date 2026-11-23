@@ -93,11 +93,15 @@ MOVE_CONTEXT = re.compile(
 )
 TOTAL_SUFFIX = re.compile(r"(계|합계|소계|전체)$")  # 공백·기호를 뺀 이름 끝의 합계 표시
 PCT_ASK = re.compile(r"%|퍼센트|비율|비중|몇\s*프로")
-# 가구 수를 묻는 말 ("다문화가구 수는?", "몇 가구"). "다문화가구 자녀 수"는 사람을 묻는다
-HOUSEHOLD_ASK = re.compile(r"가구\s*(?:수|는|가|를|은|이|$|\?)|몇\s*가구")
+# 가구 수를 묻는 말 ("다문화가구 수는?", "다문화가구 몇 개인가요?", "몇 가구").
+HOUSEHOLD_ASK = re.compile(
+    r"가구\s*(?:[은는이가을를]\s*)?(?:수|몇|얼마|[?.!]|$)"
+    r"|가구\s*[은는이가을를](?=\s)|몇\s*가구"
+)
 PERSON_ASK = re.compile(r"가구원|몇\s*명|사람|인구|평균|구성비|%|퍼센트|비율|비중")
-HOUSEHOLD_CELL = re.compile(r"가구(?!원|주)|세대(?!원|주)")
-PERSON_UNITS = {"명", "천명"}
+HOUSEHOLD_CELL = re.compile(r"가구(?:\s*수)?$")
+PERSON_UNIT_TAIL = re.compile(r"\s*\(\s*(?:천\s*)?명\s*\)$")
+HOUSEHOLD_UNITS = {"명": "가구", "천명": "천가구"}
 WITHIN = re.compile(r"\s+(?:중(?:에?서|에)?|가운데)\s+")
 NORM = re.compile(r"[\s·,.()\[\]{}<>\"'‘’“”_/-]")
 
@@ -379,13 +383,12 @@ TOTAL_TAIL = re.compile(r"(?:[\s\-·_:]+계|(?<=[주인타])계|[\s\-·_:]*(?:�
 TERM_TOTAL = re.compile(r"[_\-:]\s*(?:계|합계|소계)(?=\s|$)")
 
 
-def counts_households(plan: "Plan", dims: list["Dim"], region_dim: int | None) -> bool:
-    """고른 칸 이름에 가구 · 세대가 있는가 ("일반가구-계", "경력단절여성이 있는 가구").
-    KOSIS 단위가 '명'이어도 이런 칸은 가구를 센다. 칸이 하나뿐인 분류(표 전체 이름)는 보지 않는다"""
-    return any(
-        HOUSEHOLD_CELL.search(d.codes[plan.pick[d.no]])
-        for d in dims
-        if d.no in plan.pick and d.no != region_dim and len(d.codes) > 1
+def counts_households(plan: "Plan", item: "Dim") -> bool:
+    """측정 항목의 대상이 가구인지 확인한다. 분류가 가구 유형이어도 사람을 세는 표가 있다."""
+    codes = plan.multi[1] if plan.multi and plan.multi[0] == item.no else [plan.pick[item.no]]
+    return all(
+        HOUSEHOLD_CELL.search(_label_name(PERSON_UNIT_TAIL.sub("", item.codes[c].strip())))
+        for c in codes
     )
 
 
@@ -964,10 +967,12 @@ def build(
     unit, whole = _unit(tbl_id, plan.pick[0], _unit_cells(plan, dims, region_dim))
     unit = unit or ""
     counted = unit in COUNT_UNITS and whole
-    if counted and unit in PERSON_UNITS and not counts_households(plan, dims, region_dim):
-        if HOUSEHOLD_ASK.search(question) and not PERSON_ASK.search(question):
-            # 행안부 '다문화가구 현황'의 합계는 가구원(사람) 수다. 가구 수 질문에 "187,239명"으로
-            # 답했다 → 이 표는 건너뛰고 가구를 센 다른 표로 계산한다
+    display_unit = unit
+    if counted and (household_unit := HOUSEHOLD_UNITS.get(unit)):
+        if counts_households(plan, dims[0]):
+            display_unit = household_unit
+        elif HOUSEHOLD_ASK.search(question) and not PERSON_ASK.search(question):
+            # 행안부 '다문화가구 현황'의 합계는 가구원(사람) 수다. 가구를 센 다른 표를 찾아본다.
             return None, "가구 수를 물었는데 고른 칸은 사람 수(단위 명)를 센 칸"
     strip_age = bool(
         plan.age_dim
@@ -978,7 +983,7 @@ def build(
     name = _name(parsed, dims, plan, counted, strip_age, unit)
     spec = {
         "name": name,
-        "unit": unit,
+        "unit": display_unit,
         "kind": "count" if counted else "value",
         "method": "lookup",
         "dynamic": True,
@@ -1494,7 +1499,7 @@ HANDOFF_STATUSES = ("ok", "partial_match")
 WHOLE_COUNTRY = {"전국", "우리나라", "한국", "대한민국", "국내"}
 
 
-def to_parsed(understanding: dict, parsed: dict) -> tuple[dict, dict]:
+def to_parsed(understanding: dict, parsed: dict, *, question: str = "") -> tuple[dict, dict]:
     """탐색 해석 → 계산용 질문 해석 (qa.understand와 같은 모양). 탐색 해석에 없는 칸은 수치 해석.
     → (새 해석, 둘이 달랐던 칸 {칸: [수치 해석, 탐색 해석]}).
     지역 이름을 DB로 풀므로 스레드에서 부른다"""
@@ -1530,7 +1535,8 @@ def to_parsed(understanding: dict, parsed: dict) -> tuple[dict, dict]:
                 put("start_year", year)  # '최근 5년', '2020년 이후'
         else:
             put("year", year_end or year)
-    if cond.get("sex") in ("남", "여"):
+    # "여성이 있는 가구"의 성별 조건은 질문 보정(qa.correct)이 이미 분리했다.
+    if cond.get("sex") in ("남", "여") and not qa.HOUSEHOLD_MEMBER_GENDER.search(question):
         put("sex", cond["sex"])
     age = understanding.get("age")
     if age and age.get("lo") is not None:
@@ -1751,7 +1757,7 @@ async def _compute_target(
     if multi:
         u = _target_understanding(u, target)
     try:
-        q, diff = await run_in_threadpool(to_parsed, u, parsed)
+        q, diff = await run_in_threadpool(to_parsed, u, parsed, question=question)
     except Exception:
         logger.exception("탐색 해석 바꿔 담기 실패 → 수치 해석으로 계산")
         q, diff = dict(parsed), {}

@@ -228,6 +228,8 @@ def _indicator_list():
 # ---- 질문 해석 보정: LLM 해석을 질문 원문과 대조해 바로잡는다 ------------------------------
 
 GENDER_WORDS = {"여": re.compile(r"여성|여자"), "남": re.compile(r"남성|남자")}
+# "경력단절여성이 있는 가구"의 여성은 가구 유형을 설명한다.
+HOUSEHOLD_MEMBER_GENDER = re.compile(r"(?:여성|여자|남성|남자)\s*(?:이|가)\s*(?:있|없)는\s*가구")
 # 남녀를 함께 묻는 표현 (구성비 질문이면 성별 구성)
 SEX_SPLIT = re.compile(r"남녀|성별|(남성|남자).*(여성|여자)|(여성|여자).*(남성|남자)")
 # 남녀를 나누지 않고 합계를 물음 ("남녀 합계 인구", "성별 구분 없이")
@@ -520,8 +522,11 @@ def _says_year(question):
 
 SINCE = re.compile(r"((?:19|20)\d{2})\s*년\s*(이후|이래|부터)(?!.*까지)")
 UNTIL = re.compile(r"((?:19|20)\d{2})\s*년\s*까지")
-# "한국 인구", "한국 사람"도 전국 ("한국 국적"은 아니다: 귀화자)
-NATIONWIDE = re.compile(r"전국|우리나라|대한민국|한국\s*(전체|의|은|는|인구|사람)|국내\s*(전체)?")
+# "한국 인구", "한국 사람"도 전국이다. "국내이동자"의 국내는 지표 이름의 일부다.
+NATIONWIDE = re.compile(
+    r"전국|우리\s*나라|대한민국|한국\s*(?:전체|의|은|는|인구|사람)"
+    r"|국내(?:\s*전체|(?:의|은|는|에서)(?=\s|[?.!]|$)|\s*[?.!]*$)"
+)
 WHY_WORDS = re.compile(r"왜|이유|원인|때문|탓|효과|영향")
 CAUSAL = re.compile(r"효과가?\s*(있|없|컸)|효과적|원인|왜\s|영향을?\s*(줬|주|미쳤|끼쳤)")
 # 지표 사전이 나누지 않는 조건 (체중·기간 등). 버리고 전체 값으로 답하면 틀린 답이 된다
@@ -1103,22 +1108,23 @@ def correct(question, parsed, today=None):
     _apply_time(question, parsed, fix, today)
     _read_question(question, parsed, fix)
 
-    genders = [sex for sex, pattern in GENDER_WORDS.items() if pattern.search(question)]
-    if len(genders) == 1 and parsed.get("sex") in (None, "", "계"):
+    gender_question = HOUSEHOLD_MEMBER_GENDER.sub("가구", question)
+    genders = [sex for sex, pattern in GENDER_WORDS.items() if pattern.search(gender_question)]
+    if len(genders) == 1 and (parsed.get("sex") in (None, "", "계") or gender_question != question):
         fix("sex", genders[0], "질문의 성별 표현")
-    both = len(genders) == 2 or (not genders and SEX_SPLIT.search(question))
+    both = len(genders) == 2 or (not genders and SEX_SPLIT.search(gender_question))
     if parsed.get("sex") in ("남", "여"):
         if both:
             fix("sex", "계", "남녀를 함께 물음")  # "남자랑 여자 중 누가", "남녀 인구 비교"
-        elif not genders and not SEX_IMPLIED.search(question):
+        elif not genders and not SEX_IMPLIED.search(gender_question):
             # 성별을 말하지 않았는데 HCX가 짐작해 넣은 성별 ("서울 인구 몇 명이야?" → 남)
             fix("sex", "계", "성별을 말하지 않음")
-    if both and kind != "composition" and not SEX_TOTAL.search(question):
+    if both and kind != "composition" and not SEX_TOTAL.search(gender_question):
         # 남녀를 나눠 물음 → 계산 단계(compute)가 남·여를 따로 계산한다 (구성비는 by=sex가 맡는다)
         parsed["split_sex"] = True
         if kind == "compare" and len(parsed.get("regions") or []) == 1:
             fix("type", "value", "한 지역의 남녀 비교")  # 지역 비교가 아니라 남·여 값
-    if kind == "composition" and parsed.get("by") != "sex" and SEX_SPLIT.search(question):
+    if kind == "composition" and parsed.get("by") != "sex" and SEX_SPLIT.search(gender_question):
         fix("by", "sex", "질문의 남녀 구성 표현")
 
     _full_region_names(question, parsed, fix)

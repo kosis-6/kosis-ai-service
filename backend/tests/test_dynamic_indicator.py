@@ -1049,6 +1049,20 @@ def test_handoff_computes_with_search_reading(computed, monkeypatch) -> None:
     assert q2["regions"] == ["서울", "부산"] and q2["sex"] == "계"
 
 
+@pytest.mark.parametrize(
+    ("question", "sex"),
+    [
+        ("서울 경력단절여성이 있는 가구 수", "계"),
+        ("서울 남성 가구주의 경력단절여성이 있는 가구 수", "남"),
+    ],
+)
+def test_search_handoff_keeps_corrected_sex_for_household_member_terms(question, sex) -> None:
+    parsed, diff = d.to_parsed(
+        {"conditions": {"sex": "여"}}, {**BASE, "sex": sex}, question=question
+    )
+    assert parsed["sex"] == sex and "sex" not in diff
+
+
 def test_school_going_is_commute_only_with_movement() -> None:
     # 이동을 말하면 "학교 가는 · 다니는"은 통학 (통근 + 통학을 함께 묻는 질문)
     assert {"통근", "통학"} <= {
@@ -1497,25 +1511,31 @@ HOUSEHOLDS = [  # 통계청 '다문화가구 및 가구원': 가구를 센 칸
 
 
 @pytest.mark.parametrize(
-    ("tbl_id", "unit", "question", "ok"),
+    ("tbl_id", "unit", "question", "expected_unit"),
     [
-        ("MEMBERS", "명", "2020년 서울 다문화가구 수는?", False),  # 가구 수인데 사람 수
-        ("MEMBERS", "명", "2020년 서울 다문화가구 자녀 수는?", True),  # 사람을 묻는다
-        ("MEMBERS", "명", "2020년 서울 다문화가구는 몇 명이야?", True),
-        ("HOUSEHOLDS", "가구", "2020년 서울 다문화가구 수는?", True),
-        # KOSIS 단위가 '명'이어도 칸 이름이 가구면 가구를 센 칸이다 (DT_1PQ2012 등)
-        ("HOUSEHOLDS", "명", "2020년 서울 다문화가구 수는?", True),
+        ("MEMBERS", "명", "2020년 서울 다문화가구 수는?", None),
+        ("MEMBERS", "명", "2020년 서울 다문화가구 몇 개인가요?", None),
+        ("MEMBERS", "명", "2020년 서울 다문화가구 몇 가구인가요?", None),
+        ("MEMBERS", "명", "2020년 서울 다문화가구 얼마야?", None),
+        ("MEMBERS", "명", "2020년 서울 다문화가구 자녀 수는?", "명"),
+        ("MEMBERS", "명", "2020년 서울 다문화가구는 몇 명이야?", "명"),
+        ("HOUSEHOLDS", "가구", "2020년 서울 다문화가구 수는?", "가구"),
+        # 원자료 단위가 '명'이어도 항목이 가구를 세면 가구로 표시한다 (DT_1PQ2012 등)
+        ("HOUSEHOLDS", "명", "2020년 서울 다문화가구 수는?", "가구"),
+        ("HOUSEHOLDS", "천명", "2020년 서울 다문화가구 몇 개인가요?", "천가구"),
+        ("HOUSEHOLDS", "명", "2020년 서울 다문화가구원 수는?", "명"),
     ],
 )
 def test_household_question_skips_person_count_cells(
-    fake_table: dict, tbl_id: str, unit: str, question: str, ok: bool
+    fake_table: dict, tbl_id: str, unit: str, question: str, expected_unit: str | None
 ) -> None:
     fake_table["tables"][tbl_id] = (MEMBERS if tbl_id == "MEMBERS" else HOUSEHOLDS, 1, "시도")
     fake_table["units"][tbl_id] = (unit, True)
     parsed = {**BASE, "indicator": "", "term": ""}
     spec, why = d.build(tbl_id, question, parsed)
-    if ok:
+    if expected_unit:
         assert spec is not None, why
+        assert spec["unit"] == expected_unit
     else:
         assert spec is None and "사람 수" in str(why)
 
