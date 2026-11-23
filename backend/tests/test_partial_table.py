@@ -324,6 +324,25 @@ def test_big_table_answers_from_chosen_cells(kosis) -> None:
     assert "칸만 바로 받음 (요청 1번)" in steps[-1]["detail"]
 
 
+def test_partial_national_value_uses_only_the_published_total(kosis, monkeypatch) -> None:
+    national = ("00", "전국", "전국", "전국", None, None)
+    monkeypatch.setattr(partial_table, "_regions", lambda: (national,))
+    monkeypatch.setattr(indicators, "_data_years", lambda: (2015, 2020))
+    monkeypatch.setattr(lookup, "refresh_if_reloaded", lambda: None)
+    parsed = {**PARSED, "type": "value", "regions": ["전국"]}
+    [(res, ask)], trace, _ = run_try("2018년 전국 고등학교 인구", parsed)
+    assert ask is None and res is not None and res["status"] == "ok", trace
+    assert res["result"]["value"] == value(2018, "00", "0", "03")
+
+
+def test_unmapped_region_axis_is_not_treated_as_national(kosis, monkeypatch) -> None:
+    meta = make_meta()
+    meta["classes"][0]["values"] = _values({"11": "서울특별시", "21": "부산광역시"})
+    monkeypatch.setattr(partial_table, "_regions", lambda: ())
+    with pytest.raises(partial_table.Unsupported, match="지역 코드"):
+        partial_table.from_meta(TBL, "101", meta)
+
+
 def test_projection_parts_comparison_says_it_is_an_estimate(kosis, monkeypatch) -> None:
     monkeypatch.setattr(d, "is_projection", lambda t: True)
     monkeypatch.setattr(lookup, "_projection", lambda t: True)

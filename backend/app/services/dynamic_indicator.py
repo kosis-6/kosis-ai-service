@@ -1098,14 +1098,60 @@ def _per_average(tbl_id: str, dims: list[Dim], region_dim: int | None, level: st
     }
 
 
+def _merged_age_bands(bands):
+    """겹치거나 이어지는 연령 구간을 합쳐 같은 사람을 두 번 세지 않는다."""
+    merged = []
+    for lo, hi in sorted(bands, key=lambda band: band[0]):
+        if not merged or (merged[-1][1] is not None and lo > merged[-1][1] + 1):
+            merged.append((lo, hi))
+        else:
+            start, end = merged[-1]
+            merged[-1] = (start, None if end is None or hi is None else max(end, hi))
+    return merged
+
+
+def _age_intersection(parts, population):
+    bands = []
+    for part_lo, part_hi in parts:
+        for pop_lo, pop_hi in population:
+            start = max(part_lo, pop_lo)
+            ends = [hi for hi in (part_hi, pop_hi) if hi is not None]
+            end = min(ends) if ends else None
+            if end is None or start <= end:
+                bands.append((start, end))
+    return _merged_age_bands(bands)
+
+
 def _ratio(spec, src, plan, dims, parsed, tbl_nm="", *, question=""):
     """'~ 중 ~ 비율': 나눌 부분 하나 ÷ 같은 분류의 합계 × 100 → (정의, None) 또는 (None, 이유)"""
     sex = parsed.get("sex") or "계"
     parts = []  # (분류 열, 분자 코드들, 분모 코드, 이름)
+    scope = WITHIN.split(question, maxsplit=1)
+    population_ages = qa.extract_ages(scope[0]) if len(scope) == 2 else []
+    ages = (parsed.get("ages") or [])[:1]
+    age_dim = plan.age_dim
+    population_label = ""
+    if population_ages:
+        if age_dim is None:
+            return None, "표에 모집단을 제한할 연령 구분이 없음"
+        population_ages = _merged_age_bands(population_ages)
+        population_label = "·".join(map(indicators.age_label, population_ages))
+        requested_ages = qa.extract_ages(scope[1])
+        ages = _age_intersection(requested_ages, population_ages)
+        if requested_ages and not ages:
+            return None, "분자의 연령이 모집단의 연령 범위에 포함되지 않음"
+        try:
+            population_codes = [
+                code for band in population_ages for code in lookup._age_codes(src, band)
+            ]
+        except lookup.AgeMismatch:
+            return None, "모집단의 연령 구간을 표의 연령 칸으로 만들 수 없음"
+        if not ages:
+            src = _without_age(src)
+            src["filters"] = {**src.get("filters", {}), age_dim.col: population_codes}
     population_sex = False
     if plan.sex_dim is not None and sex in ("남", "여"):
         d = plan.sex_dim
-        scope = WITHIN.split(question, maxsplit=1)
         population_sex = (
             len(scope) == 2
             and bool(qa.GENDER_WORDS[sex].search(scope[0]))
@@ -1122,14 +1168,13 @@ def _ratio(spec, src, plan, dims, parsed, tbl_nm="", *, question=""):
         else:
             word = "남자" if sex == "남" else "여자"
             parts.append((d.col, [d.sex_codes()[sex]], plan.pick[d.no], word))
-    if plan.age_dim is not None and parsed.get("ages"):
-        d = plan.age_dim
-        band = tuple(parsed["ages"][0])
+    if age_dim is not None and ages:
         try:
-            codes = lookup._age_codes({**src, "table": src["table"]}, band)
+            codes = [code for band in ages for code in lookup._age_codes(src, tuple(band))]
         except lookup.AgeMismatch:
             return None, "질문한 연령 구간을 표의 연령 칸으로 만들 수 없음"
-        parts.append((d.col, codes, d.total(), indicators.age_label(band)))
+        den = population_codes if population_ages else age_dim.total()
+        parts.append((age_dim.col, codes, den, "·".join(map(indicators.age_label, ages))))
     for d in dims:
         whole = d.total() or _item_whole(d, tbl_nm)
         if d.no in plan.matched and whole and plan.matched[d.no] != whole:
@@ -1158,18 +1203,21 @@ def _ratio(spec, src, plan, dims, parsed, tbl_nm="", *, question=""):
         num_src["den_filters"] = {**filters, col: den}
     whole = next(d.codes for d in dims if d.col == col)
     name = spec["name"]
+    if population_label:
+        name = f"{population_label} {_without_age_words(name)}"
     if population_sex and not qa.GENDER_WORDS[sex].search(name):
         name = f"{'남성' if sex == '남' else '여성'} {name}"
+    whole_label = population_label if age_dim and col == age_dim.col and population_label else None
     out = {
         **spec,
         "name": _ratio_name(name, part),
         "unit": "%",
         "kind": "ratio",
-        "formula": f"{part} ÷ {whole.get(den, '합계')} × 100",
+        "formula": f"{part} ÷ {whole_label or whole.get(den, '합계')} × 100",
         "sources": [num_src],
     }
-    if plan.age_dim is not None and col == plan.age_dim.col:
-        # 연령 구간을 분자 칸에 넣었다 (qa.compute가 연령을 다시 넘기지 않음)
+    if population_ages or (age_dim is not None and col == age_dim.col):
+        # 연령 구간을 조회 조건에 넣었으므로 qa.compute가 다시 넘기지 않는다.
         out["ages_in_filters"] = True
     return out, None
 
@@ -1190,7 +1238,7 @@ CHECKS = MemoryCache(
 )  # 표가 다시 적재돼도 하루면 다시 본다
 
 
-def part_within_whole(src: dict, col: str, num: list[str], den: str) -> str | None:
+def part_within_whole(src: dict, col: str, num: list[str], den: str | list[str]) -> str | None:
     """분자 칸(들)이 분모 칸의 부분인가: 표의 모든 지역·연도에서 분자 합 ≤ 분모.
     맞으면 None, 아니면 이유
 
@@ -1205,7 +1253,9 @@ def part_within_whole(src: dict, col: str, num: list[str], den: str) -> str | No
     if src.get("age_dim") and f"{src['age_dim']}_id" != col:
         fixed[f"{src['age_dim']}_id"] = src["age_total"]
     item = None if col == "item_id" else src["item_id"]
-    key = (src["table"], col, tuple(num), den, tuple(sorted(fixed.items(), key=str)), str(item))
+    fixed_key = tuple((k, tuple(v) if isinstance(v, list) else v) for k, v in sorted(fixed.items()))
+    den_key = (den,) if isinstance(den, str) else tuple(den)
+    key = (src["table"], col, tuple(num), den_key, fixed_key, str(item))
     cached = CHECKS.get(key)
     if cached is not MISSING:
         return cached
@@ -1231,8 +1281,10 @@ def _part_rows(tbl_id, col, num, den, fixed, item) -> list[tuple[float | None, f
     column = "v.item_key" if dim_no == 0 else f"v.c{dim_no}"
     known = lookup._codes(tbl_id, dim_no)
     num_keys = [known[c][0] for c in num if c in known]
-    if not num_keys or den not in known:
+    den_codes = [den] if isinstance(den, str) else den
+    if not num_keys or not den_codes or any(code not in known for code in den_codes):
         return []
+    den_keys = [known[code][0] for code in den_codes]
     conds, params = [], []
     if item is not None:
         cond, keys = lookup._in("v.item_key", tbl_id, 0, [item])
@@ -1251,13 +1303,14 @@ def _part_rows(tbl_id, col, num, den, fixed, item) -> list[tuple[float | None, f
     region = lookup._region_dim(tbl_id)
     group = f"v.period, v.c{region}" if region else "v.period"
     marks = ", ".join("?" for _ in num_keys)
+    den_marks = ", ".join("?" for _ in den_keys)
     rows = _rows(
         f"select sum(v.value) filter (where {column} in ({marks}))::float8 as num,"
-        f" sum(v.value) filter (where {column} = ?)::float8 as den"
+        f" sum(v.value) filter (where {column} in ({den_marks}))::float8 as den"
         f" from stat_value v where v.tbl_key = ? and v.{lookup.YEARLY}"
         + "".join(f" and {c}" for c in conds)
         + f" group by {group}",
-        [*num_keys, known[den][0], lookup._tbl_key(tbl_id), *params],
+        [*num_keys, *den_keys, lookup._tbl_key(tbl_id), *params],
     )
     return [(r["num"], r["den"]) for r in rows]
 
@@ -1572,9 +1625,21 @@ async def compute_from_handoff(
         return None
     # 이 질문의 칸 고르기 LLM 남은 횟수 (지표가 여럿이어도 함께 쓴다)
     _cell_llm_budget.set([MAX_CELL_LLM])
-    if len(h["targets"]) > 1:
-        return await multi_answer(question, parsed, found, trace)  # 지표가 여럿 (구현 5)
-    res = await _compute_target(question, parsed, found, h["targets"][0], trace)
+    targets = h["targets"]
+    target = targets[0]
+    if len(targets) > 1:
+        if not parsed.get("scoped_age_ratio"):
+            return await multi_answer(question, parsed, found, trace)
+        # 연령을 제한한 비율은 질문 전체를 한 표에 적용한다.
+        target = {
+            "candidates": [
+                candidate
+                for side in targets
+                if not side.get("together")
+                for candidate in side.get("candidates") or []
+            ]
+        }
+    res = await _compute_target(question, parsed, found, target, trace)
     from app.services import multi_indicator
 
     if res and multi_indicator.TOP_REGION_OF.search(question):

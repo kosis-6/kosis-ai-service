@@ -785,6 +785,10 @@ def ratio_followup(question: str, state: dict) -> str | None:
     rest = AMONG.sub("", q).strip()
     if not term or not rest:
         return None
+    if ages := c.get("ages"):
+        said_ages = qa.extract_ages(term)
+        missing = [indicators.age_label(band) for band in ages if list(band) not in said_ages]
+        term = " ".join([*missing, term])
     if gender := {"남": "남성", "여": "여성"}.get(c.get("sex")):
         if not qa.GENDER_WORDS[c["sex"]].search(term):
             term = f"{gender} {term}"
@@ -1126,7 +1130,9 @@ async def _answer(conditions: dict, trace: dict | None = None) -> dict:
     return res
 
 
-async def _new(question: str, state: dict | None) -> tuple[dict, dict, str | None]:
+async def _new(
+    question: str, state: dict | None, *, scoped_age_ratio: bool = False
+) -> tuple[dict, dict, str | None]:
     """새 질문: 지금까지의 해석 경로 그대로. 앞 조건이 있으면 말하지 않은 것을 이어받는다
     → (응답, 출처, 알림)"""
     kept: dict[str, Any] = {}
@@ -1139,6 +1145,12 @@ async def _new(question: str, state: dict | None) -> tuple[dict, dict, str | Non
             parsed, kept["sources"] = inherit(
                 parsed, kept["sources"], prev, state["sources"], question
             )
+        if scoped_age_ratio:
+            # 직전 연령으로 제한한 비율은 전 연령 공표 비율이나 독립된 두 값으로 대체할 수 없다.
+            parsed.update(unsupported=True, cross=None, indicators=None, dynamic_spec=None)
+            parsed["scoped_age_ratio"] = True
+            if parsed.get("type") not in ("trend", "compare"):
+                parsed["type"] = "value"
         return parsed
 
     if refused := await table_guide.off_domain_early(question):
@@ -1149,7 +1161,7 @@ async def _new(question: str, state: dict | None) -> tuple[dict, dict, str | Non
     res = await qa.ask(question, adjust=adjust)
     sources = kept.get("sources") or sources_of(question, res.get("parsed") or {})
     notice = inherited_notice(res.get("parsed") or {}, sources)
-    if sources.get("indicator") == "inherited":
+    if sources.get("indicator") == "inherited" and not scoped_age_ratio:
         # 지표를 이어받은 짧은 말("부산은 어때?")로 통계표를 찾으면 그 글자에 걸린 다른 표가 나온다.
         # 표를 찾을 때는 이어받은 조건으로 만든 질문을 쓴다 (_attach_tables, 11/23)
         res["search_question"] = inherited_question(res.get("parsed") or {})
@@ -1431,7 +1443,9 @@ async def _turn(
         # "그중 여성 비율은?": 직전 조건으로 만든 질문("2020년 서울 1인 가구 중 여성 비율은?")을
         # 새 질문으로 계산한다 (분자 · 분모 고르기와 검증은 새 질문 경로가 한다)
         flow.add("비율 후속 질문", "새 질문으로", asked)
-        res, sources, notice = await _new(asked, state)
+        res, sources, notice = await _new(
+            asked, state, scoped_age_ratio=bool(state["conditions"].get("ages"))
+        )
         res["request_type"], res["question"] = CHANGE, asked
         return res, sources, notice
     if view is None and not (has_last and summary_request(question)):
@@ -1639,7 +1653,11 @@ async def _attach_tables(res: dict, state: dict | None, question: str, user_id: 
             await _attach_cards(res, asked)
             return
         try:
-            pair = cross_indicator.detect_partial(asked, both=True)
+            pair = (
+                None
+                if (parsed or {}).get("scoped_age_ratio")
+                else cross_indicator.detect_partial(asked, both=True)
+            )
         except Exception:
             logger.exception("두 값 나누기 감지 실패")
             pair = None

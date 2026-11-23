@@ -157,12 +157,12 @@ def from_meta(tbl_id: str, org_id: str, meta: dict[str, Any]) -> Table:
         regions = _regions()
         idx = region_map.RegionIndex([r[:4] for r in regions])
         valid = {r[0]: (r[4], r[5]) for r in regions}
-        rows = region_map.map_rows(idx, tbl_id, org_id, src_dim, sources[src_dim])
-        if any(r["region_code"] for r in rows):  # 하나도 이어지지 않으면 대응을 만들지 않는다
-            region_dim = src_dim
-            for r in rows:
-                r["valid_from"], r["valid_to"] = valid.get(r["region_code"], (None, None))
-            region_rows = rows
+        region_rows = region_map.map_rows(idx, tbl_id, org_id, src_dim, sources[src_dim])
+        if not any(r["region_code"] for r in region_rows):
+            raise Unsupported("표의 지역 코드를 확인할 수 없음")
+        region_dim = src_dim
+        for r in region_rows:
+            r["valid_from"], r["valid_to"] = valid.get(r["region_code"], (None, None))
     span = (min(a for a, _ in years), max(b for _, b in years))
     return Table(tbl_id, org_id, meta, dims, region_dim, region_rows, span)
 
@@ -179,7 +179,7 @@ def level(table: Table) -> str:
         return "전국"
     if max(len(c) for c in found) >= 5:
         return "시군구"
-    return "시도" if len(found) > 1 else "전국"
+    return "시도" if found - {"00"} else "전국"
 
 
 # ---- 받을 칸 ------------------------------------------------------------------------------
@@ -367,12 +367,12 @@ def sum_rows(table, src, region_codes, y0, y1, item_key, filters, age_codes, gro
     if src.get("age_dim") and age_codes is not None:
         pairs.append((_dim_no(src["age_dim"]), age_codes))
     want = _want(pairs)
-    national = src.get("national_only") or table.region_dim is None
+    region_dim = table.region_dim
     maps: dict[str, list[tuple]] = {}
-    if not national:
-        asked = set(region_codes)
+    if region_dim is not None:
+        asked = {"00"} if src.get("national_only") else set(region_codes)
         for m in table.region_rows:
-            if m["src_dim"] == table.region_dim and m["region_code"] in asked:
+            if m["src_dim"] == region_dim and m["region_code"] in asked:
                 maps.setdefault(m["src_code"], []).append(
                     (m["region_code"], m["valid_from"], m["valid_to"])
                 )
@@ -381,12 +381,13 @@ def sum_rows(table, src, region_codes, y0, y1, item_key, filters, age_codes, gro
     for r in _yearly(table, y0, y1):
         if not _matches(r, want):
             continue
-        if national:
+        if region_dim is None:
+            # 지역 축 자체가 없을 때만 원본 행을 전국 값으로 본다.
             places = ["00"]
         else:
             places = [
                 code
-                for code, lo, hi in maps.get(r.codes[table.region_dim], [])
+                for code, lo, hi in maps.get(r.codes[region_dim], [])
                 if projection or ((lo is None or r.period >= lo) and (hi is None or r.period <= hi))
             ]
         for place in places:

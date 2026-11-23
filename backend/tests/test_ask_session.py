@@ -1636,6 +1636,16 @@ def test_ratio_follow_up_keeps_population_sex_and_survey(talk: Talk) -> None:
     assert talk.asked[-1] == "2020년 서울 인구총조사 기준 여성 1인 가구 중 70세 이상 비율은?"
 
 
+def test_ratio_follow_up_keeps_the_previous_age_population(talk: Talk) -> None:
+    talk.parsed = {**ONE_PERSON, "sex": "여", "ages": [[70, None]]}
+    talk.say("2020년 서울 70세 이상 여성 1인 가구 수는?")
+    talk.parsed = {**ONE_PERSON, "ages": [[85, None]], "cross": {"dynamic": "both"}}
+    result = talk.say("그중 85세 이상 비율은?")
+    assert talk.asked[-1] == "2020년 서울 여성 70세 이상 1인 가구 중 85세 이상 비율은?"
+    assert result["parsed"]["scoped_age_ratio"] and result["parsed"]["cross"] is None
+    assert result["parsed"]["unsupported"]
+
+
 def test_ratio_follow_up_after_ratio_is_left_to_change_extraction(talk: Talk) -> None:
     talk.parsed = {**ONE_PERSON, "indicator": RATIO_SPEC["name"], "dynamic_spec": RATIO_SPEC}
     talk.say("2020년 서울 1인 가구 중 70세 이상 비율은?")
