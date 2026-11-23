@@ -194,7 +194,14 @@ def reason_of(turn: dict[str, Any] | None) -> dict[str, Any] | None:
         return None
     steps = (turn.get("trace") or {}).get("dynamic") or turn.get("dynamic") or []
     if not steps:
-        return {"key": "no_try", "label": LABELS["no_try"], "sub": "", "skip": "", "tbl_id": ""}
+        return {
+            "key": "no_try",
+            "label": LABELS["no_try"],
+            "sub": "",
+            "skip": "",
+            "tbl_id": "",
+            "search": _search_status(turn),
+        }
     entry = next((s for s in steps if s.get("kind") == "picked"), steps[0])
     skip = entry.get("skip") or ""
     if not skip and entry.get("status"):

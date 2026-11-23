@@ -358,3 +358,45 @@ def test_retry_plan_groups(monkeypatch) -> None:
 
 def test_compare_of_decimal_values_is_rounded() -> None:
     assert d._decimals(51.93) == 2 and d._decimals(1438) == 0 and d._decimals(47.4) == 1
+
+
+def test_forced_cell_settles_age_cells(monkeypatch) -> None:
+    # 그 연령이 든 칸이 여럿이면 규칙은 못 고르지만, 칸 고르기 LLM이 하나를 고르면 그 칸 (V2-013)
+    names = ["일반가구_계", "가구원 모두 65세이상", "가구원 65세이상+65세미만"]
+    names.append("가구원 65세이상 없음")
+    items = Dim(0, "항목", {str(i): n for i, n in enumerate(names)})
+    _table(monkeypatch, [items], name="고령자(65세이상) 가구(일반가구)")
+    q = "식구가 전부 65살 이상인 집"
+    b = binding.bind("T", q, {"ages": [[65, None]]}, _slots(), forced={0: "1"})
+    assert b.status == binding.BOUND
+    plan = binding.retry_plan(b, q, {"ages": [[65, None]]})
+    assert plan.forced == {0: "1"} and plan.parsed["ages"] is None
+
+
+def test_scenario_default_over_llm_pick(monkeypatch) -> None:
+    # 시나리오를 말하지 않았는데 LLM이 '현수준'을 골랐으면 기본값 '중위' (V2-050).
+    # 질문이 그 시나리오를 말했으면 LLM의 칸 그대로
+    items = Dim(0, "항목", {"T10": "총인구"})
+    scen = Dim(1, "시나리오별", {"01": "중위 추계", "02": "고위 추계", "03": "저위 추계",
+                                 "04": "출산율 현수준 추계"})  # fmt: skip
+    _table(monkeypatch, [items, scen])
+    b = binding.bind("T", "2072년 인구", {}, _slots(), forced={0: "T10", 1: "04"})
+    plan = binding.retry_plan(b, "2072년 인구", {})
+    assert plan.forced == {0: "T10", 1: "01"}
+    q = "출산율 현수준 추계로 2072년 인구"
+    b = binding.bind("T", q, {}, _slots(), forced={0: "T10", 1: "04"})
+    assert binding.retry_plan(b, q, {}).forced == {0: "T10", 1: "04"}
+
+
+def test_special_projection_table_without_baseline(monkeypatch) -> None:
+    # 중위 추계가 없는 특별 추계 표: 시나리오를 말하지 않았으면 잇지 못함 → 다음 후보 표로 (V2-050)
+    items = Dim(0, "항목", {"T10": "총인구"})
+    scen = Dim(1, "시나리오별", {"01": "높은 출산율 추계(출산율-고위)",
+                                 "03": "출산율 현수준 추계",
+                                 "10": "빠른 고령화 추계(출산율-저위)"})  # fmt: skip
+    _table(monkeypatch, [items, scen])
+    b = binding.bind("T", "2072년 인구", {}, _slots(), forced={0: "T10", 1: "03"})
+    assert b.status == binding.PARTIAL and any("중위" in u.why for u in b.unbound)
+    q = "빠른 고령화 추계로 2072년 인구"
+    b = binding.bind("T", q, {}, _slots(), forced={0: "T10", 1: "10"})
+    assert b.status == binding.BOUND

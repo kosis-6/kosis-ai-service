@@ -1569,3 +1569,22 @@ def test_sum_indicators_refuses_mixed_periods_or_rates() -> None:
     assert qa._sum_indicators([{**one, "year": 2025}, {**one, "year": 2024}], {}) is None
     assert qa._sum_indicators([{**one, "year": 2025}, {**one, "year": 2025, "unit": "%",
                                                        "kind": "rate"}], {}) is None  # fmt: skip
+
+
+def test_lookup_span_skips_sources_without_years(monkeypatch: pytest.MonkeyPatch) -> None:
+    """값이 적재되지 않아 수록 기간을 모르는 출처는 기간 계산에서 뺀다 (D-055: min(None, …) 오류)"""
+    monkeypatch.setattr(
+        qa.lookup, "_years", lambda s: (None, None) if s["table"] == "X" else (1990, 2010)
+    )
+    monkeypatch.setattr(qa.indicators, "resolve_region", lambda r: {"status": "ok", "kind": "시도"})
+    sp = {"sources": [{"table": "X", "level": "시도"}, {"table": "Y", "level": "시도"}]}
+    assert qa._lookup_span(sp, "서울", "계") == (1990, 2010)
+    assert qa._lookup_span({"sources": [sp["sources"][0]]}, "서울", "계") == (0, 9999)
+
+
+def test_lookup_pick_skips_sources_without_years(monkeypatch: pytest.MonkeyPatch) -> None:
+    """수록 기간을 모르는 출처만 있으면 계산 오류가 아니라 자료 없음 (D-055)"""
+    monkeypatch.setattr(qa.lookup, "_years", lambda s: (None, None))
+    spec = {"name": "인구", "sources": [{"table": "X", "level": "시도"}]}
+    src, err = qa.lookup._pick(spec, "시도", 1990, 2007, "계")
+    assert src is None and err["status"] == "missing_data"

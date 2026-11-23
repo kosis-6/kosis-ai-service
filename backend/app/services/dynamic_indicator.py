@@ -1699,6 +1699,44 @@ async def _compute_target(
             res["parsed"] = {**(res.get("parsed") or {}), "sex": said_sex}
         return res, ask
 
+    async def llm_then_binding(entry, q_used, sub, slots_llm, lines, picked):
+        """칸 고르기 LLM이 고른 칸 + 잇기로 계산 → (답, 되물을 것).
+        잇기가 다 잇지 못하면 (None, None): 지금처럼 LLM이 고른 칸만으로 계산한다"""
+        from app.services import binding
+
+        tbl_id = entry["tbl_id"]
+        try:
+            b = await run_in_threadpool(
+                binding.bind, tbl_id, question, q_used, slots_llm, picked.forced
+            )
+            plan = await run_in_threadpool(binding.retry_plan, b, question, q_used)
+        except Exception:
+            logger.exception("칸 고르기 LLM 뒤 잇기 실패: %s", tbl_id)
+            return None, None
+        if plan is None:
+            if sub["dynamic"]:
+                sub["dynamic"][-1]["binding_skip"] = b.status
+            return None, None
+        slots_b = {**slots_llm, "cells_by_binding": True, "binding_multi": plan.multi}
+        res, ask = await _try(
+            tbl_id,
+            entry.get("org_id"),
+            question,
+            plan.parsed,
+            sub,
+            plan.forced,
+            slots_b,
+            ". ".join(lines) or None,
+            sem,
+        )
+        sub["dynamic"][-1]["by"] = "cell_llm+binding"
+        sub["dynamic"][-1]["binding_plan"] = plan.to_dict()
+        sub["dynamic"][-1]["read_as"] = [list(p) for p in picked.read_as]
+        said_sex = q_used.get("sex")
+        if res is not None and said_sex in ("남", "여") and plan.parsed.get("sex") != said_sex:
+            res["parsed"] = {**(res.get("parsed") or {}), "sex": said_sex}
+        return res, ask
+
     async def with_cell_llm(entry: dict, q_used: dict, sub: dict, slots: dict, notice):
         """규칙이 칸을 못 고른 표: LLM이 고른 칸(forced)으로 다시 계산한다 (cell_pick.py).
         이 질문의 상한(MAX_CELL_LLM)을 다 썼으면 부르지 않는다"""
@@ -1740,6 +1778,12 @@ async def _compute_target(
             "cells_by_llm": True,
         }
         lines = [n for n in (notice, picked.notice()) if n]
+        if get_settings().binding_use:
+            # LLM은 분류마다 칸 하나만 고른다. 그 칸을 잇기에 넣어 나머지 조건(수 범위 · 표 전체가
+            # 만족한 성별 · 질문 이해가 놓친 연령)까지 이으면 그 칸으로 계산한다 (설계 6-5)
+            res, ask = await llm_then_binding(entry, q_used, sub, slots_llm, lines, picked)
+            if res is not None and res.get("status") == "ok":
+                return res, ask
         res, ask = await _try(
             tbl_id,
             entry.get("org_id"),
@@ -1843,7 +1887,7 @@ async def _compute_target(
             by_llm = last.get("by") == "cell_llm"
             forced = (last.get("forced") or {}) if by_llm else {}
             words = (last.get("read_as") or []) if by_llm else []
-            if last.get("by") != "binding":
+            if last.get("by") not in ("binding", "cell_llm+binding"):
                 # 잇기로 계산한 답은 남기지 않는다: 캐시는 칸 하나씩만 담아(한 분류 안의 연산 ·
                 # 표 전체가 만족한 조건이 빠진다) 다음 같은 질문에 다르게 쓰일 수 있다
                 await _remember(parsed, entry["tbl_id"], forced, res, words)
@@ -2016,10 +2060,12 @@ async def _try(
         outcome = res.get("status")
     else:
         outcome = "되묻기" if ask is not None else "못 함"
-    if step.get("by") == "cell_llm":
+    # step["by"]는 _try 뒤에 붙어 여기서는 아직 없다: 어느 길인지는 slots의 표시로 본다
+    if (slots or {}).get("cells_by_llm") and not (slots or {}).get("cells_by_binding"):
         how = "칸 고르기 LLM"
     elif (slots or {}).get("cells_by_binding"):
-        how = "잇기"  # step["by"]는 이 뒤에 붙는다 (with_binding)
+        # step["by"]는 이 뒤에 붙는다 (with_binding · llm_then_binding)
+        how = "칸 고르기 LLM + 잇기" if (slots or {}).get("cells_by_llm") else "잇기"
     else:
         how = "규칙"
     parts = [tbl_id, f"칸={step['cells']} ({how})" if step.get("cells") else ""]

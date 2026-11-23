@@ -196,10 +196,27 @@ def bind(
         logger.exception("부부 단위 표 확인 실패: %s", tbl_id)
         couple = False
     forced = {no: code for no, code in (forced or {}).items() if no in by_no}
-    for no, code in forced.items():
+    for no, code in list(forced.items()):
         d = by_no[no]
-        if code in d.codes:
-            out.bound.append(Bound("forced", d.codes[code], "forced", no, [code], [d.codes[code]]))
+        if code not in d.codes:
+            continue
+        default = d.default()
+        said = bool(di._text_hits(question, [d], set()))
+        if default is None and _is_scenario(d) and not said:
+            # 기본(중위) 추계가 없는 특별 추계 표(DT_1BPA401: 높은 출산율 · 현수준 ·
+            # 빠른 고령화 …)는 시나리오를 말하지 않은 질문에 맞는 칸이 없다
+            # → 다음 후보 표(중위 추계)로 (V2-050)
+            why = "시나리오를 말하지 않았는데 기본(중위) 추계가 없는 표"
+            out.unbound.append(Unbound(d.name, d.codes[code], why))
+            continue
+        if default is not None and code != default and not said:
+            # 기본값이 정해진 분류(장래추계 시나리오 → 중위)를 질문이 말하지 않았는데 칸 고르기
+            # LLM이 다른 칸을 골랐다: 기본값으로 (V2-050 '출산율 현수준 추계'로 답했다)
+            forced[no] = code = default
+            name = d.codes[code]
+            out.bound.append(Bound(d.name, name, "default", no, [code], [name], note="LLM 칸 대신"))
+            continue
+        out.bound.append(Bound("forced", d.codes[code], "forced", no, [code], [d.codes[code]]))
     ages = parsed.get("ages") or []
     age = tuple(ages[0]) if ages else None
 
@@ -226,7 +243,12 @@ def bind(
             # 범위보다 먼저 본다: '고령자(65세이상) 가구' 표도 65세 이상 없는 가구까지 담는다
             no, codes = cells
             d = by_no[no]
-            if len(codes) == 1:
+            if forced.get(no) in codes:
+                # 그 연령이 든 칸이 여럿인데 칸 고르기 LLM이 그중 하나를 골랐다 ('식구가 전부 65살
+                # 이상' → 가구원 모두 65세이상, V2-013)
+                code = forced[no]
+                out.bound.append(Bound("age", label, "forced", no, [code], [d.codes[code]]))
+            elif len(codes) == 1:
                 out.bound.append(Bound("age", label, "value", no, codes, [d.codes[codes[0]]]))
             else:
                 names = ", ".join(d.codes[c] for c in codes)
@@ -316,6 +338,12 @@ def _bind_topic(slots, parsed, sex, sex_dim, out: Binding) -> None:
         return
     topic = (slots or {}).get("topic") or parsed.get("term") or parsed.get("indicator") or ""
     out.unbound.append(Unbound("topic", topic, "질문의 말과 맞는 칸이 없음"))
+
+
+def _is_scenario(d: "di.Dim") -> bool:
+    """장래추계 시나리오 분류인가 (칸 이름 대부분이 '…추계')"""
+    names = [search.norm(n) for n in d.codes.values()]
+    return len(names) >= 2 and sum("추계" in n for n in names) * 2 > len(names)
 
 
 def _age_cells(age: tuple, dims: list, region_dim: int | None) -> tuple[int, list[str]] | None:
@@ -607,8 +635,8 @@ def retry_plan(b: Binding, question: str, parsed: dict) -> Retry | None:
     for x in b.bound:
         if x.by == "table" and x.cond == "sex":
             q["sex"] = None  # 표 전체가 그 성별: 성별 분류를 찾지 않는다
-        if x.by in ("table", "value") and x.cond == "age":
-            q["ages"] = None  # 표 전체 · 칸 하나가 그 연령
+        if x.by in ("table", "value", "forced") and x.cond == "age":
+            q["ages"] = None  # 표 전체 · 칸 하나가 그 연령 (그 칸은 forced로 넘긴다)
         if x.note == MISSED_AGE and (span := _age_span(x.value)):
             q["ages"] = [list(span)]  # 질문 이해가 놓친 연령: 계산이 연령 칸으로 고른다
         if x.dim is None or x.by in ("age_range", "region", "split"):

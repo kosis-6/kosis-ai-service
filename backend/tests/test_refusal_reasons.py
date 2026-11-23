@@ -138,3 +138,10 @@ def test_eval_columns_and_summary() -> None:
     )
     assert "| 표에 연령 구분이 없음 | 2 | 1 | D-1*† D-2 | 표 조건 확인 |" in text
     assert eval_devset.refusal_summary([recs[2]]) == []
+
+
+def test_no_try_turn_has_search_status() -> None:
+    # 바로 계산을 시도하지 않은 통계표 안내 턴도 '표 찾기 판정'이 있어야 한다 (eval_devset이 꺼낸다)
+    turn = {"status": "tables", "trace": {}, "tables": {"status": "ok"}}
+    assert rr.reason_of(turn)["search"] == "ok"
+    assert eval_devset.refusal_columns(turn)["표 찾기 판정"] == "ok"

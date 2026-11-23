@@ -2685,8 +2685,10 @@ def _lookup_span(sp, region, sex):
         if lookup.LEVELS[s["level"]] < lookup.LEVELS[level]:
             continue
         eff = lookup._effective(s, sex if sex != "계" or not s.get("by_sex") else "남")
-        if eff:
-            spans.append(lookup._years(eff))
+        if eff and None not in (span := lookup._years(eff)):
+            # 값이 적재되지 않은 항목은 수록 기간을 모른다 (None, None): 기간 계산에서 뺀다
+            # (DT_1IN0001_ENG에서 min(None, …)로 계산이 멈췄다, D-055)
+            spans.append(span)
     if not spans:
         return 0, 9999
     return min(a for a, _ in spans), max(b for _, b in spans)
