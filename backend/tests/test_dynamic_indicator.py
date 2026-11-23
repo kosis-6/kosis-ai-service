@@ -1375,17 +1375,69 @@ def test_couple_counted_sex_dimension_uses_male_cell() -> None:
     sex = d.Dim(2, "성별", {"1": "남자", "2": "여자"})
     q = "1978년 대구 혼인 건수"
     plan, why = d.choose(q, {"sex": "계"}, [items, region, sex], 1, couple=True)
-    assert why is None and plan.pick[2] == "1"
-    assert "부부 단위 건수" in plan.defaults[-1]
-    # 부부 단위 표가 아니면(사람 수 표) 지금처럼 고르지 못한다
+    assert why is None and plan.pick[2] == "1" and plan.couple
+    assert d.COUPLE_NOTE in plan.defaults[-1]
+    # 부부 단위 표가 아니면(사람 수 표) 남자 · 여자를 따로 보여 준다
     plan, why = d.choose(q, {"sex": "계"}, [items, region, sex], 1)
-    assert plan is None and "성별" in why
-    # 연령을 물으면 남편 · 아내 나이가 달라 고르지 않는다
-    plan, why = d.choose(q, {"sex": "계", "ages": [30, 34]}, [items, region, sex], 1, couple=True)
-    assert plan is None
-    # 성별을 말하면 그 칸
+    assert why is None and plan.split_sex == {"남": "남자", "여": "여자"} and not plan.couple
+    # 연령을 물으면 남편 · 아내 나이가 달라 한 쪽 칸으로 답하지 않고 따로 보여 준다
+    age = d.Dim(3, "연령(각세)별", {"000": "계", "230": "30세", "231": "31세", "232": "32세"})
+    plan, why = d.choose(
+        q, {"sex": "계", "ages": [[30, 34]]}, [items, region, sex, age], 1, couple=True
+    )
+    assert why is None and plan.split_sex == {"남": "남편", "여": "아내"} and plan.couple
+    assert "남편 · 아내 따로" in plan.defaults[-1]
+    # 성별을 말하면 그 칸. 부부 단위 표라는 표시는 그대로 (V2-035 "결혼한 남자 중 30대")
     plan, why = d.choose(q, {"sex": "여"}, [items, region, sex], 1, couple=True)
-    assert why is None and plan.pick[2] == "2"
+    assert why is None and plan.pick[2] == "2" and plan.couple
+    plan, why = d.choose(q, {"sex": "남"}, [items, region, sex], 1, couple=True)
+    assert why is None and plan.pick[2] == "1" and plan.couple
+    # 사람 수 표에서 성별을 말한 경우는 부부 단위가 아니다
+    plan, why = d.choose(q, {"sex": "남"}, [items, region, sex], 1)
+    assert why is None and not plan.couple
+
+
+def test_no_sex_total_split_builds_sexes_without_total(monkeypatch) -> None:
+    # 성별 합계 칸이 없는 표에서 남녀를 따로 보여 줄 때: by_sex에 '계'가 없어야 qa.compute가
+    # lookup.needs_split으로 남 · 여를 각각 계산한다. 이름표는 답의 "기혼자 수(남자)"
+    items = d.Dim(0, "항목", {"1": "남자", "2": "여자"})
+    region = d.Dim(1, "시도별", {"00": "전국", "11": "서울특별시"})
+    kind = d.Dim(2, "초혼연령별", {"0": "15세이상자", "1": "기혼자"})
+    monkeypatch.setattr(d, "schema", lambda t: ([items, region, kind], 1, "시도"))
+    monkeypatch.setattr(d, "couple_counted", lambda t: False)
+    monkeypatch.setattr(d.lookup, "_table", lambda t: {"tbl_nm": "시도/초혼연령/성별 기혼자"})
+    monkeypatch.setattr(d, "_unit", lambda *a: ("명", None))
+    parsed = {"type": "value", "indicator": "기혼자 수", "regions": ["서울"], "sex": "계"}
+    spec, why = d.build("T_NO_TOTAL", "서울 기혼자 수", parsed)
+    assert why is None
+    by_sex = spec["sources"][0]["by_sex"]
+    assert set(by_sex) == {"남", "여"} and by_sex["여"]["label"] == "여자"
+    assert d.lookup.needs_split(spec, "계")
+    # 비율은 남녀를 나눠 계산하지 않는다: 남자 칸 값이 답이 되지 않게 고르지 못한 것으로 둔다
+    spec, why = d.build("T_NO_TOTAL", "서울 기혼자 비율", {**parsed, "indicator": "기혼자 비율"})
+    assert spec is None and "칸을 고르지 못함" in str(why)
+
+
+def test_couple_note_without_region_dimension() -> None:
+    # 지역 구분이 없는 부부 단위 표 (다문화 유형별 이혼 DT_1BB0003): 지역 값 안내를 붙이지 않는다
+    items = d.Dim(0, "항목", {"T00": "이혼건수"})
+    sex = d.Dim(1, "성별", {"1": "남자", "2": "여자"})
+    kind = d.Dim(2, "유형별", {"0": "계", "1": "출생기준 한국인", "2": "외국인"})
+    plan, why = d.choose("다문화 이혼 건수", {"sex": "계"}, [items, sex, kind], None, couple=True)
+    assert why is None and plan.pick[1] == "1" and plan.couple
+    note = ", ".join(plan.defaults)
+    assert d.COUPLE_NOTE_NATIONAL in note and "지역별" not in note
+
+
+def test_couple_answer_drops_add_sexes_notice() -> None:
+    # 부부 단위 표의 성별 칸이 곧 부부 건수: "남녀 값을 더해 보라"는 표 안내를 붙이면 두 번 세게
+    # 된다 (V2-053). 성별을 말해 고른 칸도 같다 (V2-035)
+    no_total = d.search_answer.NO_TOTAL_NOTE.rstrip(".")
+    assert d.table_notice(no_total, True) is None
+    assert d.table_notice(f"표 주석 A. {no_total}. 표 주석 B", True) == "표 주석 A. 표 주석 B"
+    # 사람 수 표(부부 단위가 아님)에는 그대로 붙인다
+    assert d.table_notice(no_total, False) == no_total
+    assert d.table_notice(None, True) is None
 
 
 def test_couple_counted_compares_national_sums(monkeypatch) -> None:

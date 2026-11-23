@@ -56,6 +56,7 @@ from app.services import (
     plan_cache,
     qa,
     search,
+    search_answer,
     table_cache,
 )
 from app.services.memory_cache import MISSING, MemoryCache
@@ -153,6 +154,11 @@ class Plan:
     # 한 분류 안의 여러 칸으로 하는 연산 (분류 번호, 코드들, "sum"·"compare"·"rank")
     multi: tuple[int, list[str], str] | None = None
     multi_dim: Dim | None = None  # 순위의 분류 (항목 안의 분류면 표 이름의 말로 부른다)
+    couple: bool = False  # 부부를 한 쪽씩 센 표의 성별 칸으로 답함 (남녀를 더하면 두 번 센다)
+    # 성별 합계 칸이 없고 한 칸으로 답할 수 없어 남 · 여를 따로 보여 준다
+    # {"남": 이름표, "여": 이름표}. 이때 pick의 성별 칸은 자리만 채운 남자 칸이다
+    # (_build가 '계' 없는 by_sex를 만든다)
+    split_sex: dict[str, str] | None = None
 
 
 # ---- 표의 칸 목록 ----------------------------------------------------------------
@@ -463,6 +469,7 @@ def choose(
             if base is None and sex in ("남", "여"):
                 # 합계 칸이 없는 성별 분류 (남편 · 아내): 말한 성별의 칸 ("이혼하는 남자" → 남편)
                 plan.pick[d.no] = plan.matched[d.no] = d.sex_codes()[sex]
+                plan.couple = couple or _couple_code(d) is not None
                 continue
             if (
                 base is None
@@ -470,16 +477,32 @@ def choose(
                 and (husband := _couple_code(d) or (d.sex_codes()["남"] if couple else None))
             ):
                 if parsed.get("ages"):
-                    return None, f"{d.name}에서 칸을 고르지 못함"  # 연령별이면 남편 · 아내가 다르다
+                    # 연령별이면 남편 · 아내 나이가 달라 한 쪽 칸으로 답할 수 없고, 더하면 같은
+                    # 부부를 두 번 센다 ("1975년 서울 30대 혼인": 남편 13,257 · 아내 3,367)
+                    # → 남편 쪽 · 아내 쪽을 따로 보여 준다
+                    plan.pick[d.no] = husband
+                    plan.split_sex = {"남": "남편", "여": "아내"}
+                    plan.defaults.append(
+                        f"{d.name}: 남편 · 아내 따로"
+                        " (부부 단위 건수라 연령은 남편 · 아내 나이가 다름)"
+                    )
+                    plan.couple = True
+                    continue
                 # 남편 · 아내만 있는 분류, 또는 남자 · 여자로 부부를 한 쪽씩 센 표 (couple_counted):
                 # 부부 단위 건수라 연령을 나누지 않으면 남편 쪽 칸이 전체 건수다
                 plan.pick[d.no] = husband
-                plan.defaults.append(f"{d.name}: {d.codes[husband]} {COUPLE_NOTE}")
+                plan.defaults.append(f"{d.name}: {d.codes[husband]} {couple_note(region_dim)}")
+                plan.couple = True
                 continue
             if len(others) > 1:
                 asks.append(Ask(d.no, d.name, [(c, d.codes[c]) for c in others]))
             elif base is None:
-                return None, f"{d.name}에서 칸을 고르지 못함"
+                # 성별 합계 칸이 없는 사람 수 표 ("서울 기혼자 수", 항목이 남자 · 여자뿐):
+                # 남 · 여를 따로 보여 준다 (지표 사전의 needs_split과 같다)
+                male, female = d.sex_codes()["남"], d.sex_codes()["여"]
+                plan.pick[d.no] = male
+                plan.split_sex = {"남": d.codes[male], "여": d.codes[female]}
+                plan.defaults.append(f"{d.name}: {d.codes[male]} · {d.codes[female]} 따로")
             else:
                 plan.pick[d.no] = base
                 if others:
@@ -511,7 +534,8 @@ def choose(
             # 남편 · 아내만 있는 분류 (혼인 · 이혼 표): 부부 단위 건수라 연령을 나누지 않으면 어느
             # 쪽으로 세도 같다 ("이혼 부부 중 미성년 자녀 없는 비율"을 성별로 되묻고 있었다)
             plan.pick[d.no] = husband
-            plan.defaults.append(f"{d.name}: {d.codes[husband]} {COUPLE_NOTE}")
+            plan.defaults.append(f"{d.name}: {d.codes[husband]} {couple_note(region_dim)}")
+            plan.couple = True
         elif len(d.codes) <= MAX_ASK_OPTIONS:
             asks.append(Ask(d.no, d.name, list(d.codes.items())))
         else:
@@ -532,9 +556,25 @@ def _couple_code(d: Dim) -> str | None:
 
 
 # 부부 단위 건수 표에서 남편 쪽 칸으로 답할 때의 안내.
-# 전국 값은 두 쪽이 같지만 지역 값은 다를 수 있다
-# (1975년 혼인 DT_1B80023: 전국 남 = 여 283,226, 부산 남 18,679 · 여 16,324, 혼인 총계는 18,679)
-COUPLE_NOTE = "기준 (부부 단위 건수. 전국 값은 다른 쪽 기준과 같고, 지역별 값은 다를 수 있음)"
+# 전국 값은 두 쪽이 같고, 지역 값은 남편 쪽이 공표된 시도별 건수와 같다 (남편 주소지 기준).
+# 혼인 DT_1B80023 남편 칸 = 시도별 혼인 DT_1B80022 (1980 서울 90,497 · 아내 칸 76,675),
+# 이혼 DT_1B80032 남편 칸 = 시도별 이혼 DT_1B80030 (1980 서울 7,935 · 아내 칸 8,020) (11/22 확인)
+COUPLE_NOTE = "기준 (부부 단위 건수. 지역별 값은 남편 주소지 기준으로, 공표된 시도별 건수와 같음)"
+# 지역 구분이 없는 표 (다문화 유형별 이혼 DT_1BB0003): 지역 값 이야기는 맞지 않는다
+COUPLE_NOTE_NATIONAL = "기준 (부부 단위 건수)"
+
+
+def couple_note(region_dim: int | None) -> str:
+    return COUPLE_NOTE if region_dim is not None else COUPLE_NOTE_NATIONAL
+
+
+def table_notice(notice: str | None, couple: bool) -> str | None:
+    """답에 붙일 통계표 찾기의 주의. 부부를 한 쪽씩 센 표의 성별 칸으로 답했으면(성별을 말했든
+    아니든) "남녀 값을 더해 보라"는 표 안내를 뺀다 (더하면 두 번 센다, V2-053 · V2-035)"""
+    if not notice or not couple:
+        return notice
+    left = notice.replace(search_answer.NO_TOTAL_NOTE.rstrip("."), "")
+    return re.sub(r"(?:\.\s*){2,}", ". ", left).strip(" .") or None
 
 
 @lru_cache(maxsize=512)
@@ -900,8 +940,13 @@ def build(
         "note": OTHER_TABLE_NOTE if indicators.canonical_name(name) else NOTE,
         "sources": [src],
         **projection,
+        **({"couple": True} if plan.couple else {}),
     }
     kind = parsed.get("type")
+    if plan.split_sex and (plan.multi or kind == "composition" or PCT_ASK.search(question)):
+        # 한 분류 안의 연산 · 구성비 · 비율은 남녀를 나눠 계산하지 않는다: 자리만 채운 남자 칸
+        # 값이 답이 되지 않게 지금처럼 고르지 못한 것으로 둔다
+        return None, f"{plan.sex_dim.name}에서 칸을 고르지 못함"
     if plan.multi:
         return _parts_spec(spec, src, plan, dims, tbl_nm)
     if kind == "composition" or PCT_ASK.search(question):
@@ -912,7 +957,12 @@ def build(
                 return None, why
         spec = made
     else:
-        if plan.sex_dim is not None:
+        if plan.split_sex:
+            # '계' 없이 남 · 여만 둔다 → qa.compute가 lookup.needs_split으로 둘 다 계산한다
+            src["by_sex"] = {
+                s: {**_sex_override(plan, s), "label": label} for s, label in plan.split_sex.items()
+            }
+        elif plan.sex_dim is not None:
             src["by_sex"] = {s: _sex_override(plan, s) for s in ("계", "남", "여")}
         if plan.age_dim is not None and parsed.get("ages") and not ignore_ages:
             # 연령 구간을 더해 답한다: 더한 값이 연령 합계를 넘지 않는지 (겹치는 묶음 칸)
@@ -2015,6 +2065,7 @@ async def _try_once(
         step["skip"] = str(why)
         return None, why if isinstance(why, Ask) else None
     step["cells"] = spec["cells"]
+    notice = table_notice(notice, bool(spec.get("couple")))
     if notice:
         spec["note"] = f"{spec['note']}. {notice}"
     if spec.get("parts_op"):  # 한 분류 안의 칸들로 합·비교·순위

@@ -139,9 +139,15 @@ def test_composition_with_latest_month(october: dict) -> None:
 
 def test_recent_rank_and_composition_use_latest_month(october: dict) -> None:
     rank = qa.correct(
-        "현재 시도별 인구 순위", {"type": "rank", "indicator": "총인구", "year": 2025, "sex": "계"}
+        "현재 서울 구별 인구 순위",
+        {"type": "rank", "indicator": "총인구", "regions": ["서울"], "year": 2025, "sex": "계"},
     )
     assert qa.compute(rank)["year"] == october["year"]
+    # 시도 순위: 최신 달은 광주 · 전남이 전남광주통합특별시로 합쳐져 지역이 빠진다 → 연간 마지막 해
+    rank = qa.correct(
+        "현재 시도별 인구 순위", {"type": "rank", "indicator": "총인구", "year": 2025, "sex": "계"}
+    )
+    assert qa.compute(rank)["year"] == indicators._data_years()[1]
     comp = qa.correct(
         "현재 서울 인구의 연령대별 구성비",
         {"type": "composition", "indicator": "총인구", "regions": ["서울"], "year": 2025},

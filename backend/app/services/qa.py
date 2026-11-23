@@ -1762,12 +1762,13 @@ def _read_question(question, parsed, fix):
         and not timeref.resolve(question)
         and not SPAN.search(question)
         and not SINCE.search(question)
-        and (sp := indicators.spec(parsed.get("indicator"))) is not None
-        and sp.get("method") == "lookup"
+        and indicators.spec(parsed.get("indicator")) is not None
     ):
-        # 연도를 말하지 않은 조회 지표 질문 ("서울 외국인주민 수")은
-        # "최근"과 같이 표마다 마지막 해로
-        # (공통 기준 연도로 계산하면 2024년까지인 표는 자료가 있는데도 범위 밖이 된다)
+        # 연도를 말하지 않은 질문은 "최근"과 같이 가장 최근 자료로 답한다
+        # - 조회 지표 ("서울 외국인주민 수"): 표마다 마지막 해
+        #   (공통 기준 연도로 계산하면 2024년까지인 표는 자료가 있는데도 범위 밖이 된다)
+        # - 주민등록인구 계산 지표 ("서울 인구"): 연간 자료 다음 해의 KOSIS 최신 달
+        #   (연간 마지막 해 12월 말이 아니라). 연간 자료와 섞는 지표는 compute가 연간으로 다시 계산
         asked["latest"] = True
     elif (
         kind == "trend"
@@ -1988,10 +1989,21 @@ def compute(q):
         for r in _leaves(result):
             if TFR_MEANING not in r.setdefault("notes", []):
                 r["notes"].insert(0, TFR_MEANING)
-    if result.get("status") == "out_of_range" and asked.get("latest") and not q.get("year"):
+    if (
+        asked.get("latest")
+        and not q.get("year")
+        and (result.get("status") == "out_of_range" or _monthly_empty(result))
+    ):
         retry = _compute({**q, "asked": {**asked, "latest": False}})
         if retry.get("status") == "ok":
-            return retry
+            result = retry
+    elif asked.get("latest") and not q.get("year") and result.get("as_of") and "ranking" in result:
+        # 최신 달 자료는 행정구역 개편(예: 전남광주통합특별시, 인천 중·동·서구)이 반영돼
+        # 지역 목록과 맞지 않는 곳이 순위에서 빠진다. 빠지면 연간 마지막 해로 답한다
+        annual = _compute({**q, "asked": {**asked, "latest": False}})
+        if (annual.get("total_regions") or 0) > (result.get("total_regions") or 0):
+            annual["skipped_month"] = result["as_of"]
+            result = annual
     if (missing := asked.get("survey_missing")) and result.get("status") == "ok":
         # 물은 조사의 값이 없다: 답 첫머리에 이유를 두고, 원래 조사의 값임을 밝힌다
         # ("인구총조사로 보면?"에 앞 답과 같은 첫 문장만 나가면 질문을 무시한 것처럼 보인다)
@@ -2008,7 +2020,59 @@ def compute(q):
             # "중위연령은 시도 단위까지만 자료가 있습니다" → 어느 조사의 이야기인지 밝힌다
             if not reason.startswith(survey):
                 result["reason"] = f"{survey} {reason}"
+    _add_latest_note(q, result)
     return result
+
+
+def _monthly_empty(result):
+    """최신 달 값으로 계산했는데 값이 비었다 (세대당 인구: 최신 달 세대수가 없음)"""
+    if result.get("status") != "ok":
+        return False
+    leaves = [r for r in _leaves(result) if r.get("as_of")]
+    # 구성비는 값이 parts(count · share)에 있다. value 만 보면 빈 것으로 잘못 봐
+    # 연간 마지막 해로 다시 계산한다
+    vals = [
+        v.get("value", v.get("count"))
+        for r in leaves
+        for v in (r.get("values") or r.get("ranking") or r.get("parts") or [r])
+    ]
+    return bool(leaves) and all(v is None for v in vals)
+
+
+def _add_latest_note(q, result):
+    """연도 · 기간을 말하지 않아 가장 최근 자료로 답했으면 그 시점을 밝힌다.
+    첫 문장의 "2024년"만으로는 그게 가장 최근 자료인지 알 수 없다 (외국인주민 수는 2024년까지,
+    총인구는 최신 달까지). 최신 달 값은 새 달 자료가 들어올 때마다 답이 바뀌므로 어느 달
+    기준인지 꼭 밝힌다. 연도를 말하지 않은 질문은 correct가 year · start_year · end_year를
+    비운다"""
+    if result.get("status") != "ok" or q.get("prediction"):
+        return
+    for r in _leaves(result):
+        if r.get("series"):
+            # 추이는 끝 연도만 본다: "2010년부터" · "최근 5년"도 끝은 가장 최근 자료
+            if q.get("end_year"):
+                continue
+            last = r["series"][-1]
+            when = last.get("as_of") or f"{last['year']}년"
+            name = r.get("indicator") or "이"
+            note = f"{name} 자료는 {when}이 가장 최근입니다"
+        elif q.get("year"):
+            continue
+        elif r.get("as_of") or r.get("year"):
+            note = f"가장 최근 자료인 {_when(r)} 기준으로 답했습니다"
+            if month := r.get("skipped_month"):
+                note = (
+                    f"가장 최근 연간 자료인 {_when(r)} 기준으로 답했습니다. "
+                    f"최신 달({month}) 자료는 행정구역 개편으로 일부 지역이 달라 쓰지 않았습니다"
+                )
+            elif r.get("as_of"):
+                # 최신 달 값: "○년까지는 연간 자료이고 ○년은 월별 자료의 최신 달 값" 안내와 겹친다.
+                # 월별 자료라는 것은 출처 줄의 기준이 밝히므로 여기에 다시 적지 않는다
+                r["notes"] = [n for n in r.get("notes", []) if "KOSIS 월별 자료의" not in n]
+        else:
+            continue
+        if note not in (notes := r.setdefault("notes", [])):
+            notes.append(note)
 
 
 def _add_default_value(q, result):
@@ -2016,7 +2080,9 @@ def _add_default_value(q, result):
     ("인구총조사 기준 영도구 중위연령 55.2세" + "주민등록인구 기준으로는 56.8세입니다")"""
     if result.get("status") != "ok" or result.get("value") is None or q.get("type") != "value":
         return
-    asked = {k: v for k, v in (q.get("asked") or {}).items() if k != "survey"}
+    # latest 도 뺀다: 켜져 있으면 주민등록인구 계산이 넘긴 연도 대신 최신 달 값을 써서
+    # 2026년 값에 "2025년 주민등록인구 기준"이라고 적게 된다
+    asked = {k: v for k, v in (q.get("asked") or {}).items() if k not in ("survey", "latest")}
     other = _compute({**q, "asked": asked, "year": result.get("year")})
     if other.get("status") != "ok" or other.get("value") is None:
         return
@@ -2069,10 +2135,30 @@ def _compute(q):
     names = q.get("indicators") or []
     if len(names) > 1 and kind in ("value", "trend", "compare"):
         # 여러 지표를 함께 물음: 지표마다 따로 계산해 묶는다 (단위가 달라 차트 하나에 그리지 않는다)
-        parts = [compute({**q, "indicators": None, "indicator": n, "term": n}) for n in names]
+        def each(extra=None):
+            return [
+                compute({**q, "indicators": None, "indicator": n, "term": n, **(extra or {})})
+                for n in names
+            ]
+
+        parts = each()
         ok = [p for p in parts if p.get("status") == "ok"]
         if not ok:
             return parts[0]
+        if kind == "value" and not q.get("year") and (year := _common_year(ok)):
+            # 연도를 말하지 않아 지표마다 각자 최신으로 답했다 (주민등록인구 2026년 10월,
+            # 등록외국인 2025년): 모두 있는 해로 맞춘다. 다른 시점의 값을 나란히 놓거나
+            # 더하지 않는다
+            asked = {**(q.get("asked") or {}), "latest": False}
+            parts = each({"year": year, "asked": asked})
+            ok = [p for p in parts if p.get("status") == "ok"]
+            if not ok:
+                return parts[0]
+        # 합계는 물은 지표가 모두 계산됐을 때만: 하나라도 빠지면 남은 값만 '합계'로 나간다
+        whole = len(ok) == len(parts)
+        if q.get("aggregate") == "sum" and kind == "value" and whole:
+            if total := _sum_indicators(ok, q):
+                return total
         result = _combine(ok, by="indicator")
         if (q.get("asked") or {}).get("birth_pair"):
             ok[0].setdefault("notes", []).insert(0, BIRTH_PAIR_NOTE)
@@ -2525,7 +2611,10 @@ def _lookup_trend(q, sp, region, year, sex, ages):
     if start < lo:
         notes.append(f"{sp['name']} 자료가 {lo}년부터 있어 {lo}년부터 봤습니다")
         start = lo
-    if (q.get("end_year") or year or hi) > hi and not asked.get("recent"):
+    # 끝 연도를 말했을 때만 알린다. 말하지 않았으면 year는 주민등록인구 표의 마지막 해라
+    # 2024년까지인 표(외국인주민 수)에 묻지도 않은 "2024년까지 봤습니다"가 붙었다
+    said_end = q.get("end_year") or q.get("year")
+    if said_end and said_end > hi and not asked.get("recent"):
         notes.append(f"{sp['name']} 자료가 {hi}년까지 있어 {hi}년까지 봤습니다")
     if q.get("born"):
         result = _cohort_trend(
@@ -2606,6 +2695,54 @@ def _combine(parts, by=None):
     if by:
         out["split_by"] = by
     return out
+
+
+def _common_year(parts):
+    """지표마다 최신 시점이 다르면 모두 있는 해 (최신 달 값은 연간 마지막 해로 본다). 같으면 None.
+    연도와 기준 달이 모두 같으면 같은 시점이다 (둘 다 2026년 10월 말이면 그대로 둔다).
+    기준 달이 서로 다른 월별 값끼리도 연간 마지막 해로 간다: 둘 다 있는 가장 최근 달로 맞추려면
+    달을 지정해 받는 길이 필요하다 (지금 월별 자료는 주민등록인구뿐이라 달이 갈리지 않는다)"""
+    leaves = [r for p in parts for r in _leaves(p)]
+    if len({(r.get("year"), r.get("as_of")) for r in leaves}) <= 1:
+        return None
+    years = [r["year"] for r in leaves if r.get("year")]
+    if any(r.get("as_of") for r in leaves):
+        years.append(indicators._data_years()[1])
+    return min(years) if years else None
+
+
+def _sum_indicators(parts, q):
+    """여러 지표의 합 ("춘천 주민등록인구 + 등록외국인"). 같은 시점 · 같은 단위의 수만 더한다"""
+    leaves = [_leaves(p) for p in parts]
+    if any(len(ls) != 1 for ls in leaves):
+        return None
+    rows = [ls[0] for ls in leaves]
+    if len({(r.get("year"), r.get("as_of")) for r in rows}) > 1:
+        return None
+    if len({r.get("unit") for r in rows}) > 1 or any(r.get("value") is None for r in rows):
+        return None
+    if any(r.get("kind", "count") != "count" and r.get("unit") not in ("명", "건") for r in rows):
+        return None  # 비율은 더하지 않는다
+    names = [r.get("indicator") for r in rows]
+    notes = list(dict.fromkeys(n for r in rows for n in r.get("notes", [])))
+    return {
+        **{
+            k: rows[0][k]
+            for k in ("source", "basis", "tbl_id", "url", "unit", "region", "year")
+            if k in rows[0]
+        },
+        "status": "ok",
+        "kind": "count",
+        "indicator": " + ".join(names),
+        "value": sum(r["value"] for r in rows),
+        "members": [{"region": r.get("indicator"), "value": r["value"]} for r in rows],
+        "extra_sources": [
+            {k: r.get(k) for k in ("source", "basis", "tbl_id", "url")}
+            for r in rows[1:]
+            if r.get("tbl_id") != rows[0].get("tbl_id")
+        ],
+        "notes": notes,
+    }
 
 
 def _leaves(result):
@@ -3116,12 +3253,12 @@ def _split_text(r):
             gap = round(abs(vals[0] - vals[1]), 3)
             unit = lookup.diff_unit({"unit": hi["unit"], "kind": hi.get("kind")})
             who = hi["indicator"]
-            word = "높습니다"
+            # 건수 · 사람 수는 '많다' ("기혼자 수(여자)가 284,204명 더 많습니다")
+            word = "많습니다" if hi.get("kind", "count") == "count" else "높습니다"
             same = a.get("indicator") == b.get("indicator")
             if same and {a.get("sex"), b.get("sex")} == {"남", "여"}:
                 # 같은 지표를 남녀로 나눈 경우 ("서울 남녀 인구 비교"): 성별로 견준다
                 who = {"남": "남성", "여": "여성"}[hi["sex"]]
-                word = "많습니다" if hi.get("kind", "count") == "count" else "높습니다"
             text += f" {_josa(who, '이가')} {_val(gap, unit, full=True)} 더 {word}."
     return text
 
