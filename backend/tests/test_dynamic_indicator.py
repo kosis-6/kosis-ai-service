@@ -123,11 +123,15 @@ def test_age_ratio_uses_subgroup_as_denominator(asked_age, expected) -> None:
     assert "÷ 70세 이상" in spec["formula"]
 
 
-def test_sex_ratio_keeps_age_filter_on_both_sides() -> None:
-    spec = build("서울 70세 이상 1인 가구 중 여성 비율", sex="여", ages=[[70, None]])
+@pytest.mark.parametrize(("age", "lo"), [("70세 이상", 70), ("노인", 65)])
+def test_sex_ratio_keeps_age_filter_on_both_sides(age, lo) -> None:
+    spec = build(f"서울 {age} 1인 가구 중 여성 비율", sex="여", ages=[[lo, None]])
     src = spec["sources"][0]
     assert (src["item_id"], src["den_item_id"]) == ("T20", "T00")
-    assert src["filters"]["c2_id"] == src["den_filters"]["c2_id"] == ["075", "080", "085", "086"]
+    expected = ["075", "080", "085", "086"]
+    if lo == 65:
+        expected.insert(0, "070")
+    assert src["filters"]["c2_id"] == src["den_filters"]["c2_id"] == expected
 
 
 def test_composition_by_named_dimension() -> None:
@@ -888,10 +892,34 @@ def test_ratio_requires_the_requested_population(computed, have_full_table, use_
         ("18세 이상 1인 가구 중 70세 이상 비율", "20세 이상"),
         ("20세 이상 1인 가구 중 70세 이상 비율", None),
         ("70세 이상 1인 가구 중 여성 비율", None),
+        ("노인 1인 가구 중 여성 비율", None),
+        ("1인 가구 중 노인 비율", "20세 이상"),
+        ("성인 1인 가구 중 여성 비율", "20세 이상"),
     ],
 )
 def test_age_limit_checks_the_population_side_of_a_ratio(question, limit) -> None:
     assert d.age_limit("성별·연령별 1인가구(20세 이상, 일반가구)", question) == limit
+
+
+@pytest.mark.parametrize(
+    ("question", "limit"),
+    [
+        ("노인 1인 가구 수", None),
+        ("65세 넘은 1인 가구 수", None),
+        ("70세 이상 1인 가구 수", None),
+        ("65세 초과 70세 이하 1인 가구 수", None),
+        ("60대 1인 가구 수", "65세 이상"),
+        ("성인 1인 가구 수", "65세 이상"),
+        ("1인 가구 수", "65세 이상"),
+    ],
+)
+def test_age_limit_uses_the_resolved_band(question, limit) -> None:
+    assert d.age_limit("성별·연령별 1인가구(65세 이상)", question) == limit
+
+
+def test_ages_above_a_cutoff_exclude_that_age() -> None:
+    assert qa.extract_ages("65세 넘은 1인 가구") == [[66, None]]
+    assert qa.extract_ages("65세 초과 70세 이하 1인 가구") == [[66, 70]]
 
 
 def test_handoff_retries_others_when_the_exact_table_fails(computed) -> None:
@@ -1772,21 +1800,38 @@ def test_ratio_whole_target_drops_question_age() -> None:
     assert kept["age"]["lo"] == 70
 
 
-def test_cached_plan_on_age_limited_table_goes_to_table_search(monkeypatch) -> None:
-    # 이 규칙 전에 20세 이상 표로 저장한 계획이 통계표 찾기보다 먼저 쓰이지 않게 한다
+@pytest.mark.parametrize(
+    ("question", "fits"),
+    [
+        ("1인 가구 중 70세 이상 비율", False),
+        ("노인 1인 가구 수", True),
+        ("65세 넘은 1인 가구 수", True),
+    ],
+)
+def test_cached_plan_on_age_limited_table_checks_question_scope(
+    monkeypatch, question, fits
+) -> None:
     async def find(key):
         return [{"id": 1, "tbl_id": "DT_LIMITED", "forced": {}, "words": []}]
 
-    tried = []
+    used = []
 
     async def try_(*args, **kwargs):
-        tried.append(args[0])
-        return None, None
+        return {"status": "ok"}, None
 
-    monkeypatch.setattr(d.plan_cache, "key_of", lambda parsed: ("k", "1인 가구 중 70세 이상 비율"))
+    async def mark_used(id_):
+        used.append(id_)
+
+    monkeypatch.setattr(d.plan_cache, "key_of", lambda parsed: ("k", question))
     monkeypatch.setattr(d.plan_cache, "find", find)
-    monkeypatch.setattr(lookup, "_table", lambda t: {"tbl_nm": "1인가구(20세 이상, 일반가구)-시도"})
+    monkeypatch.setattr(d.plan_cache, "used", mark_used)
+    monkeypatch.setattr(lookup, "_table", lambda t: {"tbl_nm": "1인가구(65세 이상, 일반가구)-시도"})
     monkeypatch.setattr(d, "_try", try_)
     trace: dict = {}
-    assert asyncio.run(d.cached_answer("서울 1인 가구 중 70세 이상 비율", BASE, trace)) is None
-    assert tried == [] and "20세 이상만 집계" in trace["dynamic"][0]["skip"]
+    res = asyncio.run(d.cached_answer(f"서울 {question}", BASE, trace))
+    if fits:
+        assert res == {"status": "ok"} and used == [1]
+        assert trace["plan_cache"] == {"hit": 1, "tbl_id": "DT_LIMITED"}
+    else:
+        assert res is None and used == []
+        assert "65세 이상만 집계" in trace["dynamic"][0]["skip"]

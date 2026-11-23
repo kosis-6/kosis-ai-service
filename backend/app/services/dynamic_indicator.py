@@ -1127,7 +1127,7 @@ def _ratio(spec, src, plan, dims, parsed, tbl_nm="", *, question=""):
     sex = parsed.get("sex") or "계"
     parts = []  # (분류 열, 분자 코드들, 분모 코드, 이름)
     scope = WITHIN.split(question, maxsplit=1)
-    population_ages = qa.extract_ages(scope[0]) if len(scope) == 2 else []
+    population_ages = qa.resolved_ages(scope[0]) if len(scope) == 2 else []
     ages = (parsed.get("ages") or [])[:1]
     age_dim = plan.age_dim
     population_label = ""
@@ -1136,7 +1136,7 @@ def _ratio(spec, src, plan, dims, parsed, tbl_nm="", *, question=""):
             return None, "표에 모집단을 제한할 연령 구분이 없음"
         population_ages = _merged_age_bands(population_ages)
         population_label = "·".join(map(indicators.age_label, population_ages))
-        requested_ages = qa.extract_ages(scope[1])
+        requested_ages = qa.resolved_ages(scope[1])
         ages = _age_intersection(requested_ages, population_ages)
         if requested_ages and not ages:
             return None, "분자의 연령이 모집단의 연령 범위에 포함되지 않음"
@@ -1965,16 +1965,13 @@ def age_limit(tbl_nm: str, question: str) -> str | None:
     m = AGE_LIMIT.search(tbl_nm or "")
     if m is None:
         return None
+    population = question
     if PCT_ASK.search(question):
         # "1인 가구 중 20세 이상 비율"의 20세는 분자의 조건이다. 분모의 범위만 본다.
         scope = WITHIN.split(question, maxsplit=1)
-        population = qa.extract_ages(scope[0]) if len(scope) == 2 else []
-        if population and all(lo >= int(m[1]) for lo, _ in population):
-            return None
-        return m[0]
-    if re.search(rf"{m[1]}\s*(세|살)\s*이상", question):
-        return None
-    return m[0]
+        population = scope[0] if len(scope) == 2 else ""
+    bands = qa.resolved_ages(population)
+    return None if bands and all(lo >= int(m[1]) for lo, _ in bands) else m[0]
 
 
 def _whole_population_first(entries: list[dict], outcomes: list, question: str, trace: dict):

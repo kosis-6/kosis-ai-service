@@ -312,9 +312,12 @@ def _sum(src, codes, y0, y1, item_key, filters, age_codes, group_dim=None):
         )
     conds, params = _conds(src, item_key, filters, age_codes)
     region_dim = _region_dim(tbl)
-    if src.get("national_only") or region_dim is None:
+    if region_dim is None:
         region_sql, region_params, rc = "", [], "'00'"
     else:
+        # 전국 수준 표에도 지역 분류가 있으면 전국 합계로 매핑된 행만 집계한다.
+        if src.get("national_only"):
+            codes = ("00",)
         valid = (
             "true"
             if _projection(tbl)

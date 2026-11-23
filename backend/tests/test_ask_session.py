@@ -1621,11 +1621,12 @@ ONE_PERSON = {**BASE, "type": "value", "indicator": "1인 가구", "term": "1인
 RATIO_SPEC = {"name": "1인 가구 중 70세 이상 비율", "unit": "%", "kind": "ratio", "dynamic": True}
 
 
-def test_ratio_follow_up_is_asked_with_last_conditions(talk: Talk) -> None:
+@pytest.mark.parametrize("question", ["그중 여성 비율은?", "그중 여성 인구 비율은?"])
+def test_ratio_follow_up_is_asked_with_last_conditions(talk: Talk, question: str) -> None:
     # "그중 여성 비율은?": 성별 변경으로만 읽어 여성 1인 가구 수로 답했다
     talk.parsed = dict(ONE_PERSON)
     talk.say("2020년 서울 1인 가구 수는?")
-    res = talk.say("그중 여성 비율은?", request_type="change", changes={"sex": "여"})
+    res = talk.say(question, request_type="change", changes={"sex": "여"})
     assert talk.extracted == []  # 변경 추출을 부르지 않는다
     assert talk.asked[-1] == "2020년 서울 1인 가구 중 여성 비율은?"
     assert res["request_type"] == "change" and res["question"] == talk.asked[-1]
@@ -1651,7 +1652,15 @@ def test_ratio_follow_up_keeps_the_previous_age_population(talk: Talk, age: int)
     assert result["parsed"]["unsupported"]
 
 
-@pytest.mark.parametrize("question", ["65세 이상 비율은?", "그중 고령인구 비율은?"])
+@pytest.mark.parametrize(
+    "question",
+    [
+        "65세 이상 비율은?",
+        "그중 고령인구 비율은?",
+        "그중 여성 취업 인구 비율은?",
+        "여성 인구 비율은?",
+    ],
+)
 def test_ratio_follow_up_respects_a_named_indicator(question: str) -> None:
     state = {"conditions": {**ONE_PERSON, "ages": [[70, None]]}}
     assert s.ratio_followup(question, state) is None
@@ -1753,3 +1762,20 @@ def test_changed_conditions_search_with_rebuilt_question(talk: Talk) -> None:
     talk.say("부산은?")
     assert talk.answered[-1]["regions"] == ["부산"]
     assert talk.searched[0][0] == "2020년 부산 1인 가구 중 70세 이상 비율"
+
+
+@pytest.mark.parametrize("term", ["1인 가구", "남성 노인 1인 가구"])
+def test_changed_sex_search_keeps_age_and_uses_new_sex(talk: Talk, term: str) -> None:
+    talk.parsed = {
+        **ONE_PERSON,
+        "regions": ["부산"],
+        "term": term,
+        "ages": [[65, None]],
+        "sex": "남",
+    }
+    talk.say("2020년 부산 남성 노인 1인 가구 수는?")
+    talk.store[talk.sid][0]["conditions"]["indicator"] = "반려동물 수"
+    talk.searched.clear()
+    talk.say("여자는?", request_type="change", changes={"sex": "여"})
+    age = "노인" if "노인" in term else "65세 이상"
+    assert talk.searched[0][0] == f"2020년 부산 여성 {age} 1인 가구"

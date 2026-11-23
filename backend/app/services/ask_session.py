@@ -766,6 +766,26 @@ def region_only_changes(question: str, conditions: dict) -> dict | None:
 
 # 후속 말의 '그중' 같은 앞말 (직전 답의 대상 안에서 묻는다)
 AMONG = re.compile(r"^\s*(?:그\s*중에?서?|이\s*중에?서?|그\s*가운데|그\s*안에서|거기서|여기서)\s*")
+GROUP_NOUN_BEFORE_RATIO = (
+    r"(?:인구|사람들?|주민들?)\s*(?:의\s*)?(?=비율|비중|(?:몇\s*)?(?:%|퍼센트|프로))"
+)
+GENERIC_GROUP_RATIO = re.compile(rf"^(?:남성|여성|남자|여자)?\s*{GROUP_NOUN_BEFORE_RATIO}")
+
+
+def _with_demographics(term: str, conditions: dict) -> str:
+    """지표 표현에 아직 없는 연령과 성별을 붙인다."""
+    if ages := conditions.get("ages"):
+        said_ages = qa.resolved_ages(term)
+        missing = [indicators.age_label(band) for band in ages if list(band) not in said_ages]
+        term = " ".join([*missing, term]).strip()
+    sex = conditions.get("sex")
+    if gender := {"남": "남성", "여": "여성"}.get(sex):
+        if not qa.GENDER_WORDS[sex].search(term):
+            if not dynamic_indicator.PCT_ASK.search(term):
+                old = qa.GENDER_WORDS["남" if sex == "여" else "여"].pattern
+                term = re.sub(rf"(?<![가-힣])(?:{old})\s+", "", term, count=1)
+            term = f"{gender} {term}"
+    return term
 
 
 def ratio_followup(question: str, state: dict) -> str | None:
@@ -782,6 +802,11 @@ def ratio_followup(question: str, state: dict) -> str | None:
     # "그중 65세 이상 비율"의 연령은 직전 집단을 나누는 조건이다.
     # 연령을 빼고도 지표 이름이 남으면 새 지표로 처리한다.
     indicator_text = dynamic_indicator._without_age_words(rest) if rest != q else q
+    if rest != q and GENERIC_GROUP_RATIO.match(indicator_text):
+        # "그중 여성 인구 비율"의 인구는 직전 집단을 가리킨다.
+        rest = re.sub(GROUP_NOUN_BEFORE_RATIO, " ", rest, count=1)
+        rest = " ".join(rest.split())
+        indicator_text = dynamic_indicator._without_age_words(rest)
     if names_indicator(indicator_text, {}):
         return None
     spec = c.get("dynamic_spec") or indicators.spec(c.get("indicator") or "") or {}
@@ -790,13 +815,7 @@ def ratio_followup(question: str, state: dict) -> str | None:
     term = re.sub(r"\s*수$", "", str(c.get("term") or c.get("indicator") or "")).strip()
     if not term or not rest:
         return None
-    if ages := c.get("ages"):
-        said_ages = qa.extract_ages(term)
-        missing = [indicators.age_label(band) for band in ages if list(band) not in said_ages]
-        term = " ".join([*missing, term])
-    if gender := {"남": "남성", "여": "여성"}.get(c.get("sex")):
-        if not qa.GENDER_WORDS[c["sex"]].search(term):
-            term = f"{gender} {term}"
+    term = _with_demographics(term, c)
     if (survey := (c.get("asked") or {}).get("survey")) and not qa.survey_said(q):
         if not qa.survey_said(term):
             term = f"{survey} 기준 {term}"
@@ -824,7 +843,7 @@ def inherited_question(parsed: dict) -> str:
     """이어받은 조건으로 만든 통계표 찾기용 질문 ("2020년 부산 1인 가구 중 70세 이상 비율")"""
     where = ", ".join(parsed.get("regions") or [])
     what = parsed.get("term") or parsed.get("indicator") or ""
-    return " ".join(p for p in (period_text(parsed), where, what) if p)
+    return " ".join(p for p in (period_text(parsed), where, _with_demographics(what, parsed)) if p)
 
 
 def summary_request(question: str) -> bool:
