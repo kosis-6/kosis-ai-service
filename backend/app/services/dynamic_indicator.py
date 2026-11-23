@@ -190,19 +190,16 @@ def schema(tbl_id: str) -> tuple[list[Dim], int | None, str]:
         for n in dim_nos
     ]
     region_dim = lookup._region_dim(tbl_id)
-    longest = _rows(
-        "select max(length(region_code)) as n, count(distinct region_code) as k"
-        " from region_code_map where tbl_id = ?",
-        [tbl_id],
-    )[0]
-    if region_dim is None or not longest["n"]:
-        level = "전국"
-    elif longest["n"] >= 5:
-        level = "시군구"
-    elif longest["k"] > 1:
-        level = "시도"
-    else:
-        level = "전국"
+    level = "전국"
+    if region_dim is not None:
+        # 부분 조회와 같이 전국(00)을 제외한 코드의 길이로 지역 수준을 정한다.
+        longest = _rows(
+            "select max(length(region_code)) as n from region_code_map"
+            " where tbl_id = ? and src_dim = ? and region_code <> '00'",
+            [tbl_id, region_dim],
+        )[0]["n"]
+        if longest:
+            level = "시군구" if longest >= 5 else "시도"
     return dims, region_dim, level
 
 
