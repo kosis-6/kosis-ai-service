@@ -27,6 +27,10 @@ from pathlib import Path
 from typing import Any
 
 TABLES = "tables"  # 표를 찾았지만 수치 대신 통계표를 안내한 답
+# 통계표 찾기가 질문의 조건을 모두 만족하는 표를 찾았다고 판정한 상태 (일부 일치는 partial_match).
+# 이 판정인데 통계표 안내로 끝났으면 통계표 찾기와 계산의 기준이 어긋난 것이다
+# (docs/cell_binding_design_2026-11-23.md 6장 0단계)
+SEARCH_OK = "ok"
 
 # (키, 원인, skip 문구 정규식, 막힌 단계, 고칠 곳). 위에서부터 처음 맞는 것.
 # skip 문구가 바뀌면 '분류 안 됨'으로 잡힌다
@@ -204,6 +208,21 @@ def reason_of(turn: dict[str, Any] | None) -> dict[str, Any] | None:
         "sub": sub,
         "skip": skip,
         "tbl_id": entry.get("tbl_id") or "",
+        "search": _search_status(turn),
+    }
+
+
+def _search_status(turn: dict[str, Any]) -> str:
+    """통계표 찾기의 판정 (ok · partial_match …). 없으면 빈 문자열"""
+    return str((turn.get("tables") or {}).get("status") or "")
+
+
+def exact_ids(items: Iterable[tuple[str, dict[str, Any]]]) -> set[str]:
+    """통계표 안내로 끝난 턴 중 통계표 찾기가 '조건 충족'(ok)이라고 판정한 것"""
+    return {
+        key
+        for key, turn in items
+        if (r := reason_of(turn)) is not None and r["search"] == SEARCH_OK
     }
 
 
@@ -269,29 +288,40 @@ def table(
     answers: set[str] = frozenset(),
     old: dict[str, list[str]] | None = None,
     old_total: int = 0,
+    exact: set[str] | None = None,
 ) -> list[str]:
-    """원인별 표 (markdown 줄). answers에 있는 문항은 * (답해야 하는 문항)"""
-    mark = lambda ids: " ".join(f"{i}*" if i in answers else i for i in ids)  # noqa: E731
+    """원인별 표 (markdown 줄). answers에 있는 문항은 * (답해야 하는 문항).
+    exact를 주면 통계표 찾기가 '조건 충족'이라 한 문항을 † 로 표시하고 원인마다 그 수를 센다"""
+
+    def mark(ids: list[str]) -> str:
+        return " ".join(
+            i + ("*" if i in answers else "") + ("†" if exact and i in exact else "") for i in ids
+        )
+
     lines = [
         f"통계표 안내로 끝난 턴: {total}건" + (f" (비교: {old_total}건)" if old is not None else "")
     ]
     if answers:
         hit = sum(i in answers for ids in by.values() for i in ids)
         lines[0] += f", 그중 답해야 하는 문항 {hit}건 (*)"
+    if exact is not None:
+        hit = sum(i in exact for ids in by.values() for i in ids)
+        lines[0] += f", 통계표 찾기는 '조건 충족'이라 한 턴 {hit}건 (†)"
     lines.append("")
-    if old is None:
-        lines += ["| 원인 | 건수 | 문항 | 막힌 단계 | 고칠 곳 |", "|---|---|---|---|---|"]
-    else:
-        lines += [
-            "| 원인 | 건수 | 비교 | 문항 | 막힌 단계 | 고칠 곳 |",
-            "|---|---|---|---|---|---|",
-        ]
+    head = ["원인", "건수"] + (["조건 충족 †"] if exact is not None else [])
+    head += (["비교"] if old is not None else []) + ["문항", "막힌 단계", "고칠 곳"]
+    lines += ["| " + " | ".join(head) + " |", "|" + "---|" * len(head)]
     names = sorted(set(by) | set(old or {}), key=lambda t: (-len(by.get(t, [])), t))
     for text in names:
         ids = by.get(text, [])
         stage, where = WHERE[_key_of(text)]
-        diff = f" | {len((old or {}).get(text, []))}" if old is not None else ""
-        lines.append(f"| {text} | {len(ids)}{diff} | {mark(ids)} | {stage} | {where} |")
+        cells = [text, str(len(ids))]
+        if exact is not None:
+            cells.append(str(sum(i in exact for i in ids)))
+        if old is not None:
+            cells.append(str(len((old or {}).get(text, []))))
+        cells += [mark(ids), stage, where]
+        lines.append("| " + " | ".join(cells) + " |")
     return lines
 
 
@@ -305,11 +335,12 @@ def main() -> None:
     args = parser.parse_args()
 
     by, total, everything = collect(turns(args.path))
+    exact = exact_ids(turns(args.path))
     old, old_total = None, 0
     if args.compare:
         old, old_total, _ = collect(turns(args.compare))
     lines = [f"# 표 찾고도 거절 원인 ({args.path.name})", ""]
-    lines += table(by, total, answer_ids(args.golden), old, old_total)
+    lines += table(by, total, answer_ids(args.golden), old, old_total, exact)
     if args.all:
         lines += ["", "## 후보 표 전체의 건너뛴 이유", "", "| 원인 | 건수 |", "|---|---|"]
         lines += [f"| {LABELS[k]} | {n} |" for k, n in everything.most_common()]

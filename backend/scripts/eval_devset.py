@@ -165,8 +165,12 @@ def refusal_columns(last: dict) -> dict[str, str]:
     (scripts/refusal_reasons.py)"""
     r = rr.reason_of(last)
     if r is None:
-        return {"거절 원인": "", "거절 원인 문구": ""}
-    return {"거절 원인": rr.label_text(r), "거절 원인 문구": f"{r['tbl_id']} {r['skip']}".strip()}
+        return {"거절 원인": "", "거절 원인 문구": "", "표 찾기 판정": ""}
+    return {
+        "거절 원인": rr.label_text(r),
+        "거절 원인 문구": f"{r['tbl_id']} {r['skip']}".strip(),
+        "표 찾기 판정": r["search"],
+    }
 
 
 def refusal_summary(recs: list[dict]) -> list[str]:
@@ -178,9 +182,10 @@ def refusal_summary(recs: list[dict]) -> list[str]:
     if not by:
         return []
     answers = {r["문항"] for r in recs if r["기대 행동"] == dg.ANSWER}
+    exact = {r["문항"] for r in recs if r.get("표 찾기 판정") == rr.SEARCH_OK}
     total = sum(len(ids) for ids in by.values())
     head = ["", "## 표 찾고도 거절한 원인 (통계표 안내로 끝난 문항)", ""]
-    return head + rr.table(by, total, answers)
+    return head + rr.table(by, total, answers, exact=exact)
 
 
 def record(row: dict[str, str], g: dg.Grade, first: dict, final: dict | None, ms: int) -> dict:
