@@ -3127,12 +3127,12 @@ def _split_text(r):
             gap = round(abs(vals[0] - vals[1]), 3)
             unit = lookup.diff_unit({"unit": hi["unit"], "kind": hi.get("kind")})
             who = hi["indicator"]
-            word = "높습니다"
+            # 건수 · 사람 수는 '많다' ("기혼자 수(여자)가 284,204명 더 많습니다")
+            word = "많습니다" if hi.get("kind", "count") == "count" else "높습니다"
             same = a.get("indicator") == b.get("indicator")
             if same and {a.get("sex"), b.get("sex")} == {"남", "여"}:
                 # 같은 지표를 남녀로 나눈 경우 ("서울 남녀 인구 비교"): 성별로 견준다
                 who = {"남": "남성", "여": "여성"}[hi["sex"]]
-                word = "많습니다" if hi.get("kind", "count") == "count" else "높습니다"
             text += f" {_josa(who, '이가')} {_val(gap, unit, full=True)} 더 {word}."
     return text
 
