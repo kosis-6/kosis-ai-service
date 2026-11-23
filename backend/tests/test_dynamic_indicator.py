@@ -1555,3 +1555,26 @@ def test_same_table_unit_not_count_is_its_own_status(nation, monkeypatch) -> Non
     assert rec["status"] == "not_count" and rec["status"] in ask_session.SAME_TABLE_STATUSES
     assert rec["cells"] == ["베트남"] and rec["leftover"] == [] and rec["unit"] == "%"
     assert rec["why"] == "건수 · 인원이 아닌 값 (%)" and set(rec) == SAME_TABLE_KEYS
+
+
+# 표 이름에 있는 조건은 표가 이미 반영한 것 (통계표 찾기의 조건 확인과 같은 기준)
+REMARRY = [d.Dim(0, "항목", {"H": "남편", "W": "아내"})]
+
+
+@pytest.mark.parametrize(
+    "items, words, why",
+    [
+        # 재혼 표: 재혼 칸 없이 아내 칸으로 답한다
+        (["재혼"], ["시도별 평균재혼연령", None], None),
+        # 표 이름에 없는 조건은 지금처럼 칸에서 찾는다 (넓은 값으로 답하지 않게)
+        (["미혼"], ["시도별 평균재혼연령", None], "질문의 조건 '미혼'을 표의 칸에 반영할 수 없음"),
+        # 표 이름이 없는 계산(넘기기 꾸러미 밖)은 지금 그대로
+        (["재혼"], None, "질문의 조건 '재혼'을 표의 칸에 반영할 수 없음"),
+    ],
+)
+def test_item_in_table_name_is_covered(items, words, why) -> None:
+    slots = {"conditions": {"items": items}}
+    if words is not None:
+        slots["table_words"] = words
+    plan = d.Plan(pick={0: "W"})
+    assert d.uncovered(slots, plan, REMARRY, {"type": "trend"}) == why

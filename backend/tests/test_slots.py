@@ -162,10 +162,24 @@ def test_negation_and_spouse() -> None:
 # '우리 구로' · 학생 단어
 def test_our_district_particle_is_not_guro():
     import copy
-    base = {"topic": "이사", "search_query": None, "target": None, "exclude": [], "llm_exclude": [],
-            "query_type": "find_table",
-            "conditions": {"classes": [], "items": [], "sex": None, "region": "구로",
-                           "region_level": None, "year": None, "year_end": None}}
+
+    base = {
+        "topic": "이사",
+        "search_query": None,
+        "target": None,
+        "exclude": [],
+        "llm_exclude": [],
+        "query_type": "find_table",
+        "conditions": {
+            "classes": [],
+            "items": [],
+            "sex": None,
+            "region": "구로",
+            "region_level": None,
+            "year": None,
+            "year_end": None,
+        },
+    }
     out = sl.correct("우리 구로 이사 오는 사람들 나이", copy.deepcopy(base))
     assert out["conditions"]["region"] is None and out["conditions"]["region_level"] == "시군구"
     b2 = copy.deepcopy(base)
@@ -225,6 +239,7 @@ def test_slot_prompt_follows_the_search_llm(monkeypatch) -> None:
 
 def test_student_words():
     from app.services import agegroup, llm_pick
+
     assert llm_pick.OFF_DOMAIN.search("대학생 수") is None
     assert llm_pick.OFF_DOMAIN.search("고등학생 수") is None
     assert llm_pick.OFF_DOMAIN.search("한 반에 학생 수")

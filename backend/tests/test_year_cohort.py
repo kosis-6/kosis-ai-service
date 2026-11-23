@@ -10,6 +10,15 @@ from app.services import slots as sl
 TODAY = date(2026, 11, 22)
 
 
+@pytest.fixture(autouse=True)
+def no_statistics_db(monkeypatch):
+    """연도·연령 해석은 원자료 없이도 검증한다."""
+    monkeypatch.setattr(qa.indicators, "find_regions", lambda *a: [])
+    monkeypatch.setattr(qa.indicators, "_data_years", lambda: (1990, 2025))
+    monkeypatch.setattr(qa, "_full_region_names", lambda *a: None)
+    monkeypatch.setattr(qa, "_ground_regions", lambda *a: None)
+
+
 def _slots(question: str) -> dict:
     return sl.correct(question, sl.empty_slots(question))
 
@@ -159,3 +168,111 @@ def test_single_age_label() -> None:
 
     assert indicators.age_label((35, 35)) == "35세"
     assert indicators.age_label((30, 39)) == "30대"
+
+
+def test_separate_cohorts_do_not_include_intermediate_birth_years():
+    spans = sl.birth_spans("1990년생과 2000년생 인구")
+    assert sl.birth_ages(spans, 2025) == [(25, 25), (35, 35)]
+    assert sl.birth_age(spans, 2025) is None
+    assert sl.birth_ages([(1990, 1999), (1995, 2004)], 2025) == [(21, 35)]
+    assert sl.birth_ages([], 2025) == []
+
+
+def test_cohort_population_trend_uses_each_years_age(monkeypatch):
+    calls = []
+
+    def value(indicator, region, year, sex, ages):
+        calls.append((year, ages))
+        return {
+            "status": "ok",
+            "indicator": "인구",
+            "kind": "count",
+            "unit": "명",
+            "year": year,
+            "value": 100 - (year - 2020),
+            "notes": [],
+        }
+
+    monkeypatch.setattr(qa.indicators, "value", value)
+    q = _parsed(
+        type="trend",
+        start_year=2020,
+        end_year=2022,
+        born={"expr": "1990년생", "spans": [[1990, 1990]]},
+    )
+    result = qa._compute_population(q, "총인구", "trend", ["서울"], 2025, "계", [(32, 32)], 2025)
+    assert calls == [(2020, [(30, 30)]), (2021, [(31, 31)]), (2022, [(32, 32)])]
+    assert [r["value"] for r in result["series"]] == [100, 99, 98]
+    assert result["change"]["diff"] == -2
+    assert result["change"]["rate"] == -2
+    assert result["indicator"] == "1990년생 총인구"
+
+
+def test_separate_cohorts_are_computed_separately(monkeypatch):
+    monkeypatch.setattr(qa.lookup, "refresh_if_reloaded", lambda: None)
+    calls = []
+
+    def value(indicator, region, year, sex, ages):
+        calls.append(ages)
+        return {"status": "ok", "value": 10, "notes": []}
+
+    monkeypatch.setattr(qa.indicators, "value", value)
+    q = _parsed(
+        year=2025, born={"expr": "1990년생과 2000년생", "spans": [[1990, 1990], [2000, 2000]]}
+    )
+    result = qa.compute(q)
+    assert result["status"] == "ok"
+    assert len(result["split"]) == 2
+    assert calls == [[(35, 35)], [(25, 25)]]
+
+
+def test_cohort_trend_before_birth_has_no_values():
+    def never_called(*args):
+        pytest.fail("출생 전에는 인구 값을 조회하면 안 된다")
+
+    q = {"born": {"expr": "2030년생", "spans": [[2030, 2030]]}}
+    result = qa._cohort_trend(q, "총인구", 2020, 2025, never_called)
+    assert result["status"] == "missing_data"
+
+
+def test_value_before_birth_does_not_fall_back_to_total_population(monkeypatch):
+    monkeypatch.setattr(qa.lookup, "refresh_if_reloaded", lambda: None)
+    q = qa.correct("2030년생 서울 인구", _parsed(), TODAY)
+    assert q["born"]["spans"] == [[2030, 2030]]
+    assert qa.compute(q)["status"] == "missing_data"
+
+
+def test_cohort_lookup_trend_uses_each_years_age(monkeypatch):
+    calls = []
+    monkeypatch.setattr(qa, "_lookup_span", lambda *a: (2020, 2025))
+
+    def value(spec, region, year, sex, ages):
+        calls.append((year, ages))
+        return {"status": "ok", "value": year, "kind": "count", "unit": "명", "notes": []}
+
+    monkeypatch.setattr(qa.lookup, "value", value)
+    q = {
+        "start_year": 2020,
+        "end_year": 2021,
+        "born": {"expr": "1990년생", "spans": [[1990, 1990]]},
+    }
+    result = qa._lookup_trend(q, {"name": "출생 집단"}, "서울", 2025, "계", [(35, 35)])
+    assert result["status"] == "ok"
+    assert calls == [(2020, [(30, 30)]), (2021, [(31, 31)])]
+
+
+def test_latest_cohort_value_uses_actual_latest_year(monkeypatch):
+    monkeypatch.setattr(qa.lookup, "refresh_if_reloaded", lambda: None)
+    monkeypatch.setattr(qa.indicators, "latest_year", lambda *a: 2026)
+    calls = []
+
+    def value(indicator, region, year, sex, ages):
+        calls.append((year, ages))
+        return {"status": "ok", "value": 10, "notes": []}
+
+    monkeypatch.setattr(qa.indicators, "value", value)
+    q = _parsed(asked={"latest": True}, born={"expr": "1990년생", "spans": [[1990, 1990]]})
+    result = qa.compute(q)
+    assert result["status"] == "ok"
+    assert calls == [(2026, [(36, 36)])]
+    assert any("2026년 기준" in n for n in result["notes"])
