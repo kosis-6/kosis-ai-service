@@ -1693,6 +1693,10 @@ async def _compute_target(
         )
         sub["dynamic"][-1]["by"] = "binding"
         sub["dynamic"][-1]["binding_plan"] = plan.to_dict()
+        said_sex = q_used.get("sex")
+        if res is not None and said_sex in ("남", "여") and plan.parsed.get("sex") != said_sex:
+            # 표 전체가 그 성별이라 계산에서만 뺐다 (기혼여성 표의 '여'). 답은 그 성별의 값이다
+            res["parsed"] = {**(res.get("parsed") or {}), "sex": said_sex}
         return res, ask
 
     async def with_cell_llm(entry: dict, q_used: dict, sub: dict, slots: dict, notice):
@@ -2012,7 +2016,12 @@ async def _try(
         outcome = res.get("status")
     else:
         outcome = "되묻기" if ask is not None else "못 함"
-    how = "칸 고르기 LLM" if step.get("by") == "cell_llm" else "규칙"
+    if step.get("by") == "cell_llm":
+        how = "칸 고르기 LLM"
+    elif (slots or {}).get("cells_by_binding"):
+        how = "잇기"  # step["by"]는 이 뒤에 붙는다 (with_binding)
+    else:
+        how = "규칙"
     parts = [tbl_id, f"칸={step['cells']} ({how})" if step.get("cells") else ""]
     parts.append(step.get("skip") or "")
     flow.add("표 칸으로 계산", outcome, " · ".join(p for p in parts if p))
@@ -2041,6 +2050,8 @@ async def _try_once(
         spec["note"] = f"{spec['note']}. {notice}"
     if spec.get("parts_op"):  # 한 분류 안의 칸들로 합·비교·순위
         res = await run_in_threadpool(parts_answer, parsed, spec, question)
+        # qa.answer처럼 처리 기록을 붙인다 (없으면 평가 원응답에 어느 표 · 칸으로 답했는지가 빠진다)
+        res.setdefault("trace", trace)
         step["status"] = res["status"]
         if res["status"] == "ok":
             return res, None

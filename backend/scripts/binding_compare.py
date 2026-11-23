@@ -98,6 +98,19 @@ def report(by: dict[str, list[tuple[str, dict]]], name: str) -> list[str]:
     return lines
 
 
+def binding_used(path: Path) -> dict[str, list[str]]:
+    """2단계(BINDING_USE): 잇기로 다시 계산한 문항 → 결과별. 처리 흐름(flow)의 '표 칸으로 계산'에
+    '(잇기)'가 붙은 단계를 본다 (한 분류 안의 연산으로 답하면 trace.dynamic이 응답에 남지 않아
+    흐름으로 센다)"""
+    out: dict[str, list[str]] = defaultdict(list)
+    for key, turn in rr.turns(path):
+        for f in (turn.get("trace") or {}).get("flow") or []:
+            if f.get("stage") == "표 칸으로 계산" and "(잇기)" in (f.get("detail") or ""):
+                out[str(f.get("result"))].append(key)
+                break
+    return out
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="잇기 1단계: 지금 계산과 잇기 견주기")
     parser.add_argument(
@@ -106,6 +119,10 @@ def main() -> None:
     parser.add_argument("--out", type=Path, help="결과를 이 파일(.md)에도 쓴다")
     args = parser.parse_args()
     lines = report(collect(args.path), args.path.name)
+    if used := binding_used(args.path):
+        lines += ["", "## 잇기로 다시 계산한 문항 (BINDING_USE)", "", "| 결과 | 문항 수 | 문항 |"]
+        lines += ["|---|---|---|"]
+        lines += [f"| {k} | {len(v)} | {' '.join(v)} |" for k, v in sorted(used.items())]
     text = "\n".join(lines)
     print(text)
     if args.out:
