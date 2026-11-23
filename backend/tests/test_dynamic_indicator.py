@@ -1870,3 +1870,56 @@ def test_cached_plan_on_age_limited_table_checks_question_scope(
     else:
         assert res is None and built == [] and used == []
         assert "65세 이상만 집계" in trace["dynamic"][0]["skip"]
+
+
+@pytest.mark.parametrize("flag", ["X", "-"])
+def test_cached_answer_keeps_suppression_for_matching_table(monkeypatch, flag: str) -> None:
+    primary, fallback = "DT_1PL1502", "DT_FALLBACK"
+
+    async def find(key):
+        return [{"id": 1, "tbl_id": primary}, {"id": 2, "tbl_id": fallback}]
+
+    used = []
+    built = []
+
+    async def mark_used(plan_id):
+        used.append(plan_id)
+
+    async def build_(tbl_id, *args):
+        built.append(tbl_id)
+        return {
+            "name": "1인 가구 수",
+            "kind": "count",
+            "cells": "1인가구",
+            "sources": [{"table": tbl_id}],
+        }, None
+
+    async def answer_(parsed, *_args):
+        tbl_id = parsed["dynamic_spec"]["sources"][0]["table"]
+        if tbl_id == primary:
+            lookup.EMPTY_FLAGS.get().append(flag)
+            return {"status": "ok", "result": {"value": None}}
+        return {"status": "ok", "result": {"value": 100}}
+
+    monkeypatch.setattr(d.plan_cache, "key_of", lambda parsed: ("k", "1인 가구 수"))
+    monkeypatch.setattr(d.plan_cache, "find", find)
+    monkeypatch.setattr(d.plan_cache, "used", mark_used)
+    monkeypatch.setattr(
+        lookup,
+        "_table",
+        lambda tbl_id: {"tbl_nm": "성 및 연령별 1인가구", "org_nm": "KOSIS", "basis": ""},
+    )
+    monkeypatch.setattr(indicators, "kosis_url", lambda tbl_id: f"https://kosis.kr/{tbl_id}")
+    monkeypatch.setattr(d, "_build", build_)
+    monkeypatch.setattr(qa, "answer", answer_)
+
+    trace: dict = {}
+    res = asyncio.run(d.cached_answer("2020년 서울 1인 가구 수", BASE, trace))
+    if flag == "X":
+        assert res["status"] == "missing_data" and res["result"]["suppressed"]
+        assert res["result"]["tbl_id"] == primary and "value" not in res["result"]
+        assert built == [primary] and used == []
+        assert res["trace"]["plan_cache"] == {"hit": 1, "tbl_id": primary}
+    else:
+        assert res["status"] == "ok" and res["result"]["value"] == 100
+        assert built == [primary, fallback] and used == [2]

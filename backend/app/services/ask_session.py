@@ -103,6 +103,7 @@ NEW, CHANGE, CHART, SUMMARY, REPLY, UNCLEAR = (
     "unclear",
 )
 TABLES = "tables"  # 수치 없이 통계표만 안내한 답의 status
+REGION_RETRY_STATUSES = ("missing_data", "no_region_level")
 TYPES = {"value", "trend", "compare", "rank", "composition"}
 # 조건이 의미 있는 답 (이 뒤의 말은 조건 변경일 수 있다). 통계 밖 질문·해석 실패는 이어 가지 않는다
 NO_CONDITIONS = {"other", "parse_error", None}
@@ -1641,7 +1642,7 @@ async def _turn(
                 res["request_type"] = CHANGE
                 status = res.get("status")
                 retry_region = (
-                    status == "missing_data"
+                    status in REGION_RETRY_STATUSES
                     and "regions" in changed
                     and conditions.get("dynamic_spec")
                 )
@@ -1847,7 +1848,7 @@ async def _attach_tables(res: dict, state: dict | None, question: str, user_id: 
 
 
 def searchable_after(res: dict) -> bool:
-    """사전 지표가 자료가 없어 답하지 못한 새 질문 (table_guide.SEARCH_AFTER).
+    """사전 지표에 자료가 없거나 저장한 표가 바꾼 지역을 다루지 않으면 다른 표를 찾는다.
     추계값 제안(suggestion)이 이미 있으면 그대로 둔다 (수록 기간 밖 미래 연도 → 장래추계)"""
     result = res.get("result") or {}
     kind, status = res.get("request_type"), res.get("status")
@@ -1858,7 +1859,7 @@ def searchable_after(res: dict) -> bool:
         return False
     if (
         kind == CHANGE
-        and status == "missing_data"
+        and status in REGION_RETRY_STATUSES
         and res.get("search_question")
         and (res.get("parsed") or {}).get("dynamic_spec")
     ):

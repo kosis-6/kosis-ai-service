@@ -2021,7 +2021,7 @@ async def cached_answer(question: str, parsed: dict, trace: dict) -> dict | None
     trace["plan_cache"] = "miss" if found else "skip"
     if not plans:
         flow.add("계산 방법 캐시", "없음" if found else "건너뜀", (found or ["", ""])[1])
-    trace.setdefault("dynamic", [])
+    steps = trace.setdefault("dynamic", [])
     for plan in plans:
         saved = {int(k): v for k, v in (plan.get("forced") or {}).items()}
         forced = saved
@@ -2033,14 +2033,20 @@ async def cached_answer(question: str, parsed: dict, trace: dict) -> dict | None
                 continue
             forced = reusable_forced(question, saved, plan.get("words") or [], dims, region_dim)
         res, ask = await _try(plan["tbl_id"], None, question, parsed, trace, forced)
+        step = steps[-1]
         if dropped := {k: v for k, v in saved.items() if k not in forced}:
             # 저장한 칸 중 새 질문에 맞지 않아 쓰지 않은 칸 (요청 기록)
-            trace["dynamic"][-1]["cache_dropped"] = dropped
-        if res is not None and res.get("status") != "ok":
+            step["cache_dropped"] = dropped
+        if step.get("flag") == "X":
+            # 일치하는 칸이 비밀보호로 가려졌으면 뒤의 표에서 더 넓은 집계를 가져오지 않는다.
+            res = await run_in_threadpool(
+                suppressed_answer, parsed, plan["tbl_id"], step.get("cells") or ""
+            )
+            res["trace"] = trace
+        elif res is not None and res.get("status") != "ok":
             # 저장한 표에 그 연도·지역 자료가 없다 (예: 수록 기간 밖). 다른 표가 있을 수 있어
             # 여기서 답하지 않고 통계표 찾기로 넘긴다
-            steps = trace["dynamic"] or [{}]
-            steps[-1].setdefault("skip", f"캐시한 표로 답하지 못함 ({res.get('status')})")
+            step.setdefault("skip", f"캐시한 표로 답하지 못함 ({res.get('status')})")
             continue
         if res is None and ask is not None:
             res = ask_answer(question, parsed, plan["tbl_id"], plan["tbl_id"], ask, forced)
@@ -2163,8 +2169,11 @@ async def _try_once(
         step["skip"] = res.get("answer", "")[:60]
         return None, None
     flags: list = []
-    lookup.EMPTY_FLAGS.set(flags)  # 값이 빈 칸의 결측 기호 (표 하나의 계산마다 새로)
-    res = await qa.answer(_with_spec(parsed, spec), trace, question)
+    flag_scope = lookup.EMPTY_FLAGS.set(flags)
+    try:
+        res = await qa.answer(_with_spec(parsed, spec), trace, question)
+    finally:
+        lookup.EMPTY_FLAGS.reset(flag_scope)
     step["status"] = res["status"]
     if res["status"] == "ok" and not has_values(res.get("result") or {}):
         step["skip"] = "값이 없음 (비공개·결측)"

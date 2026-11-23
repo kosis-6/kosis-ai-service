@@ -32,6 +32,7 @@ def test_early_catches_non_statistics(question: str, status: str) -> None:
         "작년 혼인신고 건수 몇 건이야?",  # 수치를 묻는다
         "출생신고 통계 어디서 봐?",
         "2024년 부산 출생아 수",
+        "2024년 부산 합계출산율 어때?",
         "대전 인구 추이 알려줘",
         "전입 인구가 많은 시도 순위",
     ],

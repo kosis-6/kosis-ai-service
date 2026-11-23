@@ -1622,7 +1622,10 @@ ONE_PERSON = {**BASE, "type": "value", "indicator": "1인 가구", "term": "1인
 RATIO_SPEC = {"name": "1인 가구 중 70세 이상 비율", "unit": "%", "kind": "ratio", "dynamic": True}
 
 
-def test_household_age_ratio_keeps_context_after_only_guiding_to_source(talk, monkeypatch):
+@pytest.mark.parametrize("followup", ["부산은?", "부산은 어때?"])
+def test_household_age_ratio_keeps_context_after_only_guiding_to_source(
+    talk, monkeypatch, followup
+):
     table = {"tbl_nm": "성 및 연령별 1인가구 - 시군구", "start_year": 2015, "end_year": 2025}
     monkeypatch.setattr(lookup, "_table", lambda tbl_id: table)
     calls = []
@@ -1642,7 +1645,7 @@ def test_household_age_ratio_keeps_context_after_only_guiding_to_source(talk, mo
     assert guide["status"] == "tables"
     assert guide["tables"]["recommendations"][0]["tbl_id"] == "DT_1PL1502"
     response = client.post(
-        "/ask", json={"question": "부산은?", "session_id": guide["session_id"]}
+        "/ask", json={"question": followup, "session_id": guide["session_id"]}
     ).json()
     assert response["status"] == "ok" and response["request_type"] == s.CHANGE
     assert response["parsed"]["ages"] == [[70, None]]
@@ -1717,11 +1720,12 @@ def test_ratio_follow_up_after_ratio_is_left_to_change_extraction(talk: Talk) ->
     assert talk.extracted == ["그중 여성 비율은?"]
 
 
-def test_region_only_follow_up_keeps_table_definition(talk: Talk) -> None:
+@pytest.mark.parametrize("followup", ["부산은?", "부산은 어때?"])
+def test_region_only_follow_up_keeps_table_definition(talk: Talk, followup: str) -> None:
     # "부산은?": HCX가 새 질문으로 읽으면 "부산은?" 글자로 표를 찾아 다른 표를 안내했다
     talk.parsed = {**ONE_PERSON, "indicator": RATIO_SPEC["name"], "dynamic_spec": RATIO_SPEC}
     talk.say("2020년 서울 1인 가구 중 70세 이상 비율은?")
-    res = talk.say("부산은?")  # 변경 추출은 new를 돌려주게 두었다
+    res = talk.say(followup)  # 변경 추출은 new를 돌려주게 두었다
     assert talk.extracted == [] and res["request_type"] == "change"
     assert talk.answered[-1]["regions"] == ["부산"]
     assert talk.answered[-1]["dynamic_spec"] == RATIO_SPEC  # 같은 표 정의로 다시 계산
@@ -1808,19 +1812,29 @@ def test_changed_conditions_search_with_rebuilt_question(talk: Talk) -> None:
     assert talk.searched[0][0] == "2020년 부산 1인 가구 중 70세 이상 비율"
 
 
-def test_follow_up_retries_search_when_saved_definition_cannot_read_region(talk, monkeypatch):
-    stale = {"name": "1인 가구", "sources": [{"table": "T", "national_only": True}]}
+@pytest.mark.parametrize("status_override", ["missing_data", None], ids=["missing_data", "lookup"])
+def test_follow_up_retries_search_when_saved_definition_cannot_read_region(
+    talk, monkeypatch, status_override
+):
+    stale = {
+        "name": "1인 가구",
+        "sources": [{"table": "T", "level": "전국", "national_only": True}],
+    }
     talk.parsed = {**ONE_PERSON, "regions": ["전국"], "dynamic_spec": stale}
     talk.say("2020년 전국 1인 가구 수는?")
 
-    async def missing_data(parsed, trace=None):
-        return {**await talk._answer(parsed, trace), "status": "missing_data"}
+    async def regional_lookup(parsed, trace=None):
+        year = parsed["year"]
+        _, result = lookup._pick(parsed["dynamic_spec"], "시도", year, year, parsed["sex"])
+        if status_override:
+            result["status"] = status_override
+        return {**await talk._answer(parsed, trace), "status": result["status"], "result": result}
 
     async def compute(question, parsed, found, trace):
         fresh = {**stale, "sources": [{"table": "T", "level": "시도"}]}
         return talk._result({**parsed, "dynamic_spec": fresh})
 
-    monkeypatch.setattr(qa, "answer", missing_data)
+    monkeypatch.setattr(qa, "answer", regional_lookup)
     monkeypatch.setattr(dynamic_indicator, "compute_from_handoff", compute)
     talk.searched.clear()
     res = talk.say("부산은?")
