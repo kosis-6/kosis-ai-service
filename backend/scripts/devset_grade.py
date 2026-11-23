@@ -139,9 +139,18 @@ def numbers(text: str) -> list[Num]:
 
 
 def same_number(expected: Num, got: Num) -> bool:
-    """반올림 차이와 단위 환산을 허용해 같은 수인가 (부호는 보지 않는다: "-975명" = "975명 감소")"""
+    """반올림 차이와 단위 환산을 허용해 같은 수인가 (부호는 보지 않는다: "-975명" = "975명 감소")
+
+    답 쪽 반올림 오차는 답이 자릿수를 줄여 적었거나(0.107 → 0.11)
+    만·천 단위로 적은 경우(160만)만 쓴다. 단위 없는 정수까지 허용하면
+    "1세별" · "1월 1일" · "가임여성 1명당"의 1이 배수 1.17과,
+    "연령(5세)"의 5가 지표 5.2와 같은 수가 된다 (2026-11-20 테스트셋 1차에서 발견)
+    """
     a, b = abs(expected.value), abs(got.value)
-    return abs(a - b) <= max(expected.tol, got.tol) + 1e-9
+    tol = expected.tol
+    if "." in got.raw or got.tol > 0.5:
+        tol = max(tol, got.tol)
+    return abs(a - b) <= tol + 1e-9
 
 
 @dataclass

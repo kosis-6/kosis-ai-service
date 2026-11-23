@@ -56,6 +56,30 @@ def test_rounding_and_unit_conversion_match():
     assert dg.numbers("인구 1천 명당 4.7건")[0].value == 1
 
 
+def test_coarser_rounding_in_answer_matches():
+    """답이 자릿수를 줄여 적거나 만 단위로 적은 것은 같은 수"""
+    assert dg.same_number(dg.numbers("0.107")[0], dg.numbers("0.11")[0])
+    assert dg.same_number(dg.numbers("1,604,920명")[0], dg.numbers("160만 명")[0])
+    assert dg.same_number(dg.numbers("18,145명")[0], dg.numbers("18,145명")[0])
+
+
+def test_unitless_integer_in_answer_does_not_match_decimal():
+    """출처 · 단위 문구의 정수가 소수 정답과 같은 수로 잡히지 않는다"""
+    assert not dg.same_number(dg.numbers("1.17배")[0], dg.numbers("가임여성 1명당")[0])
+    assert not dg.same_number(dg.numbers("1.39배")[0], dg.numbers("1세별 주민등록인구")[0])
+    assert not dg.same_number(dg.numbers("5.2명")[0], dg.numbers("연령(5세)별 이동자수")[0])
+    assert not dg.same_number(dg.numbers("0.799")[0], dg.numbers("1월 1일")[0])
+
+
+def test_ratio_not_found_from_source_text():
+    """비교 정답의 배수가 답에 없으면 출처 문구의 1로 채우지 않는다"""
+    exp = dg.expected_numbers("비교", "서울 0.632명, 부산 0.739명. 차이 +0.107명 (부산이 1.17배)")
+    answer = "부산이 0.107명 높습니다. ※ 가임여성 1명당 명 · 각 연도 1월 1일 기준"
+    nums = dg.numbers(answer)
+    found = {e.label: dg.find_number(e, nums, answer) for e in exp}
+    assert found == {"차이": True, "배수": False}
+
+
 def test_expected_numbers_by_kind():
     trend = dg.expected_numbers(
         "추이", "2021년 1명 → 2025년 2명. 증감량 +1명, 증감률 +100.0%, 연평균 +18.9%"

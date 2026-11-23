@@ -339,6 +339,9 @@ def build(result: dict[str, Any] | None) -> dict[str, Any] | None:
     if result.get("status") != "ok":
         return None
     headline, points = _split(result) if result.get("split") else _leaf(result)
+    if lead := result.get("lead"):  # 물은 조사의 값이 없다는 이유를 먼저 (qa.summary와 같게)
+        basis = f"{result['lead_basis']} " if result.get("lead_basis") else ""
+        headline = f"{lead} {basis}{headline}"
     cautions = list(dict.fromkeys(cautions + _cautions(result)))[:MAX_CAUTIONS]
     return {
         "headline": headline,
