@@ -966,7 +966,7 @@ def correct(question, parsed, today=None):
         fix("level", "시군구", "지역 수준 정리")
     if sub := find_sub_area(question):
         parsed["sub_area"] = list(sub)
-    merged = _merge_regions(parsed.get("regions") or [])
+    merged = _merge_regions(parsed.get("regions") or [], question)
     if merged != (parsed.get("regions") or []):
         fix("regions", merged, "시도와 시군구를 한 지역으로")
     regions = [r for r in parsed.get("regions") or [] if r not in NATIONAL_NAMES]
@@ -1473,17 +1473,33 @@ def _full_region_names(question, parsed, fix):
         fix("regions", out, "질문의 정식 지역 이름")
 
 
-def _merge_regions(regions):
-    """["서울", "중구"] → ["서울 중구"]: 시도 바로 뒤에 그 시도 안의 시군구가 오면 한 지역"""
+def _merge_regions(regions, question=None):
+    """["서울", "중구"] → ["서울 중구"]: 시도 바로 뒤에 그 시도 안의 시군구가 오면 한 지역
+    ["부천", "원미구"] → ["부천 원미구"]: 시 바로 뒤에 그 시의 일반구가 질문에 붙어 나오면 한 지역
+    ("부천과 원미구 비교"처럼 떨어져 있으면 두 지역)"""
     out = []
     for name in regions:
-        if out and indicators.resolve_region(out[-1]).get("kind") == "시도":
-            both = indicators.resolve_region(f"{out[-1]} {name}")
-            if both["status"] == "ok" and both["kind"] != "시도":
-                out[-1] = f"{out[-1]} {name}"
-                continue
+        if out:
+            kind = indicators.resolve_region(out[-1]).get("kind")
+            if kind in ("시도", "시군구"):
+                both = indicators.resolve_region(f"{out[-1]} {name}")
+                ok = both["status"] == "ok" and both["kind"] != "시도"
+                if kind == "시군구":
+                    ok = ok and both["kind"] == "일반구" and _next_to(question, out[-1], name)
+                if ok:
+                    out[-1] = f"{out[-1]} {name}"
+                    continue
         out.append(name)
     return out
+
+
+def _next_to(question, city, gu):
+    """질문에서 시 이름 바로 뒤에 구 이름이 오는가 ("부천 원미구", "부천시 원미구")"""
+    if question is None:
+        return True
+    stem = re.sub(r"시$", "", indicators._norm(city.split()[-1]))
+    pattern = re.escape(stem) + "시?" + re.escape(indicators._norm(gu))
+    return re.search(pattern, indicators._norm(question)) is not None
 
 
 # 연령 집단으로 정의한 계산 지표 → (필요한 연령 구간들, 묻는 말). 질문에 그 집단(이름·숫자 구간)과
