@@ -206,6 +206,7 @@ def test_named_region_is_not_asked_again() -> None:
     assert question_clarify.detect(q, ["대전광역시 유성구"]) is None
 
 
+@pytest.mark.needs_data  # 지역 이름 목록(regions · region_aliases)을 읽는다 (CI에는 없음)
 def test_age_decade_is_not_read_as_a_region() -> None:
     # "30대 전체"의 '대전'을 지역으로 읽으면 묻지 않은 대전광역시 값으로 답한다
     assert "대전" not in indicators.find_regions("40대 전체 인구 중 미혼 비중")
