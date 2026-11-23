@@ -1748,6 +1748,36 @@ def test_region_only_first_question_asks_what_to_see(talk: Talk, question, place
     assert talk.asked == ["부산 출생아 최근 5년 보여 줘"]
 
 
+@pytest.mark.parametrize(
+    ("first", "asked"),
+    [
+        ("부산은?", "부산 2020년 출생아 수는?"),
+        ("서울과 부산은?", "서울, 부산 2020년 출생아 수는?"),
+    ],
+)
+def test_answer_to_region_only_question_keeps_the_region(talk: Talk, first, asked) -> None:
+    # "부산은?" → 볼 통계를 물음 → "2020년 출생아 수는?": 부산을 잃고 전국 값으로 답했다
+    talk.say(first)
+    res = talk.say("2020년 출생아 수는?")
+    assert talk.asked == [asked] and res["request_type"] == "reply"
+    assert res["question"] == asked
+    talk.say("2021년 출생아 수는?")  # 한 번 답한 뒤에는 되묻기 대기가 아니다
+    assert talk.asked[-1] != "부산 2021년 출생아 수는?"
+
+
+def test_answer_to_region_only_question_can_name_another_region(talk: Talk) -> None:
+    talk.say("부산은?")
+    talk.say("2020년 서울 출생아 수는?")  # 다른 지역을 말하면 그 지역으로 묻는다
+    assert talk.asked == ["2020년 서울 출생아 수는?"]
+
+
+def test_region_only_question_keeps_waiting_after_small_talk(talk: Talk) -> None:
+    talk.say("부산은?")
+    talk.say("고마워")
+    talk.say("2020년 출생아 수는?")
+    assert talk.asked == ["부산 2020년 출생아 수는?"]
+
+
 def test_region_only_first_question_keeps_one_place_in_examples(talk: Talk) -> None:
     res = talk.say("서울 부산은?")  # 잇는 말이 없으면 한 곳 ("서울 강남구는?")
     assert res["answer"].startswith("서울 부산의 어떤 통계")

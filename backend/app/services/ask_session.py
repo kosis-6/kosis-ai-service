@@ -103,6 +103,7 @@ NEW, CHANGE, CHART, SUMMARY, REPLY, UNCLEAR = (
     "unclear",
 )
 TABLES = "tables"  # 수치 없이 통계표만 안내한 답의 status
+ASK_INDICATOR = "asked_place"  # 지역만 말해 볼 통계를 되물은 답에 둔 그 지역 (_ask_indicator)
 REGION_RETRY_STATUSES = ("missing_data", "no_region_level")
 TYPES = {"value", "trend", "compare", "rank", "composition"}
 # 조건이 의미 있는 답 (이 뒤의 말은 조건 변경일 수 있다). 통계 밖 질문·해석 실패는 이어 가지 않는다
@@ -810,7 +811,18 @@ def _ask_indicator(regions: list[str], rest: str) -> dict:
         "chart": None,
         "request_type": UNCLEAR,
         "trace": {},
+        # 다음 말에 지역이 없으면 이 지역을 붙여 묻는다 (next_state가 pending으로 남긴다)
+        ASK_INDICATOR: ", ".join(regions) if several else place,
     }
+
+
+def with_asked_place(question: str, place: str) -> str | None:
+    """지역을 말하고 볼 통계를 되물은 뒤의 말에 그 지역을 붙인다 ("2020년 출생아 수는?" →
+    "부산 2020년 출생아 수는?"). 말에 지역이 있으면 새 질문이라 None.
+    DB의 지역 이름을 읽으므로 스레드에서 부른다"""
+    if indicators.find_regions(question):
+        return None
+    return f"{place} {question.strip()}"
 
 
 # 후속 말의 '그중' 같은 앞말 (직전 답의 대상 안에서 묻는다)
@@ -1591,6 +1603,16 @@ async def _turn(
             last = state["last"]
             return _reuse(state, summary_text(last, question), None, SUMMARY), {}, None
         return _nothing_to_summarize(), {}, None
+    if (
+        not usable
+        and (pending or {}).get("missing") == "indicator"
+        and (merged := await asyncio.to_thread(with_asked_place, question, pending["place"]))
+    ):
+        # "부산은?" → 볼 통계를 물음 → "2020년 출생아 수는?": 앞에서 말한 지역으로 묻는다
+        flow.add("지역 되묻기 답", "지역을 붙임", merged)
+        res, sources, notice = await _new(merged, None)
+        res["request_type"], res["question"] = REPLY, merged
+        return res, sources, notice
     if not usable and (only := await asyncio.to_thread(only_regions, question)):
         flow.add("지역만 말함", "되묻기", "이어 갈 조건이 없어 볼 통계를 묻는다")
         return _ask_indicator(*only), {}, None
@@ -1749,6 +1771,10 @@ def next_state(state: dict | None, question: str, res: dict, sources: dict) -> d
     if res.get("request_type") in (CHART, SUMMARY, DETAIL, SOURCE):
         last = {**prev["last"], "chart": res.get("chart") or prev["last"].get("chart")}
         return {**prev, "last": last, "recent": recent, "turn_no": turn_no}
+    if res.get(ASK_INDICATOR):
+        # 지역만 말해 볼 통계를 되물었다: 다음 말에 붙일 지역을 남긴다
+        pending = {"missing": "indicator", "place": res[ASK_INDICATOR]}
+        return {**prev, "pending": pending, "recent": recent, "turn_no": turn_no}
     if res.get("request_type") in (UNCLEAR, CHAT):
         return {**prev, "recent": recent, "turn_no": turn_no}
     if res.get("status") in (TABLES, *table_guide.REFUSED):

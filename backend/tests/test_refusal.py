@@ -18,6 +18,8 @@ from app.services import indicators, qa, question_clarify, refusal
         ("신혼부부가 살기 좋은 도시 추천해 줘", "not_statistics"),
         ("서울 살기 어때?", "not_statistics"),
         ("이사 가려는데 세종 어때?", "not_statistics"),
+        ("이사하려는데 대전 어때?", "not_statistics"),
+        ("은퇴하고 이주할 곳으로 제주 어때?", "not_statistics"),
         ("결혼하기 좋은 도시 어때?", "not_statistics"),
         ("서울이랑 부산 중 어디가 살기 좋아?", "not_statistics"),
         ("어디가 더 나을까?", "not_statistics"),
@@ -40,6 +42,8 @@ def test_early_catches_non_statistics(question: str, status: str) -> None:
         "2024년 부산 합계출산율 어때?",
         "부산은 어때?",  # 앞 질문의 지역을 바꾸는 말일 수 있다
         "요즘 출산율 어때?",
+        "2023년 서울 이주배경인구 어때?",  # 지표 이름 속 '이주'는 의견 말이 아니다
+        "외국인 이주민 어때?",
         "대전 인구 추이 알려줘",
         "전입 인구가 많은 시도 순위",
     ],
