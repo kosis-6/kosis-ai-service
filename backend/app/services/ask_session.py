@@ -755,12 +755,11 @@ REGION_ONLY_REST = re.compile(
 ALSO = re.compile(r"^\s*도\s*요?\s*(?:어때요?)?\s*[?.!~]*\s*$")  # 지역 이름을 뺀 나머지가 "도?"
 
 
-def region_only_changes(question: str, conditions: dict) -> dict | None:
-    """지역만 바꾸는 짧은 말이면 지역 변경, 아니면 None. HCX 변경 추출은 이 말을 실행마다 다르게
-    읽어, 새 질문으로 보면 "부산은?" 글자로 통계표를 찾아 관련 없는 표를 안내했다 (11/23).
-    순위를 보던 중이면 HCX에 맡긴다 ("부산은?"이 '부산은 몇 위?'일 수 있다)"""
+def only_regions(question: str) -> tuple[list[str], str] | None:
+    """지역 이름에 조사 · "어때?"만 붙은 짧은 말이면 (지역들, 지역 이름을 뺀 나머지), 아니면 None.
+    DB의 지역 이름을 읽으므로 스레드에서 부른다"""
     q = question.strip()
-    if len(q) > REPLY_MAX_CHARS or conditions.get("type") in ("rank", None):
+    if len(q) > REPLY_MAX_CHARS:
         return None
     if indicators.find_in_text(q) or ask_followup.has_explicit_year(q):
         return None
@@ -772,9 +771,46 @@ def region_only_changes(question: str, conditions: dict) -> dict | None:
         rest = rest.replace(name, " ")
     if not REGION_ONLY_REST.fullmatch(rest):
         return None
-    if len(regions) > 1 and not re.search(r"랑|와|과|하고|및|,|·", rest):
-        return None  # "서울 강남구는?"은 두 곳이 아니라 한 곳이다
+    return regions, rest
+
+
+def _several_places(regions: list[str], rest: str) -> bool:
+    """지역 이름이 둘 이상이고 '랑 · 와'로 이었다. "서울 강남구는?"은 두 곳이 아니라 한 곳이다"""
+    return len(regions) > 1 and bool(re.search(r"랑|와|과|하고|및|,|·", rest))
+
+
+def region_only_changes(question: str, conditions: dict) -> dict | None:
+    """지역만 바꾸는 짧은 말이면 지역 변경, 아니면 None. HCX 변경 추출은 이 말을 실행마다 다르게
+    읽어, 새 질문으로 보면 "부산은?" 글자로 통계표를 찾아 관련 없는 표를 안내했다 (11/23).
+    순위를 보던 중이면 HCX에 맡긴다 ("부산은?"이 '부산은 몇 위?'일 수 있다)"""
+    if conditions.get("type") in ("rank", None):
+        return None
+    if not (found := only_regions(question)):
+        return None
+    regions, rest = found
+    if len(regions) > 1 and not _several_places(regions, rest):
+        return None
     return {"regions": {"op": "add" if ALSO.match(rest) else "set", "value": regions}}
+
+
+def _ask_indicator(regions: list[str], rest: str) -> dict:
+    """이어 갈 조건 없이 지역만 말했다 ("부산은?"): 통계표를 찾지 않고 볼 통계를 묻는다.
+    HCX가 지역 이름을 범위 밖 지표로 읽어 "'부산'은 인구 분야 통계가 아니라"로 답하던 문제"""
+    several = _several_places(regions, rest)
+    place = " · ".join(regions) if several else " ".join(regions)  # "서울 강남구"는 한 곳
+    first = regions[0] if several else place
+    reason = f"{place}의 어떤 통계를 볼지 알려 주세요."
+    return {
+        "status": "unclear",
+        "answer": f"{reason}\n예) 2025년 {first} 인구 / 최근 5년 {first} 출생아 수 추이 / "
+        f"{first} 고령인구 비율",
+        "parsed": {},
+        "result": {"status": "unclear", "reason": reason},
+        "sources": [],
+        "chart": None,
+        "request_type": UNCLEAR,
+        "trace": {},
+    }
 
 
 # 후속 말의 '그중' 같은 앞말 (직전 답의 대상 안에서 묻는다)
@@ -1555,6 +1591,9 @@ async def _turn(
             last = state["last"]
             return _reuse(state, summary_text(last, question), None, SUMMARY), {}, None
         return _nothing_to_summarize(), {}, None
+    if not usable and (only := await asyncio.to_thread(only_regions, question)):
+        flow.add("지역만 말함", "되묻기", "이어 갈 조건이 없어 볼 통계를 묻는다")
+        return _ask_indicator(*only), {}, None
     if not usable:
         return await _new(question, None)
 

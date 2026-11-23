@@ -24,13 +24,14 @@
                         - 표는 찾았는데 조건 일부가 ✘      tables → partial_match · band_mismatch
 """
 
+import asyncio
 import logging
 import re
 import time
 from typing import Any
 
 from app.prompts import refusal_reason as prompt
-from app.services import flow, llm_calls, llm_json, search_llm
+from app.services import flow, indicators, llm_calls, llm_json, search_llm
 from app.services.josa import josa
 
 logger = logging.getLogger(__name__)
@@ -68,8 +69,13 @@ PROCEDURE = re.compile(
     r"|(?:어떻게|어디서|어디에)\s*(?:신고|신청|발급|접수|등록|제출)"
     r"|필요한\s*서류|구비\s*서류"
 )
-# 추천 · 의견을 구하는 말. "부산은 어때?" 같은 말은 통계 조건을 바꾸는 질문일 수 있다.
-RECOMMEND = re.compile(r"추천|골라\s*줘|어디가\s*(?:좋|나을|낫)|괜찮을까")
+# 추천 · 의견을 구하는 말. "어때?"는 살기 · 이사처럼 의견을 묻는 말과 함께일 때만 본다
+# ("부산은 어때?" · "합계출산율 어때?"는 통계 조건을 바꾸거나 수치를 묻는 말이다).
+# "어디가 살기 좋아?"처럼 '어디가'와 '좋아' 사이에 짧은 말이 끼어도 잡는다
+OPINION = r"살기|살\s*만|살면|이사|이주|정착|키우기|좋은|좋을|괜찮은"
+RECOMMEND = re.compile(
+    rf"추천|골라\s*줘|어디가\s*(?:\S{{1,4}}\s*)?(?:좋|나을|낫)|괜찮을까|(?:{OPINION}).*어때"
+)
 # 챗봇이 무엇을 하는지, 어떻게 쓰는지 묻는 말
 CAPABILITY = re.compile(
     r"(?:뭘|무엇을|뭐를?|무슨\s*일을?|어떤\s*(?:걸|것을|일을))\s*(?:할\s*수|해\s*줄\s*수|도와|물어)"
@@ -127,6 +133,8 @@ def early_answer(question: str) -> dict[str, Any] | None:
 # ---- 끝에서 최종 사유 고치기 ----------------------------------------------------------------
 
 SUB_REGION = re.compile(r"[가-힣0-9]{1,6}(?:동|읍|면|리)$")
+# 지역 이름을 뺀 나머지가 이것뿐이면 지역 이름이다
+REGION_REST = re.compile(r"[\s,·]*(?:광역시|특별시|특별자치시|특별자치도|지역)?[\s,·]*")
 AGE_ITEM = re.compile(r"\d+\s*(?:살|세)|\d+\s*대")
 REVIEW_NONE = "검토 결과 후보 통계표가 질문의 주제를 다루지 않습니다"
 # 사유마다 정해 둔 문장만 내보낸다. 분류기가 쓴 설명(detail)은 사실과 다를 수 있어 기록(trace)에만
@@ -217,15 +225,31 @@ async def classify(question: str, reason: str) -> dict[str, Any] | None:
     }
 
 
+def _is_region(text: str) -> bool:
+    """지역 이름뿐인 말 ("부산", "서울특별시", "서울 강남구"). 지역 이름 목록을 읽지 못하면
+    지역으로 보지 않는다 (전처럼 범위 밖 지표로 둔다)"""
+    try:
+        names = indicators.find_regions(text)
+    except Exception as e:  # 연결 실패 · 테이블 없음: 거절 문장을 고르다 답 전체를 잃지 않는다
+        logger.warning("지역 이름 확인 실패 → 범위 밖 지표 그대로: %s: %s", type(e).__name__, e)
+        return False
+    rest = re.sub(r"\s+", "", text)  # find_regions는 띄어쓰기를 지운 이름을 준다
+    for name in sorted(names, key=len, reverse=True):
+        rest = rest.replace(name, " ")
+    return bool(names) and REGION_REST.fullmatch(rest) is not None
+
+
 def outside_indicators(res: dict[str, Any]) -> tuple[list[str], list[str]]:
-    """통계표 찾기의 계획이 '인구 분야 밖'으로 적은 지표들과, 볼 수 있는 나머지 지표들"""
+    """통계표 찾기의 계획이 '인구 분야 밖'으로 적은 지표들과, 볼 수 있는 나머지 지표들.
+    계획이 지역 이름을 지표로 적은 것("부산은?"의 '부산')은 뺀다. 지역 이름 목록을 DB에서
+    읽으므로 스레드에서 부른다"""
     tables = res.get("tables") or {}
     handoff = tables.get("handoff") or {}
     outside = (handoff.get("combine") or {}).get("out_of_scope") or (tables.get("multi") or {}).get(
         "out_of_scope"
     )
     rest = [t.get("span") for t in handoff.get("targets") or [] if t.get("span")]
-    return [str(o) for o in outside or []], rest
+    return [str(o) for o in outside or [] if not _is_region(str(o))], rest
 
 
 def _outside_text(outside: list[str], rest: list[str]) -> str:
@@ -246,7 +270,7 @@ async def finalize(res: dict[str, Any], question: str) -> None:
     status = res.get("status")
     if res.get("clarification") or (res.get("tables") or {}).get("clarify"):
         return
-    outside, rest = outside_indicators(res)
+    outside, rest = await asyncio.to_thread(outside_indicators, res)
     if outside and status in ("ok", "tables"):
         # 지표 여럿 중 하나가 범위 밖 (11/23 세진): 그 지표를 빼고 답하면 다른 질문의 답이 된다.
         # 전체를 범위 밖으로 거절하고 나머지 지표는 볼 수 있다고 안내한다

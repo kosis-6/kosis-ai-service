@@ -1733,6 +1733,33 @@ def test_region_only_follow_up_keeps_table_definition(talk: Talk, followup: str)
     assert talk.answered[-1]["regions"] == ["부산", "서울"]
 
 
+@pytest.mark.parametrize(
+    ("question", "place"),
+    [("부산은?", "부산의"), ("부산은 어때?", "부산의"), ("서울과 부산은?", "서울 · 부산의")],
+)
+def test_region_only_first_question_asks_what_to_see(talk: Talk, question, place) -> None:
+    # 이어 갈 조건 없이 지역만 말하면 HCX가 지역을 범위 밖 지표로 읽어
+    # "'부산'은 인구 분야 통계가 아니라"로 답했다. 해석 · 표 찾기 없이 볼 통계를 묻는다
+    res = talk.say(question)
+    assert res["status"] == "unclear" and res["request_type"] == s.UNCLEAR
+    assert f"{place} 어떤 통계" in res["answer"] and "예)" in res["answer"]
+    assert talk.asked == [] and talk.searched == [] and talk.answered == []
+    talk.say("부산 출생아 최근 5년 보여 줘")  # 이어서 한 통계 질문은 평소처럼 답한다
+    assert talk.asked == ["부산 출생아 최근 5년 보여 줘"]
+
+
+def test_region_only_first_question_keeps_one_place_in_examples(talk: Talk) -> None:
+    res = talk.say("서울 부산은?")  # 잇는 말이 없으면 한 곳 ("서울 강남구는?")
+    assert res["answer"].startswith("서울 부산의 어떤 통계")
+    assert "2025년 서울 부산 인구" in res["answer"]
+
+
+def test_region_only_after_numeric_answer_still_changes_region(talk: Talk) -> None:
+    talk.say("부산 출생아 최근 5년 보여 줘")
+    res = talk.say("서울은?")
+    assert res["request_type"] == "change" and talk.answered[-1]["regions"] == ["서울"]
+
+
 def test_region_only_rule_needs_nothing_but_regions() -> None:
     c = {"type": "value", "regions": ["서울"]}
     assert s.region_only_changes("부산은?", c) == {"regions": {"op": "set", "value": ["부산"]}}
