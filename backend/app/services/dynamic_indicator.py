@@ -831,10 +831,12 @@ def build(
     parsed: dict,
     forced: dict[int, str] | None = None,
     slots: dict | None = None,
+    seen: dict | None = None,
 ) -> tuple[dict | None, "str | Ask | None"]:
     """(지표 정의, None) 또는 (None, 이유 또는 Ask). 적재 안 된 표면 StatsTableMissing
     forced: 되묻기에서 고른 칸 {분류 번호: 코드}
-    slots: 통계표 찾기가 질문에서 뽑은 조건 (found["parsed"]). 칸에 모두 반영됐는지 본다"""
+    slots: 통계표 찾기가 질문에서 뽑은 조건 (found["parsed"]). 칸에 모두 반영됐는지 본다
+    seen: 주면 고른 칸(Plan)을 seen["plan"]에 남긴다 (잇기 기록과 견주기, binding.py)"""
     dims, region_dim, level = schema(tbl_id)
     if not dims or dims[0].no != 0:
         return None, "항목 정보가 없음"
@@ -860,6 +862,8 @@ def build(
         logger.exception("부부 단위 표 확인 실패: %s", tbl_id)
         couple = False
     plan, why = choose(question, parsed, dims, region_dim, forced, tbl_nm, couple)
+    if seen is not None:
+        seen["plan"] = plan
     _report_cells(slots, plan, dims, parsed, region_dim)
     if plan is None:
         # 칸을 고르지 못했어도 질문의 숫자 조건(체중 3.2kg 등)이 이 표의 구간 분류에 해당하면
@@ -1605,6 +1609,7 @@ async def _compute_target(
             # 낱말이 글자로 겹치지 않아도 뜻으로 맞는 표를 막았다
             "check_target": (entry.get("review") or {}).get("match") != "exact",
             "table_words": [entry.get("tbl_nm"), entry.get("target")],
+            "topic": u.get("topic"),  # 잇기 기록(binding.py)이 질문과 표를 잇는 말을 볼 때
         }
         return slots, handoff_notice(entry, u, h.get("combine") or {}, found.get("notice"))
 
@@ -2190,8 +2195,35 @@ def has_values(result: dict) -> bool:
 
 async def _build(tbl_id, org_id, question, parsed, step, forced=None, slots=None, fetch_sem=None):
     """fetch_sem: 후보 여러 개를 동시에 계산할 때 KOSIS에서 받는 일을 동시에 몇 개까지 할지"""
+    seen: dict = {}  # build가 고른 칸 (잇기와 견준다)
+    made = await _build_once(tbl_id, org_id, question, parsed, step, forced, slots, fetch_sem, seen)
+    from app.core.config import get_settings
+
+    if get_settings().binding_shadow:
+        # 1단계: 같은 표로 조건 → 칸 잇기를 돌려 기록만 남긴다 (답은 바꾸지 않는다)
+        from app.services import binding
+
+        rec = await run_in_threadpool(
+            binding.shadow,
+            tbl_id,
+            question,
+            parsed,
+            slots,
+            seen.get("plan"),
+            made[0] is not None,
+            forced,
+        )
+        if rec is not None:
+            step["binding"] = rec
+    return made
+
+
+async def _build_once(tbl_id, org_id, question, parsed, step, forced, slots, fetch_sem, seen):
+    def run():
+        return build(tbl_id, question, parsed, forced, slots, seen)
+
     try:
-        return await run_in_threadpool(build, tbl_id, question, parsed, forced, slots)
+        return await run_in_threadpool(run)
     except StatsTableMissing:
         pass
     except Exception:
@@ -2212,7 +2244,7 @@ async def _build(tbl_id, org_id, question, parsed, step, forced=None, slots=None
         logger.exception("동적 지표 표 받기 실패: %s", tbl_id)
         return None, "표를 받지 못함"
     try:
-        return await run_in_threadpool(build, tbl_id, question, parsed, forced, slots)
+        return await run_in_threadpool(run)
     except Exception:
         logger.exception("동적 지표 계획 만들기 실패: %s", tbl_id)
         return None, "오류"
