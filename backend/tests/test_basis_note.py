@@ -8,6 +8,14 @@ import pytest
 from app.services import indicators, qa
 
 
+@pytest.fixture(autouse=True)
+def no_statistics_db(monkeypatch: pytest.MonkeyPatch) -> None:
+    """기준 안내와 질문 보정만 검증한다. 통계 원자료는 CI에 없다."""
+    monkeypatch.setattr(indicators, "find_regions", lambda *a: [])
+    monkeypatch.setattr(indicators, "_data_years", lambda: (1990, 2025))
+    monkeypatch.setattr(qa.lookup, "refresh_if_reloaded", lambda: None)
+
+
 @pytest.mark.parametrize(
     ("term", "name", "default"),
     [
