@@ -628,6 +628,10 @@ def retry_plan(b: Binding, question: str, parsed: dict) -> Retry | None:
     (parts_answer는 분류 하나만 묶는다)"""
     if b.status != BOUND:
         return None
+    if parsed.get("type") == "composition" or di.PCT_ASK.search(question):
+        # 비율 · 구성비는 분자 · 분모를 계산이 정한다. 잇기의 칸으로 다시 계산하면 분자와 분모가
+        # 같은 칸이 되기도 한다 ('식구가 전부 65살 이상인 집은 몇 퍼센트' → 100%, V2-090)
+        return None
     dims = {d.no: d for d in di.schema(b.tbl_id)[0]}
     forced: dict[int, str] = {}
     multi = None

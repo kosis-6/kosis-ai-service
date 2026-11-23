@@ -400,3 +400,12 @@ def test_special_projection_table_without_baseline(monkeypatch) -> None:
     q = "빠른 고령화 추계로 2072년 인구"
     b = binding.bind("T", q, {}, _slots(), forced={0: "T10", 1: "10"})
     assert b.status == binding.BOUND
+
+
+def test_no_retry_for_ratio_questions(monkeypatch) -> None:
+    # 비율 질문은 잇기의 칸으로 다시 계산하지 않는다 (V2-090: 분자 = 분모 → 100%)
+    items = Dim(0, "항목", {"0": "일반가구_계", "1": "가구원 모두 65세이상"})
+    _table(monkeypatch, [items])
+    q = "전체 가구 중에 식구가 전부 65살 이상인 집은 몇 퍼센트야?"
+    b = binding.bind("T", q, {"ages": [[65, None]]}, _slots(), forced={0: "1"})
+    assert b.status == binding.BOUND and binding.retry_plan(b, q, {"ages": [[65, None]]}) is None
