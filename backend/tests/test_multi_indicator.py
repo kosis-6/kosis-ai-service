@@ -187,6 +187,86 @@ def test_default_is_later_over_earlier() -> None:
     assert res["result"]["value"] == 0.25 and trace["multi"]["ratio_by"] == "default"
 
 
+# ---- 연도를 말하지 않은 값 질문: 지표마다 최신 시점이 다르면 모두 있는 해로 맞춘다 ----
+NO_YEAR = {"type": "value", "regions": ["서울특별시"], "year": None, "sex": "계"}
+
+
+def _by_year(name, values, unit="명", as_of=None):
+    """말한 연도가 없으면 가장 최근 값, 있으면 그 해 값 (없는 해는 계산 못 함)"""
+    latest = max(values)
+
+    def got(parsed):
+        year = parsed.get("year") or latest
+        if year not in values:
+            return None
+        res = _value(name, values[year], unit, year=year)
+        if as_of and not parsed.get("year"):
+            res["result"]["as_of"] = as_of
+        return res
+
+    return got
+
+
+def test_different_latest_years_are_aligned_to_the_common_year(world) -> None:
+    world["values"] = {
+        "외국인 유학생": _by_year("외국인 유학생", {2025: 30, 2024: 20}),
+        "다문화 학생": _by_year("다문화 학생", {2024: 5}),
+    }
+    found = _found([_target("외국인 유학생"), _target("다문화 학생")])
+    res, trace = run("서울 외국인 유학생과 다문화 학생 수", found, NO_YEAR)
+    assert [(p["year"], p["value"]) for p in res["result"]["split"]] == [(2024, 20), (2024, 5)]
+    assert "모두 있는 2024년으로 맞췄습니다" in res["answer"]
+    assert trace["multi"]["aligned"] == {"year": 2024, "done": True}
+
+
+def test_aligned_values_are_then_subtracted(world) -> None:
+    world["values"] = {
+        "전입": _by_year("전입", {2025: 300, 2024: 250}),
+        "전출": _by_year("전출", {2024: 120}),
+    }
+    res, _ = run(
+        "서울 전입과 전출 차이", _found([_target("전입"), _target("전출")], "diff"), NO_YEAR
+    )
+    assert res["result"]["value"] == 130 and res["result"]["op"] == "−"
+
+
+def test_latest_month_value_is_aligned_to_the_last_annual_year(world, monkeypatch) -> None:
+    monkeypatch.setattr(indicators, "_data_years", lambda: (1992, 2025))
+    world["values"] = {
+        "주민": _by_year("주민", {2026: 110, 2025: 100}, as_of="2026년 10월 말"),
+        "등록 차량": _by_year("등록 차량", {2025: 40}, "대"),
+    }
+    res, _ = run("서울 주민과 등록 차량", _found([_target("주민"), _target("등록 차량")]), NO_YEAR)
+    assert [(p["year"], p["value"]) for p in res["result"]["split"]] == [(2025, 100), (2025, 40)]
+    assert all(not p.get("as_of") for p in res["result"]["split"])
+
+
+def test_alignment_keeps_first_values_when_recompute_fails(world) -> None:
+    # 한 지표가 맞춘 해에는 값이 없다: 처음 값 그대로 (답을 잃지 않는다)
+    world["values"] = {
+        "가": _by_year("가", {2025: 30}),
+        "나": _by_year("나", {2020: 5}),
+    }
+    res, trace = run("서울 가와 나", _found([_target("가"), _target("나")]), NO_YEAR)
+    assert [p["year"] for p in res["result"]["split"]] == [2025, 2020]
+    assert "맞췄습니다" not in res["answer"]
+    assert trace["multi"]["aligned"] == {"year": 2020, "done": False}
+
+
+def test_no_alignment_when_the_question_says_a_year(world) -> None:
+    world["values"] = {
+        "가": _by_year("가", {2025: 30, 2020: 10}),
+        "나": _by_year("나", {2020: 5}),
+    }
+    found = _found([_target("가"), _target("나")])
+    res, trace = run("2020년 서울 가와 나", found, {**NO_YEAR, "year": 2020})
+    assert "aligned" not in trace["multi"]
+    same = {"가": _value("가", 1, year=2020), "나": _value("나", 2, year=2020)}
+    world["values"] = same
+    _, trace = run("서울 가와 나", found, NO_YEAR)
+    assert "aligned" not in trace["multi"]  # 시점이 같으면 다시 계산하지 않는다
+
+
 def test_compare_same_unit_adds_gap_line(world) -> None:
     world["values"] = {"가": _value("가", 300, "명"), "나": _value("나", 120, "명")}
     res, _ = run("질문", _found([_target("가"), _target("나")], "compare"))

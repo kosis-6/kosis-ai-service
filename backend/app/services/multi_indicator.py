@@ -18,6 +18,10 @@ combine.op대로 합친다.
                       두 표의 숫자로 만들 수 없어 함께 집계한 통계가 없다고 안내한다
                       (숫자를 만들지 않는다)
 
+연도를 말하지 않은 값 질문에서 지표마다 가장 최근 시점이 다르면 (주민등록인구 2026년 10월,
+등록외국인 2025년, 인구총조사 2020년) 모두 있는 해로 다시 계산해 맞춘다 (사전 지표끼리는
+qa._common_year · cross_indicator가 같은 일을 한다). 다시 계산이 하나라도 안 되면 처음 값 그대로.
+
 일부 지표만 계산되면 계산된 지표는 숫자로, 못 한 지표는 표 안내 한 줄로 같은 답에 넣는다.
 지표마다 대안 제안 LLM은 부르지 않는다 (HCX · Gemma 호출이 지표 수만큼 늘지 않게).
 """
@@ -152,6 +156,47 @@ def _value(res: dict) -> dict | None:
     """값 질문의 결과 (한 지역 · 한 해 값이 있을 때만)"""
     r = (res or {}).get("result") or {}
     return r if "value" in r and r.get("value") is not None else None
+
+
+ALIGN_OPS = ("none", "compare", "diff", "ratio")  # 값을 나란히 놓거나 서로 계산하는 합치기
+
+
+def common_year(question: str, parsed: dict, ok) -> int | None:
+    """연도를 말하지 않은 값 질문에서 지표마다 답한 시점이 다르면 모두 있는 해.
+    맞출 것이 없으면 None. 최신 달 값(as_of)은 연간 값과 섞지 않으므로 연간 자료의
+    마지막 해로 본다"""
+    if any(parsed.get(k) for k in ("year", "start_year", "end_year")) or qa._says_year(question):
+        return None
+    rows = [_value(r) for _, r in ok]
+    if len(rows) < 2 or not all(rows) or not all(r.get("year") for r in rows):
+        return None
+    years = [r["year"] for r in rows]
+    monthly = any(r.get("as_of") for r in rows)
+    if len(set(years)) <= 1 and not monthly:
+        return None
+    year = min(years)
+    if monthly:
+        year = min(year, indicators._data_years()[1])
+    return year
+
+
+async def _aligned(question: str, parsed: dict, found: dict, ok, year: int):
+    """ok였던 지표들을 year로 다시 계산한 결과. 모두 그 해의 값으로 나왔을 때만 돌려준다
+    (아니면 None)"""
+    asked = {**(parsed.get("asked") or {}), "latest": False}
+    # 넘기기 계산은 지표의 조건(target.conditions)에서 연도를 읽는다. 질문 해석에만 넣으면
+    # '질문에 없는 연도'로 지워진다 (dynamic_indicator.drop_guessed_year)
+    targets = [
+        {**t, "conditions": {**(t.get("conditions") or {}), "year": year, "year_end": None}}
+        for t, _ in ok
+    ]
+    outcomes = await _all(question, {**parsed, "year": year, "asked": asked}, found, targets)
+    redo = [(t, r) for (t, _), (r, _) in zip(ok, outcomes, strict=True)]
+    for _, r in redo:
+        row = _value(r) if _ok(r) else None
+        if not row or row.get("year") != year or row.get("as_of"):
+            return None
+    return redo
 
 
 def _basis_gap(ok) -> str | None:
@@ -346,6 +391,12 @@ async def answer(question: str, parsed: dict, found: dict, trace: dict) -> dict 
     if not ok:
         return None
     notes = []
+    if op in ALIGN_OPS and (year := await run_in_threadpool(common_year, question, parsed, ok)):
+        # 지표마다 가장 최근 시점이 달랐다: 다른 해의 값을 나란히 놓거나 서로 계산하지 않는다
+        if redo := await _aligned(question, parsed, found, ok, year):
+            ok = redo
+            notes.append(f"지표마다 가장 최근 자료의 시점이 달라 모두 있는 {year}년으로 맞췄습니다")
+        trace["multi"]["aligned"] = {"year": year, "done": bool(redo)}
     gap = None
     if op in ("compare", "diff"):
         # 조사 기준이 다른 통계(인구총조사 인구와 주민등록인구)는 빼거나 크기를 견주지 않고
