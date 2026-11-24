@@ -6,7 +6,6 @@ from app.services import charts, qa
 
 @pytest.fixture(autouse=True)
 def no_stats_db(monkeypatch: pytest.MonkeyPatch) -> None:
-    """수치 계산을 대체한 단위 테스트는 적재 버전 확인도 실제 DB에 보내지 않는다."""
 
     def no_db():
         pytest.fail("QA 단위 테스트에서 실제 통계 DB를 호출했습니다")
@@ -15,7 +14,6 @@ def no_stats_db(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(qa.lookup, "refresh_if_reloaded", lambda: None)
 
 
-# indicators.trend()가 돌려주는 형태 (DB 없이 테스트하기 위해 직접 만든 값)
 TREND = {
     "status": "ok",
     "indicator": "총인구",
@@ -70,7 +68,6 @@ def test_summary_trend() -> None:
 
 
 def test_summary_trend_turning_year() -> None:
-    # 증가하다 감소하면 '매년' 대신 꺾인 해를 밝힌다 (s16 남편 초혼연령)
     r = {
         **TREND,
         "series": [
@@ -86,7 +83,6 @@ def test_summary_trend_turning_year() -> None:
 
 
 def test_compute_group_scope(monkeypatch: pytest.MonkeyPatch) -> None:
-    # 지역 묶음 비교는 포함 지역을 답변에 밝힌다 (s26 5대 광역시)
     values = [{"region": "인천광역시", "value": 2}, {"region": "부산광역시", "value": 1}]
     monkeypatch.setattr(qa.indicators, "_data_years", lambda: (2008, 2025))
     monkeypatch.setattr(qa.indicators, "spec", lambda name: {"name": name, "method": "lookup"})
@@ -101,8 +97,6 @@ def test_compute_group_scope(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_calc_error_hides_internal_text(monkeypatch: pytest.MonkeyPatch) -> None:
-    # 계산 중 오류의 원문(표 · 저장소 이름, 코드의 칸 이름)은 답에 넣지 않는다
-    # (error_id로 서버 기록과 잇는다)
     def broken(*a):
         raise KeyError("raw.stat_value DT_TEST")
 
@@ -221,7 +215,6 @@ def test_compute_composition(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(qa.indicators, "_data_years", lambda: (2008, 2025))
     monkeypatch.setattr(qa.indicators, "composition", fake_composition)
-    # 구성비는 지표 확인 없이 총인구를 나눠 본다. 지역이 없으면 되묻는다
     assert qa.compute({"type": "composition", "regions": []})["status"] == "missing_region"
     qa.compute({"type": "composition", "indicator": "남녀 비중", "regions": ["서울"], "by": "sex"})
     assert calls == [("서울", 2025, "sex", "계")]
@@ -230,8 +223,6 @@ def test_compute_composition(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_compute_composition_without_parts_answers_the_value(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """구성 항목이 없는 지표에 구성비를 물으면(대화 중 "구성비로 보여줘") 오류 대신 값으로 답한다.
-    전에는 "계산 중 오류가 났습니다: 'parts_dim'"이 그대로 나갔다"""
     note = "나눠 볼 구성 항목이 없어 구성비 대신 값으로 답했습니다"
     value = {"status": "ok", "indicator": "출생아 수", "region": "서울특별시", "year": 2024}
     value["value"] = 1
@@ -247,12 +238,10 @@ def test_compute_composition_without_parts_answers_the_value(
     assert r["notes"] == [f"출생아 수는 {note}"]
     assert "parts_dim" not in qa.summary(r) and f"※ 출생아 수는 {note}" in qa.render(r)
 
-    # 계산 지표(주민등록인구로 계산)도 같다. 전에는 "알 수 없는 질문 유형"이었다
     spec = {"name": "고령인구 비율", "method": "population"}
     monkeypatch.setattr(qa.indicators, "value", lambda *args: {**value, "notes": ["기존 주의"]})
     r = qa.compute({**asked, "indicator": "고령인구 비율"})
     assert r["status"] == "ok" and r["notes"] == ["기존 주의", f"고령인구 비율은 {note}"]
-    # 값도 못 구하면 그 사유 그대로
     monkeypatch.setattr(qa.indicators, "value", lambda *args: {"status": "missing_data"})
     assert qa.compute({**asked, "indicator": "고령인구 비율"}) == {
         "status": "missing_data",
@@ -261,7 +250,6 @@ def test_compute_composition_without_parts_answers_the_value(
 
 
 def test_causal_question_refuses_and_points_to_trend_table() -> None:
-    # 원인·정책 효과는 답하지 않고, 그 지표의 추이를 볼 수 있는 통계표만 안내한다 (숫자 없음)
     r = qa._limit_result("causal_question", TREND)
     text = qa.summary(r)
     assert r["status"] == "causal_question" and r["source"] == TREND["source"]
@@ -317,7 +305,6 @@ def test_summary_refusal(result: dict, expected: str) -> None:
 
 
 def test_out_of_range_with_projection() -> None:
-    """수록 기간 밖 연도: status는 답변 불가로 두고 추계값을 대신 보여준다. 추계 안내는 한 번만"""
     projection = {
         "status": "ok",
         "indicator": "고령인구 비율",
@@ -372,7 +359,6 @@ def test_json_objects() -> None:
 
 
 def test_refusal_says_not_implemented_or_not_collected() -> None:
-    # 멘토링 피드백: 거절이 데이터상 불가능(수집 안 함)인지 미구현인지 구분
     collected = {
         "status": "unknown_indicator",
         "indicator": "외국인 근로자 수",
@@ -386,16 +372,12 @@ def test_refusal_says_not_implemented_or_not_collected() -> None:
     assert "아직 수집하지 않은 통계입니다." in qa.summary(missing)
 
 
-# ---- 여러 지역의 추이 --------------------------------------------------------------------
-
-
 def _region_trend(region, values, start=2023):
     series = [{"year": start + i, "value": v} for i, v in enumerate(values)]
     return {**TREND, "region": region, "series": series, "notes": []}
 
 
 def test_compute_trend_for_each_region(monkeypatch: pytest.MonkeyPatch) -> None:
-    """지역이 여럿인 추이는 지역마다 계산해 묶는다 (앞 지역 하나만 보지 않는다)"""
     asked = []
 
     def fake(q, sp, kind, regions, *rest):
@@ -409,18 +391,13 @@ def test_compute_trend_for_each_region(monkeypatch: pytest.MonkeyPatch) -> None:
     r = qa.compute(q)
     assert asked == [("trend", ["서울"]), ("trend", ["부산"])]
     assert r["split_by"] == "region" and [p["region"] for p in r["split"]] == ["서울", "부산"]
-    assert r["split"][1]["series"][1]["diff_from_prev"] == -100  # 지역마다 전년 대비도 계산
-    # 기간 합계를 물어도 지역마다 계산한다. 예전에는 지역을 한 번에 넘겼는데
-    # 받는 쪽(_lookup_trend)이 첫 지역만 써서 나머지 지역이 빠졌다
-    # (2026-11-13 결함 1, tests/test_known_defects.py)
+    assert r["split"][1]["series"][1]["diff_from_prev"] == -100
     asked.clear()
     qa.compute({**q, "aggregate": "sum"})
     assert asked == [("trend", ["서울"]), ("trend", ["부산"])]
 
 
 def test_trend_for_many_regions_keeps_every_region(monkeypatch: pytest.MonkeyPatch) -> None:
-    """7곳 이상도 모두 계산한다 (예전에는 앞 6곳만 계산해 7번째부터 수치가 빠졌다).
-    차트도 만든다 (화면이 지역마다 작은 그래프로 그린다)"""
     monkeypatch.setattr(qa.indicators, "_data_years", lambda: (2008, 2025))
     monkeypatch.setattr(qa.indicators, "spec", lambda name: {"name": name, "method": "lookup"})
     monkeypatch.setattr(
@@ -458,15 +435,12 @@ def test_summary_region_trends_ends_with_last_year_comparison() -> None:
     assert text.endswith("2024년에는 부산광역시가 서울특별시보다 50명 높습니다.")
 
 
-# ---- 여러 지표를 함께 물음 ---------------------------------------------------------------
-
-
 @pytest.mark.parametrize(
     ("question", "names"),
     [
         ("2024년 서울 출생아 수와 사망자 수", ["출생아 수", "사망자 수"]),
         ("서울 출생아 수, 사망자 수, 혼인 건수 알려줘", ["출생아 수", "사망자 수", "혼인 건수"]),
-        ("서울 인구 중 고령인구 비율", []),  # 이름이 '와·과'로 이어지지 않으면 지표 하나
+        ("서울 인구 중 고령인구 비율", []),
         ("2024년 서울 출생아 수", []),
     ],
 )
@@ -508,14 +482,12 @@ def test_compute_each_indicator(monkeypatch: pytest.MonkeyPatch) -> None:
     ]
     text = qa.summary(r)
     assert "출생아 수는 41,605명" in text and "사망자 수는 47,000명" in text
-    assert "더 높습니다" not in text  # 다른 지표끼리 견주지 않는다
+    assert "더 높습니다" not in text
     assert [s["tbl_id"] for s in qa.sources(r)] == ["T_출생아 수", "T_사망자 수"]
     assert "혼인 건수는 이 조건으로 답할 수 없어 뺐습니다" in qa.render(r)
 
 
 def test_compute_population_rank_passes_the_asked_region(monkeypatch: pytest.MonkeyPatch) -> None:
-    """ "부산은 고령인구 비율이 몇 위야?": 계산 지표 순위도 물은 지역을 넘긴다.
-    전에는 조회 지표만 넘겨, 답에 부산 순위 없이 1위와 최하위만 나왔다"""
     calls = []
     target = {"region": "부산광역시", "rank": 2, "value": 24.5}
     ranking = [
@@ -542,7 +514,6 @@ def test_compute_population_rank_passes_the_asked_region(monkeypatch: pytest.Mon
 
 
 def test_lookup_band_mismatch_lists_nearby_bands(monkeypatch: pytest.MonkeyPatch) -> None:
-    # 5세 단위 표에 62~67세를 물으면 근처 구간을 안내한다 (전에는 '범위 밖 주제'로 보였다)
     labels = (
         ("0", "계"),
         ("060", "60~64세"),
@@ -557,19 +528,17 @@ def test_lookup_band_mismatch_lists_nearby_bands(monkeypatch: pytest.MonkeyPatch
     assert r["status"] == "band_mismatch"
     assert r["available_bands"] == ["60~64세", "65~69세", "70~74세"]
     no_age = qa.lookup._band_mismatch(spec, {"table": "T"}, [[62, 67]])
-    assert no_age["status"] == "unknown_indicator"  # 연령으로 나눈 자료가 아예 없음
+    assert no_age["status"] == "unknown_indicator"
 
 
 def test_sigungu_future_year_is_prediction_with_sido_projection(monkeypatch) -> None:
-    # 2040년 해운대구: 장래추계는 시도까지만
-    # → 예측 질문으로 답하지 않고 부산 추계값을 대신 보여 준다
     from app.services import indicators
 
     monkeypatch.setattr(indicators, "_data_years", lambda: (2008, 2025))
     monkeypatch.setattr(indicators, "_monthly", lambda *a: False)
     proj = {"status": "ok", "region": "부산광역시", "year": 2040, "value": 2853768}
     monkeypatch.setattr(indicators, "projection", lambda name, code, year: proj)
-    monkeypatch.setattr(  # 표 정보(DB)를 읽지 않게
+    monkeypatch.setattr(
         indicators, "_base", lambda name, ind, status, **kw: {"status": status, **kw}
     )
     monkeypatch.setattr(indicators, "_out_of_range_reason", lambda lo, hi, ind=None: "자료 기간 밖")
@@ -589,7 +558,6 @@ def test_sigungu_future_year_is_prediction_with_sido_projection(monkeypatch) -> 
 
 
 def test_lookup_trend_entirely_before_coverage_is_out_of_range(monkeypatch) -> None:
-    # 1970~1980년을 물었는데 자료가 1990년부터: "1990~1980년 자료가 부족합니다"가 아니라 기간 밖
     monkeypatch.setattr(qa, "_lookup_span", lambda sp, region, sex: (1990, 2025))
     sp = {"name": "이혼 건수"}
     q = {"type": "trend", "start_year": 1970, "end_year": 1980}
@@ -604,7 +572,6 @@ def test_subject_does_not_repeat_sex_in_name() -> None:
 
 
 def test_latest_month_out_of_range_retries_with_annual(monkeypatch) -> None:
-    # 연도를 말하지 않아 최신 달로 계산했더니 기간 밖이면 연간 마지막 해로 다시 계산한다
     seen = []
 
     def fake(q):
@@ -633,7 +600,6 @@ def test_mean_of_regions_averages_ranking(monkeypatch) -> None:
 
 
 def test_unknown_ratio_indicator_is_not_population_composition(monkeypatch) -> None:
-    # 사전에 없는 '○○ 비율' 구성비 질문을 인구 성별 구성으로 읽지 않는다 (지역 없음으로 끝났다)
     monkeypatch.setattr(qa.lookup, "refresh_if_reloaded", lambda: None)
     monkeypatch.setattr(qa.lookup, "data_gap", lambda term: {})
     monkeypatch.setattr(qa.indicators, "_data_years", lambda: (2008, 2025))
@@ -642,7 +608,6 @@ def test_unknown_ratio_indicator_is_not_population_composition(monkeypatch) -> N
 
 
 def test_compare_times_against_nation_is_region_over_nation() -> None:
-    # "우리 동네 노인 비율 전국보다 높아?": 배수는 지역 ÷ 전국 (높은 ÷ 낮은 이 아니다)
     assert qa._times({"region": "전국", "value": 21.21}, {"region": "순천시", "value": 20.66}) == (
         ", 0.97배"
     )

@@ -36,14 +36,13 @@ def test_logs_every_request_with_stages(
     monkeypatch.setattr(qa, "ask", fake_ask)
     response = client.post("/ask", json={"question": "2025년 부산 여성 고령인구 비율"})
     assert response.status_code == 200
-    assert "trace" not in response.json()  # 로그용 정보는 API 응답에 넣지 않음
+    assert "trace" not in response.json()
     [record] = read(request_logs / "requests.jsonl")
     assert record["status"] == "ok"
     assert record["hcx_raw"] == '{"type": "value"}'
     assert record["parsed"]["corrections"]
     assert record["understand_ms"] == 900
     assert record["elapsed_ms"] is not None
-    # 답한 질문은 데이터 부족 기록에 남지 않음
     assert not (request_logs / "missing.jsonl").exists()
 
 

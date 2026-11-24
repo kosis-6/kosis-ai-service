@@ -4,10 +4,8 @@ import pytest
 
 from app.services import indicators, qa
 
-# 실제 통계 데이터(DB)가 있어야 돈다. CI는 데이터 없이 돌아서 뺀다 (pyproject.toml markers)
 pytestmark = pytest.mark.needs_data
 
-# config/catalog_notes.toml 지표 사전 일부 (DB 없이 테스트)
 ALIASES = {
     "총인구": ["인구", "인구수", "전체 인구", "주민등록인구"],
     "고령인구 비율": ["고령화율", "노인 비율", "65세 이상 비율", "고령층"],
@@ -25,7 +23,7 @@ ALIASES = {
 TODAY = date(2026, 10, 24)
 
 
-REAL_ALIASES = indicators._alias_map  # 실제 지표 사전 별칭 (아래 몇 테스트)
+REAL_ALIASES = indicators._alias_map
 
 
 @pytest.fixture(autouse=True)
@@ -39,7 +37,6 @@ def parsed(**kw) -> dict:
 
 
 def test_indicator_alias_overrides_llm() -> None:
-    # HCX가 "고령화율"을 비슷한 이름의 노령화지수로 해석한 경우
     p = qa.correct(
         "최근 5년간 부산 고령화율 변화는?",
         parsed(type="trend", indicator="노령화지수", regions=["부산"]),
@@ -50,7 +47,6 @@ def test_indicator_alias_overrides_llm() -> None:
 
 
 def test_indicator_phrase_with_change_word() -> None:
-    # "인구 증감률"을 통째로 지표 이름으로 해석한 경우
     p = qa.correct(
         "2015~2025년 대구 인구 증감률은?",
         parsed(type="trend", indicator="인구 증감률", regions=["대구"]),
@@ -60,7 +56,6 @@ def test_indicator_phrase_with_change_word() -> None:
 
 
 def test_generic_population_word_keeps_llm_indicator() -> None:
-    # "인구"만 별칭으로 잡혀도, HCX가 고른 다른 지원 지표를 총인구로 바꾸지 않는다
     p = qa.correct(
         "부산 인구에서 고령층이 차지하는 비중은?",
         parsed(indicator="고령인구 비율", regions=["부산"]),
@@ -87,14 +82,12 @@ def test_female_elderly_ratio() -> None:
         ("2025년 전국 인구 중 남녀 비중은 어떻게 돼?", "sex"),
         ("서울 인구의 남자와 여자 구성비는?", "sex"),
         ("2025년 서울 인구의 연령대별 구성비는?", None),
-        # '구성별'·'특성별' 안의 '성별'은 남녀가 아니다
         ("2020년 서울 아파트 가구 수를 세대구성별로 알려줘", None),
         ("2020년 서울 다문화가구 구성별 비중", None),
         ("서울 가구주성별 1인 가구 구성비", "sex"),
     ],
 )
 def test_composition_by_sex(question: str, by: str | None) -> None:
-    # HCX가 by를 비워도 남녀를 묻는 구성비 질문은 성별 구성으로
     p = qa.correct(question, parsed(type="composition", regions=["서울"]), TODAY)
     assert p.get("by") == by
 
@@ -109,7 +102,6 @@ def test_composition_by_sex(question: str, by: str | None) -> None:
     ],
 )
 def test_sex_word_inside_other_class_names(text: str, sex: bool) -> None:
-    # "세대구성별 아파트 가구 수"를 인구 지표로 보면 물은 지표 대신 총인구 구성을 낸다
     from app.services import slots
 
     assert bool(qa.SEX_SPLIT.search(text)) is sex
@@ -136,16 +128,13 @@ def test_no_change_when_llm_is_right() -> None:
 
 
 def test_longer_alias_wins() -> None:
-    # "유소년인구 비율" 안의 "인구"는 총인구로 세지 않는다
     assert {n for *_, n in indicators.find_in_text("세종 유소년인구 비율 비교")} == {
         "유소년인구 비율"
     }
-    # 조회 지표 별칭 안의 "인구"도 마찬가지
     assert {n for *_, n in indicators.find_in_text("서울 인구 순유입은?")} == {"순이동"}
 
 
 def test_unsupported_lookup_indicator_is_named() -> None:
-    # 조회 지표는 아직 답하지 못하지만, 엉뚱한 계산 지표로 바뀌지 않고 그 이름으로 안내된다
     p = qa.correct("2024년 서울 출산율은?", parsed(indicator="총인구", regions=["서울"]), TODAY)
     assert p["indicator"] == "합계출산율"
 
@@ -153,8 +142,8 @@ def test_unsupported_lookup_indicator_is_named() -> None:
 @pytest.mark.parametrize(
     "question",
     [
-        "서울 고령화율과 노령화지수를 비교해줘",  # 지표가 둘이면 HCX 해석을 따른다
-        "저출산 정책이 효과가 있었나요?",  # 지표 표현이 없으면 HCX 해석을 따른다
+        "서울 고령화율과 노령화지수를 비교해줘",
+        "저출산 정책이 효과가 있었나요?",
     ],
 )
 def test_keeps_llm_indicator(question: str) -> None:
@@ -180,13 +169,11 @@ def test_both_genders_or_rank_untouched() -> None:
 def test_relative_years() -> None:
     assert qa.correct("올해 서울 인구는?", parsed(indicator="총인구"), TODAY)["year"] == 2026
     assert qa.correct("재작년 서울 인구는?", parsed(indicator="총인구"), TODAY)["year"] == 2024
-    # 추이 질문의 기간은 건드리지 않는다
     p = qa.correct("작년까지 5년간 변화", parsed(type="trend", indicator="총인구"), TODAY)
     assert p["year"] is None
 
 
 def test_age_band_population_count() -> None:
-    # 연령 구간 인구 수는 총인구 + 연령 구간 (HCX가 비슷한 비율 지표로 바꿔도 되돌린다)
     p = qa.correct(
         "2025년 대전 유성구의 만 6~11세 인구는 몇 명이에요?",
         parsed(indicator="유소년인구 비율", regions=["대전 유성구"]),
@@ -212,7 +199,6 @@ def test_extract_ages() -> None:
 
 
 def test_ratio_indicator_for_count_question_is_refused() -> None:
-    # "몇 명"을 물었는데 비율 지표로 답하지 않는다 (0회차 s08 같은 바꿔치기)
     p = qa.correct(
         "2025년 서울 1인 가구는 몇 가구예요?",
         parsed(indicator="고령인구 비율", regions=["서울"], term="1인 가구"),
@@ -230,7 +216,6 @@ def test_other_with_stats_words_is_unsupported_indicator() -> None:
 
 
 def test_composition_needs_share_words() -> None:
-    # "구별 20대 인구"는 구성비가 아니라 서울 안 구별 목록
     p = qa.correct(
         "2023년 서울 지역의 구별 20대(20~29세) 인구는 몇 명인가요?",
         parsed(type="composition", indicator="총인구", regions=["서울"]),
@@ -240,7 +225,6 @@ def test_composition_needs_share_words() -> None:
 
 
 def test_more_specific_indicator_wins() -> None:
-    # 별칭이 여럿 잡히면 '인구' 말고 다른 쪽, 비율을 물었으면 비율 지표
     q = "작년에 인구가 가장 많이 빠져나간 시군구는?"
     p = qa.correct(q, parsed(type="rank", indicator="총인구"), TODAY)
     assert p["indicator"] == "순이동" and p["ascending"] is True
@@ -289,14 +273,12 @@ def test_span_causal_and_nationwide() -> None:
     assert p["type"] == "causal"
     p = qa.correct("2025년 우리나라 합계출산율은 얼마예요?", parsed(regions=["우리나라"]), TODAY)
     assert p["regions"] == ["전국"]
-    # 사유를 묻는 구성비 질문은 원인 질문이 아니다
     q = "부산으로 이사 온 사람 중 일자리 때문에 온 비율은?"
     p = qa.correct(q, parsed(type="composition"), TODAY)
     assert p["type"] != "causal"
 
 
 def test_round2_misreads() -> None:
-    # HCX가 실행마다 다르게 해석한 경우 (2회차): 원문에서 바로잡는다
     p = qa.correct(
         "2025년에 결혼을 더 많이 한 곳은 부산이에요, 대구예요?",
         parsed(type="other", indicator="혼인 건수", regions=["부산", "대구"]),
@@ -375,17 +357,14 @@ def test_sub_area_and_ungrounded_region() -> None:
 
 
 def test_full_region_name_from_question() -> None:
-    # HCX가 "광주광역시"를 "광주"로 줄이면 경기 광주시와 겹쳐 되묻게 된다
     q = "서울 광주광역시 2018년부터 2024년까지 인구 추이"
     p = qa.correct(q, parsed(type="trend", indicator="총인구", regions=["서울", "광주"]), TODAY)
     assert p["regions"] == ["서울", "광주광역시"]
-    # 질문에 "광주"라고만 썼으면 그대로 둔다 (어느 광주인지 되묻는 게 맞다)
     p = qa.correct("광주 인구 추이", parsed(type="trend", regions=["광주"]), TODAY)
     assert p["regions"] == ["광주"]
 
 
 def test_latest_without_change_is_latest_value() -> None:
-    # HCX가 "최근"을 최근 몇 년 추이로 읽어도, 변화를 묻지 않았으면 최신 값 하나
     def hcx() -> dict:
         return parsed(
             type="trend", indicator="고령인구 비율", regions=["부산"], year=2025,
@@ -394,7 +373,7 @@ def test_latest_without_change_is_latest_value() -> None:
 
     p = qa.correct("최근 부산 고령인구 비율", hcx(), TODAY)
     assert (p["type"], p.get("start_year"), p.get("end_year")) == ("value", None, None)
-    assert p["asked"]["latest"] and p.get("year") is None  # 연도는 표마다 마지막 해
+    assert p["asked"]["latest"] and p.get("year") is None
     p = qa.correct(
         "최근 서울 출생아 수", parsed(indicator="출생아 수", regions=["서울"], year=2024), TODAY
     )
@@ -402,7 +381,6 @@ def test_latest_without_change_is_latest_value() -> None:
     for q in ["최근 부산 고령인구 비율 추이", "요즘 부산 고령인구 비율이 늘었어?",
               "최근 5년 부산 고령인구 비율"]:  # fmt: skip
         assert qa.correct(q, hcx(), TODAY)["type"] == "trend", q
-    # 최근 추이: HCX가 넣은 기간을 지워 자료 마지막 해까지 본다 ("최근 5년"은 따로 N개년)
     p = qa.correct("최근 부산 고령인구 비율 추이", hcx(), TODAY)
     assert (p.get("start_year"), p.get("end_year"), p.get("year")) == (None, None, None)
 
@@ -429,7 +407,6 @@ def test_explicit_year_wins() -> None:
 
 
 def test_region_list_scope_from_question() -> None:
-    # HCX가 질문에 없는 구 목록을 지어내도 순위 범위는 질문의 시도
     q = "2024년 서울 지역의 구별 15세 이상 여성중 배우자가 있는 여성의 비율은 어떻게 되나요?"
     p = qa.correct(
         q,
@@ -446,7 +423,6 @@ def test_region_list_scope_from_question() -> None:
 
 
 def test_share_of_nation_read_as_compare() -> None:
-    # "전국 ~ 중 서울 비중"을 HCX가 전국·서울 비교로 읽은 경우 (골든셋 s44, 10회차)
     p = qa.correct(
         "2025년 전국 출생아 중 서울 아이들 비중은 얼마예요?",
         parsed(type="compare", indicator="출생아 수", regions=["전국", "서울"], year=2025),
@@ -458,7 +434,6 @@ def test_share_of_nation_read_as_compare() -> None:
 
 
 def test_compare_two_regions_with_nation_stays_compare() -> None:
-    # 전국 말고 지역이 둘이면 비중이 아니라 비교로 둔다
     p = qa.correct(
         "2025년 출생아 수 서울이랑 부산 비율을 전국과 비교해 주세요",
         parsed(type="compare", indicator="출생아 수", regions=["전국", "서울", "부산"], year=2025),
@@ -482,7 +457,6 @@ def test_past_n_years_is_recent_n_years(question, n) -> None:
 
 
 def test_from_past_is_whole_period_trend() -> None:
-    # "과거부터 지금까지" → 되묻지 않고 수록 기간 전체 추이 (HCX가 넣은 기간은 지운다)
     p = qa.correct(
         "과거부터 지금까지 전국 합계출산율 추이",
         parsed(type="value", indicator="합계출산율", regions=["전국"], start_year=2015),
@@ -493,7 +467,6 @@ def test_from_past_is_whole_period_trend() -> None:
 
 
 def test_from_past_keeps_end_year_in_question() -> None:
-    # "과거부터 2010년까지" → 시작만 수록 첫해, 끝은 질문의 2010년
     p = qa.correct(
         "과거부터 2010년까지 전국 합계출산율 추이",
         parsed(type="trend", indicator="합계출산율", regions=["전국"], start_year=1970),
@@ -504,7 +477,6 @@ def test_from_past_keeps_end_year_in_question() -> None:
 
 
 def test_from_past_drops_guessed_end_year() -> None:
-    # 질문에 끝 연도가 없으면 HCX가 넣은 끝 연도를 지우고 최신까지
     p = qa.correct(
         "과거부터 지금까지 전국 합계출산율 추이",
         parsed(type="trend", indicator="합계출산율", regions=["전국"], end_year=2020),
@@ -514,7 +486,6 @@ def test_from_past_drops_guessed_end_year() -> None:
 
 
 def test_from_past_computed_indicator_starts_at_first_year(monkeypatch) -> None:
-    # 계산 지표(총인구 등)도 "과거부터"면 주민등록인구 수록 첫해부터 (전에는 최근 6년만)
     calls = []
     monkeypatch.setattr(indicators, "_data_years", lambda: (2008, 2025))
     monkeypatch.setattr(indicators, "trend", lambda ind, reg, a, b, *rest: calls.append((a, b)))
@@ -526,7 +497,6 @@ def test_from_past_computed_indicator_starts_at_first_year(monkeypatch) -> None:
 
 
 def test_recent_n_years_computed_indicator(monkeypatch) -> None:
-    # 계산 지표도 "최근 5년"은 마지막 연도 기준 5개년 (전에는 기본값 6개년, HCX 기간을 그대로 씀)
     calls = []
     monkeypatch.setattr(indicators, "trend", lambda ind, reg, a, b, *rest: calls.append((a, b)))
     q = {"type": "trend", "asked": {"recent": 5}, "start_year": 2019, "end_year": None}
@@ -537,8 +507,8 @@ def test_recent_n_years_computed_indicator(monkeypatch) -> None:
 @pytest.mark.parametrize(
     ("question", "llm", "grounded"),
     [
-        ("최근 5년 부산 고령화율", "고령인구 비율", True),  # 별칭이 질문에 있다
-        ("서울 1인 가구 중 여성 비율", "총인구", False),  # HCX가 비슷한 지표를 고름
+        ("최근 5년 부산 고령화율", "고령인구 비율", True),
+        ("서울 1인 가구 중 여성 비율", "총인구", False),
     ],
 )
 def test_grounded_marks_indicator_named_in_question(question, llm, grounded) -> None:
@@ -547,7 +517,6 @@ def test_grounded_marks_indicator_named_in_question(question, llm, grounded) -> 
 
 
 def test_grounded_is_none_without_indicator() -> None:
-    # 원인 질문처럼 지표가 없으면 근거를 따지지 않는다 (바로 계산을 시도하지 않음)
     p = qa.correct("2025년 복지 정책이 효과적이었나요?", parsed(type="causal", indicator=""), TODAY)
     assert p["grounded"] is None
 
@@ -571,7 +540,6 @@ def foreign_aliases(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.mark.usefixtures("foreign_aliases")
 def test_excluded_phrase_is_not_an_alias_hit() -> None:
-    # 공백을 빼면 "등록외국인수" 안에 별칭 "외국인수"가 있지만 외국인주민 수가 아니다
     assert indicators.find_in_text("2023년 경기 등록외국인 수") == []
     assert [n for *_, n in indicators.find_in_text("2023년 경기 외국인 수")] == ["외국인주민 수"]
 
@@ -582,7 +550,6 @@ def test_excluded_phrase_is_not_an_alias_hit() -> None:
     ["2023년 경기 등록외국인 수", "서울 체류외국인 수는?", "2023년 경기 등록외국인 비율"],
 )
 def test_other_foreigner_statistics_are_unsupported(question: str) -> None:
-    # HCX가 비슷한 이름의 외국인주민 지표를 골라도 답하지 않고 표 안내로 넘긴다
     for llm_pick in ("외국인주민 수", "외국인주민 비율"):
         p = qa.correct(question, parsed(indicator=llm_pick, regions=["경기"]), TODAY)
         assert p["unsupported"] is True
@@ -599,7 +566,6 @@ def test_plain_foreigner_question_still_answers() -> None:
 
 
 def test_extract_ages_with_sal() -> None:
-    # "세" 대신 "살", "미만" 대신 "안 된"
     assert qa.extract_ages("대전청년 19~34살 몇명?") == [[19, 34]]
     assert qa.extract_ages("울산에 100살 이상 어르신") == [[100, None]]
     assert qa.extract_ages("15살 안 된 애들") == [[0, 14]]
@@ -608,7 +574,6 @@ def test_extract_ages_with_sal() -> None:
 @pytest.mark.parametrize(
     ("question", "ages"),
     [
-        # 개발셋 D-139, D-140: 말로 이은 구간을 읽지 못해 연령 없이 답했다
         ("동래구에서 재작년 돌아가신 분 중 62살에서 67살 사이는?", [[62, 67]]),
         ("등록 외국인 가운데 33살부터 38살까지는 몇 명?", [[33, 38]]),
         ("33세부터 38세까지 인구", [[33, 38]]),
@@ -617,7 +582,6 @@ def test_extract_ages_with_sal() -> None:
         ("65세 이상 70세 미만 인구", [[65, 69]]),
         ("65살 이상 69살 이하", [[65, 69]]),
         ("20대부터 30대까지 여자", [[20, 39]]),
-        # 연도·다른 단위의 "부터·에서"는 연령이 아니다
         ("2020년부터 2025년까지 인구", []),
         ("2015년에서 2020년 사이 30대", [[30, 39]]),
         ("3명에서 5명 사이", []),
@@ -628,7 +592,6 @@ def test_extract_ages_spoken_range(question: str, ages: list) -> None:
 
 
 def test_age_group_grounds_age_defined_indicator() -> None:
-    # 지표 이름이 없어도 연령 집단 + 묻는 말이 있으면 HCX가 고른 계산 지표를 쓴다
     p = qa.correct(
         "우리나라 사람 가운데 노인은 몇 퍼센트쯤 돼요?",
         parsed(indicator="고령인구 비율 (%)", regions=["전국"], term="노인이 몇 퍼센트"),
@@ -641,7 +604,6 @@ def test_age_group_grounds_age_defined_indicator() -> None:
         TODAY,
     )
     assert p["indicator"] == "노령화지수" and not p.get("unsupported")
-    # 한 집단만 있으면 노령화지수의 근거가 아니다
     p = qa.correct(
         "의성군 노인 몇 배야?", parsed(indicator="노령화지수", regions=["의성군"]), TODAY
     )
@@ -649,7 +611,6 @@ def test_age_group_grounds_age_defined_indicator() -> None:
 
 
 def test_age_group_count_without_population_word() -> None:
-    # "인구"라는 말이 없어도 연령 집단의 사람 수를 물으면 연령 구간 인구
     p = qa.correct(
         "대전이랑 충남 노인 다 합치면 몇 명이야",
         parsed(indicator="고령인구 비율", regions=["대전광역시", "충청남도"]),
@@ -667,7 +628,7 @@ def test_age_group_count_without_population_word() -> None:
 @pytest.mark.parametrize(
     "question",
     [
-        "인구가 많고 집값이 비싼 서울의 2020년 1인 가구 수",  # '인구'는 꾸밈말
+        "인구가 많고 집값이 비싼 서울의 2020년 1인 가구 수",
         "사람이 많이 사는 서울의 1인 가구 수는?",
         "인구 밀집 지역인 서울의 1인 가구 수",
     ],
@@ -680,10 +641,10 @@ def test_population_word_in_modifier_does_not_replace_said_indicator(question: s
 @pytest.mark.parametrize(
     ("name", "display"),
     [
-        ("울릉도", "경상북도 울릉군"),  # 섬 이름
+        ("울릉도", "경상북도 울릉군"),
         ("강화도", "인천광역시 강화군"),
         ("거제도", "경상남도 거제시"),
-        ("경기도", "경기도"),  # 시도 이름은 그대로
+        ("경기도", "경기도"),
     ],
 )
 def test_island_names_resolve_to_their_county(name: str, display: str) -> None:
@@ -698,9 +659,9 @@ def test_unknown_island_name_stays_unknown() -> None:
 @pytest.mark.parametrize(
     ("question", "modifier"),
     [
-        ("2024년 울릉도 인구는 몇 명이야?", None),  # 지역 이름: 총인구로 답한다
-        ("수원 인구 몇 명", None),  # '시'를 뗀 이름도 지역이다
-        ("통학 인구 몇 명", "통학"),  # 다른 통계를 가리키는 말은 그대로
+        ("2024년 울릉도 인구는 몇 명이야?", None),
+        ("수원 인구 몇 명", None),
+        ("통학 인구 몇 명", "통학"),
         ("외국인 인구", "외국인"),
     ],
 )
@@ -709,14 +670,12 @@ def test_region_word_before_population_is_not_a_modifier(question: str, modifier
 
 
 def test_population_word_still_replaces_unsaid_indicator() -> None:
-    # HCX가 질문에 없는 지표를 고르면 지금처럼 질문의 '인구'(총인구)
     p = qa.correct("서울 인구 몇 명이야?", parsed(indicator="주민 수", regions=["서울"]), TODAY)
     assert p["indicator"] == "총인구"
 
 
 @pytest.mark.parametrize("hcx", ["성비", "고령인구 비율"])
 def test_population_composition_read_as_other_indicator(hcx: str) -> None:
-    # "서울 남녀 인구 구성"은 성비가 아니라 인구 구성이다
     p = qa.correct(
         "2020년 서울 남녀 인구 구성",
         parsed(type="composition", indicator=hcx, regions=["서울"], year=2020),
@@ -726,7 +685,6 @@ def test_population_composition_read_as_other_indicator(hcx: str) -> None:
 
 
 def test_unknown_label_that_is_age_population() -> None:
-    # HCX가 사전에 없는 "연령 구간 인구" 이름을 주거나 지표를 비워도 총인구
     p = qa.correct(
         "대전청년 19~34살 몇명?", parsed(indicator="19~34세 인구 수", regions=["대전"]), TODAY
     )
@@ -742,7 +700,6 @@ def test_unknown_label_that_is_age_population() -> None:
 
 
 def test_age_population_needs_people_only() -> None:
-    # 연령이 있어도 다른 대상(취업자·가구)을 세면 인구로 바꾸지 않는다
     p = qa.correct(
         "서울 청년 취업자 몇 명이야?", parsed(indicator="청년 취업자 수", regions=["서울"]), TODAY
     )
@@ -756,7 +713,6 @@ def test_age_population_needs_people_only() -> None:
 @pytest.mark.parametrize("llm", ["고령인구 비율", ""])
 @pytest.mark.parametrize("question", ["청년 취업자 몇 명이야?", "취업자 중 청년 몇 명이야?"])
 def test_other_target_with_age_is_not_population(question: str, llm: str) -> None:
-    # HCX가 엉뚱한 지표를 주거나 비워도, 연령 집단이 아닌 대상(취업자)을 세면 총인구로 바꾸지 않는다
     p = qa.correct(question, parsed(indicator=llm), TODAY)
     assert p["indicator"] != "총인구"
 
@@ -780,8 +736,8 @@ def test_age_population_with_filler_words(question: str, regions: list) -> None:
     [
         ("애들보다 노인이 몇 배 많아?", True),
         ("유소년 대비 노인 몇 배야", True),
-        ("노인이랑 애들 몇 배 차이야", True),  # 나누는 쪽을 말하지 않으면 노령화지수
-        ("노인보다 애들이 몇 배 많아?", False),  # 유소년 ÷ 노인은 노령화지수가 아니다
+        ("노인이랑 애들 몇 배 차이야", True),
+        ("노인보다 애들이 몇 배 많아?", False),
         ("노인 대비 유소년 몇 배야", False),
     ],
 )
@@ -791,13 +747,9 @@ def test_aging_index_direction(question: str, ok: bool) -> None:
 
 
 def test_births_versus_deaths_is_natural_increase() -> None:
-    # HCX가 지표를 비워도 "태어난 vs 돌아가신"은 자연증가 건수
     p = qa.correct("작년엔 태어난 사람이 많았어 돌아가신 사람이 많았어?", {"type": "other"}, TODAY)
     assert (p["type"], p["indicator"]) == ("value", "자연증가 건수")
     assert not p.get("unsupported")
-
-
-# ---- 원인·예측 질문, 지원하지 않는 조건 -------------------------------------------------
 
 
 @pytest.fixture
@@ -812,7 +764,7 @@ def data_years(monkeypatch: pytest.MonkeyPatch) -> None:
         ("출산율이 앞으로 다시 오를까요?", None, True),
         ("서울 인구는 계속 줄어들까?", None, True),
         ("향후 고령인구 비율 전망", None, True),
-        ("2040년 서울 인구는 몇 명이 될까요?", 2040, False),  # 미래 연도: 장래추계로 답한다
+        ("2040년 서울 인구는 몇 명이 될까요?", 2040, False),
         ("2060년 전남 고령인구 비율은 얼마로 예상돼요?", 2060, False),
         ("2025년 서울 출생아 수", 2025, False),
     ],
@@ -840,7 +792,6 @@ def test_unsupported_condition(question: str, condition) -> None:
 
 
 def test_unsupported_condition_is_not_dropped(monkeypatch: pytest.MonkeyPatch) -> None:
-    # 지표 사전 표는 체중으로 나뉘어 있지 않다: 전체 출생아 수로 답하지 않고 맞는 구간 없음
     monkeypatch.setattr(qa.lookup, "refresh_if_reloaded", lambda: False)
     monkeypatch.setattr(indicators, "_data_years", lambda: (2008, 2025))
     q = parsed(indicator="출생아 수", regions=[], year=2025, unsupported_condition="3.2kg")
@@ -858,10 +809,9 @@ def test_unsupported_condition_is_not_dropped(monkeypatch: pytest.MonkeyPatch) -
         ("65세 이상 인구는?", None),
         ("남자 인구", None),
         ("수도권 인구 합계", None),
-        ("만 6~11세 초등학생 나이 인구는?", None),  # '나이'의 '이'는 조사가 아니다
+        ("만 6~11세 초등학생 나이 인구는?", None),
         ("작년에 인구가 줄었나", None),
         ("주민등록인구", None),
-        # 시·군·구를 뗀 짧은 지역 이름은 지역 조건이다 (find_regions는 짧은 이름을 찾지 않는다)
         ("강남 인구 알려줘", None),
         ("수원 인구는?", None),
     ],
@@ -873,7 +823,6 @@ def test_population_modifier(monkeypatch, question: str, word) -> None:
 
 
 def test_total_population_with_other_statistic_word_is_not_grounded(monkeypatch) -> None:
-    # "통학 인구"를 별칭 '인구'만 보고 총인구로 답하지 않는다 → 바로 계산을 시도한다
     monkeypatch.setattr(indicators, "find_regions", lambda t: [])
     p = qa.correct("2010년 전국 통학 인구는 몇 명이야?", parsed(indicator="총인구"), TODAY)
     assert p["grounded"] is False
@@ -894,32 +843,25 @@ def registered_aliases(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.mark.parametrize(
     "question, expected",
     [
-        # '비율' 없이 몇 프로를 물음 → 같은 이름의 비율 지표
         ("마포구 주민 가운데 등록된 외국인은 몇 프로 정도야?", "등록외국인 비율"),
         ("인천 등록외국인 몇 %야", "등록외국인 비율"),
-        # 몇 명을 물음 → 그대로
         ("마포구 등록된 외국인 몇 명이야?", "등록외국인 수"),
-        # 증감률을 물음 → 그대로
         ("마포구 등록외국인 작년보다 몇 퍼센트 늘었어?", "등록외국인 수"),
-        # 전국 중 비중은 share_of가 맡는다 → 그대로
         ("전국 등록외국인 중 마포구는 몇 프로야?", "등록외국인 수"),
     ],
 )
 def test_percent_question_uses_the_ratio_sibling(registered_aliases, question, expected) -> None:
-    for llm in ("등록외국인 수", "몇 프로"):  # HCX가 지표 칸에 '몇 프로'를 넣는 경우도
+    for llm in ("등록외국인 수", "몇 프로"):
         p = qa.correct(question, parsed(indicator=llm, term="몇 프로", regions=["마포구"]), TODAY)
         assert p["indicator"] == expected
-        # 바꾼 비율 지표는 질문에 근거가 있는 지표다 (근거 없는 지표 검사가 되돌리지 않는다)
         assert not p.get("unsupported")
 
 
 @pytest.mark.parametrize(
     ("question", "llm", "expected"),
     [
-        # 그해 태어난 아이 수: HCX가 출생아 수로 바르게 읽었으면 덮어쓰지 않는다
         ("2024년 서울에서 아기 몇 명 낳았어?", "출생아 수", "출생아 수"),
         ("2024년 서울에서 아기 몇 명 낳았어?", "합계출산율", "출생아 수"),
-        # 여자 한 명이 평균 몇 명 낳는지: 합계출산율
         ("2024년 서울 여자 한 명이 평균 아이 몇 명 낳아?", "출생아 수", "합계출산율"),
         ("여성 1명당 아기 몇 명 낳아?", None, "합계출산율"),
     ],
@@ -931,14 +873,9 @@ def test_babies_born_or_per_woman(question: str, llm, expected: str) -> None:
 
 @pytest.mark.parametrize("question", ["서울 2030세대 인구는?", "서울 2030 세대 인구는?"])
 def test_generation_population_is_total_population(question: str) -> None:
-    # "2030세대"는 연령 조건 (20~39세).
-    # '세대 인구'를 다른 통계로 보지 않고, 2030년으로도 읽지 않는다
     p = qa.correct(question, parsed(indicator="총인구", regions=["서울"], year=2030), TODAY)
     assert p["indicator"] == "총인구" and p["grounded"] is not False
     assert p["ages"] == [[20, 39]] and p["year"] is None
-
-
-# ---- 변형셋 1차: 지표 이름 없이 풀어 말한 질문 (2026-11-18) ---------------------------------
 
 
 @pytest.mark.parametrize(
@@ -954,7 +891,6 @@ def test_generation_population_is_total_population(question: str) -> None:
         ("요즘 사람들은 애를 몇 명씩 낳아?", "출생아 수", "합계출산율"),
         ("북구에 사는 이십대는 얼마나 돼?", "총인구", "총인구"),
         ("대전하고 충청남도 어르신 수 합쳐 줘", "고령인구 수", "총인구"),
-        # HCX가 맞게 고른 지표를 코드가 덮어쓰지 않는다 (11/24)
         ("해운대구는 일할 나이 100명이 노인 몇 명 부양해?", "노년부양비", "노년부양비"),
         ("고흥이랑 화성, 젊은 사람 대비 노인 부담 얼마나 차이 나?", "노년부양비", "노년부양비"),
         ("세종은 일할 나이 100명이 아이 몇 명 부양해?", "총인구", "유소년부양비"),
@@ -963,7 +899,6 @@ def test_generation_population_is_total_population(question: str) -> None:
 def test_spelled_out_indicators(question: str, llm, expected: str) -> None:
     p = qa.correct(question, parsed(indicator=llm, regions=["서울"]), TODAY)
     assert p["indicator"] == expected
-    # 근거 없는 지표로 보고 통계표 찾기로 넘기지 않는다 (이 파일은 별칭을 줄여 둬서 None일 수 있다)
     assert p["grounded"] is not False
 
 
@@ -972,7 +907,6 @@ def test_spelled_out_indicators(question: str, llm, expected: str) -> None:
     ["노원구가 강남구보다 사람이 많아 적어?", "부산에서 사람 제일 많이 사는 구 세 곳"],
 )
 def test_people_count_is_grounded_without_other_population_modifier(question: str) -> None:
-    """#202에서 합친 일반 인구 질문 보정을 유지한다."""
     p = qa.correct(question, parsed(indicator="총인구", regions=["서울"]), TODAY)
     assert p["indicator"] == "총인구"
     assert p["grounded"] is True
@@ -981,10 +915,9 @@ def test_people_count_is_grounded_without_other_population_modifier(question: st
 @pytest.mark.parametrize(
     "question",
     [
-        "강원도에 외국인으로 등록한 사람 몇 명이야?",  # 등록외국인이지 총인구가 아니다
+        "강원도에 외국인으로 등록한 사람 몇 명이야?",
         "2015년에 지하철로 통근하거나 통학한 사람은 몇 명?",
         "재작년 사망자 가운데 일흔 살 넘은 분 몇 명?",
-        # 사는 방식 · 집 · 장애는 다른 통계 (11/18: 총인구로 답하던 문제)
         "혼자 사는 사람 몇 명이야?",
         "장애가 있는 사람 수 알려줘",
         "아파트에 사는 사람 몇 명?",
@@ -1014,7 +947,6 @@ def test_korea_population_is_nationwide() -> None:
 
 
 def test_merging_words_before_population_are_plain() -> None:
-    # "합쳐서 인구", "시군 중 인구"의 앞말은 다른 통계가 아니다
     assert qa.population_modifier("대구 경북 합쳐서 인구 몇 명?") is None
     assert qa.population_modifier("충남 시군 중 인구 많은 순서로 다섯 곳") is None
     assert qa.population_modifier("2020년 통학 인구") == "통학"
@@ -1029,7 +961,6 @@ def test_merging_words_before_population_are_plain() -> None:
     ],
 )
 def test_high_rank_overrides_ascending(question) -> None:
-    # 추론을 끈 질문 해석이 "높은"을 낮은 순으로 읽은 경우 (변형셋 v1 P-081)
     p = qa.correct(question, parsed(type="rank", indicator="출생아 수", ascending=True), TODAY)
     assert p["ascending"] is False
 
@@ -1037,7 +968,7 @@ def test_high_rank_overrides_ascending(question) -> None:
 @pytest.mark.parametrize(
     "question",
     [
-        "지난해 인구 감소 폭 큰 시도 top5",  # 감소 순위는 낮은 순이 맞다
+        "지난해 인구 감소 폭 큰 시도 top5",
         "합계출산율 가장 낮은 시도 3곳",
     ],
 )
@@ -1047,13 +978,12 @@ def test_low_or_decrease_rank_keeps_ascending(question) -> None:
 
 
 def test_baby_words_are_not_an_age_for_birth_indicators(monkeypatch) -> None:
-    # 출생 지표의 "아기 · 아이"는 태어난 아이: 0세 연령 조건을 붙이지 않는다
     monkeypatch.setattr(indicators, "canonical_name", lambda n: n)
     q0 = "다문화 가정 아기 최근 5년 동안 어떻게 변했어?"
     p = qa.correct(q0, parsed(type="trend", indicator="다문화 출생아 수"), TODAY)
     assert not p.get("ages") and not p.get("age_group")
     q = qa.correct("서울 아이들 수 얼마나 돼?", parsed(indicator="총인구", regions=["서울"]), TODAY)
-    assert q["ages"] == [[0, 14]]  # 출생 지표가 아니면 지금처럼 연령 집단
+    assert q["ages"] == [[0, 14]]
 
 
 def test_counting_words_before_population_are_plain() -> None:
@@ -1061,14 +991,11 @@ def test_counting_words_before_population_are_plain() -> None:
 
 
 def test_change_rank_question(monkeypatch) -> None:
-    # "인구 제일 많이 줄어든 시도": 그해 값이 아니라 전년 대비 변화량 순위
-    # (HCX가 고른 자연증가 건수를 총인구로 고친다)
     p = qa.correct("작년에 인구 제일 많이 줄어든 시도 세 군데",
                    parsed(type="rank", indicator="자연증가 건수"), TODAY)  # fmt: skip
     assert p["rank_by"] == "decrease" and p["indicator"] == "총인구" and p["type"] == "rank"
     q = qa.correct("인구 증가 폭이 가장 큰 구는?", parsed(type="rank", indicator="총인구"), TODAY)
     assert q["rank_by"] == "increase"
-    # 해를 묻는 질문은 아니다
     asked_year = "출생아가 가장 많이 늘어난 해는?"
     y = qa.correct(asked_year, parsed(type="trend", indicator="출생아 수"), TODAY)
     assert "rank_by" not in y
@@ -1092,7 +1019,6 @@ def test_rank_by_change(monkeypatch) -> None:
 
 
 def test_causal_reading_without_causal_words_is_undone() -> None:
-    # HCX가 비율 질문을 원인 질문으로 읽어도 원인 말이 없으면 원인 질문이 아니다
     p = qa.correct("작년 혼인 중에 남녀 모두 초혼인 비율 몇 %야?", parsed(type="causal"), TODAY)
     assert p["type"] != "causal"
     q = qa.correct("출산율이 낮은 이유가 뭐야?", parsed(type="causal"), TODAY)
@@ -1113,7 +1039,6 @@ def test_region_mean_is_mean_of_regions() -> None:
     q = qa.correct("2024년 부산 구별 평균 출생아 수", parsed(regions=["부산"]), TODAY)
     assert q["region_mean"] and q["level"] == "시군구" and q["sido"] == "부산"
     assert q["regions"] == []
-    # 전국 평균과의 비교는 지역 평균이 아니다
     c = qa.correct("부산 출생아 수 지역 평균보다 많아?", parsed(regions=["부산"]), TODAY)
     assert not c.get("region_mean")
 
@@ -1121,15 +1046,15 @@ def test_region_mean_is_mean_of_regions() -> None:
 @pytest.mark.parametrize(
     "question, llm_sex, expected",
     [
-        ("서울 인구 몇 명이야?", "남", "계"),  # 성별을 말하지 않았는데 HCX가 짐작 (E1)
-        ("서울 남녀 인구 비교", "남", "계"),  # "남녀"는 둘 다 (E1')
+        ("서울 인구 몇 명이야?", "남", "계"),
+        ("서울 남녀 인구 비교", "남", "계"),
         ("서울 남자랑 여자 인구", "여", "계"),
         ("서울 여자 인구", "여", "여"),
         ("서울 여자 인구", "계", "여"),
         ("서울 경력단절여성이 있는 가구 수", "계", "계"),
         ("서울 경력단절 여성이 있는 가구 수", "여", "계"),
         ("서울 남성 가구주의 경력단절 여성이 있는 가구 수", "남", "남"),
-        ("세종 미혼모 몇 명", "여", "여"),  # 낱말에 성별이 든 말은 그대로
+        ("세종 미혼모 몇 명", "여", "여"),
         ("이혼하는 남편 평균 나이", "남", "남"),
         ("엄마 평균 나이", "여", "여"),
     ],
@@ -1142,11 +1067,10 @@ def test_sex_not_said(question: str, llm_sex: str, expected: str) -> None:
 @pytest.mark.parametrize(
     "question, llm_span, expected",
     [
-        ("서울 인구 추이 보여줘", (2015, 2024), (None, None)),  # 기간을 말하지 않음 (E2)
-        ("요새 서울 사람 수 감소 중이야?", (2015, 2024), (None, None)),  # P-038
+        ("서울 인구 추이 보여줘", (2015, 2024), (None, None)),
+        ("요새 서울 사람 수 감소 중이야?", (2015, 2024), (None, None)),
         ("2010년부터 서울 인구 추이", (2010, 2025), (2010, None)),
         ("2010년에서 2020년까지 서울 인구 추이", (2010, 2020), (2010, 2020)),
-        # 'N년간'은 코드가 센다: 자료 마지막 해를 포함한 N개 해 (HCX의 2015~2024는 버린다)
         ("서울 인구 10년간 추이", (2015, 2024), (2016, None)),
     ],
 )
@@ -1163,14 +1087,13 @@ def test_trend_period_not_said(question: str, llm_span, expected) -> None:
 @pytest.mark.parametrize(
     "question, kind, split, expected_kind",
     [
-        ("서울 남녀 인구 비교", "compare", True, "value"),  # 한 지역의 남녀 비교 → 남·여 값
+        ("서울 남녀 인구 비교", "compare", True, "value"),
         ("서울 남자랑 여자 인구", "value", True, "value"),
-        # 지역 비교는 그대로 두고 지역마다 남녀를 나눈다
         ("서울이랑 부산 남녀 인구", "compare", True, "compare"),
         ("서울 남녀 인구 추이", "trend", True, "trend"),
-        ("서울 남녀 합계 인구", "value", None, "value"),  # 합계를 물음
+        ("서울 남녀 합계 인구", "value", None, "value"),
         ("서울 성별 구분 없이 인구", "value", None, "value"),
-        ("서울 남녀 인구 구성", "composition", None, "composition"),  # 구성비는 by=sex가 맡는다
+        ("서울 남녀 인구 구성", "composition", None, "composition"),
         ("서울 인구", "value", None, "value"),
     ],
 )
@@ -1182,7 +1105,6 @@ def test_sex_split_asked(question: str, kind: str, split, expected_kind: str) ->
 
 
 def test_sex_split_computes_men_and_women(monkeypatch: pytest.MonkeyPatch) -> None:
-    """남녀를 나눠 물으면 남·여를 따로 계산한다 (더하지 않는다)"""
     monkeypatch.setattr(
         qa, "_compute", lambda q: {"status": "ok", "indicator": "총인구", "sex": q["sex"]}
     )
@@ -1195,7 +1117,6 @@ def test_sex_split_computes_men_and_women(monkeypatch: pytest.MonkeyPatch) -> No
     }
     r = qa.compute(q)
     assert [p["sex"] for p in r["split"]] == ["남", "여"]
-    # 남녀로 나눌 수 없는 지표는 한 번만 계산한다
     for name in ("성비", "세대당 인구", "합계출산율"):
         assert "split" not in qa.compute({**q, "indicator": name})
 
@@ -1205,10 +1126,6 @@ def test_sex_split_sentence_compares_sexes(monkeypatch: pytest.MonkeyPatch) -> N
     part = {"status": "ok", "indicator": "총인구", "unit": "명", "kind": "count"}
     r = {"split": [{**part, "sex": "남", "value": 100}, {**part, "sex": "여", "value": 130}]}
     assert qa._split_text(r).strip() == "여성이 30명 더 많습니다 (1.3배)."
-
-
-# ---- 상대 기간: 표현 · 종류 · N만 알아보고 연도는 규칙표(timeref.period)가 센다 ----
-# (오늘 2026-10-24, 자료 마지막 해 2025)
 
 
 @pytest.fixture
@@ -1223,17 +1140,12 @@ def trend(**kw) -> dict:
 @pytest.mark.parametrize(
     "question, llm, want",
     [
-        # 최근 N년 = 마지막 해를 포함한 N개 해 (HCX가 6개 해로 적어도)
         ("최근 5년 인천 사망자 수 변화", (2020, 2025), (2021, None)),
         ("지난 3년간 인천 사망자 수 변화", (2022, 2024), (2023, None)),
-        # N년 동안 = 최근 N년과 같다 / N년 전보다 = 마지막 해 − N 과 견준다
         ("부산 조출생률 7년 동안 어떻게 됐어?", (2017, 2024), (2019, None)),
         ("8년 전보다 고령인구 비율 얼마나 올랐어?", (2018, 2026), (2017, None)),
-        # ○년부터 N년 동안 = 그 해 + N 까지
         ("울산 인구 1995년부터 8년 동안 얼마나 늘었어?", (1995, None), (1995, 2003)),
-        # 지금까지: 끝은 자료 마지막 해 (HCX의 2026은 버린다)
         ("2016년부터 지금까지 서울 인구 추이", (2016, 2026), (2016, None)),
-        # 숫자 연도 + 낱말 시점
         ("2018년이랑 작년 출생아 수 얼마나 달라졌어?", (2018, 2024), (2018, 2025)),
     ],
 )
@@ -1249,7 +1161,6 @@ def test_years_later_is_counted_from_today(data_end_2025) -> None:
 
 
 def test_llm_year_without_number_is_dropped(data_end_2025) -> None:
-    # 질문에 숫자 연도가 없는데 HCX가 직접 채운 기간은 믿지 않는다
     p = qa.correct("외국인 작년에 얼마나 늘었어?", trend(start_year=2024, end_year=2024), TODAY)
     assert (p["start_year"], p["end_year"]) == (None, None)
 
@@ -1303,10 +1214,10 @@ NOTE_DAY = date(2026, 10, 24)
             range(2015, 2026),
             "가장 최근 자료가 2025년까지라 2015~2025년으로 계산했습니다",
         ),
-        ({"asked": {"recent": 5}}, range(2022, 2027), None),  # 올해 자료가 있으면 붙이지 않는다
-        ({"time_refs": [{"kind": "span_from"}]}, range(1995, 2004), None),  # 사용자가 정한 기간
-        ({"time_refs": [{"kind": "word"}]}, range(2020, 2026), None),  # 달력 기준 한 시점
-        ({}, range(2020, 2024), None),  # 기간을 숫자로 말함
+        ({"asked": {"recent": 5}}, range(2022, 2027), None),
+        ({"time_refs": [{"kind": "span_from"}]}, range(1995, 2004), None),
+        ({"time_refs": [{"kind": "word"}]}, range(2020, 2026), None),
+        ({}, range(2020, 2024), None),
     ],
 )
 def test_data_end_note(q, years, want) -> None:
@@ -1316,7 +1227,6 @@ def test_data_end_note(q, years, want) -> None:
 
 
 def test_n_years_end_at_this_year_when_it_has_data(monkeypatch) -> None:
-    # 햇수를 말했으면 가장 최근 자료가 있는 해를 끝으로 N개 해 (올해 자료가 있으면 올해까지)
     calls = []
 
     def fake_trend(ind, reg, a, b, *rest):
@@ -1344,7 +1254,6 @@ def test_n_years_end_at_data_end_without_this_year(monkeypatch) -> None:
 
 
 def test_guessed_year_of_period_trend_is_dropped(data_end_2025) -> None:
-    # 기간을 물은 추이에 HCX가 넣은 year(2022)는 끝 해로 쓰이므로 버린다
     p = qa.correct("대구 출생아 수 7년 동안 어떻게 변했어?", trend(year=2022), TODAY)
     assert (p["start_year"], p.get("end_year"), p["year"]) == (2019, None, None)
 
@@ -1352,7 +1261,6 @@ def test_guessed_year_of_period_trend_is_dropped(data_end_2025) -> None:
 @pytest.mark.parametrize(
     "question, llm, want",
     [
-        # 조사만 다른 두 연도도 코드가 읽는다 (HCX가 틀리게 옮겨 적어도)
         ("2019년이랑 2023년 인천 사망자 수 비교해줘", (2019, 2022), (2019, 2023)),
         ("2023년과 2019년 인천 사망자 수 얼마나 달라?", (2023, 2019), (2019, 2023)),
     ],
@@ -1363,19 +1271,16 @@ def test_two_years_with_any_particle(data_end_2025, question, llm, want) -> None
 
 
 def test_year_not_in_question_is_dropped(data_end_2025) -> None:
-    # 질문에 숫자 연도가 있는데 그 밖의 연도를 HCX가 넣으면 버린다 (끝은 자료 마지막 해까지)
     p = qa.correct("2019년 이후 인천 사망자 수 추이", trend(start_year=2019, end_year=2023), TODAY)
     assert (p["start_year"], p.get("end_year")) == (2019, None)
 
 
 def test_year_said_in_words_is_kept(data_end_2025) -> None:
-    # 숫자 연도가 없는 질문은 보지 않는다: 사건으로 말한 해는 HCX가 푼 값을 쓴다
     p = qa.correct("코로나 첫 해 인천 사망자 수", parsed(indicator="사망자 수", year=2020), TODAY)
     assert p["year"] == 2020
 
 
 def test_n_years_fall_back_when_this_year_value_is_missing(monkeypatch) -> None:
-    # 끝을 올해로 잡았는데 올해 값이 실제로 없으면(세대수는 최신 달이 없다) 연간 자료 기준 N개 해
     calls = []
 
     def fake_trend(ind, reg, a, b, *rest):
@@ -1388,9 +1293,6 @@ def test_n_years_fall_back_when_this_year_value_is_missing(monkeypatch) -> None:
     recent = {"type": "trend", "asked": {"recent": 5}}
     qa._compute_population(recent, "세대당 인구", "trend", ["서울특별시"], 2025, "계", None, 2025)
     assert calls == [(2022, 2026), (2021, 2025)]
-
-
-# ---- '사람 · 주민'으로 인구를 물은 질문: 남는 낱말이 없을 때만 총인구로 확정 ----
 
 
 @pytest.mark.parametrize(
@@ -1410,19 +1312,15 @@ def test_plain_people_question_is_population(question: str) -> None:
 @pytest.mark.parametrize(
     "question",
     [
-        "버스 타고 일하러 가는 사람 몇 명이야?",  # 다른 통계의 사람 (낱말 목록에 없는 일상어)
+        "버스 타고 일하러 가는 사람 몇 명이야?",
         "대전에서 반려동물 키우는 사람 몇 명이야?",
         "울산에 귀촌한 사람 얼마나 돼?",
-        "창원에서 혼자 사는 사람 몇 명이야?",  # OTHER_PEOPLE
+        "창원에서 혼자 사는 사람 몇 명이야?",
     ],
 )
 def test_people_of_another_statistic_is_not_grounded(question: str) -> None:
-    # 총인구로 확정하지 않는다 → 통계표 찾기가 맞는 표를 찾는다
     p = qa.correct(question, parsed(indicator="총인구", regions=["서울"]), TODAY)
     assert p["grounded"] is False
-
-
-# ---- 연도를 말하지 않은 질문: 유형과 관계없이 HCX가 넣은 연도를 버린다, 빈 값 정리 ----
 
 
 @pytest.mark.parametrize("kind", ["value", "compare", "rank", "composition", "causal", "other"])
@@ -1456,7 +1354,6 @@ def test_blank_values_are_cleaned(given: dict, want: dict) -> None:
 
 
 def test_trend_end_note_only_when_end_asked(monkeypatch: pytest.MonkeyPatch) -> None:
-    """2024년까지인 표: 끝 연도를 말하지 않은 추이에 "2024년까지 봤습니다"를 붙이지 않는다 (E6)"""
     monkeypatch.setattr(qa, "_lookup_span", lambda sp, region, sex: (2015, 2024))
     monkeypatch.setattr(qa.lookup, "trend", lambda *a: {"status": "ok", "notes": []})
     sp = {"name": "외국인주민 수", "sources": []}
@@ -1469,20 +1366,17 @@ def test_trend_end_note_only_when_end_asked(monkeypatch: pytest.MonkeyPatch) -> 
 @pytest.mark.parametrize(
     "q, leaf, expected",
     [
-        # 연도를 말하지 않은 값: 가장 최근 자료의 시점을 밝힌다
         (
             {"type": "value"},
             {"year": 2024},
             "가장 최근 자료인 2024년 기준으로 답했습니다",
         ),
-        # 월 자료는 달까지: 새 달 자료가 들어오면 답이 바뀌므로 어느 달 기준인지 밝힌다
         (
             {"type": "value"},
             {"year": 2026, "as_of": "2026년 10월 말"},
             "가장 최근 자료인 2026년 10월 말 기준으로 답했습니다",
         ),
-        ({"type": "value", "year": 2020}, {"year": 2020}, None),  # 연도를 말함
-        # 추이: 끝을 말하지 않았으면 ("2010년부터" 포함) 마지막 해를 밝힌다
+        ({"type": "value", "year": 2020}, {"year": 2020}, None),
         (
             {"type": "trend", "start_year": 2010},
             {"indicator": "외국인주민 수", "series": [{"year": 2015}, {"year": 2024}]},
@@ -1502,7 +1396,6 @@ def test_latest_note(q: dict, leaf: dict, expected: str | None) -> None:
 
 
 def test_latest_note_once_for_split() -> None:
-    """남녀로 나눠 compute를 다시 부른 결과에도 한 번만 붙는다"""
     part = {"status": "ok", "year": 2025, "notes": []}
     result = {"status": "ok", "split": [dict(part), dict(part, notes=[])]}
     qa._add_latest_note({"type": "value"}, result)
@@ -1511,7 +1404,6 @@ def test_latest_note_once_for_split() -> None:
 
 
 def test_no_year_uses_latest_for_computed_indicator() -> None:
-    """연도를 말하지 않으면 계산 지표도 가장 최근 자료로 ("서울 인구" → 최신 달)"""
     p = qa.correct(
         "서울 인구 몇 명이야", parsed(indicator="총인구", regions=["서울"], year=2025), TODAY
     )
@@ -1526,7 +1418,6 @@ def test_no_year_uses_latest_for_computed_indicator() -> None:
 def test_rank_falls_back_to_annual_when_month_drops_regions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """최신 달 순위가 행정구역 개편으로 지역이 적으면 연간 마지막 해로 (전남광주통합특별시)"""
     monthly = {
         "status": "ok",
         "as_of": "2026년 10월 말",
@@ -1550,7 +1441,6 @@ def test_rank_falls_back_to_annual_when_month_drops_regions(
 
 
 def test_empty_month_falls_back_to_annual(monkeypatch: pytest.MonkeyPatch) -> None:
-    """최신 달 값이 비면 (세대당 인구: 최신 달 세대수 없음) 연간 마지막 해로"""
     monthly = {"status": "ok", "as_of": "2026년 10월 말", "year": 2026, "value": None}
     annual = {"status": "ok", "year": 2025, "value": 2.07}
     monkeypatch.setattr(qa, "_compute", lambda q: monthly if q["asked"]["latest"] else annual)
@@ -1559,8 +1449,6 @@ def test_empty_month_falls_back_to_annual(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 def test_indicators_aligned_to_common_year_and_summed(monkeypatch: pytest.MonkeyPatch) -> None:
-    """V2-032 "춘천 인구, 등록된 외국인까지 다 합치면": 지표마다 최신 시점이 다르면 (주민등록인구
-    2026년 10월, 등록외국인 2025년) 둘 다 있는 해로 맞추고, 합계를 물었으면 더한다"""
     asked_years = []
 
     def fake(q):
@@ -1606,7 +1494,6 @@ def _count(name: str, value: int, year: int, as_of: str | None = None) -> dict:
 
 
 def test_sum_needs_every_asked_indicator(monkeypatch: pytest.MonkeyPatch) -> None:
-    """합계를 물었는데 한 지표가 계산되지 않으면 남은 값만 '합계'로 내지 않는다"""
 
     def fake(q):
         if q["indicator"] == "총인구":
@@ -1623,7 +1510,6 @@ def test_sum_needs_every_asked_indicator(monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 def test_common_year_keeps_values_of_the_same_month() -> None:
-    """둘 다 같은 달 값이면 같은 시점이다: 연간 마지막 해로 되돌리지 않는다"""
     month = "2026년 10월 말"
     same = [_count("총인구", 10, 2026, month), _count("고령인구", 2, 2026, month)]
     assert qa._common_year(same) is None
@@ -1637,14 +1523,11 @@ def test_common_year_for_a_month_value_and_an_annual_value(
     monkeypatch.setattr(qa.indicators, "_data_years", lambda: (2008, 2025))
     mixed = [_count("총인구", 10, 2026, "2026년 10월 말"), _count("등록외국인 수", 2, 2025)]
     assert qa._common_year(mixed) == 2025
-    # 기준 달이 서로 다른 월별 값끼리도 연간 마지막 해로 (달을 지정해 받는 길이 아직 없다)
     months = [_count("가", 1, 2026, "2026년 5월 말"), _count("나", 2, 2026, "2026년 10월 말")]
     assert qa._common_year(months) == 2025
 
 
 def test_default_value_next_to_alt_is_of_the_same_year(monkeypatch: pytest.MonkeyPatch) -> None:
-    """다른 조사 값 옆의 주민등록인구 값은 그 해 값이다: 연도를 말하지 않아 켜진 latest 를 넘기면
-    최신 달 값을 구해 놓고 "2025년 주민등록인구 기준"이라고 적게 된다"""
     seen = []
 
     def fake(q):
@@ -1668,7 +1551,6 @@ def test_sum_indicators_refuses_mixed_periods_or_rates() -> None:
 
 
 def test_lookup_span_skips_sources_without_years(monkeypatch: pytest.MonkeyPatch) -> None:
-    """값이 적재되지 않아 수록 기간을 모르는 출처는 기간 계산에서 뺀다 (D-055: min(None, …) 오류)"""
     monkeypatch.setattr(
         qa.lookup, "_years", lambda s: (None, None) if s["table"] == "X" else (1990, 2010)
     )
@@ -1679,7 +1561,6 @@ def test_lookup_span_skips_sources_without_years(monkeypatch: pytest.MonkeyPatch
 
 
 def test_lookup_pick_skips_sources_without_years(monkeypatch: pytest.MonkeyPatch) -> None:
-    """수록 기간을 모르는 출처만 있으면 계산 오류가 아니라 자료 없음 (D-055)"""
     monkeypatch.setattr(qa.lookup, "_years", lambda s: (None, None))
     spec = {"name": "인구", "sources": [{"table": "X", "level": "시도"}]}
     src, err = qa.lookup._pick(spec, "시도", 1990, 2007, "계")
@@ -1702,28 +1583,23 @@ def test_lookup_pick_skips_sources_without_years(monkeypatch: pytest.MonkeyPatch
         ),
         ("작년에 이사 들어온 사람 몇 명이야?", "총인구", "전입자 수"),
         ("경북 구미시 작년에 이사 나간 사람이 들어온 사람보다 많아?", "순이동", "순이동"),
-        # 한 쪽만 말하면 순이동이 아니다
         ("작년에 서울에서 이사 나간 사람들 제일 많이 간 시도 3곳", "순이동", "전출자 수"),
     ],
 )
 def test_hcx_indicator_kept_with_real_aliases(
     monkeypatch, question: str, llm, expected: str
 ) -> None:
-    """실제 별칭으로: 찾은 지표가 HCX 지표의 한 쪽(순이동의 전입)이거나 HCX 지표도 질문에 있으면
-    HCX 쪽을 둔다. HCX가 엉뚱한 지표면 찾은 지표로 바꾼다 (11/24, D-123 · V2-063 · 071)"""
     monkeypatch.setattr(indicators, "_alias_map", REAL_ALIASES)
     p = qa.correct(question, parsed(indicator=llm, regions=["서울"]), TODAY)
     assert p["indicator"] == expected
 
 
 def test_single_relative_year_read_as_trend_becomes_value() -> None:
-    """'작년에'만 말하고 변화를 묻지 않았으면 추이가 아니라 그 해 값 (D-123, 11/24)"""
     q = "화성시는 작년에 이사 들어온 사람이 나간 사람보다 많아?"
     h = parsed(type="trend", indicator="순이동", regions=["화성시"], year=2024)
     h.update(start_year=2023, end_year=2024)
     p = qa.correct(q, h, TODAY)
     assert p["type"] == "value" and p["year"] == TODAY.year - 1
-    # 변화를 물었으면 추이 그대로
     p = qa.correct(
         "작년 서울 인구 추이", parsed(type="trend", indicator="총인구", year=2024), TODAY
     )
@@ -1733,11 +1609,11 @@ def test_single_relative_year_read_as_trend_becomes_value() -> None:
 @pytest.mark.parametrize(
     ("question", "said"),
     [
-        ("해운대구는 일할 나이 100명이 노인 몇 명 부양해?", False),  # 동사 끝 '해' (D-100)
-        ("김해 사는 등록외국인 몇 명이야?", False),  # 지명
+        ("해운대구는 일할 나이 100명이 노인 몇 명 부양해?", False),
+        ("김해 사는 등록외국인 몇 명이야?", False),
         ("요즘 사람들 왜 결혼을 안 해?", False),
-        ("여자 아기 100명 태어날 때 남자 아기는 몇 명 태어나?", False),  # '~ㄹ 때'
-        ("세종시에 미성년 자녀가 딱 셋인 집 몇 가구야?", False),  # 미성년
+        ("여자 아기 100명 태어날 때 남자 아기는 몇 명 태어나?", False),
+        ("세종시에 미성년 자녀가 딱 셋인 집 몇 가구야?", False),
         ("코로나 첫 해 출생아 수", True),
         ("그해 서울 인구", True),
         ("월드컵 때 태어난 아기 수", True),
@@ -1745,18 +1621,15 @@ def test_single_relative_year_read_as_trend_becomes_value() -> None:
     ],
 )
 def test_year_words_skip_verb_endings(question: str, said: bool) -> None:
-    """연도를 말했는지: 동사 끝 '해', 지명 '김해', '~ㄹ 때', '미성년'은 연도가 아니다 (11/24)"""
     assert qa._says_year(question) is said
 
 
 def test_age_of_unlisted_measure_stays_with_it() -> None:
-    # '고령자'는 함께 물은 고령자 가구 비율의 조건이라 출생아 수에 붙이지 않는다
     q = "2020년 서울 출생아 수랑 고령자 가구 비율 알려줘"
     p = qa.correct(q, parsed(indicator="출생아 수", regions=["서울"], year=2020), TODAY)
     assert p["also_asked"] == "고령자 가구 비율"
     assert not p.get("ages") and not p.get("age_group")
     assert p["also_asked_ages"]["ages"] == [[65, None]]
-    # '65세 이상'은 인구의 조건: 인구에 두고, 1인 가구를 찾을 때는 가져가지 않는다
     q = "2020년 서울 65세 이상 인구와 1인 가구 수"
     p = qa.correct(q, parsed(indicator="총인구", regions=["서울"], year=2020), TODAY)
     assert p["ages"] == [[65, None]] and not p.get("also_asked_ages")

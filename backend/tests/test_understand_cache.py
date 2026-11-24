@@ -1,5 +1,3 @@
-"""질문 이해 캐시 (qa.UNDERSTAND_CACHE, 11/18): 같은 질문이면 HCX를 다시 부르지 않는다"""
-
 import asyncio
 
 import pytest
@@ -28,14 +26,14 @@ def hcx(monkeypatch):
 def test_same_question_is_understood_once(hcx) -> None:
     first = asyncio.run(qa.understand("서울 인구 몇 명이야?"))
     trace: dict = {}
-    again = asyncio.run(qa.understand("서울  인구 몇 명이야? ", trace))  # 띄어쓰기만 다름
+    again = asyncio.run(qa.understand("서울  인구 몇 명이야? ", trace))
     assert hcx == ["서울 인구 몇 명이야?"] and again == first
     assert trace["understand_cached"] is True and trace["hcx_raw"]
 
 
 def test_cached_result_is_a_copy(hcx) -> None:
     first = asyncio.run(qa.understand("서울 인구 몇 명이야?"))
-    first["regions"].append("부산")  # 대화 이어받기가 결과를 고쳐도 캐시는 그대로
+    first["regions"].append("부산")
     assert asyncio.run(qa.understand("서울 인구 몇 명이야?"))["regions"] == ["서울"]
 
 
@@ -43,7 +41,7 @@ def test_new_data_year_misses_the_cache(hcx, monkeypatch) -> None:
     asyncio.run(qa.understand("작년 서울 인구"))
     monkeypatch.setattr(indicators, "_data_years", lambda: (2008, 2026))
     asyncio.run(qa.understand("작년 서울 인구"))
-    assert len(hcx) == 2  # 자료의 마지막 연도가 바뀌면 '작년'이 다르게 풀릴 수 있다
+    assert len(hcx) == 2
 
 
 def test_switch_off(hcx, monkeypatch) -> None:
@@ -65,7 +63,6 @@ def test_parse_error_is_not_cached(hcx, monkeypatch) -> None:
 
 
 def test_end_punctuation_is_same_question(hcx) -> None:
-    # 물음표 · 마침표 · 느낌표만 다른 질문은 같은 질문 (다시 묻을 때 흔히 바뀐다)
     asyncio.run(qa.understand("서울 인구 몇 명이야?"))
     asyncio.run(qa.understand("서울 인구 몇 명이야"))
     asyncio.run(qa.understand("서울 인구 몇 명이야 ?!"))

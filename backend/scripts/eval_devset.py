@@ -1,25 +1,3 @@
-"""개발셋·테스트셋 자동 평가: 골든셋 시트(CSV로 내려받은 것)의 질문을 챗봇에 넣고 채점한다
-
-  1. 문항마다 새 대화로 질문을 넣는다 (ask_session.handle, /ask와 같은 경로)
-  2. 기대 행동이 되묻기이고 챗봇이 되물었으면, 사용자 답 칸을 같은 대화에 이어서 넣는다
-  3. 최종 답을 scripts/devset_grade.py 규칙으로 채점한다 (사람 채점 없음)
-     숫자·조건·출처·답변 불가·환각 숫자는 코드로 판정하고,
-     원인·예측·정책 평가 문장은 표현 사전으로 "환각 문장 후보"만 뽑는다 (사람이 확인)
-
-결과: data/eval/devset_YYYYMMDD_HHMMSS.csv        채점 기록 양식 + 원인 분석용 칸 (엑셀용)
-      data/eval/devset_YYYYMMDD_HHMMSS.md         정답률·행동·환각·틀린 이유·응답 시간·LLM 호출 요약
-      data/eval/devset_YYYYMMDD_HHMMSS.raw.jsonl  챗봇 원응답 (--regrade로 다시 채점할 때 씀)
-실행: python -m scripts.eval_devset --golden eval/devset_v1.csv
-      python -m scripts.eval_devset --golden eval/devset_v1.csv --only D-001 D-002
-      python -m scripts.eval_devset --golden eval/devset_v1.csv --round 1 --version v1
-                                    --note "1차 평가"
-      python -m scripts.eval_devset --golden eval/devset_v1.csv
-                                    --regrade data/eval/devset_r1_….raw.jsonl
-      (채점 규칙만 고쳤을 때)
-골든셋 CSV: 구글 시트 "골든셋_개발셋_v1"의 개발셋 탭을 CSV로 내려받은 파일
-테스트셋은 동결이라 결과 CSV의 문항별 칸을 보지 않고 .md의 정답률만 기록한다
-"""
-
 import argparse
 import asyncio
 import csv
@@ -34,8 +12,8 @@ from scripts import devset_grade as dg
 from scripts import refusal_reasons as rr
 
 OUT_DIR = Path("data/eval")
-CALL_INTERVAL = 3  # 호출 제한(42901) 대응 (초)
-RETRY_BUDGET = 90  # HCX 호출 하나가 호출 제한이 풀리기를 기다리는 시간 상한 (초, 서비스는 15초)
+CALL_INTERVAL = 3
+RETRY_BUDGET = 90
 KINDS = ["단순 수치", "집계", "추이", "비교", "순위", "구성비", "인구 통계 지표"]
 
 
@@ -44,11 +22,7 @@ def load_golden(path: Path) -> list[dict[str, str]]:
         return [{k: (v or "").strip() for k, v in row.items()} for row in csv.DictReader(f)]
 
 
-# ---- 실행 ---------------------------------------------------------------------------------
-
-
 def _memory_sessions() -> None:
-    """평가 대화가 개발 DB의 대화 기록(app.chat_sessions, chat_turns)에 남지 않게 메모리로 돌린다"""
     from app.services import ask_session
 
     store: dict[str, Any] = {}
@@ -66,19 +40,15 @@ def _memory_sessions() -> None:
 
 
 async def _turn(session_id: str | None, question: str) -> dict[str, Any]:
-    """한 턴. 호출 제한은 HcxClient가 그 호출만 다시 보내며 기다린다 (--retry-budget까지).
-    질문 전체를 처음부터 다시 하지 않는다: 이미 성공한 질문 이해 · 검색 호출까지 다시 불러
-    한도를 더 쓰게 된다. 그래도 실패하면 그 문항은 error로 남기고 다음 문항으로"""
     from app.services import ask_session
 
     try:
         return await ask_session.handle(session_id, question)
-    except Exception as e:  # 한 문항이 실패해도 나머지는 계속
+    except Exception as e:
         return {"status": "error", "answer": "", "error": f"{type(e).__name__}: {e}"}
 
 
 async def run_case(row: dict[str, str]) -> tuple[dict, dict | None, int]:
-    """(첫 응답, 되묻기 뒤 응답, 걸린 시간 ms)"""
     start = time.perf_counter()
     first = await _turn(None, row["질문"])
     final = None
@@ -88,8 +58,6 @@ async def run_case(row: dict[str, str]) -> tuple[dict, dict | None, int]:
 
 
 def flow_columns(g: dg.Grade, first: dict, final: dict | None) -> dict[str, str]:
-    """처리 흐름(질문이 거친 단계와 순서)과 오답 설명(틀린 이유 + 그 답을 정한 단계)
-    되묻기 뒤 답을 넣었으면 첫 질문과 답의 흐름을 이어 쓴다 (app/services/flow.py)"""
     from app.services import flow
 
     turns = [("첫 질문", first), ("되묻기 답", final)] if final else [("", first)]
@@ -123,8 +91,6 @@ STAGE_NAMES = {
 
 
 def llm_columns(first: dict, final: dict | None) -> dict[str, Any]:
-    """LLM 호출 칸 (app/services/llm_calls.py). 되묻기 뒤 답을 넣었으면 두 턴을 합친다.
-    기록이 없는 원응답(호출 기록을 넣기 전 회차를 --regrade)은 빈칸"""
     from app.services import llm_calls
 
     turns = [t for t in (first, final) if t]
@@ -161,8 +127,6 @@ LLM_COLUMNS = [
 
 
 def refusal_columns(last: dict) -> dict[str, str]:
-    """통계표 안내(status = tables)로 끝났으면 바로 계산이 표를 건너뛴 이유
-    (scripts/refusal_reasons.py)"""
     r = rr.reason_of(last)
     if r is None:
         return {"거절 원인": "", "거절 원인 문구": "", "표 찾기 판정": ""}
@@ -174,7 +138,6 @@ def refusal_columns(last: dict) -> dict[str, str]:
 
 
 def refusal_summary(recs: list[dict]) -> list[str]:
-    """'표 찾고도 거절' 원인 표. * = 답해야 하는 문항"""
     by: dict[str, list[str]] = {}
     for r in recs:
         if r.get("거절 원인"):
@@ -189,7 +152,6 @@ def refusal_summary(recs: list[dict]) -> list[str]:
 
 
 def record(row: dict[str, str], g: dg.Grade, first: dict, final: dict | None, ms: int) -> dict:
-    """채점 기록 양식 한 줄 + 원인 분석용 칸"""
     last = final or first
     return {
         "문항": g.id,
@@ -204,7 +166,6 @@ def record(row: dict[str, str], g: dg.Grade, first: dict, final: dict | None, ms
         "정답": g.correct,
         "틀린 이유": g.reason,
         **flow_columns(g, first, final),
-        # 분석용
         "질문 종류": row.get("질문 종류", ""),
         "데이터 경로": row.get("데이터 경로", ""),
         "필요 표 수": row.get("필요 표 수", ""),
@@ -225,8 +186,6 @@ def record(row: dict[str, str], g: dg.Grade, first: dict, final: dict | None, ms
 
 
 async def run(rows: list[dict[str, str]], interval: float, raw_path: Path) -> list[dict]:
-    """챗봇에 묻고 채점한다. 챗봇 원응답은 raw_path(JSONL)에 한 줄씩 바로 남긴다
-    (채점 규칙만 고쳤을 때 --regrade로 챗봇을 다시 부르지 않고 다시 채점한다)"""
     _memory_sessions()
     out = []
     with raw_path.open("w", encoding="utf-8") as raw:
@@ -239,13 +198,11 @@ async def run(rows: list[dict[str, str]], interval: float, raw_path: Path) -> li
             raw.flush()
             g = dg.grade(row, first, final)
             out.append(record(row, g, first, final, ms))
-            # 문항별 정답 내용은 찍지 않는다 (테스트셋은 오답을 보지 않는 규칙)
             print(f"[{i}/{len(rows)}] {g.id} {g.expected}→{g.actual} 정답 {g.correct} {g.reason}")
     return out
 
 
 def regrade(rows: list[dict[str, str]], raw_path: Path) -> list[dict]:
-    """저장해 둔 원응답(JSONL)을 지금 채점 규칙으로 다시 채점한다 (챗봇·HCX 호출 없음)"""
     by_id = {r["문항 ID"]: r for r in rows}
     out = []
     for text in raw_path.read_text(encoding="utf-8").splitlines():
@@ -257,15 +214,11 @@ def regrade(rows: list[dict[str, str]], raw_path: Path) -> list[dict]:
     return out
 
 
-# ---- 요약 ---------------------------------------------------------------------------------
-
-
 def _rate(hit: int, total: int) -> str:
     return f"{hit}/{total} ({hit / total * 100:.1f}%)" if total else "-"
 
 
 def summarize(recs: list[dict]) -> str:
-    """정답률은 답변·되묻기 문항(최종 답이 있는 문항) 기준. 답변 불가 문항은 따로 센다"""
     answer = [r for r in recs if r["기대 행동"] != dg.REFUSE]
     refuse = [r for r in recs if r["기대 행동"] == dg.REFUSE]
     ok = lambda rs: sum(r["정답"] == "O" for r in rs)  # noqa: E731
@@ -336,7 +289,6 @@ def summarize(recs: list[dict]) -> str:
 
 
 def llm_summary(recs: list[dict]) -> list[str]:
-    """LLM 호출 요약 (문항당, 되묻기 문항은 두 턴 합). 호출 기록이 있는 문항만 센다"""
     rs = [r for r in recs if r.get("LLM 호출") not in ("", None)]
     if not rs:
         return []
@@ -355,7 +307,7 @@ def llm_summary(recs: list[dict]) -> list[str]:
         f"실패 {total('LLM 실패')}회",
     ]
     stages: dict[str, dict[str, int]] = {}
-    asked: Counter = Counter()  # 그 단계를 부른 문항 수
+    asked: Counter = Counter()
     for r in rs:
         for name, s in json.loads(r["단계별 호출"] or "{}").items():
             acc = stages.setdefault(name, {"calls": 0, "ms": 0, "tokens": 0})

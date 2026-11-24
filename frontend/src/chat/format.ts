@@ -1,4 +1,3 @@
-// /search 응답을 화면 글자로 바꾸는 규칙 (그리기와 떼어 둔 순수 함수)
 import type { Axis, Family, Parsed, Recommendation, SearchResponse } from "../api/types";
 
 export const AXIS_LABELS: Record<string, string> = { target: "대상", sex: "성별", edition: "연도" };
@@ -16,7 +15,6 @@ export const NO_RESULT_TITLES: Record<string, string> = {
   not_statistics: "통계 질문 안내",
   parse_error: "다시 질문해 주세요",
 };
-// 카드·알림으로 따로 보여 주는 줄은 말풍선에서 뺀다
 const CARD_LINES = ["추천 통계표:", "조건 확인:", "확인 필요:", "같은 표의 다른 버전:", "바로가기:", "함께 볼 통계표:"];
 
 export function checkLabel(key: string, parsed?: Parsed): string {
@@ -27,7 +25,6 @@ export function checkLabel(key: string, parsed?: Parsed): string {
   return CHECK_LABELS[key] || key;
 }
 
-/** 조건 확인 알약: [글자, 충족 여부] */
 export function checkPills(r: Recommendation, parsed?: Parsed): [string, boolean][] {
   return Object.entries(r.checks ?? {}).map(([k, ok]) => [`${checkLabel(k, parsed)}  ${ok ? "✓" : "✕"}`, ok]);
 }
@@ -36,7 +33,6 @@ export function metaLine(r: Recommendation, gap = "  ·  "): string {
   return [r.org_nm, r.survey_nm, `${r.period}년`].join(gap);
 }
 
-/** 경로 끝이 표 이름이면 카드 제목과 겹치므로 뺀다 */
 export function pathText(r: Recommendation): string | null {
   if (!r.path) return null;
   const parts = r.path.split(" > ");
@@ -44,7 +40,6 @@ export function pathText(r: Recommendation): string | null {
   return parts.join("  ›  ");
 }
 
-/** 시안처럼 미리 골라 둘 값: 판은 최신(첫 번째), 대상·성별은 합계를 뜻하는 값이 있을 때만 */
 export function defaultOption(a: Axis): string | undefined {
   if (a.axis === "edition") return a.options[0];
   return a.options.find((o) => o === "전체" || o === "계");
@@ -61,13 +56,11 @@ export function otherVersions(fam: Family | undefined): string | null {
   return `같은 표의 다른 버전: ${shown}${rest}`;
 }
 
-/** 서버 안내 문장 중 말풍선에 둘 줄만 고른다 (표 정보·선택지는 카드와 버튼으로 보여 준다) */
 export function bubbleText(data: SearchResponse): string {
   const lines = data.answer.split("\n");
   if (data.clarify) return lines[0];
   if (!data.recommendations?.length) return data.answer;
   const kept = lines.filter((l) => {
-    // 카드 데이터가 없는 예전 응답은 문장 속 함께 볼 표 링크를 유지한다.
     if (l.startsWith("함께 볼 통계표:") && !data.together?.length) return true;
     return !CARD_LINES.some((p) => l.startsWith(p));
   }).map((l) => l.replace(/^참고: /, ""));
@@ -81,7 +74,6 @@ export function noticeLines(data: SearchResponse): string {
   return lines.join("\n");
 }
 
-/** 텍스트를 글자와 주소로 나눈다 (주소만 링크로 그린다) */
 export function splitLinks(text: string): { text: string; href?: string }[] {
   const parts: { text: string; href?: string }[] = [];
   let last = 0;
@@ -94,13 +86,10 @@ export function splitLinks(text: string): { text: string; href?: string }[] {
   return parts;
 }
 
-/** 서버 글자에 있던 주소라도 https(http)로 시작할 때만 링크로 쓴다 (javascript: 같은 주소를 막는다) */
 export function safeUrl(url: string): string | undefined {
   return /^https?:\/\//i.test(url) ? url : undefined;
 }
 
-/** 멤버 선택 → 서버에 보낼 문장과 selections.
- * 대상·성별은 selections 로, 판은 서버가 알아듣는 'YYYY~YYYY년판' 문장으로 보낸다 */
 export function memberAnswer(picked: Record<string, string>): { text: string; selections: Record<string, string> } {
   const parts: string[] = [];
   const selections: Record<string, string> = {};

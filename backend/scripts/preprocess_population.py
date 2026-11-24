@@ -1,14 +1,3 @@
-# /// script
-# requires-python = ">=3.12"
-# dependencies = ["xlrd==2.0.2"]
-# ///
-"""역할: 인구 통계표 XLS를 preprecess.json 형식의 중복 없는 Catalog로 변환한다.
-Data In: data/catalog/population.xls의 표 목록과 셀 하이퍼링크 (KOSIS 통계표 목록 다운로드 파일).
-Data Out: data/catalog/population_table_catalog.jsonl. 원본 XLS와 템플릿은 변경하지 않는다.
-실행: 프로젝트 루트에서 uv run scripts/preprocess_population.py
-다음 단계: python -m scripts.enrich_catalog_meta (분류·항목 메타데이터 추가)
-"""
-
 import json
 import re
 from pathlib import Path
@@ -20,33 +9,37 @@ from xlrd.sheet import Sheet
 ROOT = Path(__file__).resolve().parent.parent
 SOURCE = ROOT / "data" / "catalog" / "population.xls"
 OUTPUT = ROOT / "data" / "catalog" / "population_table_catalog.jsonl"
-HEADERS = ["Level", "통계명", "통계표조회", "출처", "수록기간", "경로",
-           "경로(LIST_ID)", "통계표 아이디(TBL_ID)"]
+HEADERS = [
+    "Level",
+    "통계명",
+    "통계표조회",
+    "출처",
+    "수록기간",
+    "경로",
+    "경로(LIST_ID)",
+    "통계표 아이디(TBL_ID)",
+]
 
 
 def parse_periods(text: str) -> list[dict[str, str]]:
-    """역할: 복수 주기를 분리하고 주기명과 시점 원문을 보존한다.
-    Data In: '년 (1992 ~ 2025) , 월 (201101 ~ 202609)' 형태의 문자열.
-    Data Out: frequency_label, start, end를 가진 객체 목록.
-    """
     periods: list[dict[str, str]] = []
     for part in text.split(","):
         match = re.fullmatch(r"\s*([^(),]+?)\s*\(\s*(\d+)\s*~\s*(\d+)\s*\)\s*", part)
         if not match:
             raise ValueError(f"수록기간 형식 확인 필요: {part!r}")
         label, start, end = match.groups()
-        if (not label.strip() or len(start) not in (4, 6, 8)
-                or len(start) != len(end) or start > end):
+        if (
+            not label.strip()
+            or len(start) not in (4, 6, 8)
+            or len(start) != len(end)
+            or start > end
+        ):
             raise ValueError(f"수록기간 범위 확인 필요: {part!r}")
         periods.append({"frequency_label": label.strip(), "start": start, "end": end})
     return periods
 
 
 def parse_table(sheet: Sheet, row_index: int, url: str) -> dict:
-    """역할: 표 한 행을 변환하고 링크 식별자와 분류 경로를 대조한다.
-    Data In: XLS 시트, 0부터 시작하는 행 위치, 해당 셀의 실제 하이퍼링크.
-    Data Out: preprecess.json과 같은 필드를 가진 통계표 객체. 불일치 시 예외가 발생한다.
-    """
     values = [str(value).strip() for value in sheet.row_values(row_index)]
     if not all(values):
         raise ValueError("통계표 행에 필수 값 누락")
@@ -85,22 +78,20 @@ def parse_table(sheet: Sheet, row_index: int, url: str) -> dict:
         "source_text": source,
         "period": period,
         "catalog_periods": parse_periods(period),
-        "paths": [{
-            "level": level,
-            "path": path,
-            "list_id_path": list_ids,
-            "list_id": parameters["list_id"][0],
-            "kosis_table_url": url,
-            "source_row": row_index + 1,
-        }],
+        "paths": [
+            {
+                "level": level,
+                "path": path,
+                "list_id_path": list_ids,
+                "list_id": parameters["list_id"][0],
+                "kosis_table_url": url,
+                "source_row": row_index + 1,
+            }
+        ],
     }
 
 
 def read_catalog(source: Path) -> tuple[list[dict], int]:
-    """역할: 폴더 행을 제외하고 같은 기관·표의 모든 메뉴 경로를 모은다.
-    Data In: population.xls 경로.
-    Data Out: 원본 순서의 고유 통계표 목록과 중복을 포함한 통계표 행 수.
-    """
     workbook = xlrd.open_workbook(source, formatting_info=True)
     try:
         sheet = workbook.sheet_by_name("Sheet1")
@@ -148,10 +139,6 @@ def read_catalog(source: Path) -> tuple[list[dict], int]:
 
 
 def write_catalog(records: list[dict], output: Path) -> None:
-    """역할: 검증된 결과를 UTF-8 JSONL로 저장한다.
-    Data In: 통계표 목록과 저장 경로.
-    Data Out: 한 줄에 통계표 객체 하나를 담은 파일. 저장 완료 후 최종 파일을 교체한다.
-    """
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = output.with_suffix(output.suffix + ".tmp")
     try:
@@ -164,10 +151,6 @@ def write_catalog(records: list[dict], output: Path) -> None:
 
 
 def check_period_parser() -> None:
-    """역할: 주기가 합쳐지거나 잘못된 수록기간이 통과하는 회귀를 검사한다.
-    Data In: 연·월·분기·부정기 및 잘못된 기간 예제.
-    Data Out: 정상 시 반환값 없음. 결과가 다르면 검사 실패.
-    """
     assert parse_periods("년 (1992 ~ 2025) , 월 (201101 ~ 202609)") == [
         {"frequency_label": "년", "start": "1992", "end": "2025"},
         {"frequency_label": "월", "start": "201101", "end": "202609"},
@@ -185,21 +168,23 @@ def check_period_parser() -> None:
 
 
 def main() -> None:
-    """역할: 자체 검사, XLS 변환, JSONL 저장을 순서대로 실행한다.
-    Data In: SOURCE 상수의 원본 파일.
-    Data Out: OUTPUT 파일과 처리 건수 요약. KOSIS·임베딩 API는 호출하지 않는다.
-    """
     check_period_parser()
     records, table_rows = read_catalog(SOURCE)
     write_catalog(records, OUTPUT)
-    print(json.dumps({
-        "output": str(OUTPUT.relative_to(ROOT)),
-        "table_rows": table_rows,
-        "unique_tables": len(records),
-        "merged_duplicate_rows": table_rows - len(records),
-        "survey_count": len({record["survey_name"] for record in records}),
-        "organization_code_count": len({record["org_id"] for record in records}),
-    }, ensure_ascii=False, indent=2))
+    print(
+        json.dumps(
+            {
+                "output": str(OUTPUT.relative_to(ROOT)),
+                "table_rows": table_rows,
+                "unique_tables": len(records),
+                "merged_duplicate_rows": table_rows - len(records),
+                "survey_count": len({record["survey_name"] for record in records}),
+                "organization_code_count": len({record["org_id"] for record in records}),
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
 
 
 if __name__ == "__main__":

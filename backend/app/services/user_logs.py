@@ -1,17 +1,3 @@
-"""사용자 기록 조회 (관리자용). 쓰기는 하지 않는다
-
-기록은 두 곳에 쌓인다:
-- app.chat_turns   /ask 대화의 턴 (ask_session.log_turn). 사용자가 한 말, 요청 종류, 답의 첫 문단,
-                   조건이 어떻게 바뀌었는지. 30일 보관
-- app.search_logs  통계표 찾기 한 번 (search_log.write). 슬롯·후보·단계별 시간·오류.
-                   /ask 가 수치로 답하지 못해 통계표를 찾을 때도 여기에 남는다
-
-두 기록의 대화 id 는 서로 다르다(/ask 는 "A_…", 통계표 찾기는 "S_…"). 그래서 하나로 합치지 않고
-대화(턴)를 기본 화면으로, 통계표 찾기는 따로 본다.
-
-라우터는 DB 를 직접 다루지 않고 이 함수들만 부른다 (테스트에서 이 함수들만 바꿔 끼운다).
-"""
-
 from datetime import datetime
 from typing import Any
 
@@ -21,18 +7,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.services.log_redaction import mask as mask
 from app.services.log_redaction import redact
 
-# 요약의 날짜 경계 (하루를 한국 시간으로 나눈다)
 TZ = "Asia/Seoul"
 
 
-# 오류 글에는 호출 주소가 통째로 들어갈 수 있다 (KOSIS 주소의 apiKey 등).
-# 화면으로 내보내기 전에 가린다
 def _masked(row: dict[str, Any]) -> dict[str, Any]:
     return redact(row)
 
 
 def like(word: str) -> str:
-    """부분 일치 검색어. 사용자가 넣은 %, _ 는 글자 그대로 찾는다"""
     escaped = word.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     return f"%{escaped}%"
 
@@ -49,9 +31,6 @@ def conditions(
     until: datetime | None = None,
     has_error: bool | None = None,
 ) -> tuple[str, dict[str, Any]]:
-    """거르는 조건 → (where 절, 값). 값은 모두 바인딩하고, 칸 이름은 column 에 적힌 것만 쓴다.
-    guest: True 면 손님(로그인 안 함)만, False 면 로그인한 사용자만
-    since ≤ created_at < until"""
     parts: list[str] = []
     params: dict[str, Any] = {}
 
@@ -120,7 +99,6 @@ async def _count(session: AsyncSession, sql: str, params: dict[str, Any]) -> int
 async def turns(
     session: AsyncSession, limit: int, offset: int, **filters: Any
 ) -> tuple[list[dict[str, Any]], int]:
-    """/ask 대화의 턴을 최근 것부터. (줄, 전체 수)"""
     where, params = conditions(TURN_COLUMNS, **filters)
     total = await _count(session, f"select count(*) from app.chat_turns t{where}", params)
     rows = await _rows(
@@ -132,7 +110,6 @@ async def turns(
     return redact(rows), total
 
 
-# 대화 하나를 한 줄로: 누가, 언제부터 언제까지, 몇 턴, 첫 질문
 SESSIONS_INNER = (
     "select t.session_id, max(t.user_id) as user_id, min(t.created_at) as started_at,"
     " max(t.created_at) as last_at, count(*) as turns,"
@@ -149,7 +126,6 @@ def _session_filters(
     since: datetime | None,
     until: datetime | None,
 ) -> tuple[str, dict[str, Any]]:
-    """대화(SESSIONS_INNER 의 c) 를 거르는 where 절과 값"""
     parts: list[str] = []
     params: dict[str, Any] = {}
     if user_id is not None:
@@ -181,11 +157,6 @@ async def people(
     since: datetime | None = None,
     until: datetime | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
-    """대화를 사람별로 묶은 목록 (마지막 대화가 최근인 사람부터). (줄, 전체 수)
-    로그인 사용자는 한 사람이 한 줄 (창을 여러 개 열어 따로 물어도 그 사람 아래로 모인다).
-    비로그인 사용자는 누구인지 알 수 없어 user_id 가 빈 한 줄로 모은다.
-    q · since · until 은 대화 목록(sessions)과 같은 뜻:
-    맞는 대화만 세고, 맞는 대화가 없는 사람은 뺀다"""
     where, params = _session_filters(None, guest, q, since, until)
     grouped = (
         "select c.user_id, count(*) as sessions, sum(c.turns) as turns,"
@@ -213,8 +184,6 @@ async def sessions(
     since: datetime | None = None,
     until: datetime | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
-    """대화 목록을 마지막 턴이 최근인 것부터. (줄, 전체 수)
-    q 는 그 대화의 어느 턴에든 들어 있으면 맞고, since·until 은 마지막 턴 시각으로 거른다"""
     where, params = _session_filters(user_id, guest, q, since, until)
     total = await _count(session, f"select count(*) from ({SESSIONS_INNER}) c{where}", params)
     rows = await _rows(
@@ -228,7 +197,6 @@ async def sessions(
 
 
 async def session_turns(session: AsyncSession, session_id: str) -> list[dict[str, Any]]:
-    """대화 하나의 턴을 말한 순서대로. 조건이 어떻게 바뀌었는지와 출처까지. 없으면 빈 목록"""
     return redact(
         await _rows(
             session,
@@ -241,7 +209,6 @@ async def session_turns(session: AsyncSession, session_id: str) -> list[dict[str
 
 
 async def _has_search_logs(session: AsyncSession) -> bool:
-    """app.search_logs 는 처음 기록할 때 만들어진다 (search_log.write). 아직 없을 수 있다"""
     found = await session.execute(text("select to_regclass('app.search_logs')"))
     return found.scalar() is not None
 
@@ -249,7 +216,6 @@ async def _has_search_logs(session: AsyncSession) -> bool:
 async def searches(
     session: AsyncSession, limit: int, offset: int, **filters: Any
 ) -> tuple[list[dict[str, Any]], int]:
-    """통계표 찾기 기록을 최근 것부터. (줄, 전체 수)"""
     if not await _has_search_logs(session):
         return [], 0
     where, params = conditions(SEARCH_COLUMNS, **filters)
@@ -264,7 +230,6 @@ async def searches(
 
 
 async def search_detail(session: AsyncSession, log_id: int) -> dict[str, Any] | None:
-    """통계표 찾기 기록 하나: 슬롯, 후보와 점수, 응답, HCX 원문, 단계별 시간까지"""
     if not await _has_search_logs(session):
         return None
     rows = await _rows(
@@ -277,7 +242,6 @@ async def search_detail(session: AsyncSession, log_id: int) -> dict[str, Any] | 
 
 
 async def summary(session: AsyncSession, since: datetime) -> dict[str, Any]:
-    """since 부터 지금까지의 사용량: 전체 수, 날짜별(한국 시간), 상태별, 요청 종류별"""
     params = {"since": since, "tz": TZ}
     totals = (
         await _rows(

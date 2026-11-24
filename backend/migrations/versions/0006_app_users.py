@@ -1,9 +1,3 @@
-"""app.users: 로그인 사용자
-
-Revision ID: 0006
-Revises: 0005
-"""
-
 from collections.abc import Sequence
 
 import sqlalchemy as sa

@@ -1,26 +1,3 @@
-"""통계표 검색: 질문 → 표 하나의 링크 (실전 2 F-04 · F-05 · F-18 · F-06 1차)
-
-  1. 질의 분석 (slots.extract)       질문 → 슬롯
-  2. 후보 검색 (keyword_scores)      질문 단어가 표명·경로·분류·항목에 얼마나 있는지.
-                                     검색어는 질문 원문 정리 + 일상어 사전 확장 (synonyms.py).
-                                     단어마다 희귀도(IDF) 가중치 ('인구'처럼 흔한 단어는 덜 침)
-     + 임베딩 (vector_search)        질문 원문과 표 문서의 코사인 유사도 (bge-m3).
-                                     임베딩 점수를 기본으로 두고 키워드 점수가 높을 때만 더한다
-                                     (하이브리드. 키워드는 질문마다 1위=1로 정규화한 뒤 비교.
-                                     질문 임베딩이 없으면 키워드만)
-  3. 조건 검증·재순위 (check)        표(판) 단위로 연도·지역 수준·성별·분류·값·대상을 판정해 가감점.
-                                     질문에 없는 조건(null)은 판정하지 않는다
-  4. 패밀리 묶기 (fold)              같은 패밀리는 한 자리만 차지, 패밀리 점수 = 소속 표 최고 점수
-  5. 멤버·판 선택 (choose)           대상·성별로 멤버, 연도로 판을 고른다 (검색 규칙 2.4)
-  6. 상태 판단                       ok / partial_match / clarify / ambiguous / out_of_scope
-                                     / not_statistics. 대상이 빠지면 clarify (되묻기, 규칙 2.3 가안)
-
-표 메타데이터(table_meta + table_families, 2천여 행)는 처음 한 번 읽어 메모리에 둔다.
-표 벡터(table_embeddings)도 함께 읽어 둔다. 되묻기 다음 턴(답 맞추기·세션)은 dialog.py가 맡는다.
-
-실행: python -m app.services.search "2024년 부산 시군구별 혼인 귀화자 수"
-"""
-
 import asyncio
 import json
 import logging
@@ -38,24 +15,14 @@ from app.services import slots as slot_parser
 from app.services import slots as slots_mod
 
 logger = logging.getLogger(__name__)
-# 앱에 로그 설정이 없어 INFO가 안 보이므로, 서버 시작 메시지는 uvicorn 로그로 낸다
 startup_log = logging.getLogger("uvicorn.error")
 
-# 가중치·기준값은 개발셋으로 조정할 값 (기능 정의서 F-05, F-06 미결)
 FIELD_WEIGHTS = {"name": 1.0, "path": 0.6, "meta": 0.4}
 NAME_WEIGHT = 0.3
 PASS_BONUS = 0.08
 FAIL_PENALTY = 0.15
-# 대상·분류·항목·성별은 HCX 추출과 표 메타의 표현 차이로 자주 어긋나는 '부드러운' 조건이라 감점을
-# 작게 둔다
-# (실험실에는 이 판정이 없음. 어댑터 실측 후보 재계산: 팀원 R@1 62→70, 생성 75→82, 개발 65→67, 손해
-# 없음)
 SOFT_CHECKS = ("target", "class", "item", "sex", "spouse", "period")
-# 시도 정식 이름 → 짧은 이름 ('세종특별자치시' → '세종').
-# 표명·조사명에 지역이 들어간 표를 찾을 때 쓴다
 REGION_SHORT = {name: aliases[0] for name, aliases in slots_mod.SIDO.items()}
-# 질문 표현 → 표 분류 축 이름
-# ('나이별 성별 인구'의 '나이'가 '연령별' 축에 닿지 않아 '나이 ✘'로 나오던 문제)
 CLASS_ALIAS = {
     "나이": "연령",
     "나이대": "연령",
@@ -64,33 +31,22 @@ CLASS_ALIAS = {
     "연령계층": "연령",
     "학력": "교육정도",
     "국적": "국적",
-    # '부모 국적별'은 표의 '국적별' 축이다 (국적별 축이 있는 표가 모두 '부모 국적 ✘'로 나오던 문제)
     "부모국적": "국적",
     "부모의국적": "국적",
 }
-# 특정 집단만 조사한 통계는 질문에 그 집단 말이 없으면 감점 (개발셋 d57 '평균 몇 살까지 사는지'에
-# 사할린 '결혼 여부' 표,
-# d79 '동호회 모임 참여'에 사할린 '모임 및 단체 참여' 표가 1위로 오던 문제)
 SURVEY_POPULATION = {
     "영주귀국사할린동포실태조사": ("사할린", "동포"),
     "고령친화용품제조업실태조사": ("고령친화", "노인용품", "용품", "실버"),
 }
 SURVEY_PENALTY = 0.1
 SOFT_FAIL_PENALTY = 0.05
-# 5년 주기 조사(총조사 등): '최근 N년'에서 그 통계의 최신 판이 올해보다 이 주기 + 공표 시차 안이면
-# 최신까지 담은 표로 본다 (최신 2020년 판이 2021년~ 조건에 엄격 감점되던 문제)
 CENSUS_CYCLE = 5
-PUBLISH_LAG = (
-    2  # 상대시점이 가리키는 해가 아직 공표 전이어도 이 햇수 안이면 최신 판을 맞는 표로 본다
-)
+PUBLISH_LAG = 2
 
-MIN_SCORE = 0.45  # 1순위 패밀리 점수가 이보다 낮으면 out_of_scope
-AMBIGUOUS_GAP = 0.03  # 1·2순위 패밀리 점수 차가 이보다 작으면 ambiguous
+MIN_SCORE = 0.45
+AMBIGUOUS_GAP = 0.03
 TOP_FAMILIES = 4
 
-# 모집단을 좁히는 수식어. 질문에 없으면 수식어 없는 형제 표를 기본값으로 앞세운다
-# ('결혼 건수' → '연령/교육정도별 혼인' > '…혼인(초혼)', 팀원 검색 실험 10/31 제안 5-B).
-# 키는 표명에 쓰인 말, 값은 질문에서 그 수식어를 말한 것으로 볼 표현
 SUBSET_MODIFIERS = {
     "초혼": re.compile(r"초혼|처음\s*(?:한\s*)?결혼|첫\s*결혼"),
     "재혼": re.compile(r"재혼|다시\s*(?:한\s*)?결혼|두\s*번째\s*결혼"),
@@ -98,61 +54,30 @@ SUBSET_MODIFIERS = {
     "발생기준": re.compile(r"발생\s*기준"),
     "북한": re.compile(r"북한|탈북|새터민"),
 }
-MODIFIER_PENALTY = 0.03  # 형제 표끼리 임베딩 점수 차(0.01 안팎)를 뒤집을 만큼만
+MODIFIER_PENALTY = 0.03
 
-# 하이브리드: 임베딩 우선 + 키워드 조건부 가산 (팀원 검색 실험 10/31: 고정 RRF는 약한 키워드의
-# 오답이 임베딩 정답을 끌어내림). 질문 임베딩이 있을 때만 쓰고, 없으면 위 키워드 기준을 쓴다
-DENSE_TOP_K = 50  # 키워드 점수가 0이어도 임베딩 상위 이만큼은 후보에 넣는다
-KEYWORD_GATE = 0.5  # 키워드 점수가 이 이상일 때만 키워드·표명 유사도를 더한다
-# 0.3이면 엉뚱한 단어로 기준을 겨우 넘은 키워드('우리 동네'의 동네·주민 → 사할린동포 조사 표)가
-# 임베딩 1위를 뒤집었다. 0.2는 일상어 질문 10개(scripts/check_search.py) 기준 1차 값
+DENSE_TOP_K = 50
+KEYWORD_GATE = 0.5
 KEYWORD_WEIGHT = 0.2
-# 범위 밖 판정은 조건 가감점 전 임베딩 원점수(1위)로 한다 (골든셋 설계 8장). 가감점 후 점수로 보면
-# HCX가 뽑은 대상('쌍둥이')이 표명에 없다는 감점만으로 맞는 표를 버린다.
-# 범위 밖 질문의 원점수(0.50~0.65)가 범위 안 질문과 겹쳐 점수만으로는 못 가른다.
-# 명백한 경우만 거르고, 나머지는 HCX query_type(not_statistics)에 맡긴다
 HYBRID_MIN_SCORE = 0.5
-# HCX가 not_statistics라고 해도 임베딩 1위 점수가 이 이상이면 검색한다. HCX는 일상어 질문
-# ('연탄으로 난방하는 집이 있나', '누가 돌보는지')을 잡담으로 자주 본다 (개발셋 범위 안 6~10건,
-# 임베딩 0.53~0.66). 진짜 통계 아닌 질문은 날씨 0.47~0.51. 프롬프트로 고치면 다른 질문이
-# 새로 거절돼(11/1 실험: 오판 9→12) 점수와 함께 본다. 신청 방법('월세 지원금 신청', 0.57)은
-# 넘어가지만 관련 표를 안내하는 정도다. 기준은 개발셋으로 정한 1차 값
 NOT_STATISTICS_OVERRIDE = 0.55
-# 같은 주제의 형제 패밀리('고령자인구' 4개)는 임베딩 점수 차가 0.01 안쪽이라 거의 동점일 때만 묻는다
 HYBRID_AMBIGUOUS_GAP = 0.005
 
-# 연도를 말하지 않은 질문은 지금 표를 찾는 것으로 본다. 다른 패밀리의 옛날 단일 연도 표
-# ('2005년 연령/성별 인구')가 현행 표('2015~2025')를 이기는 일이 많아(개발셋 '다른 패밀리 1위'
-# 31건의 주된 유형) 최신 판·긴 수록 기간에 가산한다. choose는 패밀리 안에서만 최신 판을
-# 고르므로 패밀리가 다르면 못 잡는다. 값은 팀원 실험실 재현(11/1, 흐름 평균 +2.6p)
-# 이 해 이후까지 담은 표가 최신 판. 인구총조사 표 261개가 2020년이 끝이라 2023으로 두면 최신 판이
-# 2010년 판과 같은 취급을 받았다 (11/2 시뮬레이션: 후보 1위 정답 +19, 잃는 문항 0)
 RECENT_END_YEAR = 2020
 RECENT_BONUS = 0.05
-LONG_SPAN_YEARS = 10  # 수록 기간이 이 이상이면 긴 표 (단일 연도 표가 2,364개 중 1,926개)
+LONG_SPAN_YEARS = 10
 LONG_SPAN_BONUS = 0.05
-# 연도 없는 질문에서 수록이 오래전에 끝난 단일 연도 표 감점 (2005년 10% 표본 블록 등).
-# 최신판 가산은 2023년 이후 표에만 붙어 5년 주기 총조사(최신 2020)는 2005년 표와 동점이었다
-# (개발셋 d12 '노인 생활비': 2005년 65세 표 0.907 > 2020년 60세 표 0.862)
-STALE_END_YEAR = 2008  # 이 해까지만 담은 단일 연도 표는 감점
-STALE_PENALTY = 0.08  # 0.05 로는 d12 가 0.004 차로 2005년 표에 밀렸다 (v6 측정)
-# 연도 대신 옛날을 가리키는 말이 있으면 가산하지 않는다
+STALE_END_YEAR = 2008
+STALE_PENALTY = 0.08
 PAST = re.compile(r"옛날|예전|과거|당시|그때|그\s*시절|\d+\s*년대|\d+\s*년\s*" + timeref.AGO)
 
 STOPWORDS = {
     "수", "통계", "통계표", "자료", "데이터", "현황", "관련", "표", "정보", "찾아줘", "알려줘",
     "보여줘", "몇", "명", "얼마", "얼마나", "몇명", "추이", "변화", "있어", "있나요",
 }  # fmt: skip
-# '취득한'·'취득자' → '취득', '국적을' → '국적'. 조사·어미 한 글자만 떼어 본다
 SUFFIXES = ("한", "된", "을", "를", "의", "은", "는", "이", "가", "에", "별", "인", "자")
 MIGRATION = re.compile(r"이동|전입|전출|이주|이사")
-# 대상 집단이 여성뿐인 표 ('기혼여성인구', '부인수'. 카탈로그에 남성뿐인 표는 없다)
-# 출산율 · 모(母)의 연령 · 가임 표도 여성만 다룬다 ('서른 살 여성의 출산율' → '모의 연령별 출산율'이
-# 성별 분류가 없어 '여 ✘'로 나오던 문제)
 FEMALE_ONLY_TABLE = re.compile(r"여성|부인|출산율|출산률|모의연령|가임")
-# 분류 값 · 항목 이름이 이 말과 같으면 그 성별을 담은 표다.
-# 혼인 · 이혼 표는 성별을 남편 · 아내로 쓴다
-# ('평균초혼연령'의 항목이 남편 · 아내라 '성별 ✘'로 나오던 문제). 기존 판정이 ✘ 일 때만 보탠다
 MALE_VALUES = frozenset({"남자", "남성", "남편"})
 FEMALE_VALUES = frozenset({"여자", "여성", "아내"})
 PROJECTION_TABLE = re.compile(r"추계|장래")
@@ -166,11 +91,10 @@ FROM catalog.table_meta s JOIN catalog.table_families f USING (tbl_id)
 """
 
 _tables: list[dict[str, Any]] | None = None
-_vectors: Any = None  # _tables 순서의 표 벡터 행렬 (numpy). 없으면 None
+_vectors: Any = None
 
 
 def norm(value: str) -> str:
-    """띄어쓰기·기호를 지운다 ('1인 가구' = '1인가구')"""
     return re.sub(r"[^0-9A-Za-z가-힣]", "", value or "")
 
 
@@ -178,12 +102,9 @@ TARGET_PARTS = re.compile(r"[,·/()]|\s및\s")
 
 
 def mentioned_targets(targets: list[str], said: str) -> list[str]:
-    """said(norm 한 질문·답)에 나온 대상. 대상 이름 전체가 나오면 그것만, 아니면 이름의 부분이
-    나온 대상 ('병원 및 복지기관' ← '병원', '서울·인천·경기' ← '서울'). '전체'는 빼고 본다"""
     names = [t for t in dict.fromkeys(targets) if t and t != "전체"]
     whole = [t for t in names if norm(t) in said]
     if whole:
-        # '강원·제주'가 나왔으면 그 안에 든 '강원'은 고르지 않는다
         return [t for t in whole if not any(norm(t) in norm(o) and t != o for o in whole)]
 
     def parts(t: str) -> list[str]:
@@ -192,19 +113,16 @@ def mentioned_targets(targets: list[str], said: str) -> list[str]:
     return [t for t in names if any(p in said for p in parts(t))]
 
 
-# 항목·값 이름을 낱말로 나눌 때 쓰는 구분자, 낱말 끝에서 떼는 꼬리
 WORD_SPLIT = re.compile(r"[_\s/·,()\[\]–\-]+")
 TOTAL_WORDS = {"계", "합계", "전체", "소계"}
 
 
 def stem(word: str) -> str:
-    """'가구수' → '가구'. 세는 대상 끝의 '수'는 같은 말이다"""
     w = norm(word)
     return w[:-1] if len(w) > 2 and w.endswith("수") else w
 
 
 def word_set(names: list[str]) -> set[str]:
-    """이름들을 낱말로 나눠 꼬리를 뗀 집합 ('가구_계' → {'가구'}, '계'는 버린다)"""
     out = set()
     for name in names:
         for part in WORD_SPLIT.split(name or ""):
@@ -213,11 +131,10 @@ def word_set(names: list[str]) -> set[str]:
     return out
 
 
-RANK_VALUES_MAX = 30  # 분류 값이 이 개수 이하이면 하위 값까지 검색 순위에 쓴다 (장애유형 16개 등)
+RANK_VALUES_MAX = 30
 
 
 def rank_values(c: dict[str, Any]) -> list[str]:
-    """검색 순위에 쓸 분류 값. 값이 적은 분류는 전체(values), 많은 분류(지역·성씨)는 대표 값만"""
     values = c.get("values") or []
     if values and len(values) <= RANK_VALUES_MAX:
         return values
@@ -228,23 +145,16 @@ VALUE_PARTS = re.compile(r"[^0-9A-Za-z가-힣\s]+")
 
 
 def value_keys(value: str) -> set[str]:
-    """값 하나로 조건을 채울 수 있는 말: 값 전체 + 기호(괄호·마침표 등)로 나눈 조각.
-    '고의적 자해(자살)(X60-X84)' → 고의적자해자살X60X84, 고의적자해, 자살, X60, X84
-    띄어쓰기에서는 나누지 않는다 ('고령군'은 '고령'이 되지 않는다)"""
     keys = {norm(value)} | {norm(part) for part in VALUE_PARTS.split(value)}
     keys.discard("")
     return keys
 
 
 AGE_AXIS = re.compile(r"연령|나이|각세|\d+세")
-# 나이에서 계산한 지수. 연령 분류는 없지만 나이를 묻는 질문의 답이다
-# ('어린이보다 노인이 얼마나 더 많은지' → 노령화지수 표)
 AGE_INDEX = re.compile(r"노령화지수|부양비|중위연령|평균연령")
 
 
 def has_age_axis(t: dict[str, Any]) -> bool:
-    """나이로 나눠 볼 수 있는 표인가: 연령 분류가 있거나, 항목에 나이가 셋 이상이거나,
-    나이를 요약한 지수(노령화지수 · 부양비 · 중위연령)를 담은 표"""
     return (
         any(AGE_AXIS.search(n) for n in t["class_n"])
         or len(set(re.findall(r"\d+세", t["meta_n"]))) >= 3
@@ -253,12 +163,10 @@ def has_age_axis(t: dict[str, Any]) -> bool:
 
 
 def has_value(t: dict[str, Any], key: str) -> bool:
-    """항목·표본값(meta_n)에 있거나, 값이 많은 분류의 값 하나와 같은가"""
     return key in t["meta_n"] or key in t.get("values_n", ())
 
 
 def _set_family_last_year(tables: list[dict[str, Any]]) -> None:
-    """같은 통계 묶음에서 가장 늦은 끝 연도 (판 고르기에 쓴다)"""
     fam_last: dict[str, int] = {}
     for t in tables:
         k = t.get("family_id") or t["tbl_id"]
@@ -269,7 +177,6 @@ def _set_family_last_year(tables: list[dict[str, Any]]) -> None:
 
 
 def prepare(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """검색에 쓸 정규화 문자열을 붙인다"""
     tables = []
     for r in rows:
         t = dict(r)
@@ -285,9 +192,6 @@ def prepare(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 + [i["name"] for i in t["items"] or []]
             )
         )
-        # 조건 확인 전용: 값이 많은 분류(지역·성씨)의 전체 값. 값이 적은 분류는 이미 meta_n에 있다.
-        # 이어 붙인 글자에서 찾으면 '고령'이 '고령군'에 걸리므로 값(또는 괄호 안 등 조각)과
-        # 같을 때만 본다 (value_keys)
         t["values_n"] = {k for c in classes for v in c.get("values") or [] for k in value_keys(v)}
         named = {
             k.removesuffix("수")
@@ -310,13 +214,10 @@ def prepare(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return tables
 
 
-# 표 이름 원문의 연령 구간 ('(만 7세~만 12세이하)', '20~39세'). name_n 은 '~'가 지워져
-# 아래 '(\d+)[~\-](\d+)세' 가 어느 표에도 맞지 않던 문제
 RAW_AGE_RANGE = re.compile(r"(\d+)\s*세?\s*[~\-]\s*(?:만\s*)?(\d+)\s*세")
 
 
 OUR_PLACE = re.compile(r"우리\s*(?:구|군|시|동네)|동네")
-# '우리 구'라고만 해서 어느 시도인지 되묻는 결과의 reason. 최종 검토(llm_pick)가 이 결과를 알아본다
 REGION_ASK = "어느 지역인지 알려 주세요"
 SIDO_PREFIX = re.compile(
     r"(서울특별시|부산광역시|대구광역시|인천광역시|광주광역시|대전광역시|울산광역시|세종특별자치시|경기도|강원(?:특별자치)?도|"
@@ -327,7 +228,6 @@ SIDO_PREFIX = re.compile(
 def age_coverage(
     name_n: str, class_n: list[str], meta_n: str, raw_name: str = ""
 ) -> tuple[int, int | None] | None:
-    """표가 담는 연령 범위. 연령 축이 없으면 None, 있으면 (시작, 끝 또는 None=이상)"""
     if m := RAW_AGE_RANGE.search(raw_name):
         return (int(m[1]), int(m[2]))
     text = name_n + " " + " ".join(class_n)
@@ -335,9 +235,6 @@ def age_coverage(
         return (int(m[1]), None)
     if m := re.search(r"(\d+)[~\-](\d+)세", text):
         return (int(m[1]), int(m[2]))
-    # '주요 연령계층별 추계인구(생산연령인구, 고령인구 등)'처럼 연령 축이 있는 표는 전 연령을
-    # 담는다.
-    # 고령자·고령인구·노인은 연령 축 표시가 없을 때만 65세 이상 전용으로 본다
     if "연령" in text or "각세" in text or "연령" in meta_n:
         return (0, None)
     if "고령자" in text or "고령인구" in text or "노인" in text:
@@ -353,21 +250,12 @@ _periods_stale = False
 
 
 def mark_periods_stale() -> None:
-    """적재로 수록 기간·판 이름이 바뀌었을 수 있다고 표시한다.
-
-    다음 load_tables()가 그 칸만 다시 읽는다 (몇 ms). 표 목록·벡터는 그대로 두어
-    순서가 바뀌지 않고, 다른 질문이 빈 목록을 보지 않는다 (PR #218 리뷰).
-    """
     global _periods_stale
     _periods_stale = True
 
 
 async def _check_reloaded() -> None:
-    """적재 프로세스가 표를 새로 넣었는지 확인한다 (DB는 30초에 한 번만 본다).
-    바뀌었으면 lookup.refresh_if_reloaded가 mark_periods_stale을 부른다.
-    확인이 실패해도 검색은 계속한다
-    """
-    from app.services import lookup  # lookup이 search를 부르므로 여기서 불러 순환을 피한다
+    from app.services import lookup
 
     try:
         await asyncio.to_thread(lookup.refresh_if_reloaded)
@@ -376,7 +264,6 @@ async def _check_reloaded() -> None:
 
 
 async def _refresh_periods(tables: list[dict[str, Any]]) -> None:
-    """표마다 수록 기간·판 이름만 DB에서 다시 읽어 고치고, 묶음 최신 연도를 다시 계산한다"""
     from app.core.db import engine
 
     async with engine.connect() as conn:
@@ -414,8 +301,6 @@ async def load_tables() -> list[dict[str, Any]]:
 
 
 async def warm_up() -> None:
-    """서버 시작 때 표·벡터를 미리 읽는다. 실패해도(DB가 비었거나 아직 안 뜸) 서버는 뜨고,
-    첫 /search에서 다시 읽는다 (실전 1 /ask는 이 데이터와 무관)"""
     start = time.perf_counter()
     try:
         tables = await load_tables()
@@ -433,7 +318,6 @@ async def warm_up() -> None:
 
 
 def status() -> dict[str, Any]:
-    """검색 준비 상태 (/health/search)"""
     return {
         "tables": len(_tables or []),
         "vectors": _vectors is not None,
@@ -441,14 +325,12 @@ def status() -> dict[str, Any]:
         "retrieval": "hybrid" if _vectors is not None else "keyword",
         "adapter": vector_search.adapter_loaded(),
         "morph": synonyms.morph_backend(),
-        "search_llm": search_llm.provider(),  # 쓰도록 설정된 쪽: hcx 또는 gemma
-        # Gemma 가 응답하지 않아 지금은 HCX 로 넘어가 있는가
+        "search_llm": search_llm.provider(),
         "search_llm_fallback": search_llm.falling_back(),
     }
 
 
 async def dense_scores(question: str) -> list[float] | None:
-    """load_tables() 순서대로 표마다 질문과의 코사인 유사도. 표 벡터나 질문 벡터가 없으면 None"""
     await load_tables()
     if _vectors is None:
         return None
@@ -456,36 +338,18 @@ async def dense_scores(question: str) -> list[float] | None:
     return None if query is None else vector_search.scores(_vectors, query)
 
 
-# ---- 2. 후보 검색 ---------------------------------------------------------------
-
-
 def keyword_query(slots: dict[str, Any]) -> str:
-    """키워드 검색어: 질문 원문 정리 + 사전 확장.
-
-    HCX topic·target은 요약하면서 지역·분류 단어('시군구별', '연령대별')를 빠뜨려 원문보다 나쁘다
-    (팀원 키워드 비교 실험 10/31: 팀원셋 흐름 59→65, 생성셋 79→86, 사전까지 넣으면 78·89)
-    """
     question = slots.get("question") or slots["topic"]
-    # 빼 달라고 한 말('귀화한 사람 말고', '귀화자가 아닌')은 사전으로 늘리면 오히려 그 표
-    # (국적취득)를 찾는다. 사전은 그 단어가 든 항목을 건너뛰고(부정 항목은 유지), 단어 자체는
-    # query_tokens 가 거른다
-    # '최근 10년'의 '10년'은 시점이지 표 단어가 아니다 ('체류기간 10년 이상' 표에 끌려가던 문제)
     question = timeref.RECENT_N_YEARS.sub(" ", question)
     return synonyms.keyword_text(question, exclude=slots.get("exclude") or None)
 
 
 def query_tokens(slots: dict[str, Any], text: str | None = None) -> list[dict[str, Any]]:
-    """검색어(text, 없으면 keyword_query) → 단어별 변형 목록 ('취득한' → ['취득한', '취득']).
-
-    value: 슬롯 items에 든 단어('미혼 인구'의 '미혼'). 분류 값이라 표명에 없어도 되므로
-    어느 필드에 있든 같은 점수를 준다.
-    """
     words = re.findall(r"[0-9A-Za-z가-힣]+", keyword_query(slots) if text is None else text)
     values = norm(" ".join(slots["conditions"]["items"]))
     excluded = {v for w in slots.get("exclude") or [] for v in variants(w)}
     tokens = []
     for w in dict.fromkeys(words):
-        # 빼 달라고 한 단어는 찾는 단어가 아니다 ('귀화한 사람 말고'의 '귀화')
         if w in STOPWORDS or excluded & set(variants(w)):
             continue
         tokens.append({"variants": variants(w), "value": bool(values) and w in values})
@@ -493,7 +357,6 @@ def query_tokens(slots: dict[str, Any], text: str | None = None) -> list[dict[st
 
 
 def variants(word: str) -> list[str]:
-    """'취득한' → ['취득한', '취득']"""
     if len(word) >= 3 and word.endswith(SUFFIXES):
         return [word, word[:-1]]
     return [word]
@@ -508,10 +371,7 @@ _value_index_for: list[dict[str, Any]] | None = None
 
 
 def value_index(tables: list[dict[str, Any]]) -> dict[str, set[str]]:
-    """분류 값 → 그 값을 가진 (표, 분류) 열쇠.
-    '아파트'·'단독주택'이 같은 열쇠에 있으면 같은 축의 값"""
     global _value_index, _value_index_for
-    # 목록 자체를 보관한다. id만 남기면 해제된 목록의 주소를 새 목록이 재사용할 수 있다.
     if _value_index is None or _value_index_for is not tables:
         idx: dict[str, set[str]] = {}
         for t in tables:
@@ -524,17 +384,13 @@ def value_index(tables: list[dict[str, Any]]) -> dict[str, set[str]]:
     return _value_index
 
 
-VALUE_LIKE_MIN = 20  # 분류 값으로만 나오는 표가 이만큼 이상이고
-VALUE_LIKE_RATIO = 5  # 표 이름에 나오는 표의 이 배 이상이면 '분류 값' 낱말
+VALUE_LIKE_MIN = 20
+VALUE_LIKE_RATIO = 5
 _value_like: dict[str, bool] = {}
 _value_like_for: list[dict[str, Any]] | None = None
 
 
 def value_like(tables: list[dict[str, Any]], word: str) -> bool:
-    """표 이름이 아니라 분류 값으로 주로 쓰이는 낱말인가.
-    아파트(표 이름 2 · 값으로만 144)·미혼(3 · 140)은 값,
-    귀화자(6 · 4)·결혼이민자(5 · 5)·유학생(9 · 3)은
-    따로 있는 표(멤버)라 빼는 대상으로 남긴다"""
     global _value_like_for
     if _value_like_for is not tables:
         _value_like.clear()
@@ -549,8 +405,6 @@ def value_like(tables: list[dict[str, Any]], word: str) -> bool:
 
 
 def contrast_words(tables: list[dict[str, Any]], slots: dict[str, Any]) -> set[str]:
-    """빼는 단어 중, 질문의 다른 단어와 같은 분류 축의 값인 것.
-    예: '아파트가 아니라 단독주택'의 '아파트가'"""
     idx = value_index(tables)
     words = re.findall(r"[0-9A-Za-z가-힣]+", slots.get("question") or "")
     out = set()
@@ -577,9 +431,6 @@ def _in_any(tables: list[dict[str, Any]], vs: list[str]) -> bool:
 def split_compounds(
     tables: list[dict[str, Any]], tokens: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
-    """붙은 말 앞에 분류 값이 있으면 그 값을 단어로 하나 더 넣는다.
-    '청각장애인' → '청각장애인' + '청각'(장애유형 값). 분류 값은 표명에 없어도 되므로 value로 둔다.
-    원래 단어는 그대로 둔다 (다른 표 이름에 '청각장애'가 있을 수 있음)"""
     idx = value_index(tables)
     have = {v for t in tokens for v in t["variants"]}
     out = list(tokens)
@@ -587,7 +438,7 @@ def split_compounds(
         word = token["variants"][0]
         if len(word) < 4:
             continue
-        for cut in range(len(word) - 2, 1, -1):  # 긴 값부터 (앞 2글자 이상, 뒤 2글자 이상)
+        for cut in range(len(word) - 2, 1, -1):
             head, rest = word[:cut], word[cut:]
             if norm(head) in idx and _in_any(tables, variants(rest)):
                 if head not in have:
@@ -598,7 +449,6 @@ def split_compounds(
 
 
 def keyword_scores(tables: list[dict[str, Any]], tokens: list[dict[str, Any]]) -> list[float]:
-    """표마다 0~1 점수: 단어 희귀도(IDF) 가중 평균으로 어느 필드에 있는지 본다"""
     tokens = split_compounds(tables, tokens)
     n = len(tables)
     idf = []
@@ -610,7 +460,6 @@ def keyword_scores(tables: list[dict[str, Any]], tokens: list[dict[str, Any]]) -
             or _found(variants, t["meta_n"])
             for t in tables
         )
-        # 어느 표에도 없는 단어('아파트 매매 가격'의 '매매')는 가장 희귀한 단어로 쳐서 점수를 깎는다
         idf.append(math.log((n + 1) / (df + 1)) if df else math.log(n + 1))
     total = sum(idf)
     if total == 0:
@@ -631,7 +480,6 @@ def keyword_scores(tables: list[dict[str, Any]], tokens: list[dict[str, Any]]) -
     return scores
 
 
-# HCX 가 질문 말을 분류 축 이름으로 바꿔 넣는 경우('나이별' → '연령')에 근거로 받아 줄 질문 표현
 CLASS_SAID = {
     "연령": re.compile(r"나이|연령|살|세|\d+\s*대|어린|노인|청년|청소년|고령|아동|유아|미성년"),
     "성별": re.compile(r"남|여|성별"),
@@ -640,12 +488,6 @@ CLASS_SAID = {
 
 
 def ground_conditions(slots: dict[str, Any]) -> dict[str, Any]:
-    """HCX 가 추측해 넣은 분류·항목 단어 중 사용자가 말하지 않은 것은 조건에서 뺀다.
-
-    근거: 질문 원문, 사전으로 늘린 검색어, 연령 표현(규칙이 해석), 분류 축 별칭.
-    실행마다 HCX 가 다른 단어('돌싱' → 이혼·사별, '어떤 집' → 거주형태)를 넣어 조건 확인 가감점이
-    표 순위와 ✔/✘ 를 흔들던 문제. 뺀 단어는 slots['dropped_conditions'] 에 남긴다.
-    """
     c = slots.get("conditions") or {}
     if not (c.get("classes") or c.get("items")):
         return slots
@@ -664,13 +506,11 @@ def ground_conditions(slots: dict[str, Any]) -> dict[str, Any]:
             return False
         if seen(key):
             return True
-        # '전입 인구' ← '전입 · 전출 인구': 낱말마다 질문에 있으면 인정
         parts = [norm(w).removesuffix("별") for w in re.split(r"[\s·/,_]+", word)]
         parts = [w for w in parts if len(w) >= 2]
         if len(parts) > 1 and all(seen(w) for w in parts):
             return True
         if kind == "class":
-            # '성별'은 '별'을 떼면 '성'이 되므로 뗀 것 · 안 뗀 것 둘 다 본다
             axis = next(
                 (a for k in (norm(word), key) if (a := CLASS_ALIAS.get(k, k)) in CLASS_SAID), key
             )
@@ -678,7 +518,6 @@ def ground_conditions(slots: dict[str, Any]) -> dict[str, Any]:
                 return True
             if (pat := CLASS_SAID.get(axis)) and pat.search(question):
                 return True
-        # 연령 표현('20대', '35세')은 질문에 나이 말이 있으면 규칙 해석으로 본다 ('서른다섯 살')
         return age_said and (
             agegroup.span(word) is not None or bool(re.search(r"\d+\s*(세|살|대)", word))
         )
@@ -694,22 +533,15 @@ def ground_conditions(slots: dict[str, Any]) -> dict[str, Any]:
     return slots
 
 
-# ---- 3. 조건 검증 ---------------------------------------------------------------
-
-
 def check(t: dict[str, Any], slots: dict[str, Any]) -> dict[str, bool]:
-    """판(표) 단위 조건 판정. 질문에 없는 조건은 결과에 넣지 않는다"""
     c = slots["conditions"]
     out: dict[str, bool] = {}
     if c["year"] is not None:
         last = c["year_end"] or c["year"]
         if (ref := slots.get("time_ref")) and ref.get("open_end") and c["year_end"] is None:
-            # '최근 10년', '3년 전부터': 그 해부터 최신까지 담은 표 (공표 시차는 아래에서 허용)
             last = date.today().year
         out["year"] = t["start_year"] <= c["year"] and last <= t["end_year"]
         if not out["year"] and slots.get("time_ref") and last > t["end_year"]:
-            # "작년"·"올해"는 아직 공표 전일 수 있다. 공표 시차(PUBLISH_LAG) 안이면 최신 판을 맞는
-            # 표로 본다
             out["year"] = t["start_year"] <= c["year"] and last - t["end_year"] <= PUBLISH_LAG
         if (
             not out["year"]
@@ -720,8 +552,6 @@ def check(t: dict[str, Any], slots: dict[str, Any]) -> dict[str, bool]:
             and t["end_year"] >= (t.get("family_last_year") or t["end_year"])
             and date.today().year - t["end_year"] <= CENSUS_CYCLE + PUBLISH_LAG
         ):
-            # 그 통계(패밀리)에서 공표된 최신 판이면 최신까지 담은 것으로 본다. 요청 기간을 다 담지
-            # 못하면 엄격 대신 'period' 부드러운 감점 (일부 일치로 답한다)
             out["year"] = True
             out["period"] = t["start_year"] <= c["year"] <= t["end_year"]
     if c["region_level"]:
@@ -730,9 +560,6 @@ def check(t: dict[str, Any], slots: dict[str, Any]) -> dict[str, bool]:
             levels |= set(t["prev_region_levels"])
         out["region_level"] = c["region_level"] in levels
         if not out["region_level"] and c.get("region"):
-            # 표 자체가 그 지역 전용이면(조사명·표명·경로에 지역 이름) 지역 축이 없어도 그 지역을
-            # 담는다 ('세종시 2013년 나이별 성별 인구' → 세종시 특별센서스 '연령별 성별 인구'가
-            # '시군구 ✘'로 나오던 문제)
             short = norm(REGION_SHORT.get(c["region"], c["region"]))
             out["region_level"] = bool(short) and (
                 short in t["name_n"] or short in norm(t["survey_name"]) or short in t["path_n"]
@@ -740,11 +567,6 @@ def check(t: dict[str, Any], slots: dict[str, Any]) -> dict[str, bool]:
     sex = c["sex"]
     if sex in ("남", "여"):
         own = "male_only" if sex == "남" else "female_only"
-        # 여성만 다루는 표는 성별 분류가 없어도 '여' 조건을 만족한다
-        # 항목이 남자 / 여자로 갈라진 표도 그 성별을 담는다 ('2025년 대구 남자 인구수' → 주민등록
-        # '행정구역(시군구)별, 성별 인구수'는 항목이 총인구수 · 남자인구수 · 여자인구수라
-        # sex_coverage 가
-        # none 이어서 성별 ✘ 가 붙던 문제. 분류 '성별' 판정에는 같은 보완이 이미 있었다)
         out["sex"] = (
             t["sex_coverage"] in ("both", own)
             or t["sex"] == sex
@@ -761,20 +583,12 @@ def check(t: dict[str, Any], slots: dict[str, Any]) -> dict[str, bool]:
             ok = any("가구주" in n and "성" in n for n in t["class_n"])
         else:
             key = CLASS_ALIAS.get(norm(cls).removesuffix("별"), norm(cls).removesuffix("별"))
-            # HCX 가 '미혼'처럼 분류 값을 classes 에 넣기도 하므로 항목·표본값(meta_n)도 본다
             ok = any(key in n for n in t["class_n"]) or key in t["name_n"] or has_value(t, key)
             if key == "연령" and not ok:
-                # 각세(1세 단위) 축도 연령 축이다 ('서울 구별 나이별 전입 전출'
-                # → 서울특별시 시군구 각세별 이동자수)
                 ok = any("각세" in n for n in t["class_n"]) or "각세" in t["name_n"]
             if key == "연령" and ok and not has_age_axis(t):
-                # 이름에만 '연령별'이 있고 한 나이대만 담은 표는 나이로 나눠 볼 수 없다
-                # ('연령별 국제결혼 가정 자녀(만 13세~만 15세이하)'가 연령 분류가 있는 표를
-                # 이기던 문제)
                 ok = False
-        if (
-            cls == "성별" and not ok
-        ):  # 항목이 남자/여자로 갈라진 표도 성별을 담는다 (주민등록 시군구별 성별 인구수)
+        if cls == "성별" and not ok:
             ok = (has_value(t, "남자") and has_value(t, "여자")) or bool(
                 t.get("male_value") and t.get("female_value")
             )
@@ -783,25 +597,17 @@ def check(t: dict[str, Any], slots: dict[str, Any]) -> dict[str, bool]:
     for item in c["items"]:
         key = norm(item)
         if counted := agegroup.count_words(item, question):
-            # 수를 말로 쓴 조건 ("아이 넷", "미성년 자녀 셋"): 표 칸은 '4자녀'처럼 숫자로 적는다.
-            # 바꾼 낱말이 모두 표 이름이나 칸에 있어야 한다 ('미성년' + '4자녀'). 글자 그대로
-            # 보면 '넷'이 '인터넷' 표에, '둘'이 다른 말에 걸린다
             ok = all(
                 w in t["name_n"] or has_value(t, w) or stem(w) in t.get("words", ())
                 for w in counted
             )
         elif agegroup.count_digits(item).strip().isdigit():
-            ok = False  # 수뿐인데 무엇을 센 수인지 질문에서 찾지 못했다 ("넷" → '인터넷')
+            ok = False
         else:
             ok = has_value(t, key) or key in t["name_n"]
         if not ok and not counted:
-            # '가구수' ↔ '가구_계', '주택수' ↔ '주택_계': 꼬리를 뗀 낱말끼리 같으면 같은 항목.
-            # 부분 문자열이 아니라 낱말 단위로 본다 ('가구'가 '가구주' 표에 걸리지 않게)
             ok = stem(key) in t.get("words", ())
         if not ok and (a := agegroup.span(item)) and t["age_cov"] is not None:
-            # '청소년' · '20대' · '30대 이상': 글자가 아니라 표의 연령 범위가 담는지로 본다.
-            # 연령 표현을 뗀 나머지('학령기 이주배경 인구' → '이주배경')도 표에 있어야 한다
-            # ('미성년 자녀 셋 이상'은 자녀 수를 묻는 말이라 연령 축만으로 통과시키지 않는다)
             lo, hi = t["age_cov"]
             rest = norm(item.replace(a.expr, " "))
             for w in ("인구", "이상", "층"):
@@ -815,8 +621,6 @@ def check(t: dict[str, Any], slots: dict[str, Any]) -> dict[str, bool]:
             ok = rest_ok and lo <= a.lo and (hi is None or (a.hi is not None and a.hi <= hi))
         out[f"item:{item}"] = ok
     if (age := slots.get("age")) and t["age_cov"] is not None:
-        # 연령 집단("노인")을 담을 수 있는 표인가: 표의 연령 범위가 집단 범위를 포함해야 한다. 연령
-        # 축이 없는 표는 판정하지 않는다
         lo, hi = t["age_cov"]
         out["age"] = lo <= age["lo"] and (hi is None or (age["hi"] is not None and age["hi"] <= hi))
     if slots.get("projection"):
@@ -827,19 +631,14 @@ def check(t: dict[str, Any], slots: dict[str, Any]) -> dict[str, bool]:
         out["exclude"] = not any(
             _found(variants(w), t["name_n"]) for w in slots["exclude"]
         )  # fmt: skip
-    # '전체'는 멤버 선택값이지 표가 갖춰야 할 조건이 아니다
     if slots.get("target") and slots["target"] != "전체":
         key = norm(slots["target"])
-        # 조사 이름·경로에 있는 대상('사할린 동포', '고령친화')은 그 조사의 모든 표가 담는다
         out["target"] = (
             key in t["name_n"]
             or has_value(t, key)
             or key in norm(t["target"] or "")
             or key in t["path_n"]
         )
-    # 항목 · 분류 낱말이 표에 글자 그대로 없어도, 사전이 이어 준 말이 표에 있으면 통과
-    # ('강아지' → 반려동물, '식당' → 음식점업). 사전은 검색어를 늘릴 때만 쓰여, 사전에 있는 말인데도
-    # 맞는 표에 '강아지 ✘'(일부 일치)가 붙었다
     for k, ok in out.items():
         kind, _, word = k.partition(":")
         if not ok and kind in ("item", "class") and by_dictionary(t, word):
@@ -847,17 +646,12 @@ def check(t: dict[str, Any], slots: dict[str, Any]) -> dict[str, bool]:
     return out
 
 
-# 사전이 이어 준 말 중 이 길이 이상만 본다 ('유형', '보유', '인구' 같은 흔한 말 제외)
 DICT_TERM_MIN = 3
 _dict_terms: dict[str, tuple[str, ...]] = {}
 _dict_index: dict[str, str] = {}
 
 
 def dict_terms(word: str) -> tuple[str, ...]:
-    """사전이 이 낱말에 이어 준 통계 용어 ('강아지' → 반려동물).
-
-    낱말 전체가 사전 항목과 같을 때만 쓴다. 낱말의 한 조각이 사전에 있다고 이으면
-    '전세보증금 규모' 안의 '보증금'이 '월세금'으로 이어져 월세 표가 통과했다 (11/17 HCX 측정)"""
     if word not in _dict_terms:
         if not _dict_index:
             _dict_index.update({norm(k): v for k, v in synonyms.load().items()})
@@ -871,7 +665,6 @@ def dict_terms(word: str) -> tuple[str, ...]:
 
 
 def by_dictionary(t: dict[str, Any], word: str) -> bool:
-    """사전이 이어 준 말이 표 이름 · 분류 이름 · 분류 값에 있는가"""
     return any(
         k in t["name_n"] or any(k in n for n in t["class_n"]) or has_value(t, k)
         for k in dict_terms(word)
@@ -883,18 +676,11 @@ def bigrams(value: str) -> set[str]:
 
 
 def name_similarity(query: str, name: str) -> float:
-    """주제와 표명의 글자 2개 단위 겹침 (Dice). 같은 단어를 가진 표 중 이름이 가까운 표를 앞으로"""
     a, b = bigrams(query), bigrams(name)
     return 2 * len(a & b) / (len(a) + len(b)) if a and b else 0.0
 
 
 def relevance(keyword: float, name_sim: float, dense: float | None) -> float:
-    """후보 점수의 바탕 (조건 가감점 전).
-
-    키워드만: 키워드 + 표명 유사도.
-    하이브리드: 임베딩 + (키워드가 높을 때만) 키워드·표명 유사도. 표명 유사도도 글자 겹침이라
-    키워드와 같이 묶는다 ('결혼 몇 건'이 짧은 표명 '결혼 여부'에 끌려가지 않게)
-    """
     lexical = keyword + NAME_WEIGHT * name_sim
     if dense is None:
         return lexical
@@ -902,8 +688,6 @@ def relevance(keyword: float, name_sim: float, dense: float | None) -> float:
 
 
 def wants_current(slots: dict[str, Any]) -> bool:
-    """연도도, 옛날을 가리키는 말도 없는 질문 → 지금 표를 찾는다.
-    '최근 10년'처럼 최신까지 이어지는 기간도 지금 표를 찾는 것이다"""
     c = slots["conditions"]
     if (ref := slots.get("time_ref")) and ref.get("open_end") and c["year_end"] is None:
         return True
@@ -913,9 +697,6 @@ def wants_current(slots: dict[str, Any]) -> bool:
 
 
 def recency_bonus(t: dict[str, Any], slots: dict[str, Any]) -> float:
-    """최신 판(RECENT_END_YEAR 이후까지)·긴 수록 기간(LONG_SPAN_YEARS 이상) 가산.
-    장래 추계 표(~2072)는 늘 최신·긴 표라, 미래를 묻지 않으면 가산하지 않는다
-    ('애를 더 낳을 생각이 있는 여성' → 시나리오별 추계인구가 1위로 오던 문제)"""
     if not slots.get("projection") and PROJECTION_TABLE.search(t["survey_name"] + t["name_n"]):
         return 0.0
     long_span = t["end_year"] - t["start_year"] >= LONG_SPAN_YEARS
@@ -927,25 +708,17 @@ def recency_bonus(t: dict[str, Any], slots: dict[str, Any]) -> float:
     )
 
 
-# ---- 주기 가산: 질문이 월 · 분기 · 반기 단위를 말하면 그 주기의 자료가 있는 표를 올려 준다 ----
-# 순위에 주기를 보는 규칙이 없어, 분기 값을 물은 질문에 분기 자료가 있는 표가 후보 밖에 있었다.
-# 맞는 표인지는 마지막 검토(LLM)가 판단하므로 여기서는 후보 안으로 올려 주기만 한다.
-# 감점 · ✘ 표시는 하지 않는다: 정규식이 놓치면 전과 같고, 잘못 걸려도 잃는 것이 없다
-CYCLE_BONUS = 0.08  # 조건 하나 통과(PASS_BONUS)와 같은 크기
-# 'N월'은 기준일('1월 1일', '11월 기준')이 아닐 때만.
-# '한 달 생활비'의 '한 달'은 주기가 아니라 넣지 않는다
+CYCLE_BONUS = 0.08
 CYCLE_MONTH = re.compile(
     r"월별|월간|매달|매월|달마다|다달이|지난\s*달|이번\s*달|저번\s*달|전월"
     r"|(?<!\d)(?:1[0-2]|[1-9])\s*월(?!\s*\d{1,2}\s*일)(?!\s*(?:말|초)?\s*기준)"
 )
 CYCLE_QUARTER = re.compile(r"분기")
 CYCLE_HALF = re.compile(r"[상하]반기|반기별")
-# 수록 기간 글의 주기: '년 (1997 ~ 2025) , 월 (199701 ~ 202512)'
 TABLE_CYCLE = re.compile(r"(?:^|,\s*)(월|분기|반기)\s*\(")
 
 
 def asked_cycle(question: str) -> str | None:
-    """질문이 말한 주기: 월 / 분기 / 반기. 말하지 않았으면 None"""
     if CYCLE_QUARTER.search(question):
         return "분기"
     if CYCLE_HALF.search(question):
@@ -956,8 +729,6 @@ def asked_cycle(question: str) -> str | None:
 
 
 def cycle_bonus(t: dict[str, Any], want: str) -> float:
-    """그 주기의 자료가 있는 표면 가산. 분기를 물었는데 월 자료만 있으면 절반(더해서 볼 수 있다),
-    반기는 월 · 분기 자료 어느 쪽으로도 볼 수 있다"""
     have = set(TABLE_CYCLE.findall(t.get("period") or ""))
     if want == "월":
         return CYCLE_BONUS if "월" in have else 0.0
@@ -967,13 +738,11 @@ def cycle_bonus(t: dict[str, Any], want: str) -> float:
 
 
 def _population_unmentioned(t: dict[str, Any], said_n: str) -> bool:
-    """특정 집단 조사의 표인데 질문에 그 집단 말이 없다"""
     words = SURVEY_POPULATION.get(t["survey_name"])
     return bool(words) and not any(norm(w) in said_n for w in words)
 
 
 def unasked_modifiers(t: dict[str, Any], said: str) -> list[str]:
-    """표명에 있지만 질문(said)에서 말하지 않은 모집단 수식어"""
     return [
         m for m, asked in SUBSET_MODIFIERS.items() if m in t["name_n"] and not asked.search(said)
     ]
@@ -982,11 +751,7 @@ def unasked_modifiers(t: dict[str, Any], said: str) -> list[str]:
 def rank(
     tables: list[dict[str, Any]], slots: dict[str, Any], dense: list[float] | None = None
 ) -> list[dict[str, Any]]:
-    """dense: tables 순서의 임베딩 점수 (없으면 키워드만)"""
     if slots.get("exclude"):
-        # 같은 분류 축의 반대 값을 찾는 말('아파트가 아니라 단독주택', '미혼 말고 이혼한')은
-        # 그 축을 담은 표가
-        # 답이다. 빼는 단어로 다루면 그 표를 오히려 놓친다 → 빼지 않는다
         contrast = contrast_words(tables, slots)
         if contrast:
             slots = {**slots, "exclude": [w for w in slots["exclude"] if w not in contrast]}
@@ -996,13 +761,9 @@ def rank(
     said = f"{slots.get('question', '')} {slots['topic']} {slots.get('target') or ''}"
     keywords = keyword_scores(tables, tokens)
     if dense is not None:
-        # 키워드 원점수는 IDF 가중 평균이라 질문 단어 하나만 표에 없어도 게이트(0.5)를 못 넘는다
-        # (1위 원점수 중앙값 0.37, 0.5 이상 27%). 질문마다 1위를 1로 맞춘 뒤 게이트를 적용한다.
-        # 키워드만 쓸 때는 원점수로 범위 밖(MIN_SCORE)을 판정하므로 정규화하지 않는다
         top = max(keywords, default=0.0) or 1.0
         keywords = [k / top for k in keywords]
     cut = sorted(dense, reverse=True)[min(DENSE_TOP_K, len(dense)) - 1] if dense else None
-    # 키워드만 쓸 때는 패밀리 점수로 범위 밖을 판정하므로 가산하지 않는다
     timeless = dense is not None and wants_current(slots)
     cycle = asked_cycle(slots.get("question") or "") if dense is not None else None
     said_n = norm(said)
@@ -1030,11 +791,7 @@ def rank(
     return ranked
 
 
-# ---- 4·5. 패밀리 묶기, 멤버·판 선택 ----------------------------------------------
-
-
 def fold(ranked: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """같은 패밀리는 최고 점수 표 하나로 접는다"""
     seen: dict[str, dict[str, Any]] = {}
     for r in ranked:
         seen.setdefault(r["table"]["family_id"], r)
@@ -1047,7 +804,6 @@ def family_axes(rows: list[dict[str, Any]]) -> dict[str, list[str]]:
         return sorted(values, key=lambda v: (v != "전체" and v != "계", v))
 
     axes = {"target": options("target"), "sex": options("sex")}
-    # 최신 연도를 담은 판 → 기간이 긴 판 순 (규칙 2.4, '2006~2015 / 2007~2015 / 2015')
     editions = sorted({(-r["end_year"], r["start_year"], r["edition"]) for r in rows})
     axes["edition"] = list(dict.fromkeys(e for _, _, e in editions))
     return {k: v for k, v in axes.items() if len(v) > 1}
@@ -1056,29 +812,18 @@ def family_axes(rows: list[dict[str, Any]]) -> dict[str, list[str]]:
 def choose(
     family: list[dict[str, Any]], slots: dict[str, Any]
 ) -> tuple[dict[str, Any], list[str], list[str]]:
-    """패밀리 안에서 표 하나 → (표, 빠진 축, 연도 메모)
-
-    되묻기 답이나 화면 버튼으로 고른 값은 slots의 target('전체' 포함)·edition·tbl_id로 들어온다.
-    """
     c = slots["conditions"]
     picked = [r for r in family if r["tbl_id"] == slots.get("tbl_id")]
-    if picked:  # 화면에서 표를 직접 고른 경우
+    if picked:
         return picked[0], [], []
     axes = family_axes(family)
     missing = []
     rows = family
 
     if "target" in axes:
-        # 대상 슬롯이 패밀리명이어도('한국국적 취득자') 질문 속 멤버 이름('혼인 귀화자')으로 고른다
-        # 실험실 §47 멤버 매칭: 질문·대상을 사전(synonyms)으로 넓힌 뒤 멤버 이름과 대조.
-        # 지역으로 나뉜 패밀리는 대상 자리에 지역 이름이 있다 ('서울·인천·경기')
-        # 원문도 함께 본다. 사전 쪽 글은 '사람' 같은 군더더기 말이 지워져 선택지 이름을
-        # 그대로 답해도('…주고받는 사람') 멤버와 안 맞았다
         raw = f"{slots.get('question', '')} {slots.get('target') or ''}"
         said = norm(f"{synonyms.keyword_text(raw)} {raw} {c.get('region') or ''}")
         named = set(mentioned_targets([r["target"] for r in rows], said))
-        # 빼 달라고 한 멤버는 고르지 않는다 ('외국국적동포 말고 외국인 근로자' → 외국국적동포 멤버가
-        # 질문에 이름이 있다고 골리던 문제)
         excluded = [v for w in slots.get("exclude") or [] for v in variants(w)]
         named = {n for n in named if not (n and any(v in norm(n) for v in excluded))}
         match = [r for r in rows if r["target"] in named]
@@ -1097,16 +842,12 @@ def choose(
             match = [r for r in rows if r["sex"] == "계"] or rows
         rows = match
     rows = [r for r in rows if r["edition"] == slots.get("edition")] or rows
-    # 지역 단위를 말한 질문은 그 단위를 가진 판을 우선한다. 없으면 전체에서 고른다
-    # ('2000~2010년 읍면동 주택 수': 읍면동 판(2000~2010) 대신 기간이 긴 시군구 판(1990~2010)을
-    # 고르던 문제, 지연 초안 jy24)
     if c.get("region_level"):
         rows = [r for r in rows if c["region_level"] in (r.get("region_levels") or [])] or rows
 
     notes = []
     year = c["year"]
     if year is None:
-        # 가장 최신 연도를 담은 판 → 그중 기간이 긴 판 (edition_order 1)
         best = min(rows, key=lambda r: (r["edition_order"], r["tbl_id"]))
     else:
         last = c["year_end"] or year
@@ -1126,9 +867,6 @@ def choose(
     return best, missing, notes
 
 
-# ---- 6. 상태 판단 ---------------------------------------------------------------
-
-
 def _brief(t: dict[str, Any]) -> dict[str, Any]:
     return {
         "tbl_id": t["tbl_id"],
@@ -1146,13 +884,6 @@ def find(
     dense: list[float] | None = None,
     scope_by_llm: bool = False,
 ) -> dict[str, Any]:
-    """슬롯 → 검색 결과 (DB·HCX 없이 동작해서 테스트·실험에 쓴다).
-    dense(tables 순서의 임베딩 점수)를 주면 하이브리드, 없으면 키워드만.
-    scope_by_llm: 범위 밖 판정(HCX not_statistics·점수 문턱)을 뒤의 LLM 검토에 맡기고 여기서는
-    거절하지 않는다. 그래서 LLM 검토가 켜진 기본 설정에서는 잡담도 out_of_scope로 나오고,
-    not_statistics 상태는 LLM_PICK=false 일 때만 나온다
-    (실험실 §61-3: 점수 문턱은 범위 안 질문을 잘못 거르고, 007 거르기가 범위 밖 30/30·
-    거짓 거절 1/102)"""
     result: dict[str, Any] = {"status": None, "reason": None, "slots": slots, "table": None}
     if slots["query_type"] == "not_statistics" and scope_by_llm:
         slots["query_type"] = "find_table"
@@ -1178,8 +909,6 @@ def find(
     families = fold(ranked)
     if dense is None:
         gap = AMBIGUOUS_GAP
-        # LLM 검토가 켜져 있으면 임베딩이 실패한 경로도 하이브리드처럼 범위 판정을 맡긴다.
-        # MIN_SCORE로 거르면 호출 제한(42901) 때 정답이 1위여도 거절로 끝난다 (11/2 측정: 40건)
         in_scope = bool(families) and (scope_by_llm or families[0]["score"] >= MIN_SCORE)
     else:
         gap = HYBRID_AMBIGUOUS_GAP
@@ -1214,9 +943,6 @@ def find(
         for f in families[1:TOP_FAMILIES]
     ]
     result["other_families"] = others
-    # '우리 구로 이사 오는'처럼 지역 이름 없이 '우리 구 · 동네'라고 했는데 1위가 시도 전용 표
-    # ('서울특별시 시군구 각세별 이동자수')면, 같은 꼴의 시도별 표를 선택지로 되묻는다
-    # (답 '부산' → 부산 표)
     if (
         allow_clarify
         and not slots["conditions"].get("region")
@@ -1252,13 +978,6 @@ def find(
 def confirmed_guesses(
     t: dict[str, Any], slots: dict[str, Any], checks: dict[str, bool]
 ) -> dict[str, bool]:
-    """LLM 이 짐작해 붙였다가 지워진 낱말(ground_conditions 의 dropped_conditions) 가운데
-    고른 표에 실제로 있는 것 → {'item:전입사유': True}.
-
-    지워진 낱말은 순위에 쓰지 않는다 (짐작이 엉뚱한 표를 끌어올린다: '연령차' → 재혼부부의
-    연령차별 표). 표를 고른 뒤에 그 표에서 확인되는 말만 조건 확인에 ✔ 로 보여 준다.
-    표에 없는 말은 보여 주지 않는다 (대부분 LLM 이 표와 다른 낱말을 쓴 것이라 ✘ 는 헛경고가 된다.
-    11/17 실험실 668문항: ✔ 가 붙는 22문항 모두 정답 표, ✘ 로 맞게 경고하는 문항 0)"""
     out: dict[str, bool] = {}
     for word in slots.get("dropped_conditions") or []:
         for field, kind in (("items", "item"), ("classes", "class")):
@@ -1279,7 +998,6 @@ def resolve(
     family_id: str,
     allow_clarify: bool = True,
 ) -> dict[str, Any]:
-    """패밀리가 정해진 뒤(되묻기 답) 검색 없이 멤버·판만 고른다"""
     result = {"status": None, "reason": None, "slots": slots, "table": None, "candidates": []}
     return finish(result, tables, family_id, None, allow_clarify)
 
@@ -1287,8 +1005,6 @@ def resolve(
 def clarify_axes(
     family: list[dict[str, Any]], slots: dict[str, Any], missing: list[str]
 ) -> list[dict[str, Any]]:
-    """되묻기 축 (규칙 2.3 가안). 기본값이 없는 대상이 빠졌을 때만 묻고,
-    기본값이 있는 성별·연도는 같은 메시지에 함께 넣는다"""
     if "target" not in missing:
         return []
     axes = family_axes(family)
@@ -1308,7 +1024,6 @@ def finish(
     score: float | None,
     allow_clarify: bool,
 ) -> dict[str, Any]:
-    """패밀리 확정 후: 멤버·판 선택 → 되묻기 또는 표 하나"""
     slots = result["slots"]
     family = [t for t in tables if t["family_id"] == family_id]
     table, missing, notes = choose(family, slots)
@@ -1332,7 +1047,7 @@ def finish(
         }
     checks = check(table, slots)
     failed = [k for k, ok in checks.items() if not ok]
-    checks.update(confirmed_guesses(table, slots, checks))  # ✔ 만 더하므로 failed 는 그대로다
+    checks.update(confirmed_guesses(table, slots, checks))
     result.update(
         {
             "status": "partial_match" if failed or notes else "ok",
@@ -1358,7 +1073,6 @@ def finish(
 async def search(
     question: str, trace: dict[str, Any] | None = None, allow_clarify: bool = True
 ) -> dict[str, Any]:
-    """trace(dict)를 주면 HCX 원본 출력과 단계별 시간(ms)을 담는다 (요청 로그용)"""
     trace = {} if trace is None else trace
     start = time.perf_counter()
 
@@ -1366,29 +1080,24 @@ async def search(
         value = await coro
         return value, time.perf_counter()
 
-    # 슬롯 추출(HCX)과 질문 임베딩은 서로 기다릴 필요가 없어 함께 보낸다
     (slots, parsed_at), (dense, embedded_at) = await asyncio.gather(
         timed(slot_parser.extract(question, trace)), timed(dense_scores(question))
     )
-    # 재작성 검색어(HCX search_query)가 있으면 그 임베딩 점수와 평균한다 (실험실 §52: 교체는 손해,
-    # 평균만
-    # 이득). 슬롯이 온 뒤에야 알 수 있어 임베딩 호출이 한 번 더 든다
     rewrite = (slots.get("search_query") or "").strip()
-    # 임베딩이 실패해도 답은 하므로, 측정이 유효한지 볼 수 있게 어느 호출이 실패했는지 남긴다
     trace["embedding"] = {"question": dense is not None, "rewrite": None}
     if dense is not None and rewrite and rewrite != question.strip():
         dense2, embedded_at = await timed(dense_scores(rewrite))
         trace["embedding"]["rewrite"] = dense2 is not None
         if dense2 is not None:
             dense = [(a + b) / 2 for a, b in zip(dense, dense2, strict=True)]
-    ground_conditions(slots)  # 추측 단어 거르기
+    ground_conditions(slots)
     ready = max(parsed_at, embedded_at)
     tables = await load_tables()
     result = find(
         tables, slots, allow_clarify, dense, scope_by_llm=vector_search.get_settings().llm_pick
     )
     searched = time.perf_counter()
-    from app.services import llm_pick  # 검색 뒤 HCX-007 최종 검토
+    from app.services import llm_pick
 
     result = await llm_pick.review(question, result, tables, trace)
     trace["timings"] = {

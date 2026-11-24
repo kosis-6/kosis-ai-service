@@ -1,5 +1,3 @@
-"""갱신 뒤 mart.population 다시 만들기 (DB의 실제 적재본으로 확인, 바꾸지 않고 되돌린다)"""
-
 import psycopg
 import pytest
 
@@ -23,7 +21,6 @@ def test_other_tables_do_nothing(pg) -> None:
 
 @pytest.mark.needs_data
 def test_rebuild_matches_preprocess_rule(pg) -> None:
-    # 같은 규칙: raw.stat_value에서 다시 만든 결과가 지금 표와 같아야 한다 (트랜잭션 안에서 비교)
     with pg.transaction():
         pg.execute(population_mart.BUILD, [population_mart.TABLE])
         diff = pg.execute(

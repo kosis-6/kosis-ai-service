@@ -1,20 +1,3 @@
-"""app.admin_audit 추가, app.search_logs 를 사용자와 잇고 날짜 인덱스 추가
-
-1. app.admin_audit: 관리자 API 호출 기록 (누가 언제 무엇을 봤는지·바꿨는지).
-   관리자가 사용자의 질문과 이메일을 볼 수 있어 그 열람을 남긴다 (app/services/admin_audit.py).
-2. app.search_logs.user_id → app.users.id (ON DELETE SET NULL).
-   지금까지는 연결이 없어 사용자를 지워도 그 번호가 기록에 남았다. 대화 턴 기록(app.chat_turns)처럼
-   사용자를 지우면 기록은 남고 번호만 비운다. 이미 없는 사용자를 가리키는 번호는 먼저 비운다.
-3. app.search_logs(created_at) 인덱스: 기간으로 거르고(관리자 화면), 30일 지난 기록을 지울 때 쓴다
-   (app/services/search_log.py 의 KEEP_DAYS).
-
-app.search_logs 는 처음 기록할 때 만들어지는 테이블이라(search_log.DDL) 아직 없을 수 있다.
-없으면 같은 모양으로 먼저 만든다.
-
-Revision ID: 0017
-Revises: 0016
-"""
-
 from collections.abc import Sequence
 
 import sqlalchemy as sa
@@ -26,7 +9,6 @@ down_revision: str | None = "0016"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
-# app/services/search_log.py 의 DDL 과 같다
 SEARCH_LOGS = """
 CREATE TABLE IF NOT EXISTS app.search_logs (
     id           bigserial PRIMARY KEY,

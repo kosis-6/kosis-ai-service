@@ -1,16 +1,3 @@
-"""요청 로그 보기: 틀린 답이 질문 해석(HCX·보정) 문제인지 조회·계산 문제인지 추적한다
-
-/ask 요청마다 data/requests/requests.jsonl에 한 줄씩 쌓인다 (qa.log_request).
-  hcx_raw   HCX 원문         → JSON을 못 읽었거나(parse_error) 해석 자체가 틀렸는지
-  parsed    해석 + 보정 내역 → 코드 보정(corrections)이 맞게 고쳤는지
-  result    조회·계산 결과   → 해석은 맞는데 값이나 status가 틀렸는지
-
-실행: python -m scripts.request_log                       (상태별 요약 + 최근 10건)
-      python -m scripts.request_log --status parse_error  (이 status만)
-      python -m scripts.request_log --last 3 --detail     (HCX 원문·해석·계산 결과까지)
-      python -m scripts.request_log --flow --find 출생아     (질문이 거친 단계와 순서)
-"""
-
 import argparse
 import json
 from collections import Counter
@@ -27,7 +14,6 @@ def load(path: Path = REQUEST_LOG) -> list[dict]:
 
 
 def summarize(records: list[dict]) -> str:
-    """status별 건수와 평균 응답 시간"""
     counts = Counter(r["status"] or "실패" for r in records)
     lines = [f"요청 {len(records)}건", "", "| status | 건수 | 평균 응답(ms) |", "|---|---|---|"]
     for status, n in counts.most_common():

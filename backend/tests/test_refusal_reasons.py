@@ -1,5 +1,3 @@
-"""'표 찾고도 거절' 원인 집계 (scripts/refusal_reasons.py)"""
-
 import json
 
 from scripts import eval_devset
@@ -84,7 +82,6 @@ def test_eval_uses_the_final_turn_and_marks_answer_items(tmp_path) -> None:
 
 
 def test_search_ok_turns_are_counted_apart(tmp_path) -> None:
-    # 통계표 찾기가 '조건 충족'(ok)이라 했는데 통계표 안내로 끝난 턴: 두 단계의 기준이 어긋남
     path = tmp_path / "x.raw.jsonl"
     rows = [
         {
@@ -106,7 +103,6 @@ def test_search_ok_turns_are_counted_apart(tmp_path) -> None:
     lines = rr.table(by, total, exact={"D-1"})
     assert "통계표 찾기는 '조건 충족'이라 한 턴 1건 (†)" in lines[0]
     assert "| 표에 성별 구분이 없음 | 2 | 1 | D-1† D-2 |" in "\n".join(lines)
-    # exact를 주지 않으면 지금 표 그대로
     assert lines[2] != rr.table(by, total)[2]
     assert rr.table(by, total)[2] == "| 원인 | 건수 | 문항 | 막힌 단계 | 고칠 곳 |"
 
@@ -141,7 +137,6 @@ def test_eval_columns_and_summary() -> None:
 
 
 def test_no_try_turn_has_search_status() -> None:
-    # 바로 계산을 시도하지 않은 통계표 안내 턴도 '표 찾기 판정'이 있어야 한다 (eval_devset이 꺼낸다)
     turn = {"status": "tables", "trace": {}, "tables": {"status": "ok"}}
     assert rr.reason_of(turn)["search"] == "ok"
     assert eval_devset.refusal_columns(turn)["표 찾기 판정"] == "ok"

@@ -1,40 +1,21 @@
-"""질문 답변(/ask)의 연도 되묻기와 대화 이어 받기
-
-과거 표현만 있고 연도가 없는 질문("과거와 최근 인구수 비교해줘", "예전보다 늘었어?")은 어느 해와
-비교할지 알 수 없어 계산하지 않고 되묻는다 (status = missing_year). 가능한 기간을 함께 알려 준다.
-  - DB에 있는 기간 (지표 사전에 연결한 과거 연도용 표 포함)
-  - KOSIS에 더 이른 연도가 있으면 그 시작 연도 (catalog.table_meta)
-
-최근·최신·현재처럼 지금을 가리키거나 시점 표현이 없으면 되묻지 않고 가장 최근 연도로 답한다.
-
-되묻기 뒤 사용자가 "2000년이랑"처럼 연도만 짧게 답하면, 같은 session_id의 앞 질문과 합쳐 다시 묻는다
-("과거와 최근 인구수 비교해줘" + "2000년" → "2000년과 최근 인구수 비교해줘").
-되묻는 중이라는 것과 원래 질문은 대화 상태에 둔다 (ask_session.py의 pending).
-"""
-
 import re
 from typing import Any
 
 from app.services import slots, timeref
 
 VAGUE_PAST = re.compile(r"과거|예전|옛날|옛적")
-# "과거부터 지금까지 합계출산율 추이" → 되묻지 않고 수록 기간 전체 추이 (qa.correct의 from_start)
 FROM_PAST = re.compile(r"(과거|예전|옛날|옛적)\s*부터")
 VAGUE_WITH_PARTICLE = re.compile(r"(과거|예전|옛날|옛적)(와|랑|를|가|는|)")
-# 받침 없는 말 뒤 조사 → '년'(받침) 뒤 조사. 없는 조사(보다·에·이랑 등)는 그대로
 PARTICLE_AFTER_NYEON = {"와": "과", "랑": "이랑", "를": "을", "가": "이", "는": "은"}
-FOLLOW_UP_MAX_CHARS = 25  # 이보다 길면 되묻기 답이 아니라 새 질문으로 본다
-# 되묻기 답에서 연도 표현을 지운 뒤 남아도 되는 말 (조사·접속어·문장부호).
-# 이것 말고 다른 말("출생아 수", "서울 인구")이 남으면 새 질문으로 본다
+FOLLOW_UP_MAX_CHARS = 25
 REPLY_FILLER = re.compile(
     r"\s+|[,.·~\-?!/()]|이랑|랑|하고|과|와|부터|까지|에서|이고|그리고|및|도|으로|로|"
     r"입니다|이에요|예요|이요|요|기준|비교|대비|보다|년도|년|쯤|정도"
 )
-CENSUS_EVERY = 5  # 인구총조사 주기 (기간 안내를 줄일 때)
+CENSUS_EVERY = 5
 
 
 def has_explicit_year(question: str) -> bool:
-    """연도나 상대 시점("2010년", "'95년", "1990년대", "작년", "5년 전", "최근 5년")이 있는가"""
     return bool(
         slots.YEAR.search(question)
         or slots.short_years(question)
@@ -46,7 +27,6 @@ def has_explicit_year(question: str) -> bool:
 
 
 def needs_year(question: str) -> bool:
-    """과거 표현만 있고 연도가 없어 되물어야 하는 질문인가"""
     return (
         bool(VAGUE_PAST.search(question))
         and not has_explicit_year(question)
@@ -55,9 +35,6 @@ def needs_year(question: str) -> bool:
 
 
 def _span_text(spans: list[tuple[int, int]]) -> str:
-    """[(1980, 1980), (2022, 2025)] → '1980년, 2022~2025년'
-    이어지는 기간은 합치고 ([(1970, 1989), (1990, 2025)] → '1970~2025년'),
-    5년마다 한 해씩인 인구총조사는 줄인다 (1970, 1975, …, 2020 → '1970~2020년(5년마다)')"""
     merged: list[list[int]] = []
     for lo, hi in sorted(set(spans)):
         if merged and lo <= merged[-1][1] + 1:
@@ -74,7 +51,7 @@ def _span_text(spans: list[tuple[int, int]]) -> str:
             and merged[j + 1][0] == merged[j + 1][1] == merged[j][0] + CENSUS_EVERY
         ):
             j += 1
-        if j - i >= 2:  # 세 번 이상 이어질 때만 줄인다
+        if j - i >= 2:
             parts.append(f"{lo}~{merged[j][0]}년({CENSUS_EVERY}년마다)")
         else:
             j = i
@@ -84,7 +61,6 @@ def _span_text(spans: list[tuple[int, int]]) -> str:
 
 
 def missing_year(parsed: dict[str, Any]) -> dict[str, Any]:
-    """되묻기 결과. 지표를 알면 그 지표의 기간을, 모르면 연도만 묻는다 (DB를 읽으므로 스레드에서)"""
     from app.services import indicators, lookup
 
     name = parsed.get("indicator") or ""
@@ -121,7 +97,6 @@ def missing_year(parsed: dict[str, Any]) -> dict[str, Any]:
 
 
 def guide(r: dict[str, Any]) -> str:
-    """되묻기 답변 문장 (qa._refusal_text)"""
     name = r.get("indicator")
     if not r.get("available"):
         return "비교할 연도를 넣어 다시 질문해 주세요 (예: 2010년과 2025년)."
@@ -132,19 +107,14 @@ def guide(r: dict[str, Any]) -> str:
     return text + f" 비교할 연도를 알려 주세요 (예: {lo}년과 {hi}년)."
 
 
-# ---- 대화 이어 받기 -----------------------------------------------------------------------
-
-
 def merge(pending: str, reply: str) -> str | None:
-    """되묻기 답("2000년이랑")을 앞 질문과 합친다. 답이 아니라 새 질문이면 None"""
     reply = reply.strip()
     if len(reply) > FOLLOW_UP_MAX_CHARS or not has_explicit_year(reply):
         return None
-    if not _only_years(reply):  # "2020년 출생아 수", "작년 서울 인구"는 새 질문
+    if not _only_years(reply):
         return None
     years = sorted({int(y) for y in slots.YEAR.findall(reply)} | slots.short_years(reply))
     if len(years) == 1 and VAGUE_PAST.search(pending):
-        # "과거와" → "2000년과" ('년' 뒤라 받침 조사로 바꾼다)
         return VAGUE_WITH_PARTICLE.sub(
             lambda m: f"{years[0]}년" + PARTICLE_AFTER_NYEON.get(m.group(2), m.group(2)),
             pending,
@@ -154,8 +124,7 @@ def merge(pending: str, reply: str) -> str | None:
 
 
 def _only_years(reply: str) -> bool:
-    """연도 표현과 조사만 있는 답인가 ("2000년이랑", "2000년, 2010년", "작년", "5년 전")"""
-    rest = slots.DECADE.sub(" ", reply)  # "1990년대" (연도보다 먼저: '년대'의 '년')
+    rest = slots.DECADE.sub(" ", reply)
     rest = slots.SHORT_DECADE.sub(" ", rest)
     rest = slots.YEAR.sub(" ", rest)
     rest = slots.SHORT_YEAR.sub(" ", rest).replace("'", " ")

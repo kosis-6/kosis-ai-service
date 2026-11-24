@@ -1,6 +1,3 @@
-// 질문의 답 한 건 (POST /ask)
-//   수치로 답함: 알림 + 답변 문장 + 적용한 조건 + 차트 + 수치·계산식 + 통계표 카드 + 출처
-//   통계표만 안내함(status "tables"): 통계표 찾기와 같은 말풍선·표 카드·선택지 (Reply)
 import { lazy, Suspense, useState } from "react";
 import type { Applied, AskResponse, Parsed, Recommendation, SearchResponse } from "../api/types";
 import { Icon } from "../components/Icon";
@@ -8,11 +5,8 @@ import { safeUrl, splitLinks } from "./format";
 import { Reply, TopCard, type Send } from "./Reply";
 import { canReport, openReport } from "./report";
 
-// 차트 라이브러리(Recharts)는 차트가 있는 답을 처음 그릴 때 내려받는다
 const ChartCard = lazy(() => import("./Chart"));
 
-/** 서버 답변을 나눈다: 첫 문단은 말풍선에, 나머지(수치 목록·계산식·주의)는 접어 둔다.
- * 출처·통계표 줄은 아래 출처 칸이 대신하므로 뺀다 */
 export function splitAnswer(answer: string): { lead: string; detail: string } {
   const [lead, ...rest] = answer.split("\n\n");
   const detail = rest
@@ -42,7 +36,6 @@ function Linked({ text }: { text: string }) {
 
 const SOURCE_WORDS: Record<string, string> = { inherited: "이어받음", default: "기본값" };
 
-// 이번 답에 적용한 조건. 사용자가 말하지 않은 조건(앞 질문에서 이어받음, 기본값)은 그렇다고 적는다
 function Conditions({ applied }: { applied: Applied[] }) {
   if (!applied.length) return null;
   return (
@@ -66,7 +59,6 @@ type Props = {
   onAskAgain: () => void;
 };
 
-// 보고서는 새 탭에 띄워 확인한 뒤 그 탭에서 저장한다 (새 탭이 막히면 파일로 바로 저장)
 function ReportButton({ data }: { data: AskResponse }) {
   const [message, setMessage] = useState<string | null>(null);
   return (
@@ -94,8 +86,6 @@ export function Answer({ data, busy, onSend, onOthers, onAskAgain }: Props) {
   const clarification = data.clarification;
   const options = clarification?.options ?? [];
 
-  // 수치 없이 통계표만 안내한 답 (지원하지 않는 지표 등): 표 카드·선택지를 통계표 찾기 화면과 같게 그린다
-  // 답변 불가 사유를 정한 뒤(partial_match · band_mismatch)에도 result.status 는 "tables" 로 남는다
   if ((data.status === "tables" || data.result?.status === "tables") && tables) {
     const search: SearchResponse = {
       session_id: data.session_id ?? "",
@@ -121,7 +111,6 @@ export function Answer({ data, busy, onSend, onOthers, onAskAgain }: Props) {
     );
   }
 
-  // 답하지 못한 경우(연도 되묻기, 자료 준비 중, 범위 밖)는 서버 안내를 그대로 보여 준다
   if (data.status !== "ok") {
     return (
       <>
@@ -153,13 +142,11 @@ export function Answer({ data, busy, onSend, onOthers, onAskAgain }: Props) {
 
   const { lead, detail } = splitAnswer(data.answer);
   const cards = tables?.recommendations ?? [];
-  // 표 카드로 보여 준 표는 출처 목록에서 뺀다 (같은 표의 KOSIS 버튼이 두 번 나오지 않게)
   const carded = new Set(cards.map((c) => c.tbl_id));
   const sources = data.sources.filter((s) => !s.tbl_id || !carded.has(s.tbl_id));
   return (
     <>
       {notice}
-      {/* 출처를 물은 답(request_type "source")은 말풍선에 통계표 주소가 있어 링크로 만든다 */}
       <div className="bubble">
         <Linked text={lead} />
       </div>
@@ -171,7 +158,6 @@ export function Answer({ data, busy, onSend, onOthers, onAskAgain }: Props) {
         </Suspense>
       )}
       {detail && data.request_type !== "chart" && data.request_type !== "summary" && (
-        // 차트가 없으면(값 하나) 계산식이 답의 일부라 펼쳐 둔다. "더 자세히"라고 했을 때도 펼친다
         <details className="answer-detail" open={!data.chart || data.request_type === "detail"}>
           <summary>수치와 계산식 보기</summary>
           <p>

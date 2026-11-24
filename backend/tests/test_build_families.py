@@ -20,7 +20,6 @@ def test_edition_name_strips_year_and_revision() -> None:
     assert bf.edition_name("성/연령(5세)/직업별(신) 사망자수(1993~2017)") == (
         "성/연령(5세)/직업별 사망자수"
     )
-    # 연령 표기처럼 네 자리 연도가 아닌 괄호는 남긴다
     assert bf.edition_name("시군구/성/연령(5세)별 사망률") == "시군구/성/연령(5세)별 사망률"
 
 
@@ -31,7 +30,6 @@ def test_member_of() -> None:
         "남",
     )
     assert bf.member_of("한국국적을 취득한 자(계)") == ("한국국적을 취득한 자", "전체", "계")
-    # 성별 표기가 없으면 '-시군구'도 표명의 일부
     assert bf.member_of("혼인상태별 인구-시군구") == ("혼인상태별 인구-시군구", None, None)
 
 
@@ -47,9 +45,7 @@ def test_build_groups_members_and_orders_editions() -> None:
     by_id = {r["tbl_id"]: r for r in rows}
     family = {by_id[t]["family_id"] for t in ("A017", "A020", "A020_A")}
     assert len(family) == 1
-    # 조사가 다르면 다른 패밀리
     assert by_id["X"]["family_id"] not in family
-    # 같은 연도를 담은 판이 둘이면 기간이 긴 판이 1번
     assert (by_id["A020"]["edition_order"], by_id["A020"]["edition"]) == (1, "2007~2015")
     assert (by_id["A020_A"]["edition_order"], by_id["A020_A"]["edition"]) == (2, "2015")
     assert by_id["A017"]["target"] == "전체"
@@ -69,7 +65,6 @@ def test_renamed_successor_joins_old_member() -> None:
         _tc("A020", "한국국적을 취득한 자-혼인 귀화자(계)", 2007, 2015, "R"),
         _tc("A008", "외국인-국제결혼 이주자(계)", 2007, 2015, "R"),
         _tc("A008_A", "외국인-결혼이민자(계)", 2015, 2024, "R"),
-        # ID는 맞지만 분류 구성이 다르면 붙이지 않는다
         _tc("A029", "국제결혼 가정 자녀(2007~2015)", 2007, 2015, "R"),
         _tc("A029_A", "가정 자녀(연령별)", 2015, 2015, "R", "AGE"),
     ]
@@ -78,7 +73,6 @@ def test_renamed_successor_joins_old_member() -> None:
     assert new["family_id"] == old["family_id"] == by_id["A020"]["family_id"]
     assert (new["target"], new["edition_order"], new["renamed_from"]) == ("전체", 1, "A017")
     assert (old["edition_order"], old["renamed_from"]) == (2, None)
-    # 대상 이름은 최신 표 기준
     assert by_id["A008"]["target"] == by_id["A008_A"]["target"] == "결혼이민자"
     assert by_id["A029"]["family_id"] != by_id["A029_A"]["family_id"]
     assert bf.successors(tables)[1] == [("A029", "A029_A")]
@@ -97,10 +91,8 @@ def test_spacing_and_symbol_variants_are_editions() -> None:
     by_id = {r["tbl_id"]: r for r in rows}
     assert by_id["OLD"]["family_id"] == by_id["NEW"]["family_id"]
     assert by_id["C1"]["family_id"] == by_id["C2"]["family_id"]
-    # 보여 줄 이름은 최신 판 표기, 판 순서는 최신 판이 1번
     assert by_id["OLD"]["family_name"] == "성별 외국인-시군구"
     assert (by_id["NEW"]["edition_order"], by_id["OLD"]["edition_order"]) == (1, 2)
-    # 지역 수준이 다르면 다른 패밀리
     assert by_id["S"]["family_id"] != by_id["NEW"]["family_id"]
 
 
@@ -121,10 +113,8 @@ def test_notation_variants_are_editions_of_one_member() -> None:
             ]
         )
     }
-    # '및'·'별'·기호만 다르면 같은 표의 판, 최신 판이 먼저
     assert rows["OLD"]["family_id"] == rows["NEW"]["family_id"]
     assert (rows["NEW"]["edition_order"], rows["OLD"]["edition_order"]) == (1, 2)
-    # 지역 단위나 다른 낱말이 다르면 합치지 않는다
     assert rows["SGG"]["family_id"] != rows["NEW"]["family_id"]
     assert rows["MOM"]["family_id"] != rows["DAD"]["family_id"]
 
@@ -156,10 +146,8 @@ def test_target_split_without_sex_tag() -> None:
             [
                 _shaped("H", "차별 받은 경험 - 병원 및 복지기관", 2024),
                 _shaped("S", "차별 받은 경험 - 가게 및 식당", 2024),
-                # '-' 뒤가 지역 수준이면 대상이 아니다
                 _shaped("A", "성별 외국인-시도", 2024),
                 _shaped("B", "성별 외국인-시군구", 2024),
-                # 분류 구성이 다르면 앞부분이 같아도 다른 패밀리
                 _shaped("X", "차별 받은 경험 - 동네 주민", 2024, classes=("연령",)),
             ]
         )
@@ -178,12 +166,9 @@ def test_region_split_members() -> None:
             [
                 _shaped("SU", "통근통학 인구(서울, 인천, 경기)(12세 이상)-시군구", 2020),
                 _shaped("GW", "통근통학 인구(강원)(12세 이상)-시군구", 2020),
-                # 같은 멤버의 다른 판은 기간이 달라도 따라온다
                 _shaped("GW15", "통근통학 인구(강원)(12세이상)-시군구", 2015),
-                # 같은 폴더·구조라도 시도 이름 말고 다른 말이 다르면 묶지 않는다
                 _shaped("M", "혼인상태별 인구", 2020, folder="인구 > 기타"),
                 _shaped("E", "교육정도별 인구", 2020, folder="인구 > 기타"),
-                # 구조가 다르면 시도 이름만 달라도 묶지 않는다
                 _shaped("BS", "통근통학 인구(부산)(12세 이상)-시군구", 2020, items=("인구", "%")),
             ]
         )
@@ -233,7 +218,6 @@ def test_same_period_with_other_structure_is_not_an_edition() -> None:
             ]
         )
     }
-    # 기호만 다른 이름이라도 같은 해에 구조가 다른 표가 둘이면 판이 아니다
     assert rows["A75"]["family_id"] == rows["A70"]["family_id"]
     assert rows["B75"]["family_id"] != rows["A75"]["family_id"]
     assert (rows["A75"]["edition_order"], rows["A70"]["edition_order"]) == (1, 2)
@@ -251,7 +235,6 @@ def test_region_label_with_new_sido_is_one_member() -> None:
             ]
         )
     }
-    # 세종이 새로 들어간 것만 다른 권역은 한 멤버의 판, 최신 판이 기본
     assert rows["D10"]["target"] == rows["D20"]["target"] == "대전·세종·충북·충남"
     assert (rows["D20"]["edition_order"], rows["D10"]["edition_order"]) == (1, 2)
     assert rows["S10"]["target"] == "서울·인천·경기"

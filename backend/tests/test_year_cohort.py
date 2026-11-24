@@ -1,5 +1,3 @@
-"""'년대'는 기간, '년생'은 출생 연도: 조회 연도로 읽지 않는다 (슬롯·지표 경로 모두)"""
-
 from datetime import date
 
 import pytest
@@ -12,7 +10,6 @@ TODAY = date(2026, 11, 22)
 
 @pytest.fixture(autouse=True)
 def no_statistics_db(monkeypatch):
-    """연도·연령 해석은 원자료 없이도 검증한다."""
     monkeypatch.setattr(qa.indicators, "find_regions", lambda *a: [])
     monkeypatch.setattr(qa.indicators, "_data_years", lambda: (1990, 2025))
     monkeypatch.setattr(qa, "_full_region_names", lambda *a: None)
@@ -28,15 +25,15 @@ def _slots(question: str) -> dict:
     [
         ("1990년대 서울 인구 변화", [(1990, 1999)]),
         ("90년대 출생아", [(1990, 1999)]),
-        ("2020년대 출생아", [(2020, 2026)]),  # 지나는 연대는 올해까지
+        ("2020년대 출생아", [(2020, 2026)]),
         ("2030년대 인구 전망", [(2030, 2039)]),
         ("2000년대 초반 부산 인구", [(2000, 2003)]),
         ("90년대 후반 출생아", [(1997, 1999)]),
         ("1990년대 말에", [(1997, 1999)]),
-        ("1990년대 초등학생 수", [(1990, 1999)]),  # '초등학생'의 초는 초반이 아니다
+        ("1990년대 초등학생 수", [(1990, 1999)]),
         ("1990년대 말레이시아 이민", [(1990, 1999)]),
         ("2000년대와 2010년대 비교", [(2000, 2009), (2010, 2019)]),
-        ("1990년대생 인구", []),  # 출생 연대
+        ("1990년대생 인구", []),
         ("2000년 대비 2020년", []),
         ("2000년 대구 인구", []),
     ],
@@ -50,8 +47,8 @@ def test_decades(question: str, span: list[tuple[int, int]]) -> None:
     [
         ("1990년생 인구", {1990}),
         ("90년생 인구", {1990}),
-        ("1990년대생 인구", set(range(1990, 2000))),  # 출생 연대는 열 해 모두
-        ("2020년 생산가능인구", set()),  # 띄어 쓴 '생'은 출생이 아니다
+        ("1990년대생 인구", set(range(1990, 2000))),
+        ("2020년 생산가능인구", set()),
     ],
 )
 def test_birth_years(question: str, born: set[int]) -> None:
@@ -64,7 +61,7 @@ def test_birth_years(question: str, born: set[int]) -> None:
         ("1990년대 서울 인구 변화", 1990, 1999),
         ("1990년대부터 2010년까지", 1990, 2010),
         ("2000년대 초반 부산 인구", 2000, 2003),
-        ("1990년생 인구", None, None),  # 출생 연도 → 최신 자료
+        ("1990년생 인구", None, None),
         ("1990년대생 인구", None, None),
         ("1990년생이 2020년에 몇 명", 2020, None),
         ("2000년 대비 2020년 인구", 2000, 2020),
@@ -117,9 +114,9 @@ def test_followup_decade_reply_is_a_year() -> None:
 @pytest.mark.parametrize(
     ("question", "ref", "span"),
     [
-        ("1990년생", 2025, (35, 35)),  # 연말 기준 만 나이
+        ("1990년생", 2025, (35, 35)),
         ("90년대생", 2025, (26, 35)),
-        ("2020년대생", 2025, (0, 5)),  # 아직 다 태어나지 않은 연대는 기준 해까지
+        ("2020년대생", 2025, (0, 5)),
         ("2030년생", 2025, None),
     ],
 )
@@ -130,9 +127,9 @@ def test_birth_age(question: str, ref: int, span: tuple | None) -> None:
 @pytest.mark.parametrize(
     ("question", "age"),
     [
-        ("1990년생 인구", (36, 36, "2026년 기준 만 나이")),  # 연도가 없으면 올해 기준
+        ("1990년생 인구", (36, 36, "2026년 기준 만 나이")),
         ("90년대생 서울 인구", (27, 36, "2026년 기준 만 나이")),
-        ("1990년생이 2020년에 몇 명", (30, 30, "2020년 기준 만 나이")),  # 물은 연도 기준
+        ("1990년생이 2020년에 몇 명", (30, 30, "2020년 기준 만 나이")),
     ],
 )
 def test_slot_birth_to_age(question: str, age: tuple, monkeypatch) -> None:
@@ -148,7 +145,6 @@ def test_slot_named_age_group_wins_over_birth_year() -> None:
 def test_indicator_birth_year_becomes_age() -> None:
     p = qa.correct("1990년생 서울 인구", _parsed(year=1990), TODAY)
     assert p["year"] is None and p["born"]["expr"] == "1990년생"
-    # 계산할 때 자료 마지막 해 기준으로 나이를 정하고 답에 기준을 남긴다
     q = dict(p)
     assert qa.born_ages(q, 2025) == [(35, 35)]
     assert q["age_group"] == {"expr": "1990년생", "range": "35세", "basis": "2025년 기준 만 나이"}

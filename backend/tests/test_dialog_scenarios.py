@@ -1,8 +1,3 @@
-"""되묻기 최소 시나리오: 질문부터 표 확정까지 여러 턴을 이어서 본다 (HCX·임베딩·DB 없이).
-
-dialog.handle을 그대로 돌리고, 세션 저장만 메모리로 바꾼다. 상태는 DB처럼 JSON을 거쳐 저장한다.
-"""
-
 import asyncio
 import json
 
@@ -82,13 +77,13 @@ def test_target_answer_confirms_table_without_new_search(chat) -> None:
     done = chat("혼인 귀화자")
     assert done["status"] in ("ok", "partial_match")
     assert done["table"]["tbl_id"].startswith("혼인 귀화자")
-    assert chat.searched == [TARGET_Q]  # 답은 다시 검색하지 않는다
+    assert chat.searched == [TARGET_Q]
 
 
 def test_answer_can_carry_target_sex_and_year_together(chat) -> None:
     chat(TARGET_Q)
     done = chat("혼인 귀화자, 여성, 2010년")
-    assert _table(done) == "혼인 귀화자여_old"  # 2010년을 담은 판 (2007~2015)
+    assert _table(done) == "혼인 귀화자여_old"
 
 
 def test_anything_falls_back_to_default_member(chat) -> None:
@@ -96,7 +91,7 @@ def test_anything_falls_back_to_default_member(chat) -> None:
     done = chat("아무거나")
     assert done["status"] in ("ok", "partial_match")
     assert _table(done).startswith("전체")
-    assert done["slots"]["target_default"] is True  # 답변에 '전체로 안내' 고지
+    assert done["slots"]["target_default"] is True
 
 
 def test_screen_button_selection_needs_no_text_match(chat) -> None:
@@ -107,10 +102,8 @@ def test_screen_button_selection_needs_no_text_match(chat) -> None:
 
 def test_clarify_stops_after_two_turns(chat) -> None:
     assert chat(TARGET_Q)["status"] == "clarify"
-    # 대상을 말하지 않은 답(성별만)이면 한 번 더 묻는다
     second = chat("여자")
     assert second["status"] == "clarify" and second["turn"] == 1
-    # 두 번째 답에서도 대상이 없으면 더 묻지 않고 기본값으로 답한다
     third = chat("2010년")
     assert third["status"] in ("ok", "partial_match") and third["turn"] == 2
     assert _table(third) == "전체여_old"
@@ -119,9 +112,9 @@ def test_clarify_stops_after_two_turns(chat) -> None:
 
 def test_answer_matching_no_option_is_a_new_question_even_on_last_turn(chat) -> None:
     chat(TARGET_Q)
-    assert chat("여자")["status"] == "clarify"  # 이제 성별은 묻는 항목이 아니다
+    assert chat("여자")["status"] == "clarify"
     chat("남자")
-    assert chat.searched[1] == "남자"  # 선택지와 안 맞으면 기본값이 아니라 새 질문으로 찾는다
+    assert chat.searched[1] == "남자"
 
 
 def test_new_question_while_clarifying_starts_over(chat) -> None:
@@ -157,7 +150,6 @@ def test_sessions_do_not_mix(chat) -> None:
 
 
 def test_exact_option_with_filler_word_confirms_member(monkeypatch) -> None:
-    """선택지에 '사람' 같은 군더더기 말이 있어도 이름을 그대로 답하면 바로 확정한다"""
     tables = se.prepare(
         [
             _t("N1", "한국인 이웃 수 - 마주치면 인사하는 사람", 2025, 2025, "FN",

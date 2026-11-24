@@ -42,34 +42,20 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 CATALOG = ROOT / "data" / "catalog" / "population_table_catalog_with_meta.jsonl"
-EXPECTED_TABLES = 2364  # 국가데이터처 제공 표 수
+EXPECTED_TABLES = 2364
 KOSIS_URL = "https://kosis.kr/statHtml/statHtml.do?orgId={org_id}&tblId={tbl_id}"
 
-# 합계 이름 (검색 규칙 7장). 성별 분류 값과 항목 이름에서 합계를 찾을 때 쓴다
 TOTAL_NAMES = {"계", "합계", "전체", "총계", "인구", "총인구", "소계"}
 MALE = {"남", "남자", "남성", "남편"}
 FEMALE = {"여", "여자", "여성", "아내"}
-# 성별 분류: '성별', '내외국인 및 성별', '성 및 농가비농가별' 등. 가구주 성별은 다른 축이라 뺀다
 SEX_CLASS_EXCLUDE = re.compile(r"가구주|성씨|세대|구성|특성|정체성|소속감")
-# 항목 이름 속 성별 단어: '남자', '총인구_남자', '남자-미혼', '남-현거주지', '고령자 남자'
 SEX_TOKEN = re.compile(r"(?:^|[_\s(·,-])(남|남자|남성|여|여자|여성)(?=$|[_\s)·,-])")
-# 표 자체가 성별로 나뉜 경우: '한국국적을 취득한 자-혼인 귀화자(남)', '…(여)(2007~2015)'
 SEX_MEMBER = re.compile(r"\((계|남|여)\)")
-# 이전 거주지 분류: '5년전 거주지별', '1년전거주지별'
 PREV_REGION = re.compile(r"\d+\s*년\s*전")
 REGION_LEVEL_ORDER = ["시도", "시군구", "읍면동"]
-# KOSIS 가 level_names 를 비워 둔 지역 축. 값은 시도 이름 목록인데 지역 수준이 없어,
-# '시도별' 조건에서 정답 표가 감점됐다
-# ('시도 간 인구 이동 통계' → '전출지/전입지(시도)별 이동자수'가 7위).
-# 축 이름이 사는 곳 · 옮긴 곳일 때만 값을 본다.
-# 값만 보면 항구별 · 성씨본관별 · 출생지별 · 본적지별까지 잡힌다.
-# '도별'은 이름 전체가 같을 때만 ('연도별' · '용도별'이 아니다)
 RESIDENCE_AXIS = re.compile(r"^(?:전출지|전입지|일시현재자|일시부재자|대도시|도)별$")
-# 대도시별 축은 대도시의 구만 담는다. 시군구 전체가 아니라 시도까지만 본다
 SIDO_ONLY_AXIS = re.compile(r"^대도시")
-SIDO_VALUE = re.compile(
-    r"[가-힣]+(?:특별시|광역시|직할시|특별자치시|특별자치도)|[가-힣]{2,3}도"
-)  # 옛 이름(부산직할시, 함경북도)도 시도다
+SIDO_VALUE = re.compile(r"[가-힣]+(?:특별시|광역시|직할시|특별자치시|특별자치도)|[가-힣]{2,3}도")
 SIGUNGU_VALUE = re.compile(r"[가-힣]{1,5}(?:시|군|구)")
 MIN_SIDO_VALUES = 5
 MIN_SIGUNGU_VALUES = 20
@@ -144,13 +130,9 @@ CREATE INDEX IF NOT EXISTS table_meta_years_idx ON catalog.table_meta (start_yea
 
 
 def clean_text(text: str | None) -> str | None:
-    """앞뒤 공백·연속 공백·앞에 붙은 따옴표를 정리한다 ("'세대구성별" → "세대구성별")"""
     if text is None:
         return None
     return re.sub(r"\s+", " ", text).strip().lstrip("'\"").strip() or None
-
-
-# ---- 1. 파생 필드 ---------------------------------------------------------------
 
 
 def years(periods: list[dict[str, str]]) -> tuple[int, int]:
@@ -158,7 +140,6 @@ def years(periods: list[dict[str, str]]) -> tuple[int, int]:
 
 
 def levels_from_values(c: dict[str, Any]) -> list[str]:
-    """level_names 가 없는 지역 축의 지역 수준을 값에서 읽는다 (시도 이름이 5개 이상일 때만)"""
     name = re.sub(r"\s+", "", c["name"])
     raw = c.get("values") or c.get("sample_values") or []
     values = {re.sub(r"\s+", "", v or "") for v in raw}
@@ -172,8 +153,6 @@ def levels_from_values(c: dict[str, Any]) -> list[str]:
 
 
 def region_levels(classifications: list[dict[str, Any]]) -> tuple[list[str], list[str]]:
-    """지역 분류의 level_names를 현거주지 / 이전 거주지로 나눠 모은다.
-    level_names 가 빈 거주 · 이동 지역 축은 값에서 지역 수준을 읽어 채운다"""
     current: set[str] = set()
     previous: set[str] = set()
     for c in classifications:
@@ -206,13 +185,10 @@ def coverage(male: bool, female: bool) -> str:
 def sex_info(
     table_name: str, classifications: list[dict[str, Any]], items: list[dict[str, Any]]
 ) -> tuple[str, str, bool | None]:
-    """(sex_source, sex_coverage, has_total). 분류 → 항목 → 표 이름 순으로 본다"""
     for c in classifications:
         if is_sex_class(c["name"]):
-            # 하위 단계에만 남자·여자가 있는 분류('총인구' 아래 남자·여자)도 보도록 전체 값(values)을 쓴다
             values = {v.strip() for v in c.get("values") or c.get("sample_values") or []}
             sex_coverage = coverage(bool(values & MALE), bool(values & FEMALE))
-            # '성연령배우관계학력별'처럼 이름에 '성'이 있어도 값에 남/여가 없으면 성별 분류가 아니다
             if sex_coverage != "none":
                 return "class", sex_coverage, bool(values & TOTAL_NAMES)
 
@@ -220,13 +196,11 @@ def sex_info(
     tokens = {m.group(1) for n in names for m in SEX_TOKEN.finditer(n)}
     if tokens:
         sex_coverage = coverage(bool(tokens & MALE), bool(tokens & FEMALE))
-        # 기혼여성처럼 한 성별만 다루는 표는 남녀 합계를 따질 필요가 없다
         has_total = _item_total(names) if sex_coverage == "both" else None
         return "item", sex_coverage, has_total
 
     member = SEX_MEMBER.search(table_name)
     if member:
-        # (남)/(여) 표의 합계는 같은 패밀리의 (계) 표에 있으므로 표 단위로는 판정하지 않는다
         label = member.group(1)
         if label == "계":
             return "member", "total_only", True
@@ -236,13 +210,6 @@ def sex_info(
 
 
 def _item_total(names: list[str]) -> bool:
-    """항목으로 남/여가 나뉜 표에 합계 항목이 있는가.
-
-    - 첫 항목이 성별 항목이 아니면 합계로 본다 ('외국인', '남자', '여자' / '취업인구-계', '남자', …)
-      (검색 규칙 10장 미결: "남/여가 아닌 첫 항목 = 합계" 추정, 표본 확인 필요)
-    - '총인구'·'계'처럼 합계 이름이 있거나, '총인구_남자'의 앞부분 '총인구'처럼
-      성별 항목의 바탕이 되는 항목이 따로 있어도 합계가 있다고 본다.
-    """
     if names and not SEX_TOKEN.search(names[0]):
         return True
     bases = set()
@@ -259,11 +226,6 @@ def _item_total(names: list[str]) -> bool:
     return False
 
 
-# ---- 2. 정제 --------------------------------------------------------------------
-
-
-# KOSIS 메타데이터의 분류 이름 오류 보정: (표 ID, 잘못된 이름에 들어 있는 말) → 올바른 이름
-# 인구총조사 2015년판 3개: 값은 미혼·배우자 있음·사별·이혼인데 분류 이름이 '교육정도별' (KOSIS 화면에서 확인)
 CLASS_NAME_FIXES: dict[tuple[str, str], str] = {
     ("DT_1PC1503", "교육정도"): "혼인상태별",
     ("DT_1PC1507", "교육정도"): "혼인상태별",
@@ -331,7 +293,6 @@ def read_catalog(path: Path = CATALOG) -> list[dict[str, Any]]:
 
 
 def check(records: list[dict[str, Any]]) -> list[str]:
-    """완료 기준 (F-01): 표 수 = 제공 표 수, tbl_id 중복 0, 분류·항목 결측 0"""
     errors = []
     if len(records) != EXPECTED_TABLES:
         errors.append(f"표 수 {len(records)} ≠ 제공 표 수 {EXPECTED_TABLES}")
@@ -368,36 +329,29 @@ def report(records: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-# ---- 3. DB에 넣기 ---------------------------------------------------------------
-
-
 def database_url() -> str:
     from app.core.config import get_settings
 
-    # SQLAlchemy용 주소(postgresql+psycopg://)를 psycopg가 읽는 형식으로 바꾼다
     return get_settings().database_url.replace("postgresql+psycopg://", "postgresql://", 1)
 
 
 def load(records: list[dict[str, Any]], url: str, recreate: bool = False) -> dict[str, int]:
-    """임시 테이블에 COPY한 뒤 tbl_id 기준으로 table_meta를 갱신한다"""
     import psycopg
     from psycopg.types.json import Jsonb
 
     rows = [tuple(Jsonb(r[c]) if c in JSON_COLUMNS else r[c] for c in COLUMNS) for r in records]
     cols = ", ".join(COLUMNS)
     updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in COLUMNS if c != "tbl_id")
-    with psycopg.connect(url) as conn:  # 블록이 끝나면 커밋, 오류면 전부 되돌림
+    with psycopg.connect(url) as conn:
         if recreate:
             conn.execute(DROP)
         conn.execute(DDL)
         conn.execute(
-            "CREATE TEMP TABLE incoming (LIKE catalog.table_meta INCLUDING DEFAULTS)"
-            " ON COMMIT DROP"
+            "CREATE TEMP TABLE incoming (LIKE catalog.table_meta INCLUDING DEFAULTS) ON COMMIT DROP"
         )
         with conn.cursor().copy(f"COPY incoming ({cols}) FROM STDIN") as copy:
             for row in rows:
                 copy.write_row(row)
-        # xmax = 0이면 새로 들어간 행, 아니면 기존 행을 고친 것
         upserted = conn.execute(
             f"""INSERT INTO catalog.table_meta ({cols}) SELECT {cols} FROM incoming
                 ON CONFLICT (tbl_id) DO UPDATE SET {updates}, loaded_at = now()

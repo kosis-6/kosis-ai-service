@@ -1,30 +1,24 @@
-/* LIKE SNAKE 공통 토큰·버튼·로고 (Figma 'TEAM SIX · 인구통계 서비스 UI' 변수값을 정리) */
 :root {
   color-scheme: light;
   --bg: #eaf0e6;
   --sidebar: #f4f7ef;
   --workspace: #fbfcf8;
   --panel: #ffffff;
-  --logo-paper: #f4f3eb; /* Figma 토큰은 #f4f3ec. 로고 PNG 배경과 맞춰 경계선이 보이지 않게 한다 */
-  /* 글자는 두 단계: 본문·제목(ink), 설명·보조(muted). muted 는 바탕 위 4.5:1 이상 */
+  --logo-paper: #f4f3eb;
   --ink: #173b2e;
   --muted: #5f7265;
-  /* 글자에는 쓰지 않는다 (작은 글씨 대비가 모자라다): 초점 테두리, 큰 제목의 둘째 줄 */
   --sage: #5f8970;
   --line: #e1e9df;
-  /* 진초록은 셋: 채움(주요 버튼·사용자 말풍선·선택), 눌림·차트 선, 링크·좋은 변화 */
   --accent: #192e27;
   --accent-hover: #245941;
   --ok: #2c6847;
   --accent-mid: #abc9af;
   --accent-soft: #e7f1e5;
-  /* 시안에 없는 오류 상태용 */
   --bad: #a33a2c;
   --bad-soft: #f8ebe7;
   --font: "Noto Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif;
   --font-brand: "Manrope", var(--font);
   --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  /* 움직임: 곡선 하나, 길이 셋 (누름·마우스 / 시트·접기 / 들어오기) */
   --ease: cubic-bezier(0.22, 1, 0.36, 1);
   --fast: 160ms;
   --mid: 220ms;
@@ -35,7 +29,6 @@
 [hidden] { display: none !important; }
 
 html, body { height: 100%; }
-/* React 가 그리는 곳. 화면의 큰 덩어리(사이드바·본문)가 body 의 flex 자식으로 놓이게 상자를 없앤다 */
 #root { display: contents; }
 
 body {
@@ -58,11 +51,9 @@ a { color: inherit; }
 
 .icon { flex: none; display: block; }
 
-/* 들어오기: 아래에서 조금 떠오르며 나타난다 (요소마다 animation-delay 로 차례를 준다) */
 @keyframes rise { from { opacity: 0; transform: translateY(8px); } }
 @keyframes fade { from { opacity: 0; } }
 
-/* SIX / Button: Primary · Secondary · Quiet */
 .btn {
   display: inline-flex;
   align-items: center;
@@ -90,7 +81,6 @@ a { color: inherit; }
 .btn:disabled { cursor: default; }
 .btn.block { display: flex; width: 100%; }
 
-/* 표 ID: 모든 수치가 어느 KOSIS 표에서 왔는지 같은 모양으로 붙인다 */
 .tbl-id {
   flex: none;
   padding: 0 6px;
@@ -102,17 +92,14 @@ a { color: inherit; }
   white-space: nowrap;
 }
 
-/* SIX / Logo symbol: 원본 이미지를 시안의 잘라내기 비율 그대로 보여 준다 (42:60) */
 .logo {
   display: block;
   flex: none;
   aspect-ratio: 42 / 60;
-  /* 작은 크기는 원본(910px)을 크게 줄일 때 일반 모니터에서 거칠어져서 작은 판을 쓴다 */
   background: var(--logo-paper) image-set(url("../assets/like-snake-symbol-small.png") 1x, url("../assets/like-snake-symbol.png") 2x) 43.44% 29.44% / 212.5% 135.67% no-repeat;
   border-radius: 13.33%/9.33%;
 }
 
-/* 서비스 이름 */
 .brand { display: flex; align-items: center; gap: 12px; min-width: 0; color: var(--accent); text-decoration: none; }
 .brand .logo { height: 52px; }
 .brand-text { display: flex; flex-direction: column; gap: 2px; white-space: nowrap; }

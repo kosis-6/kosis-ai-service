@@ -9,13 +9,10 @@ _API_KEY = re.compile(r"(apiKey=)[^&\s\"']+")
 
 
 def mask_key(text: str) -> str:
-    """요청 주소의 apiKey 값을 가린다. 오류 메시지·로그에 키가 남지 않게 한다"""
     return _API_KEY.sub(r"\1***", text)
 
 
 class KosisClient:
-    """KOSIS OpenAPI 호출 클라이언트."""
-
     def __init__(
         self, api_key: str | None = None, base_url: str | None = None, timeout: float = 30.0
     ) -> None:
@@ -31,7 +28,6 @@ class KosisClient:
             try:
                 response.raise_for_status()
             except httpx.HTTPStatusError as e:
-                # httpx 오류 메시지에는 요청 주소 전체(apiKey 포함)가 들어간다
                 raise httpx.HTTPStatusError(
                     mask_key(str(e)), request=e.request, response=e.response
                 ) from None

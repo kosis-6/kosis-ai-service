@@ -1,5 +1,3 @@
-"""표시값이 같아도 원값으로 최고·최저와 차이를 판단한다."""
-
 import pytest
 
 from app.services import cross_indicator, indicators, lookup
@@ -52,12 +50,11 @@ def test_compare_uses_raw_order_and_keeps_missing_values(monkeypatch, regions, m
 
 
 def test_rank_uses_unrounded_values() -> None:
-    """반올림하면 같아지는 두 값(1.18)도 원값 순서로 순위를 매긴다"""
     raw = {"A": 1.1761, "B": 1.1840, "C": 0.9}
     vals = [{"region": r, "value": cross_indicator._round(v)} for r, v in raw.items()]
     assert vals[0]["value"] == vals[1]["value"] == 1.18
     high = cross_indicator._rank_facts(vals, {"order": "높은 순"}, {}, raw=raw)
     assert [(x["rank"], x["region"]) for x in high["ranking"]] == [(1, "B"), (2, "A"), (3, "C")]
-    assert high["ranking"][0]["value"] == 1.18  # 보여 주는 값은 그대로 반올림한 값
+    assert high["ranking"][0]["value"] == 1.18
     low = cross_indicator._rank_facts(vals, {"order": "낮은 순"}, {}, raw=raw)
     assert [x["region"] for x in low["ranking"]] == ["C", "A", "B"]

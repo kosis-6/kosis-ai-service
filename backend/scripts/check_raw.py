@@ -1,19 +1,3 @@
-"""원본 CSV ↔ 서비스(PostgreSQL) 값 대조: 같은 분자·분모·기간으로 계산하는지 전수 확인 (멘토링 질문 2)
-
-전처리·서비스 코드를 쓰지 않고 수집 원본 CSV(data/processed/<표ID>.csv)를 pandas로 직접 읽어
-지표를 다시 계산한 뒤, 서비스가 실제로 쓰는 함수의 값과 비교한다.
-
-  1. 계산 지표 (DT_1B04006 주민등록인구): 총인구, 고령인구 비율, 유소년인구 비율, 노령화지수
-     분자 = 65세 이상(100세 이상 포함) 또는 0~14세 인구 합, 분모 = 연령 '계' 행
-     모든 연도 × 모든 지역 × 성별(계·남·여). 연령별 합 = '계'인지도 함께 본다
-  2. 조회 지표 (지표 사전 method = "lookup"): 지표 사전의 표·항목·필터 그대로 원본에서 더하고,
-     분모가 있으면 (값 ÷ 분모) × 100. 전국·시도 전체 연도. 구성비 지표는 대상이 아니다
-  3. 기간: 원본의 시점 범위와 서비스가 안내하는 수록 기간이 같은지
-
-실행: python -m scripts.check_raw
-결과: data/eval/raw_check_<시각>.md
-"""
-
 import re
 from datetime import datetime
 from functools import lru_cache
@@ -27,12 +11,11 @@ from app.services import indicators, lookup
 RAW_DIR = Path("data/processed")
 OUT_DIR = Path("data/eval")
 POP_SEX = {"T2": "계", "T3": "남", "T4": "여"}
-TOLERANCE = 1e-6  # 반올림 전 값끼리 비교
+TOLERANCE = 1e-6
 
 
 @lru_cache
 def raw(tbl_id: str) -> pd.DataFrame:
-    """원본 CSV. 통계부호(value_flag)가 있는 칸은 결측"""
     df = pd.read_csv(RAW_DIR / f"{tbl_id}.csv", dtype=str)
     df["v"] = pd.to_numeric(df["value"], errors="coerce")
     df.loc[df["value_flag"].notna() & (df["value_flag"] != ""), "v"] = float("nan")
@@ -44,9 +27,6 @@ def _age(name: str) -> int | None:
     if name == "계":
         return None
     return int(re.match(r"\d+", name).group())
-
-
-# ---- 1. 계산 지표 ----------------------------------------------------------------
 
 
 def check_population() -> list[str]:
@@ -75,7 +55,7 @@ def check_population() -> list[str]:
         ind = indicators.INDICATORS[name]
         bad, n = [], 0
         for sex in ("계", "남", "여"):
-            comps = indicators._components(codes, lo, hi, sex)  # 서비스가 쓰는 조회
+            comps = indicators._components(codes, lo, hi, sex)
             for (year, code), comp in comps.items():
                 got = ind["calc"](comp)
                 exp = want[name].get((year, code, sex))
@@ -90,9 +70,6 @@ def check_population() -> list[str]:
     return lines
 
 
-# ---- 2. 조회 지표 ----------------------------------------------------------------
-
-
 def _raw_sum(df: pd.DataFrame, items, filters: dict, by_region: bool = True) -> pd.Series:
     items = items if isinstance(items, list) else [items]
     sel = df[df["item_id"].isin(items)]
@@ -101,7 +78,7 @@ def _raw_sum(df: pd.DataFrame, items, filters: dict, by_region: bool = True) -> 
         sel = sel[sel[col].isin(vals)]
     if by_region:
         return sel.groupby(["year", "c1_id"])["v"].sum(min_count=1)
-    return sel.groupby("year")["v"].sum(min_count=1)  # 지역 구분이 없는 전국 표
+    return sel.groupby("year")["v"].sum(min_count=1)
 
 
 def _expected(src: dict) -> pd.Series:
@@ -135,7 +112,6 @@ def check_lookup() -> list[str]:
                     got = lookup._fetch(src, ["00"], lo, hi)
                     pairs = [(v, exp.get(y)) for (y, _), v in got.items()]
                 else:
-                    # 서비스 지역 코드 ↔ 원본 지역 코드 (전국·시도만)
                     mapping = db_rows(
                         """select distinct region_code, c1_id from facts
                            where tbl_id = ? and (region_code = '00' or length(region_code) = 2)""",
@@ -156,9 +132,6 @@ def check_lookup() -> list[str]:
                     + (f" (예: {bad[:2]})" if bad else "")
                 )
     return lines
-
-
-# ---- 3. 기간 ---------------------------------------------------------------------
 
 
 def check_periods() -> list[str]:

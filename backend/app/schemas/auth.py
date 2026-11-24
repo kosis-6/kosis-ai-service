@@ -7,7 +7,6 @@ from pydantic_core import PydanticCustomError
 
 PASSWORD_MIN = 6
 PASSWORD_MAX = 20
-# 규칙을 바꾸기 전(8~128자)에 만든 비밀번호를 받을 때의 한도 (지금 비밀번호 확인용)
 OLD_PASSWORD_MAX = 128
 PASSWORD_RULE = f"{PASSWORD_MIN}~{PASSWORD_MAX}자, 영문·숫자·특수기호를 모두 넣어 주세요."
 NICKNAME_MIN = 2
@@ -15,8 +14,6 @@ NICKNAME_MAX = 20
 
 
 def password_problem(v: str) -> str | None:
-    """비밀번호 규칙: 6~20자, 영문(대소문자 상관없음)·숫자·특수기호(영문·숫자·공백이 아닌 글자)
-    각각 하나 이상. 맞으면 None, 아니면 고칠 점"""
     if len(v) < PASSWORD_MIN:
         return f"비밀번호는 {PASSWORD_MIN}자 이상이어야 합니다."
     if len(v) > PASSWORD_MAX:
@@ -31,7 +28,6 @@ def password_problem(v: str) -> str | None:
         if not re.search(pattern, v)
     ]
     if missing:
-        # 받침이 있으면 '을'(영문을), 없으면 '를'(숫자를, 특수기호를)
         particle = "을" if missing[-1] == "영문" else "를"
         return f"비밀번호에 {'·'.join(missing)}{particle} 넣어 주세요. ({PASSWORD_RULE})"
     return None
@@ -40,13 +36,11 @@ def password_problem(v: str) -> str | None:
 def _check_password(v: str) -> str:
     problem = password_problem(v)
     if problem:
-        # ValueError로 내면 문구 앞에 'Value error, '가 붙어 화면에 그대로 보인다
         raise PydanticCustomError("password_rule", problem)
     return v
 
 
 def nickname_problem(v: str) -> str | None:
-    """닉네임 규칙: 앞뒤 공백을 뺀 2~20자, 줄바꿈·탭 같은 제어 문자는 안 된다"""
     if not NICKNAME_MIN <= len(v) <= NICKNAME_MAX:
         return f"닉네임은 {NICKNAME_MIN}~{NICKNAME_MAX}자로 적어 주세요."
     if any(not c.isprintable() for c in v):
@@ -100,8 +94,6 @@ class EmailVerified(BaseModel):
 
 
 class UserCreate(BaseModel):
-    """이메일 인증(POST /auth/email-code/verify)을 마친 이메일만 가입할 수 있다"""
-
     email: Email
     password: Password
     nickname: Nickname
@@ -118,20 +110,15 @@ class UserRead(BaseModel):
 
 
 class PasswordChange(BaseModel):
-    # 지금 비밀번호는 규칙을 보지 않는다 (규칙을 바꾸기 전에 만든 비밀번호도 있다)
     current_password: str = Field(max_length=OLD_PASSWORD_MAX)
     new_password: Password
 
 
 class ProfileUpdate(BaseModel):
-    """내 정보 바꾸기. 지금은 닉네임만"""
-
     nickname: Nickname
 
 
 class UserAdminRead(UserRead):
-    """관리자 화면용: 정지 여부까지 보여 준다"""
-
     is_active: bool
 
 
@@ -141,8 +128,6 @@ class UserList(BaseModel):
 
 
 class UserUpdate(BaseModel):
-    """바꿀 값만 보낸다. 빠진 값은 그대로 둔다"""
-
     is_active: bool | None = None
     is_admin: bool | None = None
 

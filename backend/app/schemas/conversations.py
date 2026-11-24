@@ -1,5 +1,3 @@
-"""로그인 유저의 대화 기록 응답 (app/services/conversations.py, /conversations)"""
-
 from datetime import datetime
 from typing import Any
 

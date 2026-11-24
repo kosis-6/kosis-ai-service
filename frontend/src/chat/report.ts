@@ -1,4 +1,3 @@
-/** 표시한 답변으로 독립 HTML 보고서를 만든다. 서버 재조회·LLM 호출·영구 저장은 하지 않는다. */
 import type { AskResponse, Chart } from "../api/types";
 import { safeUrl } from "./format";
 import reportCss from "./report.css?raw";
@@ -17,10 +16,8 @@ const value = (v: unknown) => v == null || (typeof v === "number" && !Number.isF
   ? "자료 없음" : typeof v === "number" ? v.toLocaleString("ko-KR", { maximumFractionDigits: 20 }) : String(v);
 
 const STATUS_HEADING = "자료 상태";
-// 연도·순위 같은 이름 칸은 숫자여도 쉼표 없이 쓴다 (2,024가 아니라 2024)
 const label = (v: unknown) => v == null ? v : String(v);
 
-/** 차트의 15개 표시 제한과 관계없이 실제 계산 결과의 전체 행을 사용한다. */
 export function reportTables(input: unknown): Table[] {
   const r = record(input);
   if (Array.isArray(r.split)) return r.split.flatMap(reportTables);
@@ -42,15 +39,12 @@ export function reportTables(input: unknown): Table[] {
 }
 
 export function canReport(data: AskResponse): boolean {
-  // 수치 표가 하나도 없으면(빈 결과·실패한 결과만 있음) 빈 보고서가 되므로 만들지 않는다
   return data.status === "ok" && !data.result.reused
     && reportTables(data.result).some((t) => t.headings[0] !== STATUS_HEADING);
 }
 
 const colors = ["#276749", "#2b6cb0", "#a65c00", "#805ad5", "#b83280", "#157a86"];
 
-/** HTML 파일만 열어도 보이도록 외부 스크립트·차트 라이브러리 없이 SVG를 넣는다. */
-/** 지역이 선 색보다 많으면 지역마다 작은 꺾은선 (화면 Chart.tsx GridView와 같은 규칙, 세로축은 지역마다) */
 function gridSvg(chart: Chart): string {
   const cells = (chart.series ?? []).map((name, j) => {
     const pts = chart.rows
@@ -103,7 +97,6 @@ function chartSvg(chart: Chart): string {
       if (i === 0 || i === rows.length - 1 || rows.length <= 10) marks += `<text x="${x(i)}" y="242" text-anchor="middle">${escape(r.label)}</text>`;
     });
   } else {
-    // 구성비도 항목별 수평 막대로 표현하며 보고서에 표시 방식을 명시한다.
     height = Math.max(140, rows.length * 32 + 65);
     const all = rows.map((r) => r.value).filter(number);
     const lo = Math.min(0, ...all), hi = Math.max(0, ...all), span = hi - lo || 1;
@@ -118,7 +111,6 @@ function chartSvg(chart: Chart): string {
   return `<figure><h3>${escape(chart.title)}</h3><p>단위: ${escape(chart.unit)}${chart.type === "parts" ? " · 보고서에서는 항목별 막대로 표시" : ""}</p><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escape(chart.title)}" font-family="sans-serif" font-size="12">${marks}</svg>${chart.note ? `<p>${escape(chart.note)}</p>` : ""}</figure>`;
 }
 
-/** 보고서 본문 (저장 파일·미리보기 공통) */
 function reportBody(data: AskResponse, at: Date): string {
   if (!canReport(data)) throw new Error("수치를 계산한 답변에서 보고서를 저장해 주세요.");
   const title = data.question || "통계 분석 보고서";
@@ -140,14 +132,11 @@ export function reportFileName(at = new Date()): string {
   return `통계보고서-${at.toLocaleDateString("sv-SE", { timeZone: "Asia/Seoul" })}.html`;
 }
 
-/** 저장하는 파일: 스타일을 안에 담아 파일만 열어도 보인다 (파일로 열면 CSP가 없어 인쇄 버튼도 동작) */
 export function buildReport(data: AskResponse, at = new Date()): string {
   const toolbar = `<div class="report-toolbar"><button type="button" class="primary" onclick="window.print()">인쇄 · PDF 저장</button></div>`;
   return page(data, `<style>${reportCss}</style>`, toolbar + reportBody(data, at));
 }
 
-/** 새 탭 미리보기: 채팅 화면의 CSP를 물려받아 인라인 스타일·스크립트가 막히므로
- *  스타일과 버튼 동작은 우리 주소의 파일로 불러온다. 저장할 파일 내용은 JSON으로 함께 넣는다 */
 export function buildPreview(data: AskResponse, assets: { css: string; script: string }, at = new Date()): string {
   const file = JSON.stringify(buildReport(data, at)).replace(/</g, "\\u003c");
   const toolbar = `<div class="report-toolbar"><button type="button" class="primary" id="report-save">HTML 파일로 저장</button><button type="button" id="report-print">인쇄 · PDF 저장</button><p>내용을 확인한 뒤 저장하세요. 저장한 파일은 인터넷 없이도 열립니다.</p></div>`;
@@ -171,7 +160,6 @@ function saveFile(html: string, name: string): void {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-/** 보고서를 새 탭에 띄운다. 브라우저가 새 탭을 막으면 파일로 바로 저장하고 "saved"를 돌려준다 */
 export function openReport(data: AskResponse): "opened" | "saved" {
   const at = new Date();
   const assets = {
@@ -179,7 +167,6 @@ export function openReport(data: AskResponse): "opened" | "saved" {
     script: new URL(reportViewUrl, window.location.href).href,
   };
   const html = buildPreview(data, assets, at);
-  // 탭을 새로 고쳐도 보이도록 주소는 바로 지우지 않는다 (채팅 화면을 닫으면 함께 사라진다)
   const url = URL.createObjectURL(new Blob([html], { type: "text/html;charset=utf-8" }));
   if (window.open(url, "_blank")) return "opened";
   URL.revokeObjectURL(url);

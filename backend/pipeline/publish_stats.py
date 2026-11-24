@@ -1,15 +1,3 @@
-"""검증을 통과한 build 스키마의 표를 서비스 스키마로 옮긴다.
-
-  raw      facts                 KOSIS 수치
-  mart     population, regions…  검증된 지표 계산에 쓰는 정리된 데이터, 지표 사전
-  catalog  catalog, table_notes… 표 설명과 주의사항
-
-인덱스를 먼저 만들고, 한 트랜잭션에서 기존 표를 새 표로 바꾼다. 중간에 실패하면 기존 표가
-그대로 남아 서비스가 계속 동작한다.
-
-실행: python pipeline/run_all.py (전처리와 검증을 거쳐 마지막에 실행된다)
-"""
-
 import sys
 import time
 from pathlib import Path
@@ -43,7 +31,6 @@ TABLES = {
     ],
 }
 
-# 쿼리가 거르는 칸 순서에 맞춘 인덱스 (app/services/lookup.py, indicators.py)
 INDEXES = {
     "facts": [("tbl_id", "year", "region_code"), ("tbl_id", "item_id", "year")],
     "population": [("sex", "region_code", "year"), ("year", "region_code")],

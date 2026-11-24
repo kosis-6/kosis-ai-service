@@ -26,7 +26,6 @@ async def main() -> None:
     parser.add_argument("--admin", action="store_true", help="관리자 권한 부여")
     parser.add_argument("--nickname", help="화면에 보일 이름(2~20자). 빼면 비워 둔다")
     args = parser.parse_args()
-    # 회원가입과 같은 이메일 규칙. 오타('admin@gmailcom')로 로그인 못 할 계정이 생기지 않게 한다
     email = args.email.strip().lower()
     if not EMAIL.fullmatch(email):
         raise SystemExit(f"이메일 형식이 아닙니다: {args.email} (예: admin@example.com)")

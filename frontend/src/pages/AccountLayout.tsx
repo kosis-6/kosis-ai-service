@@ -1,4 +1,3 @@
-// 계정 화면의 틀: 왼쪽 브랜드 패널 + 오른쪽 폼 (로그인·회원가입·가입 완료가 안에 들어간다)
 import { Link, Outlet } from "react-router-dom";
 import { Brand } from "../components/Brand";
 import { Icon } from "../components/Icon";

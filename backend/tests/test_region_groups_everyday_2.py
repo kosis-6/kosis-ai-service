@@ -1,12 +1,9 @@
-"""일상어 지역 묶음·생활권 2차 확장 (2026-11-20)"""
-
 import pytest
 
 from app.services import qa
 
 
 def first_group(q):
-    """챗봇과 같은 순서로 질문에 처음 들어 있는 지역 묶음"""
     return next((w for w in qa.REGION_GROUPS if qa._group_in(w, q)), None)
 
 
@@ -23,7 +20,6 @@ def first_group(q):
         ("금관구 인구", "금관구", 3),
         ("지방 광역시 인구", "지방 광역시", 5),
         ("특례시 인구", "특례시", 5),
-        # 원래 되던 것이 그대로 되는지 (권역 이름이 짧은 이름보다 먼저)
         ("영남권 인구", "영남권", 5),
         ("호남권 인구", "호남권", 3),
         ("충청권 인구", "충청권", 4),
@@ -54,7 +50,6 @@ def test_regional_metros_exclude_incheon():
         ("서면 인구", "서면"),
         ("둔산 인구", "둔산"),
         ("1기 신도시 인구", "1기 신도시"),
-        # 원래 되던 것
         ("일산 인구", "일산"),
         ("잠실에서 사는 사람", "잠실"),
         ("분당 인구", "분당"),
@@ -75,7 +70,7 @@ def test_sub_areas_2(q, area):
         "서면으로 신청한 사람 수",
         "중동 출신 외국인 몇 명이야",
         "1분당 출생아 수",
-        "분당구 인구",  # 행정구역 이름 (생활권 아님)
+        "분당구 인구",
     ],
 )
 def test_not_sub_area(q):
@@ -95,10 +90,9 @@ def test_not_sub_area(q):
     ],
 )
 def test_group_name_is_not_population_modifier(q):
-    """지역 묶음·생활권 이름을 '통학 인구'처럼 다른 통계를 가리키는 말로 보지 않는다"""
     assert qa.population_modifier(q) is None, q
 
 
-@pytest.mark.needs_data  # find_regions가 DB의 region_aliases를 읽는다
+@pytest.mark.needs_data
 def test_population_modifier_still_works():
     assert qa.population_modifier("통학 인구") is not None

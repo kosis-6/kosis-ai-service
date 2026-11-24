@@ -1,8 +1,3 @@
-"""통계표 안내 프롬프트 (app/services/slots.py에서 사용)
-
-실전 2 F-03 질의 분석. 질문을 슬롯 JSON으로 바꾸는 단계 하나뿐이다.
-"""
-
 from app.prompts import swap
 
 SLOT_SYSTEM = """당신은 통계표를 찾는 질문을 분석해 JSON으로 바꾸는 역할입니다.
@@ -49,18 +44,12 @@ JSON 형식
  "sex": null, "region": null, "region_level": "시도", "year": null, "year_end": null},
  "query_type": "find_table"}"""
 
-# Gemma 4 31B 용 (통계표 찾기에 Gemma 를 쓸 때). region 규칙에 한 줄을 더하고 target 규칙을 좁힌다.
-# Gemma 는 '우리 구로 이사 오는'의 '구로'를 서울 구로구로 읽었고, 이 한 줄로 region 을 비웠다 (11/15 실험실)
 REGION_RULE = '- region: 지역 이름을 말하면 그 표현 그대로 (예: "부산", "해운대구").'
 REGION_RULE_GEMMA = (
     REGION_RULE
     + "\n  '우리 구', '우리 군', '우리 시', '우리 동네'는 지역 이름이 아니다. region 은 null 로 둔다"
     " (예: '우리 구로 이사 오는' → region null. '구로'는 '우리 구' + 조사 '로')."
 )
-# Gemma 는 target 을 456문항 중 207문항에서 채웠다 (HCX 는 17). 주제 자체("외국인", "1인 가구"),
-# 나이 집단("노인", "청년"), 질문에 없는 바꿔 쓴 말("재혼자")이 대부분이라 표에 그 말이 없으면
-# '대상 ✘'(일부 일치)만 만들었다. 표 묶음이 실제로 그 대상으로 나뉘는 이름일 때만 쓰게 좁힌다
-# (11/16 Gemma 측정, 표 하나 408문항: 최종 정답 371 → 373, '일부 일치' 128 → 59, target 207 → 56)
 TARGET_RULE = """- target: 특정 대상 집단을 말하면 그 표현 그대로 (예: "혼인 귀화자", "유학생", "외국인 근로자",
   "고령자", "다문화 가구"). 일반 인구 전체면 null."""
 TARGET_RULE_GEMMA = """- target: 통계표가 그 집단만 따로 다루는 대상 집단 이름을 질문이 말했을 때만, 질문에 쓰인 낱말 그대로 쓴다

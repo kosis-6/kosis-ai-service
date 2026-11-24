@@ -1,5 +1,3 @@
-"""관리자용 사용자 기록 조회 응답 (app/services/user_logs.py)"""
-
 from datetime import date, datetime
 from typing import Any
 
@@ -7,16 +5,12 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class LogUser(BaseModel):
-    """기록을 남긴 사용자. 손님(로그인 안 함)이면 모두 비어 있다"""
-
     user_id: int | None = Field(default=None, description="손님이거나 지워진 사용자면 null")
     user_email: str | None = None
     user_nickname: str | None = None
 
 
 class TurnRead(LogUser):
-    """/ask 대화의 한 턴"""
-
     id: int
     created_at: datetime
     session_id: str
@@ -38,8 +32,6 @@ class TurnList(BaseModel):
 
 
 class FlowStep(BaseModel):
-    """처리 흐름의 한 단계 (app/services/flow.py)"""
-
     stage: str = Field(
         description="범위 검사 / 질문 이해 / 사전 계산 / 계산 방법 캐시 / 통계표 찾기 / "
         "표 칸으로 계산 / 같은 표에서 찾기 / 사전에 없는 쪽 계산 / 최종 답"
@@ -49,8 +41,6 @@ class FlowStep(BaseModel):
 
 
 class TurnDetail(TurnRead):
-    """대화를 펼쳐 볼 때: 조건이 어떻게 바뀌었는지와 처리 흐름까지"""
-
     conditions_before: Any | None = None
     conditions_after: Any | None = None
     sources: Any | None = Field(default=None, description="조건마다 어디서 왔는지")
@@ -61,8 +51,6 @@ class TurnDetail(TurnRead):
 
 
 class SessionRead(LogUser):
-    """대화 하나"""
-
     session_id: str
     started_at: datetime
     last_at: datetime
@@ -72,8 +60,6 @@ class SessionRead(LogUser):
 
 
 class PersonRead(LogUser):
-    """대화를 사람별로 묶은 한 줄. user_id 가 null 이면 비로그인 사용자 전체"""
-
     sessions: int = Field(description="대화 창 수 (창을 여러 개 열어 따로 물으면 창마다 하나)")
     turns: int = Field(description="질문(턴) 수")
     first_at: datetime
@@ -96,8 +82,6 @@ class SessionDetail(LogUser):
 
 
 class SearchLogRead(LogUser):
-    """통계표 찾기 한 번"""
-
     id: int
     created_at: datetime
     session_id: str | None = None
@@ -133,8 +117,6 @@ class NameCount(BaseModel):
 
 
 class LogSummary(BaseModel):
-    """최근 며칠의 사용량"""
-
     days: int
     since: datetime
     turns: int = Field(description="/ask 턴 수")
@@ -149,8 +131,6 @@ class LogSummary(BaseModel):
 
 
 class AuditRead(BaseModel):
-    """관리자 API 호출 한 번"""
-
     model_config = ConfigDict(from_attributes=True)
 
     id: int

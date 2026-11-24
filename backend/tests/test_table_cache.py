@@ -1,7 +1,3 @@
-"""적재 안 된 표를 질문 처리 중에 바로 받아 넣기 (app/services/table_cache.py, qa._compute_fetching)
-(DB·KOSIS 없이 받기·적재 함수를 바꿔 끼운다)
-"""
-
 import asyncio
 import contextlib
 
@@ -23,12 +19,8 @@ INFO = {
 OK = {"status": "ok", "value": 1}
 
 
-# ---- table_cache.fetch_now -------------------------------------------------------------------
-
-
 @pytest.fixture
 def kosis(monkeypatch: pytest.MonkeyPatch, tmp_path) -> dict:
-    """받기·적재를 바꿔 끼운다. state["requests"]로 요청 수, state["fail"]로 받기 오류를 정한다"""
     state = {"requests": 1, "fail": None, "slow": 0.0, "loaded": set(), "downloads": 0,
              "loads": [], "cleared": 0}  # fmt: skip
 
@@ -36,7 +28,7 @@ def kosis(monkeypatch: pytest.MonkeyPatch, tmp_path) -> dict:
         return {t for t in ids if t in state["loaded"]}
 
     async def fetch_meta(client, org_id, tbl_id, pause=1.0):
-        assert pause == 0  # 질문 처리 중에는 요청마다 쉬지 않는다
+        assert pause == 0
         return {"tbl_nm": "시험 표", "items": [], "classes": [], "periods": []}
 
     def plan_table(meta):
@@ -67,10 +59,10 @@ def kosis(monkeypatch: pytest.MonkeyPatch, tmp_path) -> dict:
     monkeypatch.setattr(table_cache, "INLINE_MAX_REQUESTS", 8)
     monkeypatch.setattr(table_cache, "INLINE_TIMEOUT", 5.0)
     monkeypatch.setattr(table_cache, "_locks", {})
-    monkeypatch.setattr(table_cache, "_limiter", None)  # asyncio.run마다 새 이벤트 루프
+    monkeypatch.setattr(table_cache, "_limiter", None)
 
     @contextlib.asynccontextmanager
-    async def db_lock(tbl_id):  # 적재 프로세스와 함께 쓰는 잠금. state["worker"]면 그쪽이 받는 중
+    async def db_lock(tbl_id):
         yield not state.get("worker")
 
     monkeypatch.setattr(table_cache, "_db_lock", db_lock)
@@ -78,7 +70,6 @@ def kosis(monkeypatch: pytest.MonkeyPatch, tmp_path) -> dict:
 
 
 def test_token_bucket_sends_burst_then_waits(monkeypatch) -> None:
-    """쉬고 있었으면 burst회는 바로, 그 뒤로는 분당 횟수에 맞춰 기다린다"""
     slept = []
 
     async def sleep(seconds):
@@ -89,22 +80,22 @@ def test_token_bucket_sends_burst_then_waits(monkeypatch) -> None:
     monkeypatch.setattr(table_cache.time, "monotonic", lambda: now[0])
 
     async def run():
-        bucket = table_cache.TokenBucket(per_minute=60, burst=3)  # 1초에 1회
+        bucket = table_cache.TokenBucket(per_minute=60, burst=3)
         for _ in range(5):
             await bucket.wait()
-        now[0] += 10  # 10초 쉬면 다시 burst만큼 바로
+        now[0] += 10
         for _ in range(3):
             await bucket.wait()
 
     asyncio.run(run())
-    assert slept == [1.0, 2.0]  # 4번째는 1초, 5번째는 2초 뒤. 쉰 뒤 3번은 바로
+    assert slept == [1.0, 2.0]
 
 
 def test_small_table_is_fetched_and_loaded(kosis) -> None:
     trace = {}
     assert asyncio.run(table_cache.fetch_now(TBL, "101", trace)) == "loaded"
     assert kosis["loads"] == [(f"{TBL}.csv", TBL)]
-    assert kosis["cleared"] == 1  # 새 표를 바로 읽도록 표 정보 캐시를 비운다
+    assert kosis["cleared"] == 1
     assert trace["fetch"] == "loaded" and trace["fetch_requests"] == 1
     assert isinstance(trace["fetch_ms"], int)
 
@@ -129,7 +120,6 @@ def test_already_loaded_table_is_not_fetched_again(kosis) -> None:
 
 
 def test_table_being_loaded_by_worker_is_not_fetched(kosis) -> None:
-    """적재 프로세스가 같은 표를 받는 중이면 같은 파일을 두 곳에서 쓰지 않게 받지 않는다"""
     kosis["worker"] = True
     assert asyncio.run(table_cache.fetch_now("T", "101")) == "busy"
     assert kosis["downloads"] == 0 and kosis["loads"] == []
@@ -151,7 +141,7 @@ def test_failure_hides_api_key(kosis) -> None:
 
 def test_validation_failure_is_failed(kosis, monkeypatch) -> None:
     def load(path, tbl_id):
-        raise SystemExit(f"{tbl_id}: 행 수가 다릅니다")  # load_raw의 검증 실패
+        raise SystemExit(f"{tbl_id}: 행 수가 다릅니다")
 
     monkeypatch.setattr(load_worker, "_load", load)
     assert asyncio.run(table_cache.fetch_now(TBL, "101")) == "failed"
@@ -165,7 +155,6 @@ def test_slow_download_times_out(kosis, monkeypatch) -> None:
 
 
 def test_refresh_fetches_only_missing_periods_and_merges(kosis, monkeypatch, tmp_path) -> None:
-    """이미 적재된 표의 최근 갱신: 표 전체가 아니라 DB에 없는 시점만 받아 덧붙인다"""
     from pipeline import refresh_check
 
     seen = {}
@@ -187,14 +176,13 @@ def test_refresh_fetches_only_missing_periods_and_merges(kosis, monkeypatch, tmp
     monkeypatch.setattr(load_worker, "_with_pg", lambda fn, *a: ({"A": 2024}, None))
     trace: dict = {}
     assert asyncio.run(table_cache._fetch("T", "101", trace, force=True)) == "loaded"
-    assert seen["periods"][0]["STRT_PRD_DE"] == "2025"  # 2025년만
-    assert seen["load"] == (load_worker.UPDATE_DIR, "T", True)  # 원본 CSV와 따로, 덧붙이기
-    # 받을 시점이 없으면 받지 않는다
+    assert seen["periods"][0]["STRT_PRD_DE"] == "2025"
+    assert seen["load"] == (load_worker.UPDATE_DIR, "T", True)
     monkeypatch.setattr(load_worker, "_with_pg", lambda fn, *a: ({"A": 2025}, None))
     seen.clear()
     assert asyncio.run(table_cache._fetch("T", "101", {}, force=True)) == "loaded"
     assert "load" not in seen
-    assert refresh_check  # 같은 규칙(delta_periods)을 쓴다
+    assert refresh_check
 
 
 def test_same_table_is_fetched_once_for_concurrent_questions(kosis) -> None:
@@ -209,12 +197,8 @@ def test_same_table_is_fetched_once_for_concurrent_questions(kosis) -> None:
     assert kosis["downloads"] == 1
 
 
-# ---- qa: 계산 → 바로 받기 → 다시 계산 --------------------------------------------------------
-
-
 @pytest.fixture
 def flow(monkeypatch: pytest.MonkeyPatch) -> dict:
-    """compute가 state["missing"]에 남은 표마다 StatsTableMissing을 낸다"""
     state = {"missing": [TBL], "outcome": "loaded", "fetch_calls": [], "queued": []}
 
     async def understand(question, trace=None):
@@ -243,7 +227,6 @@ def flow(monkeypatch: pytest.MonkeyPatch) -> dict:
 
     monkeypatch.setattr(qa, "understand", understand)
     monkeypatch.setattr(qa, "compute", compute)
-    # 답변 문장은 이 흐름과 상관없다 (가짜 계산 결과 OK로는 만들 수 없음)
     real_summary = qa.summary
     monkeypatch.setattr(qa, "summary", lambda r: "요약" if r is OK else real_summary(r))
     monkeypatch.setattr(qa, "render", lambda r: "")
@@ -278,7 +261,7 @@ def test_not_fetched_table_goes_to_queue(flow, outcome) -> None:
 
 def test_table_still_missing_after_load_is_not_fetched_again(flow, monkeypatch) -> None:
     def compute(parsed):
-        raise StatsTableMissing("적재 안 됨", TBL)  # 넣었는데도 계속 없다고 나옴
+        raise StatsTableMissing("적재 안 됨", TBL)
 
     monkeypatch.setattr(qa, "compute", compute)
     res = asyncio.run(qa.ask("서울 시험 지표"))

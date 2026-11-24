@@ -1,5 +1,3 @@
-"""질문 이해 + 조건 추출 합치기 (UNDERSTAND_MERGED=gemma, 실험 2-A)"""
-
 import asyncio
 import json
 from datetime import date
@@ -42,7 +40,6 @@ def test_split_puts_common_cells_into_both_shapes() -> None:
         None,
         "남",
     )
-    # 생략한 기본값 칸은 코드가 채운다 (lean)
     assert (num["level"], num["top"], num["ascending"], num["by"]) == ("시도", None, False, None)
     c = sea["conditions"]
     assert (c["region"], c["year"], c["sex"], c["items"]) == ("대전 서구", 2018, "남", ["60대"])
@@ -55,7 +52,6 @@ def test_split_periods() -> None:
     )
     assert (num["year"], num["start_year"], num["end_year"]) == (2019, 2012, 2019)
     assert (sea["conditions"]["year"], sea["conditions"]["year_end"]) == (2012, 2019)
-    # 추이인데 끝이 빠짐: 한 해로 바꾸지 않는다 (계산이 마지막 해까지)
     num, _ = um.split(merged({"year": 2012}, {"type": "trend", "indicator": "x"}))
     assert (num["year"], num["start_year"], num["end_year"]) == (None, 2012, None)
 
@@ -65,7 +61,6 @@ def test_split_vague_region_and_sex() -> None:
     num, sea = um.split(merged(com, {"type": "value", "indicator": "x"}))
     assert num["regions"] == ["우리 동네"] and sea["conditions"]["region"] is None
     assert num["sex"] == "계" and sea["conditions"]["sex"] == "전체"
-    # 지역이 여럿이면 통계표 찾기 쪽은 하나만 담지 못해 비운다
     num, sea = um.split(
         merged({"regions": ["울산", "제주"]}, {"type": "compare", "indicator": "x"})
     )
@@ -76,9 +71,9 @@ def test_split_vague_region_and_sex() -> None:
 def test_keep_and_take_are_per_question() -> None:
     um.start()
     um.keep("목포  인구 알려줘", {"topic": "a"})
-    assert um.take("목포 인구 알려줘") == {"topic": "a"}  # 띄어쓰기 차이는 같은 질문
+    assert um.take("목포 인구 알려줘") == {"topic": "a"}
     assert um.take("목포 출생아 알려줘") is None
-    um.start()  # 새 턴은 비어 있다
+    um.start()
     assert um.take("목포 인구 알려줘") is None
 
 
@@ -100,15 +95,12 @@ def test_prompt_has_dates_and_both_rule_sets() -> None:
     assert "{LATEST}" not in text and "{INDICATORS}" not in text and "총인구(명)" in text
     assert "작년 = 2025" in text and "year 2015, year_end 2025" in text
     assert "- target:" in text and "- type" not in text and "- indicator:" in text
-    # 공통 칸으로 옮긴 규칙은 한 번만 (지역 규칙이 두 번 들어가지 않는다)
     assert text.count("- regions:") == 1 and text.count("- region:") == 0
     assert text.count("- sex:") == 1
 
 
 @pytest.fixture
 def merged_on(monkeypatch: pytest.MonkeyPatch) -> dict:
-    """UNDERSTAND_MERGED=gemma. Gemma 응답은 state["reply"] (예외면 실패),
-    HCX 호출 수는 state["hcx"]"""
     state: dict = {"reply": None, "hcx": 0}
     monkeypatch.setattr(get_settings(), "understand_merged", "gemma")
     monkeypatch.setattr(get_settings(), "question_cache", False)
@@ -151,11 +143,11 @@ def test_understand_merged_answers_without_hcx(merged_on: dict) -> None:
 
 @pytest.mark.parametrize("reply", [HcxError("gemma_unreachable", "끊김"), {"common": {}}])
 def test_understand_merged_falls_back_to_hcx(merged_on: dict, reply) -> None:
-    merged_on["reply"] = reply  # Gemma 실패 · 읽을 수 없는 출력 → 지금 방식(HCX)
+    merged_on["reply"] = reply
     um.start()
     parsed = asyncio.run(qa.understand("2020년 목포 인구 알려줘", {}))
     assert merged_on["hcx"] == 1 and parsed["regions"] == ["목포"]
-    assert um.take("2020년 목포 인구 알려줘") is None  # 조건 추출은 통계표 찾기가 따로 부른다
+    assert um.take("2020년 목포 인구 알려줘") is None
 
 
 def test_understand_off_does_not_call_gemma(

@@ -1,5 +1,3 @@
-"""표의 연령 값 읽기(parse_age)와 연령 구간 → 코드 고르기(_age_codes)"""
-
 import pytest
 
 from app.services import lookup as L
@@ -20,14 +18,13 @@ from app.services import lookup as L
         ("19세", (19, 19)),
         ("만3세", (3, 3)),
         ("60~64", (60, 64)),
-        ("청년층(19-34세)", None),  # 다른 구간과 겹치는 묶음은 쓰지 않는다
+        ("청년층(19-34세)", None),
     ],
 )
 def test_parse_age(name, band):
     assert L.parse_age(name) == band
 
 
-# 2020 인구총조사(DT_1PM2002)처럼 5세 구간과 한 살 값이 함께 있는 표
 MIXED = (
     ("000", "합계"),
     ("020", "15~19세"),
@@ -64,9 +61,9 @@ def test_최소_연령_이하로_넓게_물으면_합계(mixed):
 
 def test_자를_수_없으면_AgeMismatch(mixed):
     with pytest.raises(L.AgeMismatch):
-        L._age_codes(SRC, (31, 34))  # 31세에서 시작하는 값이 없다
+        L._age_codes(SRC, (31, 34))
     with pytest.raises(L.AgeMismatch):
-        L._age_codes(SRC, (19, 32))  # 32세에서 끝나는 값이 없다
+        L._age_codes(SRC, (19, 32))
 
 
 def test_한_살_값_여러_개로_시작을_맞춘다(mixed):

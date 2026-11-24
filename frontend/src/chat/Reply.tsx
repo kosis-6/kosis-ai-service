@@ -1,4 +1,3 @@
-// 답변 한 건: 말풍선 + 알림 + 추천 표 카드 + 되묻기 선택지 (POST /search 응답의 status 별)
 import { useState } from "react";
 import type { Axis, FamilyChoice, Parsed, Recommendation, SearchResponse } from "../api/types";
 import { Icon } from "../components/Icon";
@@ -88,7 +87,6 @@ export function AltCard({ r, parsed }: { r: Recommendation; parsed?: Parsed }) {
   );
 }
 
-// 대상·성별·판을 고르는 되묻기. 한 번 보내면 다시 누르지 못하게 잠근다
 function MemberChoices({ axes, busy, onSend }: { axes: Axis[]; busy: boolean; onSend: Send }) {
   const [picked, setPicked] = useState<Record<string, string>>(() => {
     const preset: Record<string, string> = {};
@@ -157,7 +155,6 @@ function MemberChoices({ axes, busy, onSend }: { axes: Axis[]; busy: boolean; on
   );
 }
 
-// 주제가 같은 표 묶음이 여럿일 때 하나를 고르는 되묻기
 function FamilyChoices({ families, busy, onSend }: { families: FamilyChoice[]; busy: boolean; onSend: Send }) {
   const [sent, setSent] = useState(false);
   return (

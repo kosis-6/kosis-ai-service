@@ -1,5 +1,3 @@
-"""통계 데이터 없이 질문의 성별·기간 보정과 남녀 분리 계산을 확인한다."""
-
 from datetime import date
 
 import pytest
@@ -9,7 +7,6 @@ from app.services import indicators, qa
 
 @pytest.fixture(autouse=True)
 def no_region_db(monkeypatch):
-    # 지역명 해석은 이 테스트의 대상이 아니다. 성별·기간 보정은 실제 함수를 실행한다.
     monkeypatch.setattr(qa, "_full_region_names", lambda *args: None)
     monkeypatch.setattr(qa, "_ground_regions", lambda *args: None)
     monkeypatch.setattr(indicators, "find_regions", lambda *args: [])

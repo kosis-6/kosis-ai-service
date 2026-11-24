@@ -53,16 +53,12 @@ import sys
 from collections import Counter, defaultdict
 from typing import Any
 
-# 이름 속 판 표기: '(2007~2015)', '(2006)', '(2011년~)', '(~1992)', '(2023~)'
 EDITION_YEAR = re.compile(r"\s*\(\s*~?\s*\d{4}\s*년?\s*(?:~\s*(?:\d{4}\s*년?)?)?\s*\)")
-# 분류 개정 판: '직업별(신) 사망자수(1993~2017)' / '직업별(구) 사망자수(~1992)'
 EDITION_REVISION = re.compile(r"\((?:신|구)\)")
 SEX_MEMBER = re.compile(r"\((계|남|여)\)")
 SUCCESSOR_ID = re.compile(r"(.+)_A")
 TOTAL_TARGET = "전체"
-# '-' 뒤가 이것뿐이면 대상이 아니라 지역 수준 ('외국인-시군구')
 REGION_LEVEL_SUFFIX = re.compile(r"^\s*(시도|시군구|읍면동)\s*$")
-# 표명 속 시도 이름. 긴 이름을 먼저 맞춘다 ('경기도'가 '경기'보다 먼저)
 SIDO = re.compile(
     "서울특별시|부산광역시|대구광역시|인천광역시|광주광역시|대전광역시|울산광역시|세종특별자치시|"
     "경기도|강원특별자치도|강원도|충청북도|충청남도|전북특별자치도|전라북도|전라남도|경상북도|"
@@ -105,21 +101,15 @@ HAVING count(*) > 1;
 
 
 def edition_name(table_name: str) -> str:
-    """판 표기를 지운 표명 ('…(계)(2007~2015)' → '…(계)')"""
     name = EDITION_REVISION.sub("", EDITION_YEAR.sub("", table_name))
     return re.sub(r"\s+", " ", name).strip()
 
 
 def name_key(name: str) -> str:
-    """띄어쓰기·기호와 '및'·'의'·'별'을 지운 비교용 표명 (규칙 1.1 ②).
-    '성별 외국인 - 시군구' = '성별 외국인-시군구'
-    '성, 연령 및 직업별 인구' = '성별/연령별/직업별 인구'
-    """
     return re.sub(r"[^0-9A-Za-z가-힣]|및|의|별", "", name)
 
 
 def member_of(name: str) -> tuple[str, str | None, str | None]:
-    """(family_name, target, sex). 이름에 성별 표기가 없으면 멤버가 하나뿐인 패밀리"""
     sex = SEX_MEMBER.search(name)
     if not sex:
         return name, None, None
@@ -135,11 +125,6 @@ def without_sex(name: str) -> str:
 
 
 def strip_region(name: str) -> str:
-    """표명에서 시도 이름을 지운다.
-
-    '통근통학 인구(서울, 인천, 경기)(12세 이상)' → '통근통학 인구(12세 이상)'
-    빈 괄호와 괄호 안에 남은 쉼표·'-'도 지운다 ('(대구,경북-시군구)' → '(시군구)')
-    """
     n = SIDO.sub("", name)
     n = re.sub(r"\(\s*[,\s-]*", "(", n)
     n = re.sub(r"[,\s]*\)", ")", n)
@@ -148,7 +133,6 @@ def strip_region(name: str) -> str:
 
 
 def region_label(name: str) -> str:
-    """'(서울, 인천, 경기)' → '서울·인천·경기'"""
     return "·".join(dict.fromkeys(m.group(0) for m in SIDO.finditer(name)))
 
 
@@ -159,13 +143,8 @@ def _names(items: list[dict[str, Any]] | None) -> tuple[str, ...]:
 def split_members(
     tables: list[dict[str, Any]], member_name: Any
 ) -> dict[tuple[str, str], tuple[str, str]]:
-    """이름에 (계)/(남)/(여)가 없는 대상·지역 멤버 → {(조사, name_key(멤버명)): (패밀리명, 대상)}
-
-    member_name(t): 표의 멤버 이름 (후속판은 옛 표 이름, 판 표기 제거)
-    """
     out: dict[tuple[str, str], tuple[str, str]] = {}
 
-    # 대상 분할: 같은 조사 + 같은 분류명 구성 + '-' 앞부분
     by_prefix: dict[tuple[Any, ...], set[str]] = defaultdict(set)
     for t in tables:
         name = without_sex(member_name(t))
@@ -180,7 +159,6 @@ def split_members(
             prefix, _, suffix = n.rpartition("-")
             out[(survey, name_key(n))] = (prefix.strip(), suffix.strip())
 
-    # 지역 분할: 같은 조사·폴더·기간·분류명·항목명, 표명은 시도 이름만 다름
     by_shape: dict[tuple[Any, ...], set[str]] = defaultdict(set)
     for t in tables:
         folder = ((t.get("path_texts") or [""])[0]).rsplit(" > ", 1)[0]
@@ -197,18 +175,12 @@ def split_members(
     return unify_region_labels(out)
 
 
-# 행정구역 개편으로 권역 이름에만 새로 들어간 시도 (2012 세종특별자치시 출범)
 NEW_SIDO = {"세종"}
 
 
 def unify_region_labels(
     splits: dict[tuple[str, str], tuple[str, str]],
 ) -> dict[tuple[str, str], tuple[str, str]]:
-    """같은 패밀리에서 새로 생긴 시도만 다른 권역 이름을 하나로 맞춘다.
-    '대전·충북·충남'(2010) → '대전·세종·충북·충남'(2015~)
-    연도판마다 권역 표기가 달라 같은 권역이 지역 칸 두 개로 갈리는 것을 막는다 (axes_check).
-    '서울·경기' / '서울·인천·경기'처럼 다른 시도가 다르면 실제로 권역이 바뀐 것이라 두 칸으로 둔다
-    """
     by_family: dict[tuple[str, str, frozenset[str]], set[str]] = defaultdict(set)
     for (survey, _), (family, label) in splits.items():
         parts = frozenset(label.split("·"))
@@ -224,12 +196,6 @@ def unify_region_labels(
 def separate_same_period(
     grouped: dict[tuple[str, str], list[dict[str, Any]]],
 ) -> dict[tuple[str, str, int], list[dict[str, Any]]]:
-    """같은 멤버로 모인 표 중 수록 기간이 똑같은 표가 있고 분류 구성이 다르면 판이 아니라 다른 표다.
-    분류 구성별로 나눠 다른 패밀리로 둔다 (scripts/edition_check.py B: 기호만 다른 이름).
-    예 (둘 다 1975):
-      '시도/산업(대분류),직업(대분류)/성별 취업자'  분류: 시도·산업직업
-      '시도/산업(대분류)/직업(대분류)/성별 취업자'  분류: 시도·성별·직업
-    """
     out: dict[tuple[str, str, int], list[dict[str, Any]]] = {}
     for (survey, key), ts in grouped.items():
         periods = Counter((t["start_year"], t["end_year"]) for t in ts)
@@ -253,7 +219,6 @@ def class_ids(t: dict[str, Any]) -> list[str]:
 
 
 def successors(tables: list[dict[str, Any]]) -> tuple[dict[str, str], list[tuple[str, str]]]:
-    """(새 표 ID → 옛 표 ID, 분류 구성이 달라 붙이지 않은 쌍)"""
     by_id = {t["tbl_id"]: t for t in tables}
     linked, unsure = {}, []
     for t in tables:
@@ -272,7 +237,6 @@ TIMELINE_ALIASES = {"목적지": "통근통학지"}
 
 
 def timeline_key(t: dict[str, Any]) -> tuple | None:
-    """표 이름에서 (조사, 세는 대상, 분류 구성)을 뽑는다. 괄호·지역 꼬리표·분류 순서는 무시."""
     m = re.match(r"^(.*)별\s*([^/별]+)$", t["table_name"])
     if not m:
         return None
@@ -287,8 +251,6 @@ def timeline_key(t: dict[str, Any]) -> tuple | None:
 
 
 def link_timelines(rows: list[dict[str, Any]], by_id: dict[str, dict[str, Any]]) -> int:
-    """같은 조사·같은 대상·같은 분류 구성이고 연도가 이어지는 패밀리를 하나로 합친다.
-    합친 결과 안에 같은 해에 함께 있는 패밀리가 생기면 합치지 않는다."""
     fam_years: dict[str, set[int]] = defaultdict(set)
     fam_end: dict[str, int] = defaultdict(int)
     fam_name: dict[str, str] = {}
@@ -304,7 +266,7 @@ def link_timelines(rows: list[dict[str, Any]], by_id: dict[str, dict[str, Any]])
             key_fams[k].add(fid)
 
     def overlaps(fams: list[str]) -> bool:
-        return any(fam_years[a] & fam_years[b] for i, a in enumerate(fams) for b in fams[i + 1:])
+        return any(fam_years[a] & fam_years[b] for i, a in enumerate(fams) for b in fams[i + 1 :])
 
     parent: dict[str, str] = {}
 
@@ -341,11 +303,8 @@ def link_timelines(rows: list[dict[str, Any]], by_id: dict[str, dict[str, Any]])
 
 
 def build(tables: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """tables: tbl_id, survey_name, table_name, start_year, end_year, classifications
-    (지역 분할 판정에는 items, path_texts도)를 가진 목록"""
     linked, _ = successors(tables)
     by_id = {t["tbl_id"]: t for t in tables}
-    # 이름까지 바뀐 경우만 기록 (ID에 '_A'만 붙고 표명이 같은 판은 원래 같은 멤버)
     renamed = {
         new: old
         for new, old in linked.items()
@@ -353,7 +312,6 @@ def build(tables: list[dict[str, Any]]) -> list[dict[str, Any]]:
     }
 
     def anchor_name(t: dict[str, Any]) -> str:
-        """후속판은 옛 표의 이름으로 (옛 표의 멤버에 붙인다)"""
         return edition_name(by_id[linked.get(t["tbl_id"], t["tbl_id"])]["table_name"])
 
     grouped: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
@@ -364,11 +322,9 @@ def build(tables: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
     rows = []
     for (survey, _, variant), editions in members.items():
-        # 최신 연도를 담은 판 → 기간이 긴 판 → 시작 연도가 이른 판 (규칙 2.4)
         editions.sort(key=lambda t: (-t["end_year"], t["start_year"], t["tbl_id"]))
         name = anchor_name(editions[0])
         family_name, _, sex = member_of(name)
-        # 대상 이름은 최신 판 표명 기준 ('국제결혼 이주자' → '결혼이민자')
         target = member_of(edition_name(editions[0]["table_name"]))[1] or member_of(name)[1]
         split = splits.get((survey, name_key(without_sex(name))))
         if target is None and split:
@@ -388,8 +344,6 @@ def build(tables: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 }
             )
 
-    # family_id는 조사·패밀리명 순서로 매긴다 (카탈로그가 같으면 같은 번호).
-    # 멤버끼리 패밀리명 표기가 다르면 ('취득한 자' / '취득한자') 가장 많이 쓰인 표기로
     def family_key(r: dict[str, Any]) -> tuple[str, str, int]:
         return r["survey_name"], name_key(r["family_name"]), r["_variant"]
 
@@ -403,8 +357,6 @@ def build(tables: list[dict[str, Any]]) -> list[dict[str, Any]]:
         r["family_id"], r["family_name"] = ids[k], spellings[k].most_common(1)[0][0]
     for r in rows:
         del r["_variant"]
-    # 판 순서는 패밀리 안의 같은 대상·성별 멤버끼리 다시 매긴다. 권역 이름을 합쳐 이름이 다른 표가
-    # 한 멤버가 될 수 있어서다 (최신 연도를 담은 판 → 기간이 긴 판 → 시작 연도가 이른 판, 규칙 2.4)
     link_timelines(rows, by_id)
     same_member: dict[tuple[str, Any, Any], list[dict[str, Any]]] = defaultdict(list)
     for r in rows:
@@ -419,7 +371,6 @@ def build(tables: list[dict[str, Any]]) -> list[dict[str, Any]]:
         )
         for order, r in enumerate(group, start=1):
             r["edition_order"] = order
-    # 대상으로 나뉜 패밀리에 '-대상' 없는 표가 함께 묶이면 그 표가 '전체'
     split_families = {r["family_id"] for r in rows if r["target"] is not None}
     for r in rows:
         if r["target"] is None and r["family_id"] in split_families:
@@ -465,7 +416,7 @@ def load(rows: list[dict[str, Any]], url: str) -> int:
         "edition",
         "renamed_from",
     ]
-    with psycopg.connect(url) as conn:  # 블록이 끝나면 커밋, 오류면 전부 되돌림
+    with psycopg.connect(url) as conn:
         conn.execute(DDL)
         copy_sql = f"COPY catalog.table_families ({', '.join(cols)}) FROM STDIN"
         with conn.cursor().copy(copy_sql) as copy:
