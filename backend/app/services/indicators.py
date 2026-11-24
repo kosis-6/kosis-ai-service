@@ -400,8 +400,8 @@ def find_in_text(text):
     """
     s = _norm(text)
     # 공백을 뺀 위치 → 원문 위치. 두 글자 이하 이름이 원문의 띄어쓰기를 넘어 걸리면 두 낱말에
-    # 걸친 가짜 일치다 ("여성 비중"의 '성 비' → 성비로 읽어 "여성 성비 94.66"으로 답했다).
-    # 긴 이름은 띄어 쓴 복합어("합계 출산율")도 같은 말이라 그대로 맞춘다
+    # 걸친 가짜 일치다 ("여성 비중"의 '성 비'). 긴 이름은 띄어 쓴 복합어("합계 출산율")도
+    # 같은 말이다
     where = [i for i, ch in enumerate(str(text)) if not ch.isspace()]
 
     def one_word(start, end):
@@ -1016,10 +1016,9 @@ def region_mentions(text: str) -> list[tuple[int, int, str]]:
     ]
 
 
-# 지표 표현 속 전국 범위 말 ("전국 1인 가구 수"의 "전국"). "전국민"은 낱말이라 두고,
-# 국내이동과 '국내(에서) 태어난 · 출생한'(다문화 자녀의 국내출생 등)은 지표 · 조건이라 둔다
-# ("국내에서 태어난 다문화가구 자녀 수"가 "태어난 다문화가구 자녀 수"와 같은 캐시 키가 됐다).
-# "국내 출생아"의 국내는 범위다 (qa.NATIONWIDE와 같은 기준)
+# 지표 표현 속 전국 범위 말 ("전국 1인 가구 수"의 "전국"). "전국민", 국내이동,
+# '국내(에서) 태어난'은 지표 · 조건이라 두고 "국내 출생아"의 국내는 범위로 본다
+# (qa.NATIONWIDE와 같은 기준)
 NATIONAL_WORDS = re.compile(
     r"(?<![가-힣])(?:전국|우리\s*나라|대한민국|한국\s*전체"
     r"|국내(?!\s*(?:이동|인구\s*이동))(?!(?:에서)?\s*(?:태어|출생(?!\s*아))))"
@@ -1028,8 +1027,8 @@ NATIONAL_WORDS = re.compile(
 
 
 def without_national(term):
-    """지표 표현에서 전국 범위 말을 뺀다 ("전국 1인 가구 수" → "1인 가구 수"). 범위는 지역 조건이
-    맡는다. HCX가 지표 표현에 '전국'을 넣으면 "전국의 전국 1인 가구 수"로 답했다"""
+    """지표 표현에서 전국 범위 말을 뺀다 ("전국 1인 가구 수" → "1인 가구 수").
+    범위는 지역 조건이 맡는다"""
     rest = " ".join(NATIONAL_WORDS.sub(" ", str(term)).split())
     return rest or str(term)
 
@@ -1097,9 +1096,8 @@ def resolve_region(name, year=None, sigungu=False):
     for suffix in ("시", "군", "구"):
         if not found and not key.endswith(("시", "군", "구", "도")):
             found = _rows(sql.format(extra=""), [key + suffix, key + suffix])
-    # 섬 이름: "울릉도" → 울릉군, "강화도" → 강화군, "거제도" → 거제시, "진도" · "완도" → 진도군 ·
-    # 완도군. '도'로 끝나 위의 재시도를 건너뛰어 "지역을 찾지 못했습니다"로 끝났다.
-    # 시도 이름("경기도")과 여러 시도를 가리키는 이름("충청도")은 위에서 이미 찾거나 되묻는다
+    # 섬 이름: "울릉도" → 울릉군, "거제도" → 거제시, "진도" → 진도군. 시도 이름("경기도")과
+    # 여러 시도를 가리키는 이름("충청도")은 위에서 이미 찾거나 되묻는다
     if not found and key.endswith("도") and len(key) >= 2:
         for base in dict.fromkeys((key[:-1], key)):
             for suffix in ("군", "시"):

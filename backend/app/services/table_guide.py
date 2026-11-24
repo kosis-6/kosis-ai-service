@@ -249,7 +249,7 @@ async def off_domain_early(question: str) -> dict | None:
     population = bool(POPULATION_SIGNAL.search(rest) or indicators.find_in_text(question))
     # 인구 통계도 묻는 질문은 범위 밖 말이 인구 지표와 나란히 물은 지표일 때만 거절한다
     # ("출생아 수랑 아파트 매매가격": 출생아 수만 답하면 다른 질문의 답이 된다).
-    # "물가 비싼 서울에 사는 1인 가구"처럼 꾸밈말이면 지금처럼 뒤 단계로
+    # "물가 비싼 서울에 사는 1인 가구"처럼 꾸밈말이면 거절하지 않고 뒤 단계로 넘긴다
     asked = coordinated_words(question, words) if population else {}
     if population and not asked:
         return None

@@ -1457,7 +1457,7 @@ def test_more_is_a_comparison() -> None:
 @pytest.mark.parametrize(
     ("label", "name"),
     [
-        ("이주배경인구_계", "이주배경인구"),  # 전에는 '계'만 떼어 "이주배경인구_ 수"
+        ("이주배경인구_계", "이주배경인구"),
         ("다문화가구_가구원_계", "다문화가구 가구원"),
         ("아내의 연령별: 계", "아내의 연령별"),
         ("통학-계", "통학"),
@@ -1466,7 +1466,7 @@ def test_more_is_a_comparison() -> None:
         ("아시아주계", "아시아주"),  # 소계 이름 꼴 (대륙 · 내외국인 · 기타)
         ("외국인계", "외국인"),
         ("기타계", "기타"),
-        ("중국계", "중국계"),  # 출신을 뜻하는 '계'는 낱말의 일부다 (전에는 "중국")
+        ("중국계", "중국계"),  # 출신을 뜻하는 '계'는 낱말의 일부다
         ("일본계", "일본계"),
         ("중국_한국계", "중국 한국계"),
         ("연금 지급·증액 및 1세대 연금 자녀 승계", "연금 지급·증액 및 1세대 연금 자녀 승계"),
@@ -1606,7 +1606,7 @@ def test_household_table_uses_general_households_when_dwelling_is_unspecified(
 @pytest.mark.parametrize(
     ("term", "name"),
     [
-        ("전국 1인 가구 수", "1인 가구 수"),  # "2020년 전국의 전국 1인 가구 수"로 답했다
+        ("전국 1인 가구 수", "1인 가구 수"),
         ("우리나라 1인 가구 수", "1인 가구 수"),
         ("전국의 1인 가구 수", "1인 가구 수"),
         ("국내이동자 수", "국내이동자 수"),  # 지표 이름의 '국내'는 그대로
@@ -1637,10 +1637,10 @@ BIRTHPLACE_TITLE = "현 거주지별/성별/연령별/출생지별 1인가구(�
 @pytest.mark.parametrize(
     ("question", "ok"),
     [
-        ("2020년 서울 1인 가구 수는?", False),  # 출생지 '서울'로 434,920가구가 나왔다
+        ("2020년 서울 1인 가구 수는?", False),  # 사는 곳 서울은 출생지 칸이 아니다
         ("2020년 전국 1인 가구 수는?", False),
         ("2020년 부산 출생 1인 가구 수는?", True),  # 출생지를 말하면 그 칸을 쓴다
-        # 사는 곳(서울)은 출생지 칸을 고르지 않는다 (화면에서 "서울 수는 434,920가구"로 답했다)
+        # 사는 곳(서울)은 출생지 칸을 고르지 않는다
         ("2020년 서울에 사는 부산 출신 1인 가구는 몇 가구야?", True),
         ("고향이 부산인 서울 1인 가구 수", True),
     ],
@@ -1691,7 +1691,7 @@ def test_place_cell_is_made_of_region_words_only(monkeypatch, name: str, place: 
 def test_place_cell_name_uses_question_phrase_and_table_target(
     fake_table, monkeypatch, question: str, name: str
 ) -> None:
-    # 출생지가 '항목' 분류에 든 표: 칸 이름으로만 지으면 "서울특별시의 대구 수는 46,248가구"
+    # 출생지가 '항목' 분류에 든 표: 칸 이름('대구')만으로 이름을 짓지 않는다
     names = ("서울특별시", "부산광역시", "서울", "부산")
     monkeypatch.setattr(indicators, "_region_names", lambda: names)
     monkeypatch.setattr(lookup, "_table", lambda _: {"tbl_nm": BIRTHPLACE_TITLE})
@@ -1768,8 +1768,7 @@ def test_other_places_are_read_per_region_mention(monkeypatch, question, places)
 
 
 def test_destination_region_is_not_a_residence_condition(fake_table, monkeypatch) -> None:
-    # "경기도에서 서울로 통근하는 사람": HCX가 지역 [경기도, 서울]로 읽어 두 지역을 비교했고
-    # 통근지 칸도 경기도를 골랐다 (경기도 5,966,491 vs 서울 523,388)
+    # "경기도에서 서울로 통근하는 사람": 사는 곳은 경기도, 통근지는 서울이다
     known = ["서울특별시", "경기도", "서울"]
     monkeypatch.setattr(indicators, "_region_names", lambda: known)
     dims = [
@@ -1793,8 +1792,7 @@ def test_destination_region_is_not_a_residence_condition(fake_table, monkeypatch
 
 @pytest.mark.parametrize("item", ["서울", "서울에 사는", "서울 거주"])
 def test_residence_condition_is_covered_by_region_dim(monkeypatch, item: str) -> None:
-    # "서울에 사는 부산 출신 1인 가구": 통계표 찾기가 '서울'을 조건 낱말로도 뽑으면 칸 이름에
-    # 없어 "조건 '서울'을 반영할 수 없음"으로 끝났다. 사는 곳은 지역 분류가 반영한다
+    # "서울에 사는 부산 출신 1인 가구": 조건 낱말 '서울'(사는 곳)은 지역 분류가 반영한다
     names = ("서울특별시", "부산광역시", "서울", "부산")
     monkeypatch.setattr(indicators, "find_regions", lambda t: [n for n in names if n in t])
     plan = d.Plan(pick={0: "21"}, matched={0: "21"})
@@ -1826,7 +1824,7 @@ GENERATIONS = [  # '세대구성별/거처의종류별/점유형태별 가구(�
 @pytest.mark.parametrize(
     ("question", "classes", "ok"),
     [
-        # 조건 추출이 "2세대가구"의 '세대'를 나눠 보기로 읽어 표 안내로 끝났다
+        # "2세대가구"의 '세대'는 나눠 보기(세대구성별)가 아니다
         ("2020년 서울 2세대가구 수는?", ["세대"], True),
         ("2020년 서울 2세대가구 수는?", [], True),
         ("2020년 서울 세대구성별 가구 수는?", ["세대구성"], False),  # 나눠 보기는 그대로 막는다
@@ -1850,7 +1848,7 @@ def test_named_cell_is_not_a_split_view(fake_table, monkeypatch, question, class
 
 def test_llm_or_cached_cell_does_not_make_a_split_view_one_value(fake_table, monkeypatch) -> None:
     # "아파트 가구 수를 세대구성별로": 칸 고르기 LLM · 캐시가 고른 칸(질문에 없는 2세대가구)은
-    # 나눠 보기가 아니라는 근거가 되지 않는다 (비친족 22,804가구가 통과했다)
+    # 나눠 보기가 아니라는 근거가 되지 않는다
     title = "세대구성/가구원 수/활동제약자수별 가구(일반가구)-시도"
     monkeypatch.setattr(lookup, "_table", lambda _: {"tbl_nm": title})
     fake_table["tables"]["GEN"] = (GENERATIONS, 1, "시도")
@@ -1872,8 +1870,7 @@ DWELLING = [  # '거처의 종류별 가구(일반가구)': 세대구성 분류�
 @pytest.mark.parametrize(
     ("question", "kind", "ok"),
     [
-        # 세대구성별로 구성비를 낼 수 없는 표에서 아파트 칸의 비율("가구 중 아파트 비율 43.02%")로
-        # 답했다
+        # 세대구성 분류가 없는 표에서 아파트 칸의 비율로 바꿔 답하지 않는다
         ("2020년 서울 아파트 가구 수를 세대구성별로 알려줘", "composition", False),
         ("2020년 서울 일반가구의 거처의 종류별 구성비", "composition", True),  # 표에 있는 분류
         ("2020년 서울 가구 중 아파트 비율은?", "value", True),  # '~별'이 없는 비율 질문
@@ -1931,7 +1928,6 @@ DISABLED = [  # '연령 및 성별 장애인 인구': 항목에 묶음 이름 �
 
 
 def test_group_named_sex_cells_are_a_sex_dimension() -> None:
-    # 전에는 성별 칸으로 보지 않아 "장애인"이 남 · 여 두 칸에 걸린 채 "맞는 칸 없음"으로 끝났다
     assert DISABLED[0].sex_codes() == {"남": "T2", "여": "T3"}
     # 합계 칸이 없는 묶음은 성별 칸으로 보지 않는다
     loose = d.Dim(0, "항목", {"A": "통근_남자", "B": "통학_여자"})
@@ -1963,7 +1959,7 @@ def test_group_word_hitting_both_sex_cells_picks_group_total(
 @pytest.mark.parametrize(
     ("term", "target", "name"),
     [
-        # 조건절을 이름으로 쓰면 연령을 뗀 "엄마가 일 때는 표의 연령 구간이…"가 됐다
+        # 표의 대상을 담지 않은 조건절은 이름으로 쓰지 않는다
         ("엄마가 32살에서 37살일 때", "출생", "출생 수"),
         ("1인 가구 수", "1인가구", "1인 가구 수"),  # 표의 대상을 담은 표현은 그대로
         ("", "출생", "출생 수"),
@@ -1985,7 +1981,7 @@ RELIGION = [  # '성/연령/종교별 인구': 종교가 항목 분류에 들어
 @pytest.mark.parametrize(
     ("question", "item"),
     [
-        ("2005년에 천주교 믿는 사람 몇 명이었어?", "2"),  # 나눠 보기(종교별)로 막혔다
+        ("2005년에 천주교 믿는 사람 몇 명이었어?", "2"),  # 항목에 든 종교 칸은 나눠 보기가 아니다
         ("2005년 종교별 인구 알려줘", None),  # 나눠 보기는 그대로 막는다
     ],
 )
@@ -2005,7 +2001,7 @@ def test_class_held_in_item_dimension_counts_as_named_cell(
 
 
 def test_name_from_underscored_total_cell() -> None:
-    # "2023년 서울 이주배경인구 어때?": 질문 해석이 지표 표현을 비워 칸 이름으로 이름을 지었다
+    # 지표 표현이 비었으면 칸 이름에서 합계 표시를 떼고 이름을 짓는다
     item = d.Dim(0, "항목", {"T10": "이주배경인구_계", "T20": "내국인(귀화)_계"})
     plan = d.Plan(pick={0: "T10"}, matched={0: "T10"})
     assert d._name({}, [item], plan, True, unit="명") == "이주배경인구 수"

@@ -250,15 +250,13 @@ def test_one_indicator_outside_the_domain_refuses_the_whole_question(status, mon
 
 
 def test_outside_text_uses_particle_for_the_word() -> None:
-    # "'미세먼지'은 인구 분야 통계가 아니라"로 조사를 '은'으로 고정했다
     assert refusal._outside_text(["미세먼지"], ["사망자 수"]).startswith("'미세먼지'는 ")
     assert refusal._outside_text(["집값"], []).startswith("'집값'은 ")
     assert refusal._outside_text(["집값", "물가"], []).startswith("'집값' · '물가' 등은 ")
 
 
 def test_region_name_listed_as_outside_indicator_is_not_refused(monkeypatch) -> None:
-    # "부산은?": 계획이 지역 이름을 범위 밖 지표로 적으면
-    # "'부산'은 인구 분야 통계가 아니라"로 답했다
+    # 계획이 지역 이름("부산")을 범위 밖 지표로 적어도 거절하지 않는다
     monkeypatch.setattr(indicators, "find_regions", lambda t: ["부산"] if "부산" in t else [])
     assert _finalize(_multi("tables", ["부산"]))["status"] == "tables"
     assert _finalize(_multi("tables", ["부산광역시"]))["status"] == "tables"

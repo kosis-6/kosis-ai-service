@@ -782,9 +782,8 @@ def _several_places(regions: list[str], rest: str) -> bool:
 
 
 def region_only_changes(question: str, conditions: dict) -> dict | None:
-    """지역만 바꾸는 짧은 말이면 지역 변경, 아니면 None. HCX 변경 추출은 이 말을 실행마다 다르게
-    읽어, 새 질문으로 보면 "부산은?" 글자로 통계표를 찾아 관련 없는 표를 안내했다 (11/23).
-    순위를 보던 중이면 HCX에 맡긴다 ("부산은?"이 '부산은 몇 위?'일 수 있다)"""
+    """지역만 바꾸는 짧은 말이면 지역 변경, 아니면 None. HCX 변경 추출은 이런 말을 실행마다
+    다르게 읽는다. 순위를 보던 중이면 HCX에 맡긴다 ("부산은?"이 '부산은 몇 위?'일 수 있다)"""
     if conditions.get("type") in ("rank", None):
         return None
     if not (found := only_regions(question)):
@@ -796,8 +795,7 @@ def region_only_changes(question: str, conditions: dict) -> dict | None:
 
 
 def _ask_indicator(regions: list[str], rest: str) -> dict:
-    """이어 갈 조건 없이 지역만 말했다 ("부산은?"): 통계표를 찾지 않고 볼 통계를 묻는다.
-    HCX가 지역 이름을 범위 밖 지표로 읽어 "'부산'은 인구 분야 통계가 아니라"로 답하던 문제"""
+    """이어 갈 조건 없이 지역만 말했다 ("부산은?"): 통계표를 찾지 않고 볼 통계를 묻는다"""
     several = _several_places(regions, rest)
     place = " · ".join(regions) if several else " ".join(regions)  # "서울 강남구"는 한 곳
     first = regions[0] if several else place

@@ -165,8 +165,7 @@ CHILD_COUNT = re.compile(
     rf"{CHILD_WORD}\s*(?:가|를|이)?\s*(\d+)(?![0-9]|{AGE_UNIT})(?:\s*명)?"
     rf"|(?<![0-9])(\d+)\s*(?:명\s*의?\s*)?{CHILD_WORD}"
 )
-# 아이 수를 말하는 말 ("아이 넷", "아이가 셋", "아이 2명", "두 아이")은 연령 집단(0~14세)이 아니라
-# 자녀 수다. 연령으로 읽으면 연령 분류가 있는 인구 표가 자녀수별 가구 표를 이겼다
+# 아이 수를 말하는 말("아이 넷", "아이가 셋", "두 아이")은 연령 집단이 아니라 자녀 수다
 COUNT_SENSITIVE = {"아이", "아이들", "애들"}
 COUNT_AFTER = re.compile(
     r"^\s*(?:가|를|이|들이|들을)?\s*"
@@ -179,8 +178,7 @@ COUNT_BEFORE = re.compile(
 
 
 def count_digits(text: str) -> str:
-    """고유어 수를 숫자로, 자녀 수를 표의 칸 꼴로 ("미성년 자녀 넷" → "미성년 4자녀").
-    표 칸은 '4자녀', '3명이상'처럼 숫자로 적어 "자녀 넷"이 어느 칸에도 맞지 않았다"""
+    """고유어 수를 숫자로, 자녀 수를 표의 칸 꼴로 ("미성년 자녀 넷" → "미성년 4자녀")"""
     text = COUNT_ALONE.sub(lambda m: str(NATIVE_COUNT[m[1]]), text)
     text = COUNT_BEFORE_UNIT.sub(lambda m: str(NATIVE_COUNT[m[1]]), text)
     return CHILD_COUNT.sub(lambda m: f"{m[1] or m[2]}자녀", text)
@@ -192,9 +190,8 @@ COUNT_UNIT = re.compile(r"(?<![0-9])(\d+)\s*(?:자녀|명|인|세대)")
 
 def count_words(item: str, question: str = "") -> list[str]:
     """수를 말로 쓴 조건 낱말을 표 칸 꼴의 낱말로 ("미성년 자녀 넷" → ['미성년', '4자녀']).
-    수를 말로 쓰지 않았으면 []. 조건이 수뿐이면("넷", HCX가 '아이'를 떼고 뽑는다) 질문에서
-    그 수가 붙은 말을 찾는다 ("아이 넷" → '4자녀'). 못 찾으면 []
-    (수 하나로는 '4'가 든 아무 칸에나 맞는다)"""
+    아니면 []. 조건이 수뿐이면("넷") 질문에서 그 수가 붙은 말을 찾고, 못 찾으면 []
+    (수만으로는 '4'가 든 아무 칸에나 맞는다)"""
     counted = count_digits(item)
     if counted == item:
         return []

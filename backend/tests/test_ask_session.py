@@ -1758,8 +1758,7 @@ def test_region_only_follow_up_keeps_table_definition(talk: Talk, followup: str)
     [("부산은?", "부산의"), ("부산은 어때?", "부산의"), ("서울과 부산은?", "서울 · 부산의")],
 )
 def test_region_only_first_question_asks_what_to_see(talk: Talk, question, place) -> None:
-    # 이어 갈 조건 없이 지역만 말하면 HCX가 지역을 범위 밖 지표로 읽어
-    # "'부산'은 인구 분야 통계가 아니라"로 답했다. 해석 · 표 찾기 없이 볼 통계를 묻는다
+    # 이어 갈 조건 없이 지역만 말하면 해석 · 표 찾기 없이 볼 통계를 묻는다
     res = talk.say(question)
     assert res["status"] == "unclear" and res["request_type"] == s.UNCLEAR
     assert f"{place} 어떤 통계" in res["answer"] and "예)" in res["answer"]
@@ -1776,7 +1775,7 @@ def test_region_only_first_question_asks_what_to_see(talk: Talk, question, place
     ],
 )
 def test_answer_to_region_only_question_keeps_the_region(talk: Talk, first, asked) -> None:
-    # "부산은?" → 볼 통계를 물음 → "2020년 출생아 수는?": 부산을 잃고 전국 값으로 답했다
+    # "부산은?" → 볼 통계를 물음 → "2020년 출생아 수는?": 부산으로 묻는다
     talk.say(first)
     res = talk.say("2020년 출생아 수는?")
     assert talk.asked == [asked] and res["request_type"] == "reply"
@@ -1800,7 +1799,7 @@ def test_answer_to_region_only_question_keeps_the_region(talk: Talk, first, aske
     ],
 )
 def test_answer_to_region_only_question_can_name_another_region(talk: Talk, question) -> None:
-    # 다른 지역이나 전국을 말하면 앞의 지역을 붙이지 않는다 ("부산 2020년 전국 …"이 되었다)
+    # 다른 지역이나 전국을 말하면 앞의 지역을 붙이지 않는다
     talk.say("부산은?")
     talk.say(question)
     assert talk.asked == [question]
@@ -1851,7 +1850,7 @@ def test_region_only_rule_needs_nothing_but_regions() -> None:
     assert s.region_only_changes("부산 출생아 수는?", c) is None  # 지표를 말함
     assert s.region_only_changes("부산은 몇 명이야?", c) is None
     assert s.region_only_changes("부산은?", {"type": "rank", "regions": []}) is None  # 순위
-    # 받침 뒤의 '이랑'도 두 곳을 잇는 말이다 (전에는 지역만 말한 말로 보지 않았다)
+    # 받침 뒤의 '이랑'도 두 곳을 잇는 말이다
     both = {"regions": {"op": "set", "value": ["서울", "부산"]}}
     assert s.region_only_changes("서울이랑 부산은?", c) == both
 

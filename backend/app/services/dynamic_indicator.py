@@ -172,8 +172,7 @@ class Dim:
         """{"남": 코드, "여": 코드} (둘 다 있을 때만)"""
         out = {}
         # "장애인 인구_남자"처럼 묶음 이름 뒤에 붙은 성별: 같은 묶음의 합계 칸("장애인 인구_계")이
-        # 있을 때만 성별 칸으로 본다 (전에는 성별 분류로 보지 않아 "장애인"이 남 · 여 두 칸에
-        # 걸린 채 "질문의 말과 맞는 칸이 없음"으로 끝났다)
+        # 있을 때만 성별 칸으로 본다
         groups = {_norm(_label_name(n)) for n in self.codes.values() if is_subtotal(n)}
         for sex, names in SEX_NAMES.items():
             hits = [c for c, n in self.codes.items() if _norm(n) in names]
@@ -354,7 +353,7 @@ def _is_place_cell(name: str) -> bool:
         return True
     try:
         found = [f for f in indicators.find_regions(name) if f not in NOT_PLACE_WORDS]
-    except Exception:  # 지역 이름 목록을 읽지 못하면 지역 칸으로 보지 않는다 (전처럼 칸을 쓴다)
+    except Exception:  # 지역 이름 목록을 읽지 못하면 지역 칸으로 보지 않는다
         logger.warning("지역 이름 확인 실패 → 지역 칸 검사 건너뜀: %s", name)
         return False
     for f in sorted(found, key=len, reverse=True):
@@ -410,10 +409,8 @@ def _drop_region_words(
     question: str, hits: dict[int, list[str]], dims: list[Dim], region_dim: int | None
 ) -> dict[int, list[str]]:
     """질문의 지역 이름이 지역 분류가 아닌 칸(출생지 '서울' 등)에 걸린 것을 뺀다. 그 지역을
-    다른 장소로 말했을 때("대구 출신")만 그 칸을 쓴다.
-    '현 거주지별 … 출생지별 1인가구' 표에서 "서울 1인 가구 수"가 출생지도 서울인 434,920가구로
-    나왔고 (실제 1,390,701가구), "서울에 사는 대구 출신"은 사는 곳 서울을 출생지로 골랐다.
-    지역 분류가 없는 표는 지역 이름 칸이 곧 지역이라 그대로 둔다"""
+    다른 장소로 말했을 때("대구 출신")만 그 칸을 쓴다. 지역 분류가 없는 표는 지역 이름 칸이
+    곧 지역이라 그대로 둔다"""
     if region_dim is None:
         return hits
     by_no = {d.no: d for d in dims}
@@ -432,8 +429,8 @@ def _drop_region_words(
         d = by_no.get(no)
         kept = [c for c in codes if allowed(d, c)]
         if not kept and d is not None:
-            # 빼고 나니 빈 분류는 낱말 일부로 다시 맞춘다 ("경기도에서 서울로 통근": 통근지의
-            # '경기도'를 빼면 '서울로' → '서울특별시'. 이름이 그대로 나온 칸이 있으면 하지 않던 일)
+            # 빼고 나니 빈 분류는 낱말 일부로 다시 맞춘다
+            # ("경기도에서 서울로 통근": 통근지의 '경기도'를 빼면 '서울로' → '서울특별시')
             kept = [c for c in _word_hits(question, d) if allowed(d, c)]
         if kept:
             out[no] = kept
@@ -442,9 +439,8 @@ def _drop_region_words(
 
 def _place_cell_unasked(question: str, d: Dim, code: str, region_dim: int | None) -> bool:
     """저장된 칸 · 칸 고르기 LLM이 고른 칸(forced)이 질문이 묻지 않은 다른 장소 칸인가
-    (출생지 '서울'). _drop_region_words와 같은 기준을 규칙 밖에서 고른 칸에도 쓴다.
-    캐시에 출생지 '서울' 칸이 있으면 "서울 1인 가구 수"가 434,920가구로 나왔다.
-    합계 칸('전국' = 출생지 전체)은 질문의 범위를 좁히지 않아 그대로 쓴다"""
+    (출생지 '서울'). _drop_region_words와 같은 기준이다. 합계 칸('전국' = 출생지 전체)은
+    질문의 범위를 좁히지 않아 그대로 쓴다"""
     return (
         region_dim is not None
         and d.no != region_dim
@@ -580,8 +576,7 @@ def is_subtotal(label: str) -> bool:
 
 def _label_name(label: str) -> str:
     """칸 이름을 지표 이름에 쓰는 모양으로: 끝의 합계 표시를 떼고 단계를 나눈 밑줄은 띄운다
-    ("이주배경인구_계" → "이주배경인구", "다문화가구_가구원_계" → "다문화가구 가구원").
-    전에는 '계'만 떼어 "이주배경인구_ 수"로 답했다"""
+    ("이주배경인구_계" → "이주배경인구", "다문화가구_가구원_계" → "다문화가구 가구원")"""
     name = TOTAL_TAIL.sub("", label.strip()) or label
     return " ".join(name.replace("_", " ").split()) or label
 
@@ -765,8 +760,7 @@ def choose(
                 plan.pick[d.no] = base
                 if others or sex_set <= set(codes):
                     # 질문 낱말이 남자 · 여자 칸에 모두 걸렸으면 그 집단 전체를 말한 것이다
-                    # ("장애인" ⊂ 장애인 인구_남자 · _여자 → 장애인 인구_계). 맞은 칸으로 보지 않아
-                    # "질문의 말과 맞는 칸이 없음"으로 끝나 연령 구간 확인까지 가지 못했다
+                    # ("장애인" ⊂ 장애인 인구_남자 · _여자 → 장애인 인구_계)
                     plan.matched[d.no] = base
             continue
         if len(codes) > 1 and d.total() and set(codes) == set(_leaf_codes(d)):
@@ -1005,14 +999,12 @@ def uncovered(
 def _class_narrowed(cls: str, plan: Plan, dims: list[Dim], said: dict[int, list[str]]) -> bool:
     """나눠 보기로 읽힌 분류(cls)에서 질문이 한 칸을 글자로 직접 말했는가 (said: _text_hits).
     "2세대가구 수"의 '세대'는 세대구성별로 나눠 보라는 말이 아니라 그 안의 2세대가구다.
-    칸 고르기 LLM · 캐시가 고른 칸은 근거가 되지 않는다: "아파트 가구 수를 세대구성별로"에서
-    LLM이 고른 비친족가구 칸(22,804가구)이 세대구성별 답으로 통과했다"""
+    칸 고르기 LLM · 캐시가 고른 칸은 근거가 되지 않는다"""
     word = _norm(cls)
     if len(word) < 2:
         return False
     # 그 분류가 어느 분류 이름에도 없으면 표가 항목(0번 분류)에 그 분류를 담은 것이다
-    # ('성/연령/종교별 인구'의 항목: 불교 · 기독교(천주교) …). "천주교 믿는 사람"이 나눠 보기
-    # (종교별)로 막혀 표 안내로 끝났다
+    # ('성/연령/종교별 인구'의 항목: 불교 · 기독교(천주교) …)
     in_item = not any(word in _norm(d.name) for d in dims)
     return any(
         d.no in plan.matched
@@ -1043,8 +1035,7 @@ def _chosen_places(plan: Plan, dims: list[Dim], region_dim: int | None) -> list[
 
 def _elsewhere(parsed: dict, cells: list[str], mentions: list[PlaceMention]) -> list[str]:
     """질문의 지역 중 다른 장소 칸(통근지 · 출생지 등)으로 쓴 지역. 사는 곳 조건(지역 분류)에서
-    뺀다 (_with_spec). "경기도에서 서울로 통근"을 HCX가 지역 [경기도, 서울]로 읽어 두 지역을
-    비교했다 (서울 거주 통근 인구가 함께 나왔다)"""
+    뺀다 (_with_spec). "경기도에서 서울로 통근"의 서울은 통근지다"""
     residences = [m.name for m in mentions if m.role is None]
     regions = parsed.get("regions") or []
     used = [
@@ -1063,8 +1054,7 @@ def _place_name(
     counted: bool,
 ) -> str:
     """칸 이름으로 지은 이름이 다른 장소 칸('대구')뿐이면 질문의 장소 표현과 표의 집계 대상으로
-    다시 짓는다 ("대구 수" → "대구 출신 1인가구 수"). 출생지가 '항목' 분류에 든 표에서
-    "서울특별시의 대구 수는 46,248가구"로 답했다"""
+    다시 짓는다 ("대구 수" → "대구 출신 1인가구 수")"""
     if not places or not target or not _norm(name).startswith(_norm(_label_name(places[0]))):
         return name
     phrase = _label_name(places[0])
@@ -1090,8 +1080,7 @@ LIVES_IN = re.compile(r"\s*(?:에\s*)?(?:사는|살고\s*있는|거주하는|거
 
 def _lives_in_asked_region(item: str, parsed: dict) -> bool:
     """조건 낱말이 질문의 지역(사는 곳) 그 자체인가 ("서울", "서울에 사는").
-    통계표 찾기가 '서울'을 조건 낱말로도 뽑으면, 지역은 칸 이름에 없어 "질문의 조건 '서울'을
-    반영할 수 없음"으로 끝났다 (전에는 '서울'이 출생지 칸에 잘못 걸려 통과했다)"""
+    사는 곳은 지역 분류가 맡아 칸 이름에는 없다"""
     place = LIVES_IN.sub("", item)
     regions = parsed.get("regions") or []
     return bool(place) and _is_place_cell(place) and _named_place(place, regions)
@@ -1214,8 +1203,7 @@ def _name(
         # 질문의 표현도 원자료 합계 표시("이주배경인구_계 수")와 전국 범위 말은 떼고 쓴다
         named = _term_name(str(term))
         # 고른 칸이 모두 합계(전국 · 계)면 질문의 표현이 이름이다 (사전 지표 이름은 담김 검사).
-        # 단 그 표현이 표의 집계 대상을 담을 때만: HCX가 "엄마가 32살에서 37살일 때" 같은 조건절을
-        # 주면 연령을 뗀 "엄마가 일 때"가 이름이 되어 "엄마가 일 때는 표의 연령 구간이…"로 답했다
+        # 단 그 표현이 표의 집계 대상을 담을 때만 ("엄마가 32살에서 37살일 때" 같은 조건절은 아니다)
         about = _norm(_label_name(target)) if target else ""
         needed = informative if source == "term" else words
         fits_target = bool(informative) or not about or about in _norm(named)

@@ -79,7 +79,7 @@ def test_population_signal_is_not_refused(question: str) -> None:
     ],
 )
 def test_off_domain_indicator_asked_with_population_refuses_whole(question, outside) -> None:
-    # 출생아 수만 답하면 다른 질문의 답이 된다 (전에는 매매가격을 조용히 빼고 출생아 수만 답했다)
+    # 출생아 수만 답하면 다른 질문의 답이 된다
     res = early(question)
     assert res is not None and res["status"] == "out_of_scope"
     assert f"'{outside}'" in res["answer"] and "인구 분야 통계가 아니라" in res["answer"]
@@ -95,7 +95,7 @@ def test_coordinated_words_finds_the_asked_phrase() -> None:
     }
     # 꾸밈말은 나란히 물은 지표가 아니다
     assert table_guide.coordinated_words("물가 비싼 서울에 사는 1인 가구", ["물가"]) == {}
-    # '과' 뒤에 와도 뒤의 지역을 꾸미면 따로 물은 지표가 아니다 (거절했었다)
+    # '과' 뒤에 와도 뒤의 지역을 꾸미면 따로 물은 지표가 아니다
     q = "2020년 서울과 집값이 비싼 부산의 1인 가구 수는?"
     assert table_guide.coordinated_words(q, ["집값"]) == {}
     assert table_guide.coordinated_words("서울과 집값 오른 지역의 인구", ["집값"]) == {}
@@ -105,7 +105,6 @@ def test_coordinated_words_finds_the_asked_phrase() -> None:
 
 def test_catalog_check_uses_the_word_the_user_wrote(catalog) -> None:
     # '전세가'는 인구 표의 '전세가구' 안에 있지만 물은 말은 '전세가격'이다
-    # (출생아 수만 답하고 전세가격을 조용히 뺐다)
     catalog.append(_table("점유형태별 전세가구 월세가구"))
     res = early("부산 출생아 수와 전세가격 같이 알려줘")
     assert res is not None and res["status"] == "out_of_scope"

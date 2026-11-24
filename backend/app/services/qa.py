@@ -231,7 +231,6 @@ GENDER_WORDS = {"여": re.compile(r"여성|여자"), "남": re.compile(r"남성|
 # "경력단절여성이 있는 가구"의 여성은 가구 유형을 설명한다.
 HOUSEHOLD_MEMBER_GENDER = re.compile(r"(?:여성|여자|남성|남자)\s*(?:이|가)\s*(?:있|없)는\s*가구")
 # '성별'이라는 말. "세대구성별", "다문화가구 구성별", "특성별" 안의 '성별'은 아니다
-# ("아파트 가구 수를 세대구성별로"가 서울 총인구의 성별 구성으로 답했다)
 SEX_WORD = r"(?<![구특])성별"
 # 남녀를 함께 묻는 표현 (구성비 질문이면 성별 구성)
 SEX_SPLIT = re.compile(rf"남녀|{SEX_WORD}|(남성|남자).*(여성|여자)|(여성|여자).*(남성|남자)")
@@ -1121,8 +1120,8 @@ def correct(question, parsed, today=None):
         if name and current != name:
             # "인구"만 찾았고 HCX가 다른 지표를 골랐으면 그대로 둔다 (예: "인구에서 고령층 비중")
             # 단, 연령 구간 인구 수를 물었으면 총인구 (예: "65세 이상 인구는?").
-            # HCX가 사전에 없는 지표를 골랐어도 그 표현이 질문에 그대로 있으면 그대로 둔다
-            # ("인구가 많고 집값이 비싼 서울의 1인 가구 수": 꾸밈말의 '인구'로 총인구가 됐다)
+            # HCX가 고른 사전 밖 지표 표현이 질문에 그대로 있으면 그대로 둔다
+            # ("인구가 많고 집값이 비싼 서울의 1인 가구 수"의 '인구'는 꾸밈말이다)
             said = name == "총인구" and current is None and _says_other_indicator(question, parsed)
             if _both_sides(current, name, question):
                 names = names | {current}  # 질문이 차이의 두 쪽을 다 말했다: HCX의 차이 지표가 근거
@@ -1287,8 +1286,8 @@ def correct(question, parsed, today=None):
         and parsed.get("type") in ("value", "trend", "compare")
         and (other := unlisted_measure(question))
     ):
-        # "출생아 수랑 1인 가구 수": 사전에 없는 지표가 함께 물렸다. 사전 지표 하나로 답하면
-        # 다른 지표를 조용히 뺀다 → 통계표 찾기가 지표마다 나눠 계산하게 근거 없음으로 둔다
+        # 사전에 없는 지표를 함께 물었다 ("출생아 수랑 1인 가구 수"). 그 지표도 계산하도록
+        # 근거 없음으로 둔다
         parsed["also_asked"] = other
         parsed["grounded"] = False
         rest = question.replace(other, " ")
@@ -1914,8 +1913,7 @@ def _guard_indicator(question, parsed, names, fix):
         if _asks_age_population(question, parsed):
             fix("indicator", "총인구", "연령 구간 인구 수를 물음")
         elif parsed.get("type") == "composition" and "총인구" in names:
-            # "서울 남녀 인구 구성"을 HCX가 성비로 읽었다: 질문이 묻는 것은 인구의 구성이다.
-            # 지원하지 않는 지표로 두면 엉뚱한 표('5세 이상만 집계')로 넘어갔다
+            # "서울 남녀 인구 구성"을 HCX가 성비로 읽어도 묻는 것은 인구의 구성이다
             fix("indicator", "총인구", "인구 구성을 물음")
             parsed.pop("unsupported", None)
         else:

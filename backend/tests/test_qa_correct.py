@@ -87,7 +87,7 @@ def test_female_elderly_ratio() -> None:
         ("2025년 전국 인구 중 남녀 비중은 어떻게 돼?", "sex"),
         ("서울 인구의 남자와 여자 구성비는?", "sex"),
         ("2025년 서울 인구의 연령대별 구성비는?", None),
-        # '구성별'·'특성별' 안의 '성별'은 남녀가 아니다 (서울 총인구의 성별 구성으로 답했다)
+        # '구성별'·'특성별' 안의 '성별'은 남녀가 아니다
         ("2020년 서울 아파트 가구 수를 세대구성별로 알려줘", None),
         ("2020년 서울 다문화가구 구성별 비중", None),
         ("서울 가구주성별 1인 가구 구성비", "sex"),
@@ -667,7 +667,7 @@ def test_age_group_count_without_population_word() -> None:
 @pytest.mark.parametrize(
     "question",
     [
-        "인구가 많고 집값이 비싼 서울의 2020년 1인 가구 수",  # 꾸밈말의 '인구'로 총인구가 됐다
+        "인구가 많고 집값이 비싼 서울의 2020년 1인 가구 수",  # '인구'는 꾸밈말
         "사람이 많이 사는 서울의 1인 가구 수는?",
         "인구 밀집 지역인 서울의 1인 가구 수",
     ],
@@ -680,7 +680,7 @@ def test_population_word_in_modifier_does_not_replace_said_indicator(question: s
 @pytest.mark.parametrize(
     ("name", "display"),
     [
-        ("울릉도", "경상북도 울릉군"),  # "'울릉도'에 해당하는 지역을 찾지 못했습니다"로 끝났다
+        ("울릉도", "경상북도 울릉군"),  # 섬 이름
         ("강화도", "인천광역시 강화군"),
         ("거제도", "경상남도 거제시"),
         ("경기도", "경기도"),  # 시도 이름은 그대로
@@ -716,7 +716,7 @@ def test_population_word_still_replaces_unsaid_indicator() -> None:
 
 @pytest.mark.parametrize("hcx", ["성비", "고령인구 비율"])
 def test_population_composition_read_as_other_indicator(hcx: str) -> None:
-    # "서울 남녀 인구 구성"을 HCX가 성비로 읽으면 지원하지 않는 지표가 되어 엉뚱한 표로 넘어갔다
+    # "서울 남녀 인구 구성"은 성비가 아니라 인구 구성이다
     p = qa.correct(
         "2020년 서울 남녀 인구 구성",
         parsed(type="composition", indicator=hcx, regions=["서울"], year=2020),

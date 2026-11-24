@@ -70,9 +70,8 @@ PROCEDURE = re.compile(
     r"|필요한\s*서류|구비\s*서류"
 )
 # 추천 · 의견을 구하는 말. "어때?"는 살기 · 이사처럼 의견을 묻는 말과 함께일 때만 본다
-# ("부산은 어때?" · "합계출산율 어때?"는 통계 조건을 바꾸거나 수치를 묻는 말이다).
-# "어디가 살기 좋아?"처럼 '어디가'와 '좋아' 사이에 짧은 말이 끼어도 잡는다.
-# 이사 · 이주 · 정착은 하려는 일로 말할 때만 본다 ("이주배경인구", "이주민"은 통계 이름이다)
+# ("부산은 어때?"는 조건을 바꾸는 말이다). 이사 · 이주 · 정착은 하려는 일로 말할 때만 본다
+# ("이주배경인구"는 통계 이름이다)
 OPINION = (
     r"살기|살\s*만|살면|키우기|좋은|좋을|괜찮은"
     r"|이사\s*(?:가|갈|하|할|해)|(?:이주|정착)\s*(?:하|할|해)"
@@ -198,9 +197,7 @@ def _band_text(rec: dict, bands: list[str]) -> str:
 
 @llm_calls.staged("refusal_reason")
 async def _ask(question: str, reason: str) -> dict[str, Any] | None:
-    # 다른 통계표 찾기 LLM 호출처럼 search_llm.ask로 부른다: Gemma가 응답하지 않으면 HCX로
-    # 넘어간다. 전에는 Gemma에만 보내 Gemma가 내려가면 "거절 사유 분류 실패 → 범위 밖 그대로"로
-    # 끝나 '없는 지역 단위' 같은 안내 대신 '범위 밖'이 나갔다
+    # Gemma가 응답하지 않으면 HCX로 넘어간다
     def request(llm: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         messages = [
             {"role": "system", "content": prompt.SYSTEM},
@@ -237,7 +234,7 @@ async def classify(question: str, reason: str) -> dict[str, Any] | None:
 
 def _is_region(text: str) -> bool:
     """지역 이름뿐인 말 ("부산", "서울특별시", "서울 강남구"). 지역 이름 목록을 읽지 못하면
-    지역으로 보지 않는다 (전처럼 범위 밖 지표로 둔다)"""
+    지역으로 보지 않는다"""
     try:
         names = indicators.find_regions(text)
     except Exception as e:  # 연결 실패 · 테이블 없음: 거절 문장을 고르다 답 전체를 잃지 않는다
@@ -264,7 +261,7 @@ def outside_indicators(res: dict[str, Any]) -> tuple[list[str], list[str]]:
 
 def _outside_text(outside: list[str], rest: list[str]) -> str:
     names = " · ".join(f"'{o}'" for o in outside)
-    # 받침에 맞춘 조사 ("'미세먼지'는", "'집값'은"). '은'으로 고정해 "'미세먼지'은"이 됐다
+    # 받침에 맞춘 조사 ("'미세먼지'는", "'집값'은")
     subject = josa(names, "은는") if len(outside) == 1 else f"{names} 등은"
     text = (
         f"{subject} 인구 분야 통계가 아니라 제공하지 "
