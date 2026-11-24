@@ -166,3 +166,20 @@ def test_plan_prompt_follows_the_search_llm(monkeypatch) -> None:
         monkeypatch.setattr(search_llm.get_settings(), "search_llm", name, raising=False)
         asyncio.run(pl.call("시도별 출생성비"))
     assert seen == [pl.SYSTEM, pl.SYSTEM_GEMMA]
+
+
+def test_dict_name_strips_level_and_axis_words_but_never_matches_by_containment() -> None:
+    # 재계획의 search 는 "시도별 노년부양비", "국적별 결혼이민자 수"처럼
+    # 지역 단위 · 분류 축 말을 앞에 붙인다
+    from app.agent import plan as planner
+
+    assert planner.dict_name("시도별 노년부양비") == "노년부양비"
+    assert planner.dict_name("국적별 결혼이민자 수") == "결혼이민자 수"
+    assert planner.dict_name("출생아 수(출생순위별)") == "출생아 수"
+    assert planner.dict_name("시도별 사망원인별 사망자수 (인구 10만명당 사망자수)") in (
+        "사망자 수",
+        "조사망률",
+    )
+    # 포함 매칭은 하지 않는다: 수식어가 붙어 뜻이 달라진 말은 사전에 붙이지 않는다
+    assert planner.dict_name("등록외국인 결혼이민자 수") is None
+    assert planner.dict_name("") is None and planner.dict_name(None) is None

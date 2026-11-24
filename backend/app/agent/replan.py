@@ -132,7 +132,9 @@ def resolve(new: dict, question: str, first: dict, kind: str) -> tuple[dict | No
             c[key] = spans[v] if 0 <= v < len(spans) else None
         elif v not in spans:
             c[key] = None
-    if _signature(p) == _signature(first):
+    first_filled = copy.deepcopy(first)
+    planner.fill_dict(first_filled)  # 처음 계획에도 같은 dict 채우기를 적용해 같은 조건으로 견준다
+    if _signature(p) == _signature(first_filled):
         return None, "처음 계획과 같음"
     p["measure"] = measure
     p["changed"] = new.get("changed")
