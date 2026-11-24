@@ -45,6 +45,10 @@ class Settings(BaseSettings):
     # LLM이 고른 칸에도 잇기를 붙인다 (답이 바뀐다). 지금 계산이 성공한 표는 그대로.
     # 개발셋 v1.3 · v2.3에서 정답이 줄지 않아 기본으로 켠다 (11/24, 설계 9-1). 끄려면 false
     binding_use: bool = True
+    # B 1단계: 지표 사전(사전 계산)이 답한 질문도 통계표 찾기의 조건 추출로 조건을 뽑아 그 지표의
+    # 표에 잇고, 넘겼을지를 처리 기록(trace.dict_binding)에만 남긴다 (답은 그대로, HCX 호출 1회 더).
+    # 평가에서 켜고 scripts/dict_binding_compare.py로 본다 (app/services/dict_binding.py)
+    binding_dict_shadow: bool = False
 
     # 통계표 찾기(조건 추출·계획·최종 검토)에 쓰는 LLM (app/services/search_llm.py)
     # auto(기본): GEMMA_BASE_URL이 있으면 Gemma 4 31B, 없으면 HCX-007

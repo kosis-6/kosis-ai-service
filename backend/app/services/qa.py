@@ -3833,6 +3833,14 @@ async def answer(parsed, trace=None, question=""):
     trace["compute_ms"] = round((time.perf_counter() - start) * 1000)
     if not parsed.get("dynamic_spec"):  # 표 칸으로 계산한 답은 dynamic_indicator._try가 남긴다
         flow.add("사전 계산", result.get("status"), flow_result(result))
+        from app.core.config import get_settings
+
+        if get_settings().binding_dict_shadow and result.get("status") == "ok" and question:
+            # B 1단계: 질문의 조건이 지표 사전의 표에 이어지는지 기록만 남긴다 (답은 그대로)
+            from app.services import dict_binding
+
+            if (rec := await dict_binding.shadow(question, parsed, result)) is not None:
+                trace["dict_binding"] = rec
     return {
         "status": result.get("status"),
         "answer": f"{summary(result)}\n\n{render(result)}".strip(),
