@@ -305,6 +305,7 @@ def apply_changes(conditions: dict, changes: dict) -> tuple[dict, set[str]]:
         for key in (
             "ages",
             "age_group",
+            "age_note",
             "unsupported",
             "share_of",
             "aggregate",
@@ -422,6 +423,28 @@ def follow_year(question: str, conditions: dict, today: date | None = None) -> i
     return ref.year if ref and not ref.open_end else None
 
 
+def recent_years(question: str) -> int | None:
+    """이어 묻는 말의 "최근 N년" · "N년 동안" → N. 숫자 연도를 함께 말했으면 None.
+    새 질문 경로(qa)는 이 표현을 코드 규칙표로 세는데, 이어 묻기 경로는 한 해(follow_year)만 세서
+    "최근 5년간 어떻게 변했어?"가 HCX 변경 추출의 기본 기간(6개 해)으로 답했다 (11/24 S-44)"""
+    if FULL_YEAR.search(question):
+        return None
+    for ref in timeref.find(question):
+        if ref["kind"] in ("recent", "span") and ref.get("n"):
+            return ref["n"]
+    return None
+
+
+def with_recent(conditions: dict, changed: set[str], n: int) -> tuple[dict, set[str]]:
+    """조건을 '자료 마지막 해를 포함한 N개 해' 추이로 (계산 단계가 asked.recent로 표마다 센다)"""
+    c = copy.deepcopy(conditions)
+    c["asked"] = {**(c.get("asked") or {}), "recent": n}
+    c["start_year"] = c["end_year"] = None
+    if c.get("type") in ("value", "compare"):
+        c["type"] = "trend"
+    return c, changed | {"period"}
+
+
 # 지표가 아니라 보는 방식을 가리키는 말.
 # HCX가 이런 말을 지표(term)로 적어도 지표를 말한 것으로 보지 않는다
 VIEW_WORDS = {
@@ -449,7 +472,18 @@ def names_indicator(question: str, parsed: dict) -> bool:
         return True  # 사람 · 인구 · 주민: 총인구를 물었다 ("사람이 많아 적어?", 11/23)
     compact = question.replace(" ", "")
     words = [parsed.get("term"), parsed.get("indicator")]
-    return any(w and w.strip() not in VIEW_WORDS and w.replace(" ", "") in compact for w in words)
+    return any(_says_word(w, compact) for w in words)
+
+
+def _says_word(word: Any, compact: str) -> bool:
+    """HCX가 지표로 적은 말이 질문에 있고, 보는 방식이나 연령만 가리키는 말이 아닌가.
+    "20~24세로 보여줘"에 HCX가 '20~24세'를 지표로 적어도 지표를 말한 것이 아니다
+    (앞 지표 '미혼 비율'을 이어받지 않고 연앙인구 표로 답했다, 11/24 S-45)"""
+    if not isinstance(word, str) or not word.strip() or word.strip() in VIEW_WORDS:
+        return False
+    if not dynamic_indicator._without_age_words(word):
+        return False  # 연령 표현뿐이다
+    return word.replace(" ", "") in compact
 
 
 def complete_question(question: str) -> bool:
@@ -483,10 +517,22 @@ def inherit(
     if question and prev.get("indicator") and not names_indicator(question, p):
         # 표에서 바로 계산한 지표면 그 정의(dynamic_spec)도: 같은 표로 다시 계산한다
         # (정의를 두고 가면 새 말 글자로 통계표를 다시 찾아 다른 표를 안내했다, 11/23)
-        for key in ("indicator", "term", "ages", "age_group", "by", "dynamic_spec"):
+        keys = ["indicator", "term", "ages", "age_group", "age_note", "by", "dynamic_spec"]
+        said_ages = bool(p.get("ages")) and bool(qa.age_spans(question))
+        if said_ages:
+            # "20~24세로 보여줘": 이번 말의 연령으로 바꾼다. 앞 연령(청년 19~34세)으로 덮으면
+            # 다시 '표 구간과 맞지 않음'으로 끝난다. 앞 term('청년')도 연령 이름이라 지표 이름으로
+            keys = [k for k in keys if k not in ("term", "ages", "age_group", "age_note")]
+            p.pop("age_group", None)
+            p["term"] = prev["indicator"]
+        for key in keys:
             if prev.get(key) is not None:
                 p[key] = copy.deepcopy(prev[key])
         p.pop("unsupported", None)
+        if "grounded" in prev:
+            # 지표는 앞 질문에서 정했다. HCX가 이번 말에 적은 다른 지표의 근거 판정은 쓰지 않는다
+            # (근거 없음이면 이어받은 지표를 버리고 통계표 찾기로 간다)
+            p["grounded"] = prev["grounded"]
         s["indicator"] = "inherited"
     if (
         question
@@ -1689,12 +1735,24 @@ async def _turn(
                 if k not in ("year", "start_year", "end_year")
             }
             delta.update(request_type=CHANGE, unclear=None, changes={**changes, "year": year})
+        recent = recent_years(question)
+        if recent and not names_indicator(question, {}) and delta["request_type"] != NEW:
+            # "최근 5년간 어떻게 변했어?": 기간도 코드가 센다 (새 질문 경로와 같은 규칙).
+            # HCX가 적은 연도는 버리고, 조건을 바꾼 뒤 asked.recent로 둔다 (with_recent)
+            changes = {
+                k: v
+                for k, v in (delta.get("changes") or {}).items()
+                if k not in ("year", "start_year", "end_year")
+            }
+            delta.update(request_type=CHANGE, unclear=None, changes=changes)
         if delta["unclear"]:
             return _unclear(state, delta["unclear"]), state["sources"], None
         if delta["request_type"] == SUMMARY and delta["changes"]:
             delta["request_type"] = CHANGE  # "2022년만 요약해줘": 조건을 바꾼 답이 먼저다
         if delta["request_type"] == CHANGE:
             conditions, changed = apply_changes(state["conditions"], delta["changes"])
+            if recent and not names_indicator(question, {}):
+                conditions, changed = with_recent(conditions, changed, recent)
             if changed:
                 res = None
                 if "regions" in changed and (state.get("last") or {}).get("status") == TABLES:
