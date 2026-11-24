@@ -1439,7 +1439,10 @@ def _short_region(word):
     한 글자 말("중"→중구)과 흔한 낱말과 겹치는 이름("고령")은 지역으로 보지 않는다"""
     if len(word) < 2 or word in COMMON_WORD_REGIONS:
         return False
-    return indicators.resolve_region(word)["status"] in ("ok", "ambiguous_region")
+    try:
+        return indicators.resolve_region(word)["status"] in ("ok", "ambiguous_region")
+    except StatsTableMissing:  # 지역 목록이 없는 DB(CI 등): 짧은 이름 확인을 건너뛴다
+        return False
 
 
 def asked_indicators(question):
