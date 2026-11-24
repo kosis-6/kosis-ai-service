@@ -68,6 +68,15 @@ def pick(param: str, names: dict[str, str]) -> list[str]:
 
 
 @pytest.fixture(autouse=True)
+def binding_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """이 파일은 규칙 · 칸 고르기 LLM 경로를 가짜 표로 본다.
+    잇기로 다시 계산(BINDING_USE, 기본 켬)은 tests/test_binding.py가 본다"""
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "binding_use", False)
+
+
+@pytest.fixture(autouse=True)
 def fresh_registry():
     """등록이 다른 테스트로 새지 않게 테스트마다 비운다"""
     token = partial_table._ACTIVE.set(None)

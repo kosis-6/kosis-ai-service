@@ -41,9 +41,10 @@ class Settings(BaseSettings):
     # (답은 그대로).
     # 개발셋 평가에서 BINDING_SHADOW=true로 켜고 scripts/binding_compare.py로 견준다
     binding_shadow: bool = False
-    # 2단계: 규칙이 칸을 못 고른 '검토가 고른 표'를 잇기 결과의 칸으로 다시 계산한다 (답이 바뀐다).
-    # 지금 계산이 성공한 표는 그대로. 개발셋 평가로 정답 수가 줄지 않는지 본 뒤 켠다
-    binding_use: bool = False
+    # 2단계: 규칙이 칸을 못 고른 '검토가 고른 표'를 잇기 결과의 칸으로 다시 계산하고, 칸 고르기
+    # LLM이 고른 칸에도 잇기를 붙인다 (답이 바뀐다). 지금 계산이 성공한 표는 그대로.
+    # 개발셋 v1.3 · v2.3에서 정답이 줄지 않아 기본으로 켠다 (11/24, 설계 9-1). 끄려면 false
+    binding_use: bool = True
 
     # 통계표 찾기(조건 추출·계획·최종 검토)에 쓰는 LLM (app/services/search_llm.py)
     # auto(기본): GEMMA_BASE_URL이 있으면 Gemma 4 31B, 없으면 HCX-007

@@ -33,6 +33,15 @@ BASE = {"type": "value", "regions": ["서울"], "year": 2020, "sex": "계", "ind
 
 
 @pytest.fixture(autouse=True)
+def binding_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """이 파일은 규칙 · 칸 고르기 LLM 경로를 가짜 표로 본다.
+    잇기로 다시 계산(BINDING_USE, 기본 켬)은 tests/test_binding.py가 본다"""
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "binding_use", False)
+
+
+@pytest.fixture(autouse=True)
 def fake_table(monkeypatch: pytest.MonkeyPatch) -> dict:
     tables = {"DT_1PL1502": (ONE_PERSON, 1, "시군구")}
     units = {"DT_1PL1502": ("가구", True)}
