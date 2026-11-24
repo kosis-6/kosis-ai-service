@@ -552,6 +552,7 @@ def _indicator_target(
         "merged_spans": list(ind.get("merged_spans") or []),
         "scope": ind.get("scope") or "in",
         "role": ind.get("role"),
+        "dict": ind.get("dict"),  # 계획이 적은(또는 plan.fill_dict가 채운) 사전 지표 이름
         "conditions": _plan_conditions(ind.get("conditions") or {}, understanding["conditions"]),
         "question": question,
         "candidates": out,

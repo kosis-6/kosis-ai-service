@@ -58,6 +58,7 @@ from starlette.concurrency import run_in_threadpool
 
 from app.prompts.qa import FOLLOW_SYSTEM
 from app.services import (
+    agent_action,
     answer_judge,
     answer_summary,
     ask_followup,
@@ -2220,6 +2221,15 @@ async def _judged(res: dict, state: dict | None, question: str, user_id: int | N
     res.setdefault("trace", {})["answer_judge"] = record
     flow.add("답 판정", first["verdict"], f"{first['reason']} · {first['missing']}")
     if first["verdict"] != "retry":
+        return
+    # 행동 고르기 (N9, 코드 규칙): 판정 이유 · 답의 경로 · 1위 후보의 ✔/✘로 다음 행동을 정한다.
+    # 지금 호출부가 있는 행동은 reroute · retable(둘 다 _recompute) · give_up. replan · requery ·
+    # recell은 이름만 기록하고 fallback으로 떨어진다 (재계획 프롬프트 · 연결 단계가 들어오면 채운다)
+    action = agent_action.choose(first, res, _found_now.get())
+    record["action"] = action.as_trace()
+    flow.add("행동 고르기", action.name, action.why)
+    if action.name == agent_action.GIVE_UP:
+        record["retry"] = {"how": "give_up", "computed": False}
         return
     try:
         again, how = await _recompute(res, state, asked, user_id)

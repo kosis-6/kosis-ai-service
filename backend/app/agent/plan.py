@@ -62,7 +62,24 @@ def correct(question: str, p: Plan, today: date | None = None) -> Plan:
     """계획을 코드로 보정한다. 지운 조건은 _dropped, 고친 내용은 _fixed에 남긴다"""
     p["_dropped"] = ground_plan(question, p)
     p["_fixed"] = fix_periods_and_level(question, p, today) + fix_indicators(question, p)
+    fill_dict(p)
     return p
+
+
+def fill_dict(p: Plan) -> None:
+    """지표마다 search · span이 지표 사전의 이름 · 별칭과 같으면 dict 칸에 사전 이름을 적는다.
+    계획 LLM이 '노년부양비'처럼 공표 지표 이름을 search에 써도 dict를 비워 두는 일이 잦았다
+    (11/24 재계획 시험 32건 모두 null). 사전 목록을 프롬프트에 넣는 대신 코드가 맞춘다.
+    받는 쪽(multi_indicator._one)은 dict가 있으면 사전으로 바로 계산한다"""
+    from app.services import indicators
+
+    for ind in p.get("indicators") or []:
+        if ind.get("dict"):
+            continue
+        for text in (ind.get("search"), ind.get("span")):
+            if text and (name := indicators.canonical_name(text)):
+                ind["dict"] = name
+                break
 
 
 def _conditions(p: Plan) -> list[dict[str, Any]]:

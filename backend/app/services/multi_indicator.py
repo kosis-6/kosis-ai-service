@@ -75,7 +75,9 @@ def without_unsaid_age(parsed: dict, phrase: str) -> dict:
 def target_parsed(parsed: dict, target: dict, kind: str | None = None) -> dict:
     """지표 하나를 계산할 해석: 질문 전체 해석에서 지표 이름만 그 지표로 바꾼다"""
     span = target.get("span") or target.get("question") or ""
-    name = indicators.canonical_name(span) or span
+    # 계획의 dict(사전 지표 이름)가 있으면 그것으로. "젊은 사람 대비 노인 부담"처럼 구절로는
+    # 사전에 못 잇지만 계획이 search를 '노년부양비'로 쓴 경우 (11/24 재계획 시험)
+    name = target.get("dict") or indicators.canonical_name(span) or span
     q = {
         **parsed,
         "indicator": name,
