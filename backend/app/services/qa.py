@@ -1060,6 +1060,8 @@ def correct(question, parsed, today=None):
     ages = extract_ages(question)
     if ages:
         parsed["ages"] = ages
+        if note := decade_part_note(question):
+            parsed["age_note"] = note  # "20대 후반" → 27~29세: 사람마다 달라 답에 기준을 밝힌다
     # "노인"·"청년" 같은 이름은 정의 구간으로 (답변에 기준 고지).
     # 단, 출생 지표의 "아기 · 아이"는 태어난 아이를 가리키는 말이지 0세 연령 조건이 아니다
     # ("다문화 가정 아기 최근 5년" → 연령 조건을 붙여 '연령으로 나눈 자료 없음'으로 끝났다)
@@ -1328,9 +1330,29 @@ def correct(question, parsed, today=None):
         # 하므로 그 지표의 표에서 분류 순위를 계산한다 (ask_session._dynamic_instead)
         parsed["rank_axis"] = OTHER_AXIS.search(question)[1]
         parsed["grounded"] = False
+    _one_region_years(parsed, fix)
     if fixes:
         parsed["corrections"] = fixes
     return parsed
+
+
+def _one_region_years(parsed, fix):
+    """ "2010년과 2025년 서울 인구 비교": 한 지역의 두 연도 비교는 그 기간의 추이다.
+    계산 단계도 같은 규칙으로 추이를 계산하지만(_compute_population · _compute_lookup), 조건에
+    '비교'가 남으면 화면의 조건 칩이 끝 해 하나('2025년')로만 보였다 (11/24).
+    남녀 비교 · 여러 지표 · 지역 묶음은 그대로 둔다"""
+    y0, y1 = parsed.get("start_year"), parsed.get("end_year")
+    if (
+        parsed.get("type") == "compare"
+        and len(parsed.get("regions") or []) == 1
+        and y0
+        and y1
+        and y0 != y1
+        and not parsed.get("split_sex")
+        and not parsed.get("indicators")
+        and not parsed.get("group")
+    ):
+        fix("type", "trend", "한 지역의 두 연도 비교는 그 기간의 추이")
 
 
 def _change_rank(question, parsed, fix):
@@ -2181,6 +2203,20 @@ def age_basis_note(group):
     return f"{josa(repr_q(group['expr']), '은는')} {ro(group['range'])} 계산했습니다 ({basis})"
 
 
+def decade_part_note(question):
+    """'20대 후반'처럼 초반 · 중반 · 후반으로 말한 연령의 기준 한 줄. 없으면 None.
+    "20대 후반"을 25~29세로 보는 사람도 있어, 숫자로만 풀면 어느 구간인지 알 수 없다 (11/24 S-20)"""
+    said = []
+    for m in AGE_DECADE_PART.finditer(agegroup.native_to_digits(question)):
+        if int(m[1]) % 10 == 0:
+            lo, hi = DECADE_PART[m[2]]
+            band = f"{int(m[1]) + lo}~{int(m[1]) + hi}세"
+            said.append(f"{josa(repr_q(m[0]), '은는')} {ro(band)} 계산했습니다")
+    if not said:
+        return None
+    return f"{', '.join(said)} (초반 0~3세 · 중반 4~6세 · 후반 7~9세)"
+
+
 # 계산 지표 중 남녀로 나눠 볼 수 없는 것 (성비는 그 자체가 남녀 비교, 세대·면적은 성별이 없다)
 NO_SEX_SPLIT = frozenset({"성비", "세대당 인구", "인구밀도"})
 
@@ -2592,6 +2628,11 @@ def _compute(q):
         for r in _leaves(result):
             if note not in r.get("notes", []):
                 r["notes"] = [note] + r.get("notes", [])
+    if result.get("status") == "ok" and (note := q.get("age_note")):
+        # "20대 후반"처럼 초반 · 중반 · 후반으로 말한 연령 (decade_part_note)
+        for r in _leaves(result):
+            if note not in r.get("notes", []):
+                r["notes"] = [note] + r.get("notes", [])
     if (group := q.get("group")) and result.get("status") == "ok" and "values" in result:
         # 묶음 비교·순위는 정의가 갈릴 수 있어 (예: 5대 광역시에 울산 포함 여부) 포함 지역을 밝힌다
         names = ", ".join(v["region"] for v in result["values"])
@@ -2730,6 +2771,11 @@ def _compute_population(q, ind, kind, regions, year, sex, ages, hi):
         # 지역을 말하지 않은 인구 질문("애들 몇 명이야?", "중년 몇 명이야?")은 전국.
         # '우리 동네' · '여기'처럼 지역을 가리키기만 한 질문은 앞(ask_session)에서 되묻는다 (11/24)
         regions = ["전국"]
+    if kind == "compare" and len(regions) == 1:
+        # "2010년과 2025년 서울 인구 비교"처럼 한 지역의 두 연도 비교 (조회 지표의 _compute_lookup과
+        # 같은 규칙). 지역 비교로 계산하면 "값이 있는 지역이 둘 이상이 아니어서"로 끝났다 (11/24)
+        y0, y1 = q.get("start_year"), q.get("end_year")
+        kind = "trend" if y0 and y1 and y0 != y1 else "value"
     if (q.get("asked") or {}).get("latest") and kind in ("value", "compare", "rank"):
         # 연간 자료 다음 해의 최신 달이 있으면 그 해 (순위는 지역 없이 전국으로 확인)
         year = indicators.latest_year([] if kind == "rank" else regions, sex)

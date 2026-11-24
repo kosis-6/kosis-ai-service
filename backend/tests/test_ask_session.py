@@ -1984,3 +1984,69 @@ def test_switching_to_all_sexes_removes_stale_filter_from_search(term):
     changed, _ = s.apply_changes(prev, {"sex": "여"})
     assert "남성" not in s.inherited_question(changed)
     assert "여성" in s.inherited_question(changed)
+
+
+def test_age_only_follow_up_keeps_the_indicator() -> None:
+    """ "서울 청년 미혼 비율" 뒤 "20~24세로 보여줘": HCX가 '20~24세'를 지표로 적어도 연령만 바꾸고
+    미혼 비율을 이어받는다 (11/24 S-45, 전에는 연앙인구 표로 564,693.5명이라 답했다)"""
+    youth = {"expr": "청년", "range": "19~34세", "basis": "청년기본법 19~34세"}
+    prev = {
+        **BASE,
+        "type": "value",
+        "indicator": "미혼 비율",
+        "term": "청년",
+        "regions": ["서울"],
+        "ages": [[19, 34]],
+        "age_group": youth,
+        "year": None,
+        "start_year": None,
+        "end_year": None,
+        "grounded": True,
+    }
+    parsed = {
+        "type": "value",
+        "indicator": "20대 인구",
+        "term": "20~24세",
+        "regions": [],
+        "ages": [[20, 24]],
+        "sex": "계",
+        "grounded": None,
+    }
+    question = "20~24세로 보여줘"
+    assert not s.names_indicator(question, parsed)
+    p, src = s.inherit(parsed, s.sources_of(question, parsed), prev, {**USER}, question)
+    assert p["indicator"] == "미혼 비율" and src["indicator"] == "inherited"
+    assert p["ages"] == [[20, 24]] and "age_group" not in p and p["term"] == "미혼 비율"
+    assert p["regions"] == ["서울"] and p["grounded"] is True
+
+
+def test_term_with_age_and_other_words_still_names_an_indicator() -> None:
+    # 연령에 다른 말이 붙은 지표 표현("30대 미혼 인구")은 지금처럼 지표를 말한 것이다
+    assert s.names_indicator("30대 미혼 인구는?", {"term": "30대 미혼 인구"})
+
+
+def test_recent_years_follow_up_is_counted_by_code() -> None:
+    """이어 묻는 "최근 5년간 어떻게 변했어?"도 새 질문 경로처럼 자료 마지막 해를 포함한 N개 해
+    (11/24 S-44, 전에는 HCX 변경 추출의 기본 기간 6개 해로 답했다)"""
+    assert s.recent_years("최근 5년간 어떻게 변했어?") == 5
+    assert s.recent_years("10년 동안은?") == 10
+    assert s.recent_years("2020년부터 5년간") is None  # 숫자 연도를 말했다
+    assert s.recent_years("작년은?") is None  # 한 해는 follow_year가 맡는다
+    before = {**BASE, "type": "value", "asked": {"survey": "인구총조사"}}
+    c, changed = s.with_recent(before, set(), 5)
+    assert c["type"] == "trend" and c["asked"] == {"survey": "인구총조사", "recent": 5}
+    assert c["start_year"] is None and c["end_year"] is None and changed == {"period"}
+    assert before["asked"] == {"survey": "인구총조사"}  # 앞 조건은 그대로
+
+
+def test_recent_years_follow_up_sends_recent_to_the_calculation(talk: Talk) -> None:
+    talk.say("부산 출생아 2024년 알려줘")
+    talk.fail_when = lambda p: bool((p.get("asked") or {}).get("recent"))
+    talk.say(
+        "최근 5년간 어떻게 변했어?",
+        request_type="change",
+        changes={"type": "trend", "start_year": 2019, "end_year": 2024},
+    )
+    asked = talk.answered[0]  # 첫 질문은 해석(qa.ask)으로 답하므로 조건으로 계산한 첫 번째가 이 턴
+    assert asked["type"] == "trend" and asked["asked"]["recent"] == 5
+    assert asked["start_year"] is None and asked["end_year"] is None  # HCX가 적은 기간은 버린다

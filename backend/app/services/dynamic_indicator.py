@@ -2756,8 +2756,9 @@ async def _try_once(
         return None, why if isinstance(why, Ask) else None
     step["cells"] = spec["cells"]
     notice = table_notice(notice, bool(spec.get("couple")))
-    if notice:
-        spec["note"] = f"{spec['note']}. {notice}"
+    if notice and (notice := notice.strip(" .")):
+        # 표 안내가 마침표로 시작하기도 해 "꺼냈습니다. . 외국인은 제외"로 붙었다 (11/24)
+        spec["note"] = f"{spec['note'].rstrip(' .')}. {notice}"
     if spec.get("parts_op"):  # 한 분류 안의 칸들로 합·비교·순위
         res = await run_in_threadpool(parts_answer, parsed, spec, question)
         # qa.answer처럼 처리 기록을 붙인다 (없으면 평가 원응답에 어느 표 · 칸으로 답했는지가 빠진다)

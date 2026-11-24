@@ -1747,3 +1747,35 @@ def test_single_relative_year_read_as_trend_becomes_value() -> None:
 def test_year_words_skip_verb_endings(question: str, said: bool) -> None:
     """연도를 말했는지: 동사 끝 '해', 지명 '김해', '~ㄹ 때', '미성년'은 연도가 아니다 (11/24)"""
     assert qa._says_year(question) is said
+
+
+def test_one_region_two_years_compare_is_a_trend(monkeypatch) -> None:
+    """ "2010년과 2025년 서울 인구수 비교해줘": 한 지역의 두 해는 지역 비교가 아니라 추이
+    (조회 지표와 같은 규칙. 전에는 '값이 있는 지역이 둘 이상이 아니어서'로 끝났다, 11/24)"""
+    calls = []
+    monkeypatch.setattr(indicators, "trend", lambda ind, reg, a, b, *rest: calls.append((a, b)))
+    monkeypatch.setattr(indicators, "compare", lambda *a: pytest.fail("지역 비교로 계산함"))
+    q = {"type": "compare", "asked": {}, "start_year": 2010, "end_year": 2025}
+    qa._compute_population(q, "총인구", "compare", ["서울특별시"], 2025, "계", None, 2025)
+    assert calls == [(2010, 2025)]
+
+
+def test_decade_part_age_is_explained() -> None:
+    # "20대 후반"은 27~29세로 계산하고, 사람마다 달라 답에 기준을 밝힌다 (11/24 S-20)
+    note = "'20대 후반'은 27~29세로 계산했습니다 (초반 0~3세 · 중반 4~6세 · 후반 7~9세)"
+    assert qa.decade_part_note("서울 20대 후반 여자 인구") == note
+    assert qa.decade_part_note("서울 20대 여자 인구") is None
+
+
+def test_one_region_two_years_compare_reads_as_trend() -> None:
+    # 해석 단계에서도 추이로 둔다: 조건 칩이 '2025년'이 아니라 '2010~2025년'으로 보인다 (11/24)
+    asked = parsed(type="compare", indicator="총인구", regions=["서울"], year=2025)
+    p = qa.correct(
+        "2010년과 2025년 서울 인구수 비교해줘",
+        {**asked, "start_year": 2010, "end_year": 2025},
+        TODAY,
+    )
+    assert p["type"] == "trend" and (p["start_year"], p["end_year"]) == (2010, 2025)
+    two = parsed(type="compare", indicator="총인구", regions=["서울", "부산"], year=2025)
+    p = qa.correct("2025년 서울과 부산 인구 비교해줘", two, TODAY)
+    assert p["type"] == "compare"  # 두 지역 비교는 그대로
