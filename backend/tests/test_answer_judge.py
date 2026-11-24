@@ -187,3 +187,18 @@ def test_sure_first_needs_all_checks_and_a_clear_gap() -> None:
     result, cands = searched(0.2, yes)
     assert llm_pick.sure_first(result, cands[:1])  # 후보가 하나
     assert not llm_pick.sure_first(result, [])
+
+
+def test_describe_says_summed_values_were_added() -> None:
+    # 두 지역을 더한 답은 "지역: A + B"만이 아니라 더했다는 말이 있어야
+    # 판정이 "더해야 함"으로 막지 않는다
+    res = {
+        "status": "ok",
+        "indicator": "출생아 수",
+        "region": "전라남도 + 전라북도",
+        "value": 30,
+        "members": [{"region": "전라남도", "value": 10}, {"region": "전라북도", "value": 20}],
+        "year": 2024,
+    }
+    text = answer_judge.describe(res)
+    assert "합계" in text and "전라남도, 전라북도를 더한 값 (2개)" in text

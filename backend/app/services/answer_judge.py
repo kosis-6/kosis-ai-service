@@ -77,6 +77,11 @@ def _shape(p: dict[str, Any], top: int | None) -> list[str]:
     if p.get("categories"):
         labels = ", ".join(str(c.get("label")) for c in p["categories"][:5])
         return [f"형태: 구분별 값 ({labels})"]
+    if members := p.get("members"):
+        # 여러 지역 · 여러 지표를 더한 값 (qa._sum_regions · _sum_indicators). "지역: A + B"만
+        # 보이면 판정이 "더해야 함"이라고 막았다 (11/24): 더했다는 것을 말로 적는다
+        names = ", ".join(str(m.get("region")) for m in members[:4])
+        return [f"형태: 합계 — {names}를 더한 값 ({len(members)}개)"]
     if total := next((n for n in notes if n.endswith("합계")), None):
         return [f"형태: 합계 ({total[:40]})"]
     return ["형태: 값 하나"]
