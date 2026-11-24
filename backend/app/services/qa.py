@@ -1449,19 +1449,24 @@ def population_modifier(question):
         words = {m[1], re.sub(r"(의|은|는|이|가|에서|에|별)$", "", m[1]) or m[1]}
         if any(w in PLAIN_POPULATION or re.search(r"\d", w) for w in words):
             continue
-        if any(indicators.find_regions(w) or agegroup.resolve(w) or _region_name(w) for w in words):
+        if any(
+            indicators.find_regions(w) or agegroup.resolve(w) or _short_region(w) for w in words
+        ):
             continue
         return min(words, key=len)
     return None
 
 
-def _region_name(word):
-    """지역 해석이 아는 지역 이름인가 ("울릉도" → 울릉군, "수원" → 수원시). 질문 속 지역 찾기
-    (find_regions)의 이름 목록에는 없어 "울릉도 인구"의 '울릉도'를 다른 통계를 가리키는 말로 보고
-    총인구 대신 통계표 찾기로 보냈다"""
+def _short_region(word):
+    """'강남'(강남구)·'수원'(수원시)처럼 끝의 시·군·구를 뗀 지역 이름이나
+    섬 이름('울릉도' → 울릉군)인가. find_regions는 짧은 이름을 찾지 않으므로
+    (일반 낱말과 겹쳐서) 여기서 따로 본다.
+    한 글자 말("중"→중구)과 흔한 낱말과 겹치는 이름("고령")은 지역으로 보지 않는다"""
+    if len(word) < 2 or word in COMMON_WORD_REGIONS:
+        return False
     try:
-        return indicators.resolve_region(word).get("status") in ("ok", "ambiguous_region")
-    except Exception:  # 지역 목록을 읽지 못하면 지역이 아닌 것으로 (전처럼)
+        return indicators.resolve_region(word)["status"] in ("ok", "ambiguous_region")
+    except StatsTableMissing:  # 지역 목록이 없는 DB(CI 등): 짧은 이름 확인을 건너뛴다
         return False
 
 

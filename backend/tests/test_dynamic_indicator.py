@@ -2496,3 +2496,15 @@ def test_cached_answer_keeps_suppression_for_matching_table(monkeypatch, flag: s
     else:
         assert res["status"] == "ok" and res["result"]["value"] == 100
         assert built == [primary, fallback] and used == [2]
+
+
+def test_cell_name_unit_wins_over_count_unit() -> None:
+    # 인구총조사 주택 표는 '전세금 평균(만원)' 항목의 단위도 '가구'로 적혀 있다 (11/24, S-38)
+    dims = [
+        d.Dim(0, "항목", {"T1": "가구", "T2": "전세금 평균(만원)"}),
+        d.Dim(1, "거처의 종류별", {"0": "계", "1": "아파트"}),
+    ]
+    assert d._name_unit(d.Plan(pick={0: "T2", 1: "1"}), dims, "가구") == "만원"
+    assert d._name_unit(d.Plan(pick={0: "T1", 1: "1"}), dims, "가구") == "가구"
+    # 표가 이미 수 아닌 단위를 적었으면 그대로
+    assert d._name_unit(d.Plan(pick={0: "T2"}), dims, "%") == "%"
