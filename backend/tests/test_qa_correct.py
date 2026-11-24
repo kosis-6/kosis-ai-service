@@ -1747,3 +1747,43 @@ def test_single_relative_year_read_as_trend_becomes_value() -> None:
 def test_year_words_skip_verb_endings(question: str, said: bool) -> None:
     """연도를 말했는지: 동사 끝 '해', 지명 '김해', '~ㄹ 때', '미성년'은 연도가 아니다 (11/24)"""
     assert qa._says_year(question) is said
+
+
+@pytest.mark.parametrize(
+    ("question", "measure", "asks"),
+    [
+        (
+            "2020년 서울 출생아 수랑 1인 가구 수 알려줘",
+            "1인 가구 수",
+            "2020년 서울 1인 가구 수 알려줘",
+        ),
+        (
+            "부산 2022년 1인 가구 수하고 출생아 수 각각 알려줘",
+            "1인 가구 수",
+            "부산 2022년 1인 가구 수",
+        ),
+        # '65세 이상'은 인구의 조건이라 1인 가구에 가져오지 않는다
+        ("65세 이상 인구와 1인 가구 수", "1인 가구 수", "1인 가구 수"),
+    ],
+)
+def test_measure_question_asks_only_the_unlisted_measure(
+    question: str, measure: str, asks: str
+) -> None:
+    """묶음 질문의 사전 밖 지표만 통계표 찾기에 묻는다. 사전 지표 쪽 말에서는 연도 · 지역만
+    가져온다 (질문 전체로 찾으면 검토가 두 지표를 한 표에서 찾다 거절했다, PR #221 검토)"""
+    assert qa.unlisted_measure(question) == measure
+    assert qa.measure_question(question, measure) == asks
+
+
+def test_age_of_unlisted_measure_is_not_put_on_dictionary_indicator() -> None:
+    """ "출생아 수랑 고령자 가구 비율"의 고령자는 함께 물은 지표의 조건이다. 사전 지표에 붙이면
+    "출생아 수는 연령으로 나눈 자료가 없습니다"로 사전 계산까지 실패했다"""
+    q = "2020년 서울 출생아 수랑 고령자 가구 비율 알려줘"
+    p = qa.correct(q, parsed(indicator="출생아 수", regions=["서울"], year=2020), TODAY)
+    assert p["also_asked"] == "고령자 가구 비율"
+    assert not p.get("ages") and not p.get("age_group")
+    assert p["also_asked_ages"]["ages"] == [[65, None]]
+    # 사전 지표 쪽에서 연령을 말했으면 그대로 둔다
+    q = "2020년 서울 65세 이상 인구와 1인 가구 수"
+    p = qa.correct(q, parsed(indicator="총인구", regions=["서울"], year=2020), TODAY)
+    assert p["ages"] == [[65, None]] and not p.get("also_asked_ages")

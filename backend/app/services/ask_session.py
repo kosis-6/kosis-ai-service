@@ -2334,6 +2334,9 @@ async def _dynamic_instead(res: dict, state: dict | None, asked: str, user_id: i
         await _attach_cards(res, asked)
         res["request_type"], res["question"], res["search_session"] = kind, asked, sid
         return True
+    if parsed.get("also_asked") and res.get("status") == "ok":
+        # 사전 밖 지표도 함께 물음 ("출생아 수랑 1인 가구 수"): 사전 답은 두고 그 지표만 계산한다
+        return await _with_also_asked(res, parsed, asked, sid, user_id, trace)
     try:
         computed = await dynamic_indicator.cached_answer(asked, parsed, trace)
         if computed is None:
@@ -2342,29 +2345,14 @@ async def _dynamic_instead(res: dict, state: dict | None, asked: str, user_id: i
     except Exception:
         logger.exception("근거 없는 지표의 바로 계산 실패")
         return False
-    also_asked = parsed.get("also_asked")  # 사전 밖 지표도 함께 물음 ("출생아 수랑 1인 가구 수")
     if computed is None and found is None:
-        if also_asked and res.get("answer"):
-            # 함께 물은 지표를 찾지 못했다: 조용히 빼지 않고 알린다
-            said = josa(f"'{also_asked}'", "은는")
-            res["answer"] += f"\n※ 함께 물은 {said} 통계표를 찾지 못해 답에 넣지 못했습니다."
         return False
-    if (
-        res.get("status") == "ok"
-        and not also_asked
-        and (same := _same_dictionary_table(parsed, computed, found))
-    ):
+    if res.get("status") == "ok" and (same := _same_dictionary_table(parsed, computed, found)):
         # 바로 계산이 사전 지표가 쓰는 표를 골랐다 (예: 출생아 수 표 DT_1B8000H).
         # 표 안내나 칸 되묻기, 같은 표의 다른 칸 대신 검증된 사전 계산을 쓴다
         # (변형셋 1차: 사전 표를 고르고도 안내로 끝남)
         trace["dynamic_kept"] = {"indicator": parsed.get("indicator"), "tbl_id": same}
         return False
-    if also_asked and res.get("status") == "ok" and _one_indicator(computed):
-        # 바로 계산이 함께 물은 지표 하나만 답했다 (캐시한 표 · 지표 하나로 읽은 통계표 찾기).
-        # 그 답으로 바꾸기만 하면 사전 지표를 조용히 뺀다 ("1인 가구 수하고 사망자 수" → 1인 가구만,
-        # 11/24) → 사전 지표 답과 나란히 둔다
-        pair = [(parsed.get("indicator") or "", dict(res)), (also_asked, computed)]
-        computed = multi_indicator.side_by_side(asked, parsed, pair, trace) or computed
     # 바꾼 원래 답 (요청 기록·회귀 평가에서 사전 지표 답과 비교한다)
     trace["replaced"] = {
         "indicator": parsed.get("indicator"),
@@ -2383,6 +2371,63 @@ async def _dynamic_instead(res: dict, state: dict | None, asked: str, user_id: i
         res["trace"] = trace
     res["request_type"], res["question"], res["search_session"] = kind, asked, sid
     return True
+
+
+async def _with_also_asked(
+    res: dict, parsed: dict, asked: str, sid: str, user_id: int | None, trace: dict
+) -> bool:
+    """사전 지표 답(res)과 함께 물은 사전 밖 지표의 답을 나란히 둔다. res를 바꿨으면 True
+
+    함께 물은 지표만 묻는 질문("2020년 서울 1인 가구 수 알려줘")으로 계산한다. 질문 전체로 통계표를
+    찾으면 검토가 두 지표를 한 표에서 찾다가 거절했고, 그 거절이 이미 계산한 사전 답까지 덮었다
+    (PR #221 검토: 출생아 수 47,445명 → no_joint_table). 계산하지 못하면(표 안내 · 거절 · 못 찾음)
+    사전 답은 그대로 두고 한 줄 알림만 붙인다"""
+    also = parsed["also_asked"]
+    question = qa.measure_question(asked, also)
+    target = {"span": also, "unsaid_age": not multi_indicator.says_age(question)}
+    sub = multi_indicator.target_parsed(parsed, target)
+    if not target["unsaid_age"] and parsed.get("also_asked_ages"):
+        # 함께 물은 지표에만 있던 연령 (qa.correct가 사전 지표에서 떼어 둔 것: "고령자 가구 비율")
+        sub.update(parsed["also_asked_ages"])
+    computed = found = None
+    try:
+        computed = await dynamic_indicator.cached_answer(question, sub, trace)
+        if computed is None:
+            found = await table_guide.find_tables(question, sid, None, user_id)
+            computed = await dynamic_indicator.compute_from_handoff(question, sub, found, trace)
+    except Exception:
+        logger.exception("함께 물은 지표의 바로 계산 실패: %s", also)
+    trace["also_asked"] = {
+        "term": also,
+        "question": question,
+        "by": (computed or {}).get("status") or (found or {}).get("status"),
+    }
+    pair = [(parsed.get("indicator") or "", dict(res)), (also, computed)]
+    both = (
+        multi_indicator.side_by_side(asked, parsed, pair, trace)
+        if _one_indicator(computed)
+        else None
+    )
+    if both is None:
+        res["answer"] = f"{res.get('answer') or ''}\n※ {_also_asked_note(also, found)}"
+        return False
+    kind = res.get("request_type")
+    res.clear()
+    res.update(both)
+    res["chart"] = charts.build(res.get("result"))
+    await _attach_cards(res, asked)
+    res["request_type"], res["question"], res["search_session"] = kind, asked, sid
+    return True
+
+
+def _also_asked_note(also: str, found: dict | None) -> str:
+    """함께 물은 지표를 계산하지 못했을 때 사전 답에 붙이는 한 줄 (찾은 표가 있으면 그 표 이름)"""
+    said = josa(f"'{also}'", "은는")
+    recs = (found or {}).get("recommendations") or []
+    if (found or {}).get("status") not in ("out_of_scope", None) and recs:
+        where = f"'{recs[0].get('tbl_nm') or recs[0].get('tbl_id')}' 표에서 확인할 수 있습니다"
+        return f"함께 물은 {said} 바로 계산하지 못했습니다 ({where})."
+    return f"함께 물은 {said} 맞는 통계표를 찾지 못해 답에 넣지 못했습니다."
 
 
 async def _after_table_choice(pending: dict | None, found: dict) -> dict | None:
