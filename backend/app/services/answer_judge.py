@@ -74,9 +74,19 @@ def _shape(p: dict[str, Any], top: int | None) -> list[str]:
         regions = ", ".join(str(v.get("region")) for v in values[:4])
         ratio = " + 몇 배" if p.get("ratio") else ""
         return [f"형태: 지역 비교 ({regions}): 값마다 + 차이{ratio}"]
-    if p.get("categories"):
-        labels = ", ".join(str(c.get("label")) for c in p["categories"][:5])
-        return [f"형태: 구분별 값 ({labels})"]
+    if cats := p.get("categories"):
+        # 값이 큰 순으로 보여 준다: 분류 순위("어느 나라 사람이 제일 많아")의 답은 categories 에
+        # 모든 구분이 표 순서대로 들어 있어, 앞 다섯 개만 보이면 판정이 순위를 못 뽑았다고 봤다
+        with_value = [c for c in cats if isinstance(c.get("value"), (int, float))]
+        ordered = sorted(with_value, key=lambda c: c["value"], reverse=True) or list(cats)
+        if top:
+            # 답한 만큼만 적는다 (판정이 수를 센다: 다섯 개를 적으면 "3위까지인데 5개"로 막았다)
+            shown = ", ".join(str(c.get("label")) for c in ordered[:top])
+            return [
+                f"형태: 구분별 순위 (값이 큰 순), {len(cats)}개 중 상위 {top}개를 답함 ({shown})"
+            ]
+        labels = ", ".join(str(c.get("label")) for c in ordered[:5])
+        return [f"형태: 구분별 값, 값이 큰 순으로 ({labels})"]
     if members := p.get("members"):
         # 여러 지역 · 여러 지표를 더한 값 (qa._sum_regions · _sum_indicators). "지역: A + B"만
         # 보이면 판정이 "더해야 함"이라고 막았다 (11/24): 더했다는 것을 말로 적는다
@@ -129,6 +139,9 @@ def describe(result: dict[str, Any] | None, parsed: dict[str, Any] | None = None
         else:
             how = "여러 값"
         lines.insert(0, f"(답을 {how} 계산해 함께 보여 줌: {len(parts)}개)")
+        if v := result.get("verdict"):
+            # which_larger (multi_indicator._larger): 어느 쪽이 큰지 판정까지 한 답
+            lines.append(f"형태: 두 값 비교 — 큰 쪽 판정 ({v.get('line')})")
         if notes := [str(n) for n in result.get("notes") or []]:
             # 지표끼리 비교한 답의 "A가 B보다 N명 많습니다" 같은 줄 (multi_indicator._side_by_side)
             lines.append("함께 적은 것: " + " / ".join(notes[:3]))

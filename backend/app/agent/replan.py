@@ -33,10 +33,11 @@ EDITABLE = {
     "기간이 다름": "combine, indicators",
 }
 EDITABLE_DEFAULT = "indicators[].search, combine"
-# 코드에 아직 없는 계산 종류 (A_10 작업안). 이 op 가 나오면 계산하지 않고 다음 행동으로
-NOT_YET = {"sum": "더하기(sum)", "not_computable": "계산 불가(not_computable)"}
-# 코드에 있는 비슷한 종류로 돌리는 것: 큰 쪽은 compare 가 값 · 차이 · 배수까지 낸다
-ALIAS = {"which_larger": "compare"}
+# 아직 코드가 없는 것: 월 단위 합 (lookup 은 연 단위 자료만 읽는다). 계산하지 않고 다음 행동으로
+NOT_YET_MONTH = "월 단위 합계(sum over month)"
+# 계산하지 않는 종류: 숫자 대신 답변 불가 사유로 (refusal.not_collected_item, 설계서 B-1 예외)
+NOT_COMPUTABLE = "not_computable"
+REFUSAL_CODE = "not_collected_item"
 
 
 def first_plan_of(found: dict | None, parsed: dict) -> dict:
@@ -78,6 +79,13 @@ def kind_of(parsed: dict, first: dict) -> str:
         return "ratio"
     spec = parsed.get("dynamic_spec") or {}
     if spec.get("kind") == "ratio" or (first.get("combine") or {}).get("op") == "ratio":
+        return "ratio"
+    # 사전 지표로 답했으면 그 지표의 종류 (등록외국인 비율 → ratio). 11/24 손 확인: 이걸 안 봐서
+    # 서울 안 구 순위의 맞는 재계획을 "종류가 바뀜"으로 버렸다
+    from app.services import indicators
+
+    sp = indicators.spec(parsed.get("indicator") or "") or {}
+    if sp.get("kind") in ("ratio", "composition") or sp.get("unit") == "%":
         return "ratio"
     return "count"
 
@@ -124,9 +132,6 @@ def resolve(new: dict, question: str, first: dict, kind: str) -> tuple[dict | No
             c[key] = spans[v] if 0 <= v < len(spans) else None
         elif v not in spans:
             c[key] = None
-    if c.get("op") in ALIAS:
-        c["op_asked"] = c["op"]
-        c["op"] = ALIAS[c["op"]]
     if _signature(p) == _signature(first):
         return None, "처음 계획과 같음"
     p["measure"] = measure
@@ -136,12 +141,37 @@ def resolve(new: dict, question: str, first: dict, kind: str) -> tuple[dict | No
 
 def runnable(p: dict) -> str | None:
     """코드로 계산할 수 있는 계획인가. 없는 종류면 그 이름"""
-    op = (p.get("combine") or {}).get("op")
-    if op in NOT_YET:
-        return NOT_YET[op]
+    c = p.get("combine") or {}
+    if c.get("op") == NOT_COMPUTABLE:
+        return None  # 계산하지 않고 답변 불가 사유로 (ask_session._replan_compute)
+    if c.get("op") == "sum" and c.get("over") == "month":
+        return NOT_YET_MONTH
     if not [i for i in p.get("indicators") or [] if i.get("scope") != "out" and i.get("search")]:
         return "검색할 지표가 없음"
     return None
+
+
+def apply_to_parsed(p: dict, parsed: dict) -> dict:
+    """새 계획의 combine 을 지표 하나짜리 계산(사전 경로 qa)이 읽는 해석 칸으로 옮긴다.
+    지표가 둘 이상이면 multi_indicator 가 combine 을 직접 읽으므로 바꾸지 않는다
+    - sum over region · year  → aggregate=sum (qa 가 지역 묶음 · 연도 묶음 합을 이미 한다)
+    - rank within=시도 이름    → sido · level=시군구 (lookup.rank(sido=…))
+    - rank axis=분류 이름      → rank_axis (ask_session._axis_rank)"""
+    c = p.get("combine") or {}
+    live = [i for i in p.get("indicators") or [] if i.get("scope") != "out"]
+    out = dict(parsed)
+    if len(live) != 1:
+        return out
+    op = c.get("op")
+    if op == "sum" and c.get("over") in ("region", "year"):
+        out["aggregate"] = "sum"
+    if op == "rank":
+        out["type"] = "rank"
+        if c.get("within"):
+            out["sido"], out["level"] = c["within"], "시군구"
+        if c.get("axis"):
+            out["rank_axis"] = c["axis"]
+    return out
 
 
 @llm_calls.staged("replan")

@@ -380,8 +380,18 @@ def _leaf_codes(d: Dim) -> list[str]:
     return [c for c, n in d.codes.items() if c != d.total() and not SUBTOTAL.search(_norm(n))]
 
 
-def _rank_dim(question: str, dims: list[Dim], region_dim: int | None, tbl_nm: str) -> Dim | None:
-    """분류 안의 순위를 묻는가: 그 분류. 지역 순위("가장 많은 시도")는 아니다"""
+def _rank_dim(
+    question: str, dims: list[Dim], region_dim: int | None, tbl_nm: str, axis: str | None = None
+) -> Dim | None:
+    """분류 안의 순위를 묻는가: 그 분류. 지역 순위("가장 많은 시도")는 아니다.
+    axis: 계획(재계획 combine.axis)이 정한 분류 이름. 있으면 질문의 말 대신 그 이름으로 고른다
+    ("어느 나라 사람이 제일 많아"처럼 질문에 '국적별'이 없어도 국적 분류로)"""
+    if axis:
+        a = _norm(axis)
+        for d in dims:
+            stem = _norm(re.sub(r"(별|구분)$", "", re.sub(r"\(.*?\)", "", d.name)))
+            if d.no not in (0, region_dim) and (a in stem or stem in a):
+                return d
     if not RANK_PARTS.search(question) or REGION_RANK.search(question):
         return None
     q = _norm(question)
@@ -432,7 +442,7 @@ def choose(
     skip = {region_dim} | ({plan.age_dim.no} if plan.age_dim else set())
     hits = _text_hits(question, dims, skip)
     asks: list[Ask] = []
-    ranked = _rank_dim(question, dims, region_dim, tbl_nm)
+    ranked = _rank_dim(question, dims, region_dim, tbl_nm, parsed.get("rank_axis"))
     if ranked is not None and len(leaves := _leaf_codes(ranked)) >= 2:
         # "교통수단 top3": 이 분류의 세부 칸끼리 순위 (지역 순위가 아니다)
         plan.multi, plan.multi_dim = (ranked.no, leaves, "rank"), ranked

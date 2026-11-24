@@ -45,6 +45,7 @@ REFUSAL_GROUPS = {
     "prediction_question": "원인·예측·평가 질문",
     "not_statistics": "통계 질문이 아님",
     "chat": "통계 질문이 아님",
+    "not_collected_item": "집계되지 않는 값",  # 파생값(평균의 평균 · 코호트 출산율 등). 11/24 추가
 }
 # 챗봇 status → 유형. 정의서에 없는 status는 가까운 유형으로.
 # 여기 없는 status는 유형을 정하지 못한 것(유형 오류)

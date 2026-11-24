@@ -212,3 +212,27 @@ def test_describe_shows_compare_line_of_split_answer() -> None:
     res = {"status": "ok", "split": [a, b], "notes": ["혼인 건수가 이혼 건수보다 100건 많습니다"]}
     text = answer_judge.describe(res)
     assert "지표마다" in text and "함께 적은 것: 혼인 건수가 이혼 건수보다 100건 많습니다" in text
+
+
+def test_describe_shows_which_larger_verdict() -> None:
+    a = {"status": "ok", "indicator": "출생아 수", "year": 2024, "unit": "명"}
+    b = {"status": "ok", "indicator": "사망자 수", "year": 2024, "unit": "명"}
+    verdict = {"larger": "사망자 수", "line": "사망자 수가 많습니다"}
+    res = {"status": "ok", "split": [a, b], "verdict": verdict}
+    assert "형태: 두 값 비교 — 큰 쪽 판정 (사망자 수가 많습니다)" in answer_judge.describe(res)
+
+
+def test_describe_orders_categories_by_value_and_says_top_n() -> None:
+    # 분류 순위 답: 구분이 표 순서대로 들어 있어도 값이 큰 순으로, 상위 몇 개를 답했는지 적는다
+    res = {
+        "status": "ok",
+        "indicator": "x",
+        "categories": [
+            {"label": "가", "value": 1},
+            {"label": "나", "value": 30},
+            {"label": "다", "value": 20},
+        ],
+    }
+    text = answer_judge.describe(res, {"top": 2})
+    assert "형태: 구분별 순위 (값이 큰 순), 3개 중 상위 2개를 답함 (나, 다)" in text
+    assert "값이 큰 순으로 (나, 다, 가)" in answer_judge.describe(res)

@@ -342,6 +342,12 @@ def build_handoff(
             "num": combine.get("num") or None,
             "den": combine.get("den") or None,
             "out_of_scope": list(plan.get("out_of_scope") or []),
+            # 재계획(agent/replan.py)이 내는 칸: which_larger의 pair, sum의 over, rank의 within·axis
+            **{
+                k: combine.get(k)
+                for k in ("pair", "over", "within", "axis", "scale", "by_change")
+                if combine.get(k) not in (None, "", False)
+            },
         },
         "clarify": response.get("clarify"),
         "llm": _llm_used(multi_result, pick),

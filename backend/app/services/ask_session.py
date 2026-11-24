@@ -2224,18 +2224,53 @@ async def _replan_compute(
     how = "계획 다시"
     if new_plan is None:
         return None, how
+    if (new_plan.get("combine") or {}).get("op") == replan.NOT_COMPUTABLE:
+        # 공표되지 않고 만들 수도 없는 값: 숫자를 만들지 않고 답변 불가 사유로 (설계서 B-1 예외)
+        return _refusal_answer(res, replan.REFUSAL_CODE, new_plan.get("changed") or ""), how
     sid = table_guide.new_search_session()  # 새 계획은 새 질문처럼 찾는다 (되묻기 상태를 잇지 않음)
     found2 = await table_guide.find_tables(asked, sid, None, user_id, plan=new_plan)
     trace: dict = {}
-    base = {**parsed, "dynamic_spec": None}
-    computed = await dynamic_indicator.compute_from_handoff(asked, base, found2, trace)
+    base = replan.apply_to_parsed(new_plan, {**parsed, "dynamic_spec": None})
+    computed = None
+    if base.get("rank_axis") and not parsed.get("rank_axis"):
+        # 지역이 아닌 분류의 순위(rank axis): 사전 지표의 표에서 (_dynamic_instead와 같은 길)
+        computed = await _axis_rank(asked, base, trace)
+    targets = (found2.get("handoff") or {}).get("targets") or []
+    live = [i for i in new_plan.get("indicators") or [] if i.get("scope") != "out"]
+    if computed is None and len(live) == 1 and len(targets) == 1:
+        # 지표 하나: 사전에 있으면 사전으로(sido · aggregate 같은 해석 칸을 qa 가 읽는다), 없으면
+        # 표로. compute_from_handoff 의 지표 하나 길은 표로만 가서 사전 지표의 시도 안 순위를 놓쳤다
+        computed, sub = await multi_indicator._one(asked, base, found2, targets[0])
+        trace["dynamic"] = sub.get("dynamic") or []
+        trace["by"] = sub.get("by")
+    if computed is None:
+        computed = await dynamic_indicator.compute_from_handoff(asked, base, found2, trace)
     if not computed or computed.get("status") != "ok" or computed.get("clarification"):
-        record["replan"]["computed"] = False
+        record["replan"]["computed"] = {
+            "status": (computed or {}).get("status"),
+            "reason": str((computed or {}).get("reason") or (computed or {}).get("answer") or "")[
+                :160
+            ],
+            "clarification": bool((computed or {}).get("clarification")),
+            "dynamic": [d.get("skip") or d.get("reason") for d in trace.get("dynamic") or []][-3:],
+        }
         return None, how
     again = dict(computed)
     again.setdefault("trace", trace)
     again["search_session"] = sid
     return again, how
+
+
+def _refusal_answer(res: dict, code: str, why: str) -> dict:
+    """다시 계산 대신 답변 불가 사유로 끝낸 답 (refusal.TEMPLATES 의 문장, 숫자 없음)"""
+    return {
+        "status": code,
+        "answer": refusal.TEMPLATES[code],
+        "parsed": dict(res.get("parsed") or {}),
+        "result": {"status": code, "refusal": code, "why": why},
+        "sources": [],
+        "trace": {"refusal": {"from": res.get("status"), "to": code, "why": why}},
+    }
 
 
 async def _retry(
@@ -2283,12 +2318,20 @@ async def _judged(res: dict, state: dict | None, question: str, user_id: int | N
         record["retry"] = {"error": True}
         return
     record["retry"] = {"how": how, "computed": again is not None}
+    if again is not None:  # 버려도 무엇이었는지 · 판정이 무엇을 봤는지 남긴다
+        record["retry"]["answer"] = lead(again.get("answer") or "")[:200]
+        record["retry"]["summary"] = answer_judge.describe(again.get("result"), again.get("parsed"))
     if again is None:
         flow.add("다시 계산", "실패", f"{how}: 계산하지 못해 처음 답 그대로")
         return
-    second = await answer_judge.verdict(asked, again.get("parsed"), again.get("result"))
+    if again.get("status") in refusal.TEMPLATES:
+        # 다시 계산이 답변 불가 사유로 끝남: 판정 없이 그 사유로 바꾼다 (설계서 4절 B-1 예외)
+        flow.add("답변 불가 사유", again["status"], f"{how}: {refusal.NAMES.get(again['status'])}")
+        second = None
+    else:
+        second = await answer_judge.verdict(asked, again.get("parsed"), again.get("result"))
     record["second"] = second
-    if not second or second["verdict"] != "ok":
+    if again.get("status") not in refusal.TEMPLATES and (not second or second["verdict"] != "ok"):
         why = f"{second['reason']} · {second['missing']}" if second else "판정하지 못함"
         flow.add("다시 계산", "버림", f"{how}: 다시 한 답도 판정에 걸려 처음 답 그대로 ({why})")
         return

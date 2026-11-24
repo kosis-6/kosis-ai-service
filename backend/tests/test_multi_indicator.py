@@ -439,3 +439,25 @@ def test_ratio_whole_side_does_not_take_question_age() -> None:
     assert not multi_indicator.says_age("전체 1인 가구")
     assert multi_indicator.without_unsaid_age(parsed, "전체 1인 가구")["ages"] is None
     assert multi_indicator.without_unsaid_age(parsed, "70세 이상 1인 가구") is parsed
+
+
+def test_sum_adds_same_unit_values_and_keeps_members(world) -> None:
+    world["values"] = {"주민": _value("주민", 300, "명"), "외국인": _value("외국인", 20, "명")}
+    res, _ = run("질문", _found([_target("주민"), _target("외국인")], "sum"))
+    r = res["result"]
+    assert r["value"] == 320 and r["indicator"] == "주민 + 외국인"
+    assert [m["value"] for m in r["members"]] == [300, 20]
+
+
+def test_sum_of_different_units_is_side_by_side(world) -> None:
+    world["values"] = {"가": _value("가", 300, "명"), "나": _value("나", 20, "가구")}
+    res, _ = run("질문", _found([_target("가"), _target("나")], "sum"))
+    assert res["result"].get("split_by") == "indicator" and "더하지 않고" in res["answer"]
+
+
+def test_which_larger_says_which_is_bigger_with_gap_and_ratio(world) -> None:
+    world["values"] = {"가": _value("가", 300, "명"), "나": _value("나", 120, "명")}
+    res, _ = run("질문", _found([_target("가"), _target("나")], "which_larger"))
+    v = res["result"]["verdict"]
+    assert (v["larger"], v["gap"], v["ratio"]) == ("가", 180, 2.5)
+    assert res["answer"].startswith("가가 나보다 많습니다 (차이 180명, 2.5배)")

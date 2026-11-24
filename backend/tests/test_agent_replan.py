@@ -27,7 +27,7 @@ def test_first_plan_comes_from_handoff_plan_or_parsed() -> None:
     assert p["shared"] == {"year_from": 2024, "year_to": 2024, "sex": "여", "age": "30대"}
 
 
-def test_resolve_turns_index_num_den_into_spans_and_aliases_which_larger() -> None:
+def test_resolve_turns_index_num_den_into_spans_and_keeps_which_larger() -> None:
     new = {
         "measure": "ratio",
         "changed": "combine",
@@ -46,7 +46,7 @@ def test_resolve_turns_index_num_den_into_spans_and_aliases_which_larger() -> No
     new["combine"] = {"op": "which_larger", "num": 7, "den": None, "pair": "indicator"}
     new["measure"] = "count"
     p, _ = replan.resolve(new, "노인이 많아 어린이가 많아", FIRST, "count")
-    assert p["combine"]["op"] == "compare" and p["combine"]["op_asked"] == "which_larger"
+    assert p["combine"]["op"] == "which_larger" and p["combine"]["pair"] == "indicator"
     assert p["combine"]["num"] is None  # 범위 밖 번호는 버린다
 
 
@@ -59,13 +59,27 @@ def test_resolve_rejects_kind_change_and_same_plan() -> None:
     assert replan.resolve(new, "q", FIRST, "count")[0] is None  # 처음 계획과 같음
 
 
-def test_runnable_blocks_ops_the_code_does_not_have_yet() -> None:
-    assert (
-        replan.runnable({**FIRST, "combine": {"op": "sum", "over": "indicator"}}) == "더하기(sum)"
-    )
-    assert replan.runnable({**FIRST, "combine": {"op": "not_computable"}}) is not None
+def test_runnable_blocks_only_month_sums_and_empty_plans() -> None:
+    assert replan.runnable({**FIRST, "combine": {"op": "sum", "over": "indicator"}}) is None
+    assert replan.runnable({**FIRST, "combine": {"op": "sum", "over": "month"}}) is not None
+    assert replan.runnable({**FIRST, "combine": {"op": "not_computable"}}) is None  # 사유로 끝낸다
     assert replan.runnable({**FIRST, "combine": {"op": "ratio"}}) is None
     assert replan.runnable({**FIRST, "indicators": []}) is not None
+
+
+def test_apply_to_parsed_moves_single_indicator_combine_into_the_dictionary_fields() -> None:
+    base = {"indicator": "총인구", "type": "value", "regions": ["서울특별시"]}
+    p = {**FIRST, "combine": {"op": "rank", "within": "서울특별시"}}
+    out = replan.apply_to_parsed(p, base)
+    assert (out["type"], out["sido"], out["level"]) == ("rank", "서울특별시", "시군구")
+    out = replan.apply_to_parsed({**FIRST, "combine": {"op": "rank", "axis": "국적"}}, base)
+    assert out["rank_axis"] == "국적" and "sido" not in out
+    out = replan.apply_to_parsed({**FIRST, "combine": {"op": "sum", "over": "region"}}, base)
+    assert out["aggregate"] == "sum"
+    # 지표가 둘이면 multi_indicator 가 combine 을 직접 읽으므로 해석은 그대로
+    two = {**FIRST, "indicators": FIRST["indicators"] * 2}
+    two["combine"] = {"op": "sum", "over": "indicator"}
+    assert replan.apply_to_parsed(two, base) == base
 
 
 def test_user_text_opens_search_only_for_target_reason() -> None:

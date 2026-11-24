@@ -181,7 +181,8 @@ def _value(res: dict) -> dict | None:
     return r if "value" in r and r.get("value") is not None else None
 
 
-ALIGN_OPS = ("none", "compare", "diff", "ratio")  # 값을 나란히 놓거나 서로 계산하는 합치기
+# 값을 나란히 놓거나 서로 계산하는 합치기 (시점을 먼저 맞춘다)
+ALIGN_OPS = ("none", "compare", "diff", "ratio", "sum", "which_larger")
 
 
 def common_year(question: str, parsed: dict, ok) -> int | None:
@@ -228,6 +229,31 @@ def _basis_gap(ok) -> str | None:
             if gap:
                 return gap
     return None
+
+
+def _larger(ok) -> dict | None:
+    """which_larger: 두 값 중 큰 쪽 · 차이 · 몇 배 (단위 · 연도가 같을 때만)"""
+    if len(ok) != 2:
+        return None
+    (ta, ra), (tb, rb) = ok
+    a, b = _value(ra), _value(rb)
+    if not a or not b or a.get("unit") != b.get("unit") or a.get("year") != b.get("year"):
+        return None
+    if a["value"] == b["value"]:
+        return {"larger": None, "gap": 0, "line": f"{_span(ta)}와 {_span(tb)}가 같습니다"}
+    (big, hi), (small, lo) = ((ta, a), (tb, b)) if a["value"] > b["value"] else ((tb, b), (ta, a))
+    gap = hi["value"] - lo["value"]
+    gap_text = f"{gap:,}" if float(gap).is_integer() else f"{round(gap, 2):,}"
+    ratio = round(hi["value"] / lo["value"], 2) if lo["value"] else None
+    times = f", {ratio}배" if ratio else ""
+    return {
+        "larger": _span(big),
+        "smaller": _span(small),
+        "gap": gap,
+        "ratio": ratio,
+        "line": f"{josa(_span(big), '이가')} {_span(small)}보다 많습니다 "
+        f"(차이 {gap_text}{hi.get('unit') or ''}{times})",
+    }
 
 
 def _compare_line(ok) -> str | None:
@@ -434,9 +460,22 @@ async def answer(question: str, parsed: dict, found: dict, trace: dict) -> dict 
         ):
             return combined
         notes.append("두 값의 단위나 기준이 달라 직접 계산하지 않고 나란히 보여 드립니다")
-    if op == "compare" and not gap and (line := _compare_line(ok)):
+    if op == "sum" and not failed and not gap:
+        # 더하기 (재계획 A_10): 같은 시점 · 같은 단위의 건수만. 사전 경로의 합계와 같은 모양
+        # (members 가 있어 답 판정 요약에 "합계 — A, B를 더한 값"으로 보인다)
+        if total := qa._sum_indicators([r["result"] for _, r in ok], parsed):
+            return _response(question, parsed, total, trace, notes, [_span(t) for t, _ in ok])
+        notes.append("두 값의 단위나 기준이 달라 더하지 않고 나란히 보여 드립니다")
+    verdict = None
+    if op in ("compare", "which_larger") and not gap and (line := _compare_line(ok)):
         notes.append(line)
+        if op == "which_larger":
+            verdict = _larger(ok)
     out = _side_by_side(question, parsed, ok, failed, trace, notes)
+    if verdict:
+        # 큰 쪽 판정: 결과에 남겨 답 판정이 "비교해야 함"으로 보지 않게 하고, 답 첫 줄로 올린다
+        out["result"]["verdict"] = verdict
+        out["answer"] = f"{verdict['line']}\n{out['answer']}"
     if gap:
         out["result"]["basis_gap"] = gap  # 요청 기록(result)에 남는다 (cross_indicator와 같은 칸)
     return out
