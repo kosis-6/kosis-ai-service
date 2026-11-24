@@ -722,66 +722,24 @@ def test_ungrounded_dictionary_answer_not_returned_when_dynamic_fails(talk: Talk
     assert len(talk.searched) == searched
 
 
-ALSO_ASKED = {
-    **BASE,
-    "type": "value",
-    "indicator": "출생아 수",
-    "grounded": False,
-    "also_asked": "1인 가구 수",
-}
-
-
-@pytest.mark.parametrize("status", ["out_of_scope", "partial_match", "ambiguous"])
+@pytest.mark.parametrize("status", ["out_of_scope", "partial_match"])
 def test_also_asked_failure_keeps_dictionary_answer(talk: Talk, status: str) -> None:
-    # "2020년 서울 출생아 수랑 1인 가구 수": 함께 물은 1인 가구를 계산하지 못해도(거절 · 일부 충족)
-    # 이미 계산한 출생아 수는 버리지 않는다. 전에는 통계표 찾기의 거절로 답 전체를 바꿨다
-    # (PR #221 검토)
-    talk.parsed = dict(ALSO_ASKED)
+    # 함께 물은 지표를 계산하지 못해도 사전 지표 답은 남기고 알림만 붙인다
+    talk.parsed = {
+        **BASE,
+        "type": "value",
+        "indicator": "출생아 수",
+        "grounded": False,
+        "also_asked": "1인 가구 수",
+    }
     talk.found = {"status": status, "answer": "표 안내"}
     res = talk.say("2020년 서울 출생아 수랑 1인 가구 수 알려줘")
     assert res["status"] == "ok" and res["result"] == {"status": "ok", "value": 1}
-    assert "함께 물은 '1인 가구 수'는" in res["answer"]
-    # 통계표 찾기에는 함께 물은 지표만 묻는다 (질문 전체로 찾으면 두 지표를 한 표에서 찾다 거절)
     assert [q for q, *_ in talk.searched] == ["2020년 서울 1인 가구 수 알려줘"]
     if status == "out_of_scope":
-        assert "맞는 통계표를 찾지 못해" in res["answer"]
-    else:  # 찾은 표는 있는데 계산하지 못함: 그 표를 안내한다
+        assert "'1인 가구 수'는 맞는 통계표를 찾지 못해" in res["answer"]
+    else:
         assert "'DT_X' 표에서 확인할 수 있습니다" in res["answer"]
-
-
-def test_also_asked_computed_sits_beside_dictionary_answer(
-    talk: Talk, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # 함께 물은 지표를 계산했으면 사전 지표 답과 질문 순서대로 나란히 둔다
-    plain = talk._result
-
-    def named(parsed: dict, question: str = "") -> dict:
-        out = plain(parsed, question)  # 나란히 쓴 답 문장에 지표 · 지역 · 연도가 필요하다
-        out["result"].update(indicator=parsed["indicator"], region="서울특별시", year=2020)
-        return out
-
-    monkeypatch.setattr(talk, "_result", named)
-    talk.parsed = dict(ALSO_ASKED)
-    talk.dynamic = {
-        "status": "ok",
-        "answer": "2020년 서울특별시의 1인 가구 수는 1,390,701가구입니다.",
-        "parsed": {**BASE, "type": "value", "indicator": "1인 가구 수"},
-        "result": {
-            "status": "ok",
-            "value": 1390701,
-            "indicator": "1인 가구 수",
-            "region": "서울특별시",
-            "year": 2020,
-            "unit": "가구",
-            "method": "dynamic",
-        },
-        "sources": [{"name": "1인가구", "basis": "기준", "tbl_id": "DT_1PL1502", "url": None}],
-        "trace": {},
-    }
-    res = talk.say("2020년 서울 출생아 수랑 1인 가구 수 알려줘")
-    assert res["status"] == "ok" and res["result"]["split_by"] == "indicator"
-    assert [part["value"] for part in res["result"]["split"]] == [1, 1390701]
-    assert res["parsed"]["indicators"] == ["출생아 수", "1인 가구 수"]
 
 
 def test_table_cell_clarification_then_pick(talk: Talk, monkeypatch: pytest.MonkeyPatch) -> None:

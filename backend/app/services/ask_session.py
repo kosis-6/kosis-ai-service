@@ -2335,7 +2335,7 @@ async def _dynamic_instead(res: dict, state: dict | None, asked: str, user_id: i
         res["request_type"], res["question"], res["search_session"] = kind, asked, sid
         return True
     if parsed.get("also_asked") and res.get("status") == "ok":
-        # 사전 밖 지표도 함께 물음 ("출생아 수랑 1인 가구 수"): 사전 답은 두고 그 지표만 계산한다
+        # 사전 밖 지표를 함께 물었다: 사전 답은 두고 그 지표만 따로 계산한다
         return await _with_also_asked(res, parsed, asked, sid, user_id, trace)
     try:
         computed = await dynamic_indicator.cached_answer(asked, parsed, trace)
@@ -2376,18 +2376,14 @@ async def _dynamic_instead(res: dict, state: dict | None, asked: str, user_id: i
 async def _with_also_asked(
     res: dict, parsed: dict, asked: str, sid: str, user_id: int | None, trace: dict
 ) -> bool:
-    """사전 지표 답(res)과 함께 물은 사전 밖 지표의 답을 나란히 둔다. res를 바꿨으면 True
-
-    함께 물은 지표만 묻는 질문("2020년 서울 1인 가구 수 알려줘")으로 계산한다. 질문 전체로 통계표를
-    찾으면 검토가 두 지표를 한 표에서 찾다가 거절했고, 그 거절이 이미 계산한 사전 답까지 덮었다
-    (PR #221 검토: 출생아 수 47,445명 → no_joint_table). 계산하지 못하면(표 안내 · 거절 · 못 찾음)
-    사전 답은 그대로 두고 한 줄 알림만 붙인다"""
+    """사전 지표 답(res) 옆에 함께 물은 사전 밖 지표의 답을 둔다. res를 바꿨으면 True.
+    그 지표만 묻는 질문으로 계산하고, 계산하지 못하면 사전 답에 한 줄 알림만 붙인다"""
     also = parsed["also_asked"]
     question = qa.measure_question(asked, also)
     target = {"span": also, "unsaid_age": not multi_indicator.says_age(question)}
     sub = multi_indicator.target_parsed(parsed, target)
     if not target["unsaid_age"] and parsed.get("also_asked_ages"):
-        # 함께 물은 지표에만 있던 연령 (qa.correct가 사전 지표에서 떼어 둔 것: "고령자 가구 비율")
+        # qa.correct가 사전 지표에서 떼어 둔 연령
         sub.update(parsed["also_asked_ages"])
     computed = found = None
     try:

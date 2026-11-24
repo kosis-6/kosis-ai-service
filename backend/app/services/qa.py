@@ -1297,10 +1297,8 @@ def correct(question, parsed, today=None):
             and _says_age(other)
             and not _says_age(rest)
         ):
-            # 연령 말이 함께 물은 지표에만 있다 ("출생아 수랑 고령자 가구 비율"의 고령자).
-            # 사전 지표에 붙이면 "출생아 수는 연령으로 나눈 자료가 없습니다"로
-            # 사전 계산까지 실패했다.
-            # 함께 물은 지표를 계산할 때 쓰도록 따로 둔다 (ask_session._with_also_asked)
+            # 연령 말이 함께 물은 지표에만 있으면("고령자 가구 비율") 사전 지표의 조건이 아니다.
+            # 그 지표를 계산할 때 쓰도록 따로 둔다
             parsed["also_asked_ages"] = {k: parsed.get(k) for k in ("ages", "age_group")}
             fix("ages", None, "연령은 함께 물은 지표의 조건")
             parsed["age_group"] = None
@@ -1597,21 +1595,18 @@ def unlisted_measure(question):
 
 
 def _says_age(text):
-    """말에 연령 조건이 있는가 ("65세 이상", "고령자", "노인").
-    multi_indicator.says_age와 같은 기준"""
+    """말에 연령 조건이 있는가 ("65세 이상", "고령자")"""
     return bool(extract_ages(text) or agegroup.resolve(text))
 
 
-# 지표 둘이 함께 쓰는 때 · 곳 낱말 ("2020년", "작년", "서울")
+# 두 지표가 함께 쓰는 때 낱말 ("2020년", "작년"). 곳은 지역 이름으로 본다
 SHARED_WHEN = re.compile(r"^(?:(?:19|20)\d{2}년?|작년|올해|지난해|재작년|최근)")
 
 
 def measure_question(question, measure):
-    """묶음 질문에서 함께 물은 사전 밖 지표(measure)만 묻는 질문
+    """묶음 질문에서 함께 물은 사전 밖 지표만 묻는 질문
     ("2020년 서울 출생아 수랑 1인 가구 수 알려줘" → "2020년 서울 1인 가구 수 알려줘").
-    질문 전체로 통계표를 찾으면 검토가 두 지표를 한 표에서 찾다가 '맞는 표 없음'으로 거절했다
-    (PR #221 검토). 사전 지표 쪽 말에서는 둘이 함께 쓰는 연도 · 지역만 가져온다
-    ("65세 이상 인구와 1인 가구 수"의 '65세 이상'은 인구의 조건이다)"""
+    사전 지표 쪽 말에서는 연도 · 지역만 가져온다"""
     parts = [p.strip() for p in MEASURE_JOIN.split(question.strip()) if p and p.strip()]
     key = indicators._norm(measure)
     own = next((p for p in parts if key in indicators._norm(p)), measure)
