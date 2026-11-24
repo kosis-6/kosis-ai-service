@@ -838,6 +838,8 @@ GROUP_NOUN_BEFORE_RATIO = (
     r"(?=비율|비중|(?:몇\s*)?(?:%|퍼센트|프로))"
 )
 GENERIC_GROUP_RATIO = re.compile(rf"^(?:남성|여성|남자|여자)?\s*{GROUP_NOUN_BEFORE_RATIO}")
+# 질문이 분모를 스스로 말하는 것 ("전체 가구 중", "서울 인구 중"): 직전 대상 안의 비율이 아니다
+OWN_BASE = re.compile(r"[가-힣]\s*(?:중에?서?|가운데)\s")
 
 
 def _with_demographics(term: str, conditions: dict) -> str:
@@ -872,6 +874,10 @@ def ratio_followup(question: str, state: dict) -> str | None:
     if c.get("type") not in ("value", "compare", "trend"):
         return None
     rest = AMONG.sub("", q).strip()
+    if OWN_BASE.search(rest):
+        # "전체 가구 중 혼자 사는 집 비율은?": 분모를 질문이 말하므로 직전 대상(인구)을 붙이면
+        # "총인구 중 전체 가구 중 … 비율"이 되어 분모를 잘못 읽었다 (11/25). 변경 추출(HCX)에 맡긴다
+        return None
     # "그중 65세 이상 비율"의 연령은 직전 집단을 나누는 조건이다.
     # 연령을 빼고도 지표 이름이 남으면 새 지표로 처리한다.
     indicator_text = q

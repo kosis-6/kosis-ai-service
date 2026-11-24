@@ -1713,6 +1713,21 @@ def test_ratio_follow_up_respects_a_named_indicator(question: str) -> None:
     assert s.ratio_followup(question, state) is None
 
 
+@pytest.mark.parametrize(
+    "question",
+    [
+        "전체 가구 중 나홀로 가구 비율은?",
+        "서울 인구 중 노인 비율은?",
+        "그중 여성 가운데 취업자 비율은?",
+    ],
+)
+def test_ratio_follow_up_leaves_questions_that_name_their_own_base(question: str) -> None:
+    # 분모를 질문이 말하면 직전 대상 안의 비율이 아니다: 직전 조건을 붙이지 않고 변경 추출에 맡긴다
+    conditions = {"type": "value", "indicator": "총인구", "regions": ["서울특별시"], "year": 2025}
+    state = {"conditions": conditions}
+    assert s.ratio_followup(question, state) is None
+
+
 def test_ratio_follow_up_after_ratio_is_left_to_change_extraction(talk: Talk) -> None:
     talk.parsed = {**ONE_PERSON, "indicator": RATIO_SPEC["name"], "dynamic_spec": RATIO_SPEC}
     talk.say("2020년 서울 1인 가구 중 70세 이상 비율은?")
