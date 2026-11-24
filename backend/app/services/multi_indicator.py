@@ -435,6 +435,64 @@ async def _intersect(question, parsed, found, targets, trace) -> dict | None:
     return out
 
 
+JOINT_MAX = 3  # 한 표 비율로 시도할 표 수
+
+
+def joint_candidates(h: dict, targets: list[dict]) -> list[dict]:
+    """비율의 분자 · 분모를 한 표에서 낼 후보: 두 지표의 후보에 모두 있는 표 + 질문 전체 상위 표
+    (조건 확인에 ✘가 없는 것). 탐색이 고른 표가 앞에 온다"""
+    if len(targets) < 2:
+        return []
+    per = [{c.get("tbl_id"): c for c in t.get("candidates") or []} for t in targets[:2]]
+    both = [per[0][i] for i in per[0] if i in per[1]]
+    whole = [
+        c
+        for c in h.get("whole") or []
+        if not any(v is False for v in (c.get("checks") or {}).values())
+    ]
+    out: list[dict] = []
+    for c in sorted(both, key=lambda c: not c.get("picked")) + whole:
+        if c.get("tbl_id") and c["tbl_id"] not in {o["tbl_id"] for o in out}:
+            out.append({**c, "picked": False, "review": c.get("review")})
+    if out:
+        out[0] = {
+            **out[0],
+            "picked": True,
+        }  # 첫 표는 검토가 고른 표처럼 잇기 · 칸 고르기 LLM 을 쓴다
+    return out[:JOINT_MAX]
+
+
+async def _one_table_ratio(
+    question: str, parsed: dict, found: dict, cands: list[dict], trace: dict
+):
+    """한 표에서 분자 ÷ 분모: 원래 질문 문장으로 dynamic_indicator 를 부른다 (표 안의 비율 계산은
+    질문에 비율 · 비중 · % 가 있을 때 돈다). 비율 값이 나오면 그 답, 아니면 None"""
+    target = {"span": question, "question": question, "conditions": {}, "candidates": cands}
+    sub: dict = {"dynamic": []}
+    try:
+        res = await dynamic_indicator._compute_target(question, parsed, found, target, sub)
+    except Exception:
+        logger.exception("한 표 비율 계산 실패")
+        res = None
+    trace["multi"]["one_table"] = {
+        "tables": [c.get("tbl_id") for c in cands],
+        "status": (res or {}).get("status"),
+        "kind": ((res or {}).get("result") or {}).get("kind"),
+    }
+    trace.setdefault("dynamic", []).extend(sub.get("dynamic") or [])
+    r = (res or {}).get("result") or {}
+    if (
+        res
+        and res.get("status") == "ok"
+        and not res.get("clarification")
+        and r.get("kind") == "ratio"
+    ):
+        res.setdefault("trace", {})
+        r.setdefault("notes", []).append("분자와 분모를 한 통계표에서 계산했습니다")
+        return res
+    return None
+
+
 async def answer(question: str, parsed: dict, found: dict, trace: dict) -> dict | None:
     """지표가 여럿인 꾸러미 → 합친 답 (qa.answer와 같은 모양). 하나도 계산하지 못하면 None"""
     h = found["handoff"]
@@ -454,6 +512,12 @@ async def answer(question: str, parsed: dict, found: dict, trace: dict) -> dict 
         # "A 중 B 비율": 연령을 말하지 않은 쪽("전체 1인 가구")에는 질문의 연령을 붙이지 않는다.
         # 분모에도 70세 이상을 붙여 182,686 ÷ 182,686 = 100%로 답했다 (11/23)
         targets = [{**t, "unsaid_age": not says_age(_span(t))} for t in targets]
+        if joint := joint_candidates(h, targets):
+            # 분자 · 분모가 한 표에 다 있으면 그 표에서 원래 질문 그대로 분자 ÷ 분모 (11/25):
+            # 지표마다 다시 쓴 문장("시도별 1인 가구")에는 '비율'이 없어 표 안의 비율 계산이 돌지
+            # 않았고, 질문 전체 1위 표는 지표별 후보에 없었다 ("전체 가구 중 혼자 사는 집 비율")
+            if one := await _one_table_ratio(question, parsed, found, joint, trace):
+                return one
     outcomes = await _all(question, parsed, found, targets)
     _record(trace, targets, outcomes)
     ok = [(t, r) for t, (r, _) in zip(targets, outcomes, strict=True) if _ok(r)]

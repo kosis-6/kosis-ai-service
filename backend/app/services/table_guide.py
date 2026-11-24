@@ -403,6 +403,7 @@ def build_handoff(
     understanding = _understanding(slots)
 
     targets: list[dict[str, Any]] = []
+    whole: list[dict[str, Any]] = []
     if status in COMPUTABLE and (result.get("table") or {}).get("tbl_id") in by_id:
         picked_id = result["table"]["tbl_id"]
         if multi_result.get("mode") == "multi":
@@ -410,6 +411,9 @@ def build_handoff(
                 _indicator_target(ind, understanding, by_id, families, picked_id)
                 for ind in multi_result.get("indicators") or []
             ]
+            # 질문 전체 검색 상위 표: 지표를 둘로 나눈 비율 질문에서 분자 · 분모가 한 표에 다 있는
+            # 표(1인 가구와 전체 가구)는 지표별 후보 어디에도 없었다 (11/25, 한 표 비율)
+            whole = _whole_candidates(result, by_id, families, slots, picked_id)
         else:
             targets = [_single_target(result, understanding, by_id, families, slots)]
 
@@ -421,6 +425,7 @@ def build_handoff(
         "status": status,
         "understanding": understanding,
         "targets": targets,
+        "whole": whole,  # 지표가 여럿일 때 질문 전체로 찾은 상위 표 (한 표 비율 후보)
         # 계획 전체 (shared · indicators · combine · given). 재계획이 처음 계획으로 쓴다
         "plan": {k: plan.get(k) for k in ("shared", "indicators", "combine", "given") if k in plan},
         "combine": {
@@ -553,6 +558,49 @@ def _review_of(
         if other is None or other["family_id"] != picked["family_id"]:
             return None
     return {"match": raw.get("match"), "reason": raw.get("reason"), "llm": pick.get("llm")}
+
+
+def _whole_candidates(
+    result: dict[str, Any],
+    by_id: dict[str, dict[str, Any]],
+    families: dict[str, list[dict[str, Any]]],
+    slots: dict[str, Any],
+    picked_id: str,
+) -> list[dict[str, Any]]:
+    """질문 전체 검색의 상위 표(탐색이 고른 표 먼저, 그 뒤 다른 묶음)를 후보 모양으로"""
+    chosen = by_id[picked_id]
+    out = [
+        _candidate(
+            1,
+            chosen,
+            families.get(chosen["family_id"], [chosen]),
+            by_id,
+            result["table"].get("checks") or {},
+            result.get("score"),
+            slots,
+            "whole",
+            True,
+            _review_of(result, chosen, by_id),
+        )
+    ]
+    seen = {chosen["family_id"]}
+    for c in (result.get("multi") or {}).get("whole") or []:
+        t = by_id.get(c["tbl_id"])
+        if t is None or t["family_id"] in seen:
+            continue
+        seen.add(t["family_id"])
+        checks = c.get("checks")
+        if checks is None:
+            checks = search.check(t, slots) if slots.get("conditions") else {}
+        out.append(
+            _candidate(
+                len(out) + 1, t, families.get(t["family_id"], [t]), by_id, checks,
+                c.get("score"), slots, "whole", False, None,
+            )
+        )  # fmt: skip
+        if len(out) >= MAX_CANDIDATES:
+            break
+    return out
 
 
 def _single_target(

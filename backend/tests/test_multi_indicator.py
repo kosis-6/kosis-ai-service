@@ -468,3 +468,61 @@ def test_target_parsed_drops_unsupported_mark_of_the_whole_question() -> None:
     parsed = {**BASE, "indicator": "남자와 여자", "unsupported": True}
     q = multi_indicator.target_parsed(parsed, {"span": "x", "dict": "총인구"})
     assert q["indicator"] == "총인구" and q["unsupported"] is None
+
+
+def test_joint_candidates_prefer_tables_in_both_targets_then_whole() -> None:
+    h = {
+        "whole": [
+            {"tbl_id": "W1", "checks": {"year": True}},
+            {"tbl_id": "W2", "checks": {"year": False}},
+        ]
+    }
+    a = _target("부분", cands=("T1", "T2"))
+    b = _target("전체", cands=("T2", "T3"))
+    a["candidates"][1]["picked"] = True
+    got = multi_indicator.joint_candidates(h, [a, b])
+    assert [c["tbl_id"] for c in got] == ["T2", "W1"]  # 둘 다에 있는 표, 그 뒤 ✘ 없는 전체 상위 표
+    assert got[0]["picked"] is True and got[1]["picked"] is False
+    assert multi_indicator.joint_candidates(h, [a]) == []
+
+
+def test_ratio_tries_one_table_before_splitting(world) -> None:
+    # 분자 · 분모가 한 표에 있으면 원래 질문으로 그 표에서 비율을 낸다 (지표 둘 따로는 돌지 않는다)
+    def one_table(parsed):
+        return {
+            "status": "ok",
+            "answer": "비율 36%",
+            "result": {"status": "ok", "kind": "ratio", "unit": "%", "value": 36.0, "year": 2020},
+            "parsed": {},
+        }
+
+    world["values"] = {
+        "전체 가구 중 혼자 사는 집 비율": one_table,
+        "부분": _value("부분", 1),
+        "전체": _value("전체", 3),
+    }
+    found = _found(
+        [_target("부분", cands=("T1", "T9")), _target("전체", cands=("T9", "T3"))], "ratio"
+    )
+    res, trace = run("전체 가구 중 혼자 사는 집 비율", found)
+    assert res["result"]["kind"] == "ratio" and res["result"]["value"] == 36.0
+    assert trace["multi"]["one_table"]["tables"] == ["T9"]
+    assert "분자와 분모를 한 통계표에서 계산했습니다" in res["result"]["notes"]
+    assert [a[0] for a in world["asked"]] == [
+        "전체 가구 중 혼자 사는 집 비율"
+    ]  # 지표 둘은 부르지 않음
+
+
+def test_ratio_falls_back_to_two_targets_when_one_table_fails(world) -> None:
+    world["values"] = {
+        "전체 가구 중 혼자 사는 집 비율": None,
+        "부분": _value("부분", 1, "명"),
+        "전체": _value("전체", 4, "명"),
+    }
+    # 기본 방향은 뒤 지표 ÷ 앞 지표: 전체(4)를 앞에, 부분(1)을 뒤에 둔다
+    found = _found(
+        [_target("전체", cands=("T9", "T3")), _target("부분", cands=("T1", "T9"))], "ratio"
+    )
+    res, trace = run("전체 가구 중 혼자 사는 집 비율", found)
+    assert trace["multi"]["one_table"]["status"] is None
+    assert res["status"] == "ok" and res["result"]["value"] == 25.0  # 1 ÷ 4 × 100
