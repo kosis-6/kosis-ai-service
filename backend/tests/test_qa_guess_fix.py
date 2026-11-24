@@ -1,6 +1,8 @@
+from datetime import date
+
 import pytest
 
-from app.services import qa
+from app.services import indicators, qa
 
 SAYS_YEAR = [
     "2022년 서울 인구",
@@ -77,3 +79,74 @@ def _ground(question, region):
 @pytest.mark.needs_data
 def test_ground_regions(question, region, expected):
     assert _ground(question, region) == expected
+
+
+@pytest.mark.parametrize(
+    ("question", "parsed_regions", "expected"),
+    [
+        ("서울 강남 인구 알려줘", ["서울"], ["서울특별시 강남구"]),
+        ("강남 인구 알려줘", [], ["서울특별시 강남구"]),
+        ("서울 강서 인구 알려줘", ["서울"], ["서울특별시 강서구"]),
+        ("강서 인구 알려줘", ["서울특별시 강서구"], ["강서"]),
+        ("서울 인구 알려줘", ["서울"], ["서울"]),
+    ],
+)
+def test_short_population_region_is_used_for_calculation(
+    monkeypatch, question, parsed_regions, expected
+):
+    seoul = {
+        "status": "ok",
+        "region_code": "11",
+        "region_name": "서울특별시",
+        "kind": "시도",
+        "display": "서울특별시",
+    }
+    gangnam = {
+        "status": "ok",
+        "region_code": "11680",
+        "region_name": "강남구",
+        "sido_code": "11",
+        "kind": "시군구",
+        "display": "서울특별시 강남구",
+    }
+    gangseo = {
+        "status": "ok",
+        "region_code": "11500",
+        "region_name": "강서구",
+        "sido_code": "11",
+        "kind": "시군구",
+        "display": "서울특별시 강서구",
+    }
+    regions = {
+        "서울": seoul,
+        "강남": gangnam,
+        "서울 강남": gangnam,
+        gangnam["display"]: gangnam,
+        "강서": {"status": "ambiguous_region", "candidates": [gangseo["display"], "부산 강서구"]},
+        "서울 강서": gangseo,
+        gangseo["display"]: gangseo,
+    }
+    monkeypatch.setattr(
+        indicators, "_region_names", lambda: ["서울특별시", "서울", "강남구", "강서구"]
+    )
+    monkeypatch.setattr(
+        indicators, "resolve_region", lambda name: regions.get(name, {"status": "unknown_region"})
+    )
+    parsed = {"type": "value", "indicator": "총인구", "regions": parsed_regions, "sex": "계"}
+    corrected = qa.correct(question, parsed, date(2026, 11, 24))
+    assert corrected["regions"] == expected
+    assert "ungrounded_region" not in corrected
+
+
+@pytest.mark.parametrize(
+    "period", ["재작년까지 5년간", "2024년까지 최근 5년", "2년 전까지 5년 동안"]
+)
+def test_explicit_end_year_is_used_in_new_question(monkeypatch, period):
+    monkeypatch.setattr(indicators, "find_regions", lambda _: [])
+    question = f"{period} 출생아 수 알려줘"
+    parsed = {"type": "value", "indicator": "출생아 수", "regions": [], "sex": "계", "year": 2025}
+    corrected = qa.correct(question, parsed, date(2026, 11, 24))
+    assert corrected["type"] == "trend"
+    assert (corrected["start_year"], corrected["end_year"]) == (2020, 2024)
+    assert corrected["year"] is None
+    assert "recent" not in (corrected.get("asked") or {})

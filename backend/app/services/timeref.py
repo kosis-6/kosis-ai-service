@@ -83,10 +83,26 @@ def recent_period(
     return None
 
 
-KINDS = ("word", "ago", "later", "recent", "span", "compare_ago", "span_from", "until_now")
-N_KINDS = ("ago", "later", "recent", "span", "compare_ago", "span_from")
+KINDS = (
+    "word",
+    "ago",
+    "later",
+    "recent",
+    "span",
+    "compare_ago",
+    "span_from",
+    "span_until",
+    "until_now",
+)
+N_KINDS = ("ago", "later", "recent", "span", "compare_ago", "span_from", "span_until")
 _N = r"(?<![\d~])(\d{1,2})\s*"
 SPAN_FROM = re.compile(r"((?:19|20)\d{2})\s*년\s*부터\s*(\d{1,2})\s*(?:개년|년)\s*(?:간|동안)")
+SPAN_UNTIL = re.compile(
+    rf"(?:(?<!\d)(?P<year>(?:19|20)\d{{2}})(?:\s*년도?)?|"
+    rf"(?P<relative>{'|'.join(word for word, _ in WORDS)}|(?<!\d)\d{{1,2}}\s*년\s*{AGO}))"
+    rf"\s*까지\s*(?:(?:최근|지난|과거)\s*)?(?P<length>[1-9]\d?)\s*(?:개년|년)(?!\s*{AGO})"
+    r"(?:\s*(?:간|동안|사이))?"
+)
 COMPARE_AGO = re.compile(
     _N + r"년\s*" + AGO + r"\s*(?:이랑|하고|랑|과|와)?\s*(?:보다|대비|에\s*비해|비교)"
 )
@@ -99,7 +115,7 @@ WORD_AS_BASE = re.compile(r"\s*(?:보다|대비|에\s*비해)")
 def find(question: str) -> list[dict]:
     text, out = question, []
 
-    def take(pattern: re.Pattern, kind: str, n_group: int | None, **extra) -> None:
+    def take(pattern: re.Pattern, kind: str, n_group: int | str | None, **extra) -> None:
         nonlocal text
         for m in pattern.finditer(text):
             ref = {"expr": m.group(0).strip(), "kind": kind}
@@ -108,6 +124,12 @@ def find(question: str) -> list[dict]:
             out.append(ref)
         text = pattern.sub(lambda m: " " * len(m.group(0)), text)
 
+    take(
+        SPAN_UNTIL,
+        "span_until",
+        "length",
+        anchor=lambda m: int(m["year"]) if m["year"] else m["relative"],
+    )
     take(SPAN_FROM, "span_from", 2, anchor=lambda m: int(m.group(1)))
     take(RECENT_N_YEARS, "recent", 2)
     take(COMPARE_AGO, "compare_ago", 1)
@@ -135,7 +157,7 @@ def find(question: str) -> list[dict]:
     return out
 
 
-def period(ref: dict, today: date, end: int) -> dict:
+def period(ref: dict, today: date, end: int | None = None) -> dict:
     kind, n = ref["kind"], ref.get("n") or 0
     if kind == "word":
         year = today.year + ref.get("offset", 0)
@@ -145,12 +167,15 @@ def period(ref: dict, today: date, end: int) -> dict:
         return {"start": year, "end": None} if ref.get("open") else {"year": year}
     if kind == "later":
         return {"year": today.year + n}
-    if kind in ("recent", "span"):
-        return {"start": end - n + 1, "end": None}
-    if kind == "compare_ago":
-        return {"start": end - n, "end": None}
+    if kind in ("recent", "span", "compare_ago"):
+        last = end if end is not None else data_end(today)
+        return {"start": last - n + (kind != "compare_ago"), "end": None}
     if kind == "span_from":
         return {"start": ref["anchor"], "end": ref["anchor"] + n}
+    if kind == "span_until":
+        anchor = ref["anchor"]
+        last = anchor if isinstance(anchor, int) else resolve(anchor, today).year
+        return {"start": last - n + 1, "end": last}
     if kind == "until_now":
         return {"end": None}
     return {}

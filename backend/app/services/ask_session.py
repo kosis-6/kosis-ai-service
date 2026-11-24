@@ -13,6 +13,7 @@ from starlette.concurrency import run_in_threadpool
 
 from app.prompts.qa import FOLLOW_SYSTEM
 from app.services import (
+    agegroup,
     answer_summary,
     ask_followup,
     charts,
@@ -269,6 +270,7 @@ def apply_changes(conditions: dict, changes: dict) -> tuple[dict, set[str]]:
         changed.add("period")
     if "period" in changed:
         _clear_period_questions(c)
+        c.pop("time_refs", None)
 
     if changes.get("sex") in ("계", "남", "여"):
         old_sex = c.get("sex")
@@ -351,6 +353,7 @@ def with_recent(conditions: dict, changed: set[str], n: int) -> tuple[dict, set[
     """조건을 '자료 마지막 해를 포함한 N개 해' 추이로 (계산 단계가 asked.recent로 표마다 센다)"""
     c = copy.deepcopy(conditions)
     c["asked"] = {**(c.get("asked") or {}), "recent": n}
+    c.pop("time_refs", None)
     c["start_year"] = c["end_year"] = None
     if c.get("type") in ("value", "compare"):
         c["type"] = "trend"
@@ -384,7 +387,7 @@ def names_indicator(question: str, parsed: dict) -> bool:
 def _says_word(word: Any, compact: str) -> bool:
     if not isinstance(word, str) or not word.strip() or word.strip() in VIEW_WORDS:
         return False
-    if not dynamic_indicator._without_age_words(word):
+    if dynamic_indicator._without_age_words(agegroup.native_to_digits(word)) in ("", "로", "으로"):
         return False
     return word.replace(" ", "") in compact
 
@@ -408,9 +411,9 @@ def inherit(
         return p, s
     if question and prev.get("indicator") and not names_indicator(question, p):
         keys = ["indicator", "term", "ages", "age_group", "age_note", "by", "dynamic_spec"]
-        said_ages = bool(p.get("ages")) and bool(qa.age_spans(question))
-        if said_ages:
+        if said_ages := qa.extract_ages(question):
             keys = [k for k in keys if k not in ("term", "ages", "age_group", "age_note")]
+            p["ages"] = said_ages
             p.pop("age_group", None)
             p["term"] = prev["indicator"]
         for key in keys:
@@ -1470,29 +1473,32 @@ async def _turn(
                 and await asyncio.to_thread(asks_other_people, question, state["conditions"])
             ):
                 delta["request_type"] = NEW
-        year = follow_year(question, state["conditions"])
-        if year and not names_indicator(question, {}) and delta["request_type"] != NEW:
-            changes = {
-                k: v
-                for k, v in (delta.get("changes") or {}).items()
-                if k not in ("year", "start_year", "end_year")
-            }
-            delta.update(request_type=CHANGE, unclear=None, changes={**changes, "year": year})
-        recent = recent_years(question)
-        if recent and not names_indicator(question, {}) and delta["request_type"] != NEW:
-            changes = {
-                k: v
-                for k, v in (delta.get("changes") or {}).items()
-                if k not in ("year", "start_year", "end_year")
-            }
-            delta.update(request_type=CHANGE, unclear=None, changes=changes)
+        recent = None
+        if delta["request_type"] != NEW and not names_indicator(question, {}):
+            anchor = next((r for r in timeref.find(question) if r["kind"] == "span_until"), None)
+            recent = recent_years(question) if not anchor else None
+            year = follow_year(question, state["conditions"]) if not (anchor or recent) else None
+            if anchor or recent or year:
+                changes = {
+                    k: v
+                    for k, v in (delta.get("changes") or {}).items()
+                    if k not in ("year", "start_year", "end_year")
+                }
+                if anchor:
+                    period = timeref.period(anchor, date.today())
+                    changes.update(start_year=period["start"], end_year=period["end"])
+                    if changes.get("type") in ("value", "compare"):
+                        changes["type"] = "trend"
+                elif year:
+                    changes["year"] = year
+                delta.update(request_type=CHANGE, unclear=None, changes=changes)
         if delta["unclear"]:
             return _unclear(state, delta["unclear"]), state["sources"], None
         if delta["request_type"] == SUMMARY and delta["changes"]:
             delta["request_type"] = CHANGE
         if delta["request_type"] == CHANGE:
             conditions, changed = apply_changes(state["conditions"], delta["changes"])
-            if recent and not names_indicator(question, {}):
+            if recent:
                 conditions, changed = with_recent(conditions, changed, recent)
             if changed:
                 res = None

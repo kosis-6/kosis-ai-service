@@ -746,7 +746,7 @@ def set_survey(question, parsed):
 
 
 YEAR_ARITH = re.compile(r":\s*(?:19|20)\d{2}\s*[-+]\s*\d{1,3}(?=\s*[,}])")
-PERIOD_KINDS = ("recent", "span", "compare_ago", "span_from", "until_now")
+PERIOD_KINDS = ("recent", "span", "compare_ago", "span_from", "span_until", "until_now")
 
 
 def _apply_time(question, parsed, fix, today):
@@ -754,7 +754,7 @@ def _apply_time(question, parsed, fix, today):
     if not refs:
         _drop_unsaid_years(question, parsed, fix, set())
         return
-    end = indicators._data_years()[1]
+    end = None
     said = sorted({int(y) for y in YEAR.findall(question)})
     kind_now, resolved, touched = parsed.get("type"), [], set()
 
@@ -764,10 +764,15 @@ def _apply_time(question, parsed, fix, today):
             fix(key, value, why)
 
     for ref in refs:
+        if end is None and ref["kind"] in ("recent", "span", "compare_ago"):
+            end = indicators._data_years()[1]
         got = timeref.period(ref, today, end)
         resolved.append({"expr": ref["expr"], "kind": ref["kind"], "n": ref.get("n"), **got})
         why = f"'{ref['expr']}'"
         if ref["kind"] in PERIOD_KINDS:
+            if ref["kind"] == "span_until" and kind_now == "value":
+                fix("type", "trend", "끝 연도와 기간을 물음")
+                kind_now = "trend"
             if "start" in got:
                 put("start_year", got["start"], f"{why} = {got['start']}년부터")
             if "end" in got:
@@ -926,8 +931,11 @@ def correct(question, parsed, today=None):
         parsed["grounded"] = (chosen in names) if chosen else None
         if chosen == "총인구" and parsed["grounded"] is False and _plain_people_question(question):
             parsed["grounded"] = True
-        if chosen == "총인구" and population_modifier(question):
-            parsed["grounded"] = False
+        if chosen == "총인구":
+            if population_modifier(question):
+                parsed["grounded"] = False
+            elif kind in ("value", "trend", "compare", "composition"):
+                _fix_short_population_region(question, parsed, fix)
         chosen_spec = indicators.spec(chosen) if chosen else None
         if undone_pct and chosen_spec and lookup.kind_of(chosen_spec) == "count":
             parsed["grounded"] = False
@@ -987,7 +995,11 @@ def correct(question, parsed, today=None):
         if parsed.get("year") != year:
             fix("year", year, "질문의 연도")
 
-    if not has_abs_year and (ref := timeref.resolve(question, today)):
+    if (
+        not has_abs_year
+        and not timeref.SPAN_UNTIL.search(question)
+        and (ref := timeref.resolve(question, today))
+    ):
         if ref.open_end:
             if parsed.get("start_year") != ref.year:
                 fix("start_year", ref.year, ref.describe(today))
@@ -1217,6 +1229,7 @@ PLAIN_POPULATION = {
     "개", "곳", "군데",
 }  # fmt: skip
 POPULATION_NOUN = re.compile(r"([가-힣]+)\s*인구")
+POPULATION_PARTICLE = re.compile(r"(의|은|는|이|가|에서|에|별)$")
 
 
 PEOPLE_WORD = re.compile(r"사람|주민")
@@ -1267,24 +1280,50 @@ def population_modifier(question):
     if sub := find_sub_area(question):
         question = question.replace(sub[0], " ")
     for m in POPULATION_NOUN.finditer(question):
-        words = {m[1], re.sub(r"(의|은|는|이|가|에서|에|별)$", "", m[1]) or m[1]}
+        words = {m[1], POPULATION_PARTICLE.sub("", m[1]) or m[1]}
         if any(w in PLAIN_POPULATION or re.search(r"\d", w) for w in words):
             continue
         if any(
-            indicators.find_regions(w) or agegroup.resolve(w) or _short_region(w) for w in words
+            indicators.find_regions(w) or agegroup.resolve(w) or _resolve_short_region(w)
+            for w in words
         ):
             continue
         return min(words, key=len)
     return None
 
 
-def _short_region(word):
+def _resolve_short_region(word):
     if len(word) < 2 or word in COMMON_WORD_REGIONS:
-        return False
+        return None
     try:
-        return indicators.resolve_region(word)["status"] in ("ok", "ambiguous_region")
+        region = indicators.resolve_region(word)
     except StatsTableMissing:
-        return False
+        return None
+    return region if region["status"] in ("ok", "ambiguous_region") else None
+
+
+def _fix_short_population_region(question, parsed, fix):
+    matches = list(POPULATION_NOUN.finditer(question))
+    if len(matches) != 1 or len(parsed.get("regions") or []) > 1:
+        return
+    match = matches[0]
+    prefix = question[: match.start(1)].split()
+    explicit = indicators.find_regions(question)
+    if explicit and (len(explicit) != 1 or not prefix or explicit[0] != prefix[-1]):
+        return
+    for word in dict.fromkeys((match[1], POPULATION_PARTICLE.sub("", match[1]))):
+        if word in PLAIN_POPULATION or indicators.find_regions(word):
+            continue
+        if not (region := _resolve_short_region(word)):
+            continue
+        if explicit:
+            region = indicators.resolve_region(f"{explicit[0]} {word}")
+            if region["status"] != "ok" or region["kind"] not in ("시군구", "일반구"):
+                continue
+        name = region["display"] if region["status"] == "ok" else word
+        if parsed.get("regions") != [name]:
+            fix("regions", [name], "질문의 짧은 지역 이름")
+        return
 
 
 MEASURE_JOIN = re.compile(
@@ -1328,7 +1367,7 @@ def measure_question(question, measure):
         for p in parts
         if p != own and indicators.find_in_text(p)
         for w in p.split()
-        if SHARED_WHEN.match(w) or indicators.find_regions(w) or _short_region(w)
+        if SHARED_WHEN.match(w) or indicators.find_regions(w) or _resolve_short_region(w)
     ]
     return " ".join([*shared, own])
 
@@ -1651,12 +1690,13 @@ def _read_question(question, parsed, fix):
             fix("end_year", end, "질문의 기간")
 
     asked = {}
+    fixed_end = any(r["kind"] == "span_until" for r in parsed.get("time_refs") or [])
     for mode, pattern in YEAR_EXTREME.items():
         if pattern.search(question):
             asked["extreme"] = mode
     if STREAK.search(question):
         asked["streak"] = "negative" if re.search(r"유출|빠져|감소|줄", question) else "positive"
-        if not SPAN.search(question) and not SINCE.search(question):
+        if not fixed_end and not SPAN.search(question) and not SINCE.search(question):
             for key in ("start_year", "end_year"):
                 if parsed.get(key):
                     fix(key, None, "연속 기간은 수록 기간 전체에서 셈")
@@ -1665,9 +1705,14 @@ def _read_question(question, parsed, fix):
     if PER_YEAR.search(question):
         asked["per_year"] = True
     by_year = {"extreme", "streak", "rebound", "per_year"} & set(asked)
-    if m := RECENT.search(question):
+    if not fixed_end and (m := RECENT.search(question)):
         asked["recent"] = int(m[2])
-    elif LATEST.search(question) and not YEAR.search(question) and not timeref.resolve(question):
+    elif (
+        not fixed_end
+        and LATEST.search(question)
+        and not YEAR.search(question)
+        and not timeref.resolve(question)
+    ):
         asked["latest"] = True
         if THESE_DAYS.search(question):
             asked["these_days"] = True
@@ -3360,7 +3405,7 @@ def _add_data_end_note(parsed, result, today=None):
     refs = [r for r in parsed.get("time_refs") or [] if r.get("kind") in PERIOD_KINDS]
     recent = _asked_years(parsed)
     kinds = {r["kind"] for r in refs}
-    if not recent and not kinds - {"span_from"}:
+    if not recent and not kinds - {"span_from", "span_until"}:
         return
     parts = _leaves(result) if result.get("split") else [result]
     years = [
