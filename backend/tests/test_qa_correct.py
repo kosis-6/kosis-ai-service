@@ -1118,7 +1118,7 @@ def test_sex_split_sentence_compares_sexes(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(qa, "summary", lambda p: "")
     part = {"status": "ok", "indicator": "총인구", "unit": "명", "kind": "count"}
     r = {"split": [{**part, "sex": "남", "value": 100}, {**part, "sex": "여", "value": 130}]}
-    assert qa._split_text(r).strip() == "여성이 30명 더 많습니다."
+    assert qa._split_text(r).strip() == "여성이 30명 더 많습니다 (1.3배)."
 
 
 # ---- 상대 기간: 표현 · 종류 · N만 알아보고 연도는 규칙표(timeref.period)가 센다 ----

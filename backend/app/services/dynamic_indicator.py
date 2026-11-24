@@ -122,6 +122,11 @@ class Dim:
     def default(self) -> str | None:
         """말하지 않으면 쓸 칸 (합계가 없는 분류). 장래추계 시나리오는 중위 (지표 사전과 같음)"""
         names = {c: _norm(n) for c, n in self.codes.items()}
+        # 구분 {총인구, 내국인}: 합계 칸이 없지만 총인구(외국인 포함)가 전체다
+        # (주요 인구지표 표의 평균연령 · 부양비, 골든 '구분 → 총인구', D-102 · 122 11/24)
+        whole = [c for c, n in names.items() if n == "총인구"]
+        if len(whole) == 1 and set(names.values()) - {"총인구"} <= {"내국인", "외국인"}:
+            return whole[0]
         if any(n.startswith(("고위", "저위")) for n in names.values()):
             middle = [c for c, n in names.items() if n.startswith("중위")]
             if len(middle) == 1:
@@ -419,6 +424,22 @@ def _rank_dim(question: str, dims: list[Dim], region_dim: int | None, tbl_nm: st
     return None
 
 
+COUNT_CELL = re.compile(r"^(인원|인구|명|건수|가구|.+수)$")
+SHARE_CELL = re.compile(r"^(구성비|비율|비중)")
+
+
+def _count_or_share(d: Dim, question: str) -> str | None:
+    """{인원, 구성비}처럼 같은 대상의 수와 비율 두 칸뿐인 분류: '몇 %'를 물었으면 비율, 아니면 수
+    ("불법체류 외국인 2020년이랑 작년 비교" → 인원. 되묻고 있었다, V2-041 11/24)"""
+    if len(d.codes) != 2:
+        return None
+    count = [c for c, n in d.codes.items() if COUNT_CELL.match(_norm(n))]
+    share = [c for c, n in d.codes.items() if SHARE_CELL.match(_norm(n))]
+    if len(count) != 1 or len(share) != 1:
+        return None
+    return share[0] if PCT_ASK.search(question) else count[0]
+
+
 def choose(
     question: str,
     parsed: dict,
@@ -556,6 +577,9 @@ def choose(
         elif (default := d.default()) is not None:
             plan.pick[d.no] = default
             plan.defaults.append(f"{d.name}: {d.codes[default]}")
+        elif (count := _count_or_share(d, question)) is not None:
+            plan.pick[d.no] = count
+            plan.defaults.append(f"{d.name}: {d.codes[count]}")
         elif (husband := _couple_code(d)) and not parsed.get("ages"):
             # 남편 · 아내만 있는 분류 (혼인 · 이혼 표): 부부 단위 건수라 연령을 나누지 않으면 어느
             # 쪽으로 세도 같다 ("이혼 부부 중 미성년 자녀 없는 비율"을 성별로 되묻고 있었다)
@@ -566,8 +590,10 @@ def choose(
             asks.append(Ask(d.no, d.name, list(d.codes.items())))
         else:
             return None, f"{d.name}에서 칸을 고르지 못함"
-    if not plan.matched and not (plan.sex_dim and sex in ("남", "여")):
-        return None, "질문의 말과 맞는 칸이 없음"  # 맞는 말이 없는 표는 되묻지도 않는다
+    if not plan.matched and not (plan.sex_dim and sex in ("남", "여")) and quiet is None:
+        # 맞는 말이 없는 표는 되묻지도 않는다. 잇기로 다시 계산할 때(quiet가 있음)는 잇기가 조건을
+        # 모두 이었으니 보지 않는다: 이은 칸이 모두 기본 칸(합계)이면 matched가 빈다 (V2-139 11/24)
+        return None, "질문의 말과 맞는 칸이 없음"
     if asks:
         return None, asks[0]
     return plan, None
@@ -911,7 +937,7 @@ def build(
         logger.exception("부부 단위 표 확인 실패: %s", tbl_id)
         couple = False
     multi = (slots or {}).get("binding_multi")  # 잇기로 다시 계산할 때만 (binding.retry_plan)
-    quiet = (slots or {}).get("binding_quiet")
+    quiet = (slots or {}).get("binding_quiet")  # 잇기로 다시 계산할 때만 dict (비어 있어도)
     plan, why = choose(question, parsed, dims, region_dim, forced, tbl_nm, couple, multi, quiet)
     if (seen := (slots or {}).get("seen")) is not None:
         seen["plan"] = plan

@@ -422,3 +422,16 @@ def test_no_retry_for_ratio_questions(monkeypatch) -> None:
     q = "전체 가구 중에 식구가 전부 65살 이상인 집은 몇 퍼센트야?"
     b = binding.bind("T", q, {"ages": [[65, None]]}, _slots(), forced={0: "1"})
     assert b.status == binding.BOUND and binding.retry_plan(b, q, {"ages": [[65, None]]}) is None
+
+
+def test_binding_retry_with_only_default_cells_is_not_rejected() -> None:
+    """잇기가 이은 칸이 모두 기본 칸(합계)이면 matched가 비지만, 잇기로 다시 계산할 때는
+    '질문의 말과 맞는 칸이 없음'으로 막지 않는다 (V2-139: 가구주 32~37세 · 2030년, 11/24)"""
+    items = Dim(0, "항목", {"T1": "계"})
+    sex = Dim(1, "성별", {"0": "계", "1": "남자", "2": "여자"})
+    forced, quiet = {1: "0"}, {1: "total"}
+    got, why = d.choose("가구 몇 가구", {}, [items, sex], None, forced, quiet=quiet)
+    assert got is not None and got.pick == {0: "T1", 1: "0"} and not got.matched
+    # 잇기 재계산이 아니면 지금처럼 막는다
+    got, why = d.choose("가구 몇 가구", {}, [items, sex], None, forced)
+    assert got is not None or why  # forced 칸은 matched로 들어간다 (기존 동작)

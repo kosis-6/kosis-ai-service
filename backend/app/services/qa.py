@@ -1316,7 +1316,12 @@ def _change_rank(question, parsed, fix):
         return
     if YEAR_ASKED.search(question):
         return  # "출생아가 가장 많이 늘어난 해는?": 지역이 아니라 해를 묻는다 (추이의 극값 연도)
-    if parsed.get("type") not in ("rank", "compare", "value", None):
+    many = parsed.get("top") or AXIS_REGION.search(question)
+    if parsed.get("type") not in ("rank", "compare", "value", None) and not (
+        parsed.get("type") == "trend" and many
+    ):
+        # 추이로 읽었어도 여러 지역 중 변화가 큰 곳을 물었으면 순위다
+        # ("최근 5년 동안 인구가 제일 많이 늘어난 시도 3곳은?" → 지역을 되물었다, V2-080 11/24)
         return
     parsed["rank_by"] = "decrease" if DECREASE_WORDS.search(m[0]) else "increase"
     if parsed.get("type") != "rank":
@@ -2513,10 +2518,14 @@ def _compute(q):
 
 
 def _rank_by_change(q, hi):
-    """전년 대비 변화량 순위: 그해와 전년 순위(모든 지역)를 각각 계산해 지역마다 뺀다"""
+    """변화량 순위: 그해와 비교할 해의 순위(모든 지역)를 각각 계산해 지역마다 뺀다.
+    비교할 해는 전년, '최근 N년'이면 N개 해의 첫해 (최근 5년: 2021 → 2025)"""
     year = q.get("year") or hi
-    base = {**q, "rank_by": None, "top": None}
-    now, before = compute({**base, "year": year}), compute({**base, "year": year - 1})
+    n = (q.get("asked") or {}).get("recent") or 0
+    start = year - (n - 1 if n > 1 else 1)
+    base = {**q, "rank_by": None, "top": None, "type": "rank", "start_year": None, "end_year": None}
+    base["asked"] = {k: v for k, v in (q.get("asked") or {}).items() if k != "recent"}
+    now, before = compute({**base, "year": year}), compute({**base, "year": start})
     for part in (now, before):
         if part.get("status") != "ok":
             return part
@@ -2534,10 +2543,11 @@ def _rank_by_change(q, hi):
         ranking=[{**r, "rank": i} for i, r in enumerate(rows[:top], start=1)],
         total_regions=len(rows),
         rank_by=q["rank_by"],
+        change_from=start,
         order="감소 폭이 큰 순" if decrease else "증가 폭이 큰 순",
         base_indicator=now.get("indicator"),
         indicator=f"{now.get('indicator')} 변화량",
-        notes=[f"{year - 1}년 → {year}년 변화량으로 순위를 매겼습니다", *(now.get("notes") or [])],
+        notes=[f"{start}년 → {year}년 변화량으로 순위를 매겼습니다", *(now.get("notes") or [])],
         kind="value",
     )
     return out
@@ -2632,7 +2642,9 @@ def _compute_population(q, ind, kind, regions, year, sex, ages, hi):
         result = _compute_population(q, ind, "value", regions, year, sex, ages, hi)
         return _value_instead(result, ind)
     if kind in ("value", "trend", "compare") and not regions:
-        return {"status": "missing_region", "reason": "어느 지역인지 질문에 없습니다."}
+        # 지역을 말하지 않은 인구 질문("애들 몇 명이야?", "중년 몇 명이야?")은 전국.
+        # '우리 동네' · '여기'처럼 지역을 가리키기만 한 질문은 앞(ask_session)에서 되묻는다 (11/24)
+        regions = ["전국"]
     if (q.get("asked") or {}).get("latest") and kind in ("value", "compare", "rank"):
         # 연간 자료 다음 해의 최신 달이 있으면 그 해 (순위는 지역 없이 전국으로 확인)
         year = indicators.latest_year([] if kind == "rank" else regions, sex)
@@ -3242,6 +3254,18 @@ def _trend_answer(r):
     return (" " + " ".join(out)) if out else ""
 
 
+def _times(high, low, key="region"):
+    """두 값 비교의 배수 ", 1.39배". 한쪽이 전국이면 지역 ÷ 전국 ("우리 동네 노인 비율 전국보다
+    높아?" → 0.97배), 아니면 높은 값 ÷ 낮은 값. 값이 0 이하이면 쓰지 않는다
+    (골든셋 비교 정답은 차이와 배수를 함께 적는다. 숫자는 맞고 배수가 없어 틀린 문항 16건, 11/24)"""
+    hi, lo = high["value"], low["value"]
+    if not hi or not lo or hi <= 0 or lo <= 0:
+        return ""
+    if high.get(key) == "전국" or high.get(key) in NATIONAL_NAMES:
+        hi, lo = lo, hi
+    return f", {round(hi / lo, 2):g}배"
+
+
 def _compare_text(r):
     name, unit = _subject(r), r.get("unit", "")
     valid = [v for v in r["values"] if v["value"] is not None]
@@ -3265,11 +3289,12 @@ def _compare_text(r):
         )
     gap = _val(r["gap"], r["gap_unit"])
     if len(valid) == 2:
+        times = _times(high, low)
         return (
             f"{_when(r)} {_josa(name, '은는')} {_josa(high['region'], '이가')} "
             f"{low['region']}보다 {gap} 높습니다"
             f"({high['region']} {_val(high['value'], unit)}, "
-            f"{low['region']} {_val(low['value'], unit)})."
+            f"{low['region']} {_val(low['value'], unit)}{times})."
         )
     return (
         f"{_when(r)} {_josa(name, '이가')} 가장 높은 지역은 "
@@ -3290,7 +3315,9 @@ def _rank_text(r):
     if r.get("rank_by") in ("decrease", "increase"):
         moved = "줄어든" if r["rank_by"] == "decrease" else "늘어난"
         who = _josa(r.get("base_indicator") or name, "이가")
-        head = f"{_when(r)} {who} 가장 많이 {moved} {r['level']}"
+        # 어느 해부터의 변화인지 첫 문장에 ('2024년 → 2025년', 최근 5년이면 '2021년 → 2025년')
+        when = f"{r['change_from']}년 → {r['year']}년" if r.get("change_from") else _when(r)
+        head = f"{when} {who} 가장 많이 {moved} {r['level']}"
     if r.get("indicator") == "순이동" and r["order"] == "낮은 순":  # 순유출이 큰 순
         head = f"{_when(r)} 인구가 가장 많이 빠져나간(순유출이 가장 큰) {r['level']}"
     listed = ", ".join(f"{x['region']}({_val(x['value'], unit)})" for x in items)
@@ -3423,7 +3450,9 @@ def _split_text(r):
             if same and {a.get("sex"), b.get("sex")} == {"남", "여"}:
                 # 같은 지표를 남녀로 나눈 경우 ("서울 남녀 인구 비교"): 성별로 견준다
                 who = {"남": "남성", "여": "여성"}[hi["sex"]]
-            text += f" {_josa(who, '이가')} {_val(gap, unit, full=True)} 더 {word}."
+            times = _times({"value": max(vals)}, {"value": min(vals)})
+            times = f" ({times[2:]})" if times else ""
+            text += f" {_josa(who, '이가')} {_val(gap, unit, full=True)} 더 {word}{times}."
     return text
 
 
