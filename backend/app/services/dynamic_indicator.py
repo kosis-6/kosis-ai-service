@@ -2760,6 +2760,7 @@ def _with_spec(parsed: dict, spec: dict) -> dict:
     if not q.get("year") and q.get("type") in LAST_YEAR_KINDS:
         try:
             q["year"] = lookup._years(spec["sources"][0])[1]
+            q["year_filled"] = True  # 사용자가 말한 연도가 아니다 (qa._add_latest_note)
         except Exception:
             logger.exception("동적 지표 수록 기간 확인 실패")
     return q

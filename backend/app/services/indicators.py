@@ -342,9 +342,59 @@ def _exclusions():
 
 
 def excluded_phrase(name, text):
-    """문장에 지표의 제외 표현이 있으면 그 표현 (공백을 뺀 형태), 없으면 None"""
+    """문장에 지표의 제외 표현이 있으면 그 표현 (공백을 뺀 형태), 없으면 None.
+    제외 표현에 걸친 그 지표의 별칭이 모두 띄어쓰기로 떨어져 있으면 세지 않는다 (_separated)"""
     s = _norm(text)
-    return next((n for n in map(_norm, _exclusions().get(name, [])) if n in s), None)
+    spans, gaps = _exclusion_spans(text)
+    aliases = [
+        (m.start(), m.end())
+        for n in {_norm(x) for x in [name, *_alias_map().get(name, [])]}
+        for m in re.finditer(re.escape(n), s)
+    ]
+    for ex in spans:
+        if ex[2] != name:
+            continue
+        hit = [al for al in aliases if al[0] < ex[1] and ex[0] < al[1]]
+        if not hit or any(not _separated(ex, al, gaps) for al in hit):
+            return ex[3]
+    return None
+
+
+def _exclusion_spans(text):
+    """문장에 든 제외 표현(not_in) → ([(시작, 끝, 지표 이름, 표현, 띄어쓰기 포함)], 띄어쓰기 자리)
+    (공백을 뺀 문장 기준 위치). 공백을 빼고 찾으므로 낱말 경계를 넘어 생긴 표현이 걸린다
+    (11/24 "대구 성비" → '구성비'). 띄어쓰기와 지역 이름의 시작 · 끝을 낱말 경계로 돌려주고,
+    경계가 별칭을 가르는지는 별칭마다 _separated로 본다"""
+    s = _norm(text)
+    found = [
+        (m.start(), m.end(), name, n, bool(re.search(r"\s", raw)))
+        for name, phrases in _exclusions().items()
+        for raw in phrases
+        for n in [_norm(raw)]
+        for m in re.finditer(re.escape(n), s)
+    ]
+    if not found:
+        return [], set()
+    # 공백을 뺀 문장에서 원래 띄어쓰기가 있던 자리 (그 자리 글자 앞이 띄어져 있었다)
+    gaps, k = set(), 0
+    for i, ch in enumerate(str(text)):
+        if ch.isspace():
+            continue
+        if i and str(text)[i - 1].isspace():
+            gaps.add(k)
+        k += 1
+    # 지역 이름의 시작 · 끝도 낱말 경계다 ("대구성비"는 '대구|성비', "대전출생아"는 '대전|출생아')
+    gaps |= {k for a, b, _ in _region_spans(s) for k in (a, b)}
+    return list(dict.fromkeys(found)), gaps
+
+
+def _separated(ex, alias, gaps):
+    """제외 표현(ex) 안의 낱말 경계가 별칭(alias)을 가르지 않는다 = 별칭은 따로 쓴 낱말이고
+    제외 표현이 우연히 생겼다. "대구 성비" · "달서구성비": 경계가 '성비' 밖 → 성비로 센다.
+    "대전 출생아" · "대전출생아": 경계가 별칭 '전출'을 가른다 → 별칭이 우연이라 막는다"""
+    if ex[4]:  # 표현에 띄어쓰기가 있다 ("여성 비율"): 띄어 써도 같은 표현
+        return False
+    return any(ex[0] < g < ex[1] and not (alias[0] < g < alias[1]) for g in gaps)
 
 
 def canonical_name(indicator):
@@ -404,14 +454,14 @@ def find_in_text(text):
         for n in {_norm(x) for x in [name, *names]}:
             spans += [(m.start(), m.end(), name) for m in re.finditer(re.escape(n), s)]
     # 제외 표현 안에 든 별칭은 세지 않는다 (예: "등록외국인수" 안의 "외국인수")
-    blocked = [
-        (m.start(), m.end(), name)
-        for name, phrases in _exclusions().items()
-        for n in map(_norm, phrases)
-        for m in re.finditer(re.escape(n), s)
-    ]
+    blocked, gaps = _exclusion_spans(text)
     spans = [
-        a for a in spans if not any(b[2] == a[2] and b[0] < a[1] and a[0] < b[1] for b in blocked)
+        a
+        for a in spans
+        if not any(
+            b[2] == a[2] and b[0] < a[1] and a[0] < b[1] and not _separated(b, a, gaps)
+            for b in blocked
+        )
     ]
     return [
         a
@@ -980,16 +1030,19 @@ def _region_names():
 def find_regions(text):
     """문장에 나온 지역 이름들 (나온 순서). HCX가 지역을 빠뜨렸을 때 쓴다
     더 긴 이름 안에 든 짧은 이름(예: "광주광역시" 안의 "광주")은 세지 않는다"""
-    s = _norm(text)
-    taken, found = [], []
+    return [name for _, _, name in sorted(_region_spans(_norm(text)))]
+
+
+def _region_spans(s):
+    """공백을 뺀 문장 s에 나온 지역 이름 → [(시작, 끝, 이름)]. 더 긴 이름 안의 짧은 이름은 뺀다"""
+    taken = []
     for name in _region_names():
         for m in re.finditer(re.escape(name), s):
             if m.start() and s[m.start() - 1].isdigit():
                 continue  # "30대 전체"의 '대전': 앞에 숫자가 붙은 것은 연령대 · 수량이다
-            if not any(a < m.end() and m.start() < b for a, b in taken):
-                taken.append((m.start(), m.end()))
-                found.append((m.start(), name))
-    return [name for _, name in sorted(found)]
+            if not any(a < m.end() and m.start() < b for a, b, _ in taken):
+                taken.append((m.start(), m.end(), name))
+    return taken
 
 
 def _base_name(name):

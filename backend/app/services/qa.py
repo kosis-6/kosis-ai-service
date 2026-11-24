@@ -461,12 +461,16 @@ SURVEY_ASK = [
         ),
     ),
 ]
-# "애를 얼마나 낳아" · "아이 몇 명 낳아" · "출산 얼마나 해": 합계출산율로도 출생아 수로도 읽힌다
+# "애를 얼마나 낳아" · "아이 몇 명 낳아" · "애 많이 낳아?" · "출산 얼마나 해": 합계출산율로도
+# 출생아 수로도 읽힌다 (11/24: '많이'를 못 잡아 HCX의 '저출산'이 통계표 바로 계산으로 갔다)
 BIRTH_HOW_MANY = re.compile(
-    r"(?:애|아이|아기|애기)(?:들)?(?:을|를)?\s*(?:얼마나|몇\s*명(?:씩)?)\s*(?:을|를)?\s*낳"
+    r"(?:애|아이|아기|애기)(?:들)?(?:을|를)?\s*(?:얼마나|몇\s*명(?:씩)?|많이|적게)\s*(?:을|를)?"
+    r"\s*(?:안\s*)?낳"
     r"|출산(?:을)?\s*(?:얼마나|많이)"
 )
-TFR_MEANING = "합계출산율은 여자 한 명이 평생(15~49세) 낳을 것으로 예상되는 아이 수입니다"
+# HCX가 '애 낳아'를 지표 대신 주제로 읽은 이름. 지표 사전에 없는 이름이라 고쳐도 잃는 것이 없다
+BIRTH_TOPIC = ("저출산", "저출생", "출산", "출생", "출산율", "출생률")
+TFR_MEANING = indicators.spec("합계출산율")["definition"]  # 지표 사전의 설명과 같은 문장
 BIRTH_PAIR_NOTE = (
     f"{TFR_MEANING}. '얼마나 낳는지'는 합계출산율로 답하고, "
     "그해 태어난 아이 수(출생아 수)를 함께 보여 드립니다"
@@ -1275,7 +1279,7 @@ def correct(question, parsed, today=None):
     elif (
         BIRTH_PER_WOMAN.search(question)
         and re.search(r"낳", question)
-        and parsed.get("indicator") in (None, "합계출산율", "출생아 수", "조출생률")
+        and parsed.get("indicator") in (None, "합계출산율", "출생아 수", "조출생률", *BIRTH_TOPIC)
     ):
         # "여자 한 명이 애를 몇 명 낳아?": 별칭("한 명이 애 몇 명")과 조사 하나 차이로 못 잡았다
         if parsed.get("indicator") != "합계출산율":
@@ -1287,7 +1291,7 @@ def correct(question, parsed, today=None):
         # "요즘 애를 얼마나 낳아?": 한 사람이 몇 명 낳는지(합계출산율)로도, 몇 명 태어났는지
         # (출생아 수)로도 읽힌다. HCX가 그때그때 둘 중 하나를 골랐다 (D-096: 1차 합계출산율 ·
         # 2차 출생아 수). 합계출산율로 답하고 출생아 수를 함께 보여 준다
-        if parsed.get("indicator") in (None, "합계출산율", "출생아 수", "조출생률"):
+        if parsed.get("indicator") in (None, "합계출산율", "출생아 수", "조출생률", *BIRTH_TOPIC):
             fix("indicator", "합계출산율", "'얼마나 낳아'는 합계출산율 + 출생아 수")
             parsed["term"] = "합계출산율"
             parsed["grounded"] = True
@@ -2195,6 +2199,7 @@ def compute(q):
             if not reason.startswith(survey):
                 result["reason"] = f"{survey} {reason}"
     _add_latest_note(q, result)
+    _add_definition_note(result)
     if result.get("sub_future") and not q.get("guess"):
         # 시군구의 미래 연도를 콕 집어 물었다 ("2030년 ○○시 인구 알려줘"): 짐작을 물은 것이 아니라
         # 아직 없는 연도를 물은 것이다. 속한 시도의 추계값은 그대로 참고로 보여 준다
@@ -2225,6 +2230,9 @@ def _add_latest_note(q, result):
     비운다"""
     if result.get("status") != "ok" or q.get("prediction"):
         return
+    # 통계표 바로 계산은 연도를 말하지 않으면 표의 마지막 해를 year에 넣는다 (year_filled).
+    # 사용자가 말한 연도가 아니므로 가장 최근 자료로 답한 것으로 본다
+    asked_year = q.get("year") and not q.get("year_filled")
     for r in _leaves(result):
         if r.get("series"):
             # 추이는 끝 연도만 본다: "2010년부터" · "최근 5년"도 끝은 가장 최근 자료
@@ -2234,7 +2242,7 @@ def _add_latest_note(q, result):
             when = last.get("as_of") or f"{last['year']}년"
             name = r.get("indicator") or "이"
             note = f"{name} 자료는 {when}이 가장 최근입니다"
-        elif q.get("year"):
+        elif asked_year:
             continue
         elif r.get("as_of") or r.get("year"):
             note = f"가장 최근 자료인 {_when(r)} 기준으로 답했습니다"
@@ -2251,6 +2259,22 @@ def _add_latest_note(q, result):
             continue
         if note not in (notes := r.setdefault("notes", [])):
             notes.append(note)
+
+
+def _add_definition_note(result):
+    """지표 사전의 지표로 답했으면 그 지표가 무엇인지(definition) 안내 맨 앞에 둔다.
+    통계표 바로 계산(method=dynamic)은 사전의 지표와 칸이 다를 수 있어 붙이지 않는다"""
+    if result.get("status") != "ok":
+        return
+    for r in _leaves(result):
+        if r.get("method") == "dynamic" or r.get("status", "ok") != "ok":
+            continue
+        sp = indicators.spec(r.get("indicator"))
+        if not sp or not (definition := sp.get("definition")):
+            continue
+        notes = r.setdefault("notes", [])
+        if not any(definition in n for n in notes):
+            notes.insert(0, definition)
 
 
 def _add_default_value(q, result):
@@ -3633,6 +3657,11 @@ def render(result):
         lines = ["지원 지표: " + ", ".join(result.get("supported", []))]
 
     notes = list(src.get("notes") or [])
+    # 다른 안내에 통째로 들어 있는 안내는 뺀다 (지표 설명 ⊂ "합계출산율은 … 함께 보여 드립니다")
+    notes = [n for n in notes if not any(n != m and n in m for m in notes)]
+    # 지표 설명은 지표마다 나뉜 답에서도 앞에 모아 둔다 (설명 → 기준 · 시점 안내 순)
+    defs = {sp.get("definition") for sp in indicators.specs().values()}
+    notes.sort(key=lambda n: not any(d and d in n for d in defs))
     if src.get("formula"):
         notes.insert(0, f"계산식: {src['formula']}")
     lines += [f"※ {n}" for n in notes]
