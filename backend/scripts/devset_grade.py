@@ -211,6 +211,16 @@ def expected_numbers(kind: str, answer: str) -> list[Expect]:
     return out
 
 
+def allowed_answers(answer: str) -> list[str]:
+    """정답 수치 칸의 "허용:" 줄 → 다른 기준으로 맞는 답 (정답 표 칸의 "허용:"과 같은 표기).
+    예) 부양비 정답은 인구총조사 공표값, 허용 줄은 주민등록인구로 계산한 값 (11/24)"""
+    return [
+        re.sub(r"^\s*허용\s*:\s*", "", line)
+        for line in answer.split("\n")[1:]
+        if line.strip().startswith("허용")
+    ]
+
+
 def rank_names(answer: str) -> list[str]:
     """순위 정답의 이름 순서 ("1위 전라남도 …; 2위 세종특별자치시 …")"""
     return [m.group(2) for m in re.finditer(rf"(\d+)위\s+(\S+)\s+{NUM}", answer.split("\n")[0])]
@@ -517,6 +527,13 @@ def grade(row: dict[str, str], first: dict, final: dict | None = None) -> Grade:
     exp = expected_numbers(row["질문 종류"], row["정답 수치"])
     nums = numbers(text)
     found = {e.label: find_number(e, nums, text) for e in exp}
+    for alt in allowed_answers(row["정답 수치"]):
+        # 정답 줄로 다 맞지 않으면 허용 줄로 본다 (허용 줄 하나를 통째로 맞아야 한다)
+        alt_exp = expected_numbers(row["질문 종류"], alt)
+        alt_found = {e.label: find_number(e, nums, text) for e in alt_exp}
+        if alt_exp and all(alt_found.values()) and not all(found.values()):
+            exp, found = alt_exp, alt_found
+            g.details["허용 정답"] = alt
     if row["질문 종류"] == "순위":
         found["순서"] = ranks_in_order(rank_names(row["정답 수치"]), text)
     computed: list[float] = []
@@ -530,7 +547,12 @@ def grade(row: dict[str, str], first: dict, final: dict | None = None) -> Grade:
     g.details["찾은 숫자"] = found
     g.number = "O" if answered and exp and all(found.values()) else "X"
 
-    cond_wrong = check_conditions(row["정답 조건"], final) if answered else ["답하지 않음"]
+    cond = row["정답 조건"]
+    if (alt := g.details.get("허용 정답")) and golden_years(alt):
+        # 허용 줄이 시점을 적었으면 (예: "… 37.66명 (2026년 10월 말)") 기간은 그 시점으로 본다
+        lo, hi = golden_years(alt)
+        cond = YEAR.sub("", cond) + (f", {lo}" if lo == hi else f", {lo}~{hi}")
+    cond_wrong = check_conditions(cond, final) if answered else ["답하지 않음"]
     g.details["조건 차이"] = cond_wrong
     g.condition = "X" if cond_wrong else "O"
 

@@ -437,12 +437,19 @@ def _pick(spec, level, y0, y1, sex):
             "reason": f"{josa(spec['name'], '은는')} {top} 단위까지만 자료가 있습니다.",
             "level": top,
         }
-    for s in fits:
-        lo, hi = _years(s)
+    # 값이 적재되지 않은 항목은 수록 기간을 모른다 (None, None): 고르지 않는다 (D-055)
+    spans = [(s, _years(s)) for s in fits]
+    spans = [(s, span) for s, span in spans if None not in span]
+    if not spans:
+        return None, {
+            "status": "missing_data",
+            "indicator": spec["name"],
+            "reason": f"{josa(spec['name'], '은는')} 이 표에 값이 없습니다.",
+        }
+    for s, (lo, hi) in spans:
         if lo <= y0 and y1 <= hi:
             return s, None
-    spans = [_years(s) for s in fits]
-    lo, hi = min(a for a, _ in spans), max(b for _, b in spans)
+    lo, hi = min(a for _, (a, _) in spans), max(b for _, (_, b) in spans)
     return None, {
         "status": "out_of_range",
         "indicator": spec["name"],
