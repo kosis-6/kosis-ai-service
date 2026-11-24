@@ -1,23 +1,3 @@
-"""카탈로그 보강: config/catalog_notes.toml → build 스키마
-
-하위 태스크 2(답변 가능 판단)·3(표 선택)에서 쓰는 설명 정보를 DB에 넣는다.
-
-만들어지는 테이블
-  table_groups       비교 그룹 (주민등록 / 인구총조사 / 장래추계 / 인구동향 ...)
-  compatible_groups  그룹이 달라도 직접 비교해도 되는 조합
-  table_notes        표마다 조사 이름, 기준 시점, 대상, 그룹, 원표 최신 시점, 확인 여부
-  series_breaks      통계 기준이 바뀐 해 (예: 2010년 거주불명자 포함 시작)
-  region_notes       특정 지역에만 해당하는 주의사항 (예: 장래추계 대구는 군위군 미포함)
-  indicator_dict     지표 사전 (이름, 단위, 계산/조회 방식, 별칭)
-  indicator_sources  지표 → 표·항목·지역 수준·수록 기간
-
-조회 함수(find_indicator, table_info, comparable)는 서비스 코드인 app/services/catalog.py에 있다.
-
-실행 순서: preprocess.py → catalog.py → validate.py → publish_stats.py
-  (preprocess.py가 build 스키마를 새로 만들기 때문에 catalog.py를 다시 실행해야 함)
-실행: python pipeline/catalog.py   (가상환경 활성화 후, README 참고. 보통은 run_all.py로 실행)
-"""
-
 import json
 import re
 import sys
@@ -43,18 +23,12 @@ def _as_list(v):
 
 
 def base_sources(ind):
-    """서비스 기본 표(전처리 대상)를 쓰는 출처.
-    years가 있는 출처는 과거 연도용 표로, 질문이 그 연도를 물을 때 받는다
-    (app/services/table_cache.py). 기본 표가 아니라서 여기 검사·indicator_sources에서 뺀다"""
     return [s for s in ind["sources"] if not s.get("years")]
 
 
 def load_notes():
     with open(NOTES_PATH, "rb") as f:
         return tomllib.load(f)
-
-
-# ---- 1. DB에 넣기 ---------------------------------------------------------------
 
 
 def build(con, notes):
@@ -131,7 +105,6 @@ def build(con, notes):
         con.sql(f"drop table if exists {name}")
         con.register(name, pd.DataFrame(rows), temp=False)
 
-    # 지표 출처에 수록 기간 붙이기
     con.sql("drop table if exists indicator_sources")
     con.sql("""
         create table indicator_sources as
@@ -141,11 +114,7 @@ def build(con, notes):
     con.sql("drop table indicator_sources_raw")
 
 
-# ---- 2. 설정 파일 검사 ----------------------------------------------------------
-
-
 def check(con, notes):
-    """설정 파일이 실제 데이터와 맞는지 확인. 문제 목록을 돌려준다."""
     issues = []
     data_tables = {r[0] for r in con.sql("select tbl_id from catalog").fetchall()}
     note_tables = set(notes["tables"])
@@ -182,7 +151,6 @@ def check(con, notes):
                 continue
             for item in _as_list(s.get("item_id", [])):
                 where = [f"tbl_id = '{s['table']}'", f"item_id = '{item}'"]
-                # 값이 목록이면 그중 하나라도 있으면 됨 (lookup.py가 더해서 쓴다)
                 where += [
                     f"{col} in ({', '.join(repr(v) for v in _as_list(val))})"
                     for col, val in s.get("filters", {}).items()
@@ -203,9 +171,6 @@ def check(con, notes):
             if n == 0:
                 issues.append(f"{ind['name']}: 추계 {proj} 자료가 없음")
     return issues
-
-
-# ---- 실행 -----------------------------------------------------------------------
 
 
 def main():

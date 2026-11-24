@@ -1,5 +1,3 @@
-"""질문 기록과 검색 상태의 보관 기간. 요청이 없어도 서버가 주기적으로 정리한다."""
-
 import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
@@ -15,10 +13,9 @@ async def purge() -> None:
     from app.core.db import engine
 
     async with engine.begin() as conn:
-        # 처음 요청 전에는 기록 테이블이 아직 없을 수 있다.
         for table, column in (
             ("chat_sessions", "updated_at"),
-            ("conversations", "updated_at"),  # 로그인 유저의 대화: 마지막 대화 뒤 30일
+            ("conversations", "updated_at"),
             ("chat_turns", "created_at"),
             ("search_logs", "created_at"),
         ):

@@ -1,6 +1,3 @@
-"""칸 고르기 프롬프트: 규칙(글자 맞추기)이 칸을 못 고른 표에서 질문에 맞는 칸 고르기
-(app/services/cell_pick.py 에서 쓴다. Gemma · HCX 같은 문구. 2026-11-18 세진 검토)"""
-
 UNSURE = "정할 수 없음"
 YES, NO = "예", "아니오"
 
@@ -22,14 +19,6 @@ SYSTEM = """너는 통계표에서 질문에 맞는 칸을 고르는 도우미�
 
 
 def schema(groups: dict[str, int]) -> dict:
-    """응답 모양을 고정한다. groups: {분류 이름: 칸 수}. 칸 번호는 목록에 있는 것만"""
-    # 칸 순서 fits → reason → read_as → picks: 핵심 답(picks)을 맨 뒤에 두고 그 뒤에 칸을 두지 않는다.
-    # 모델은 핵심 답을 쓰고 나면 JSON을 닫고 싶어 하는데, 뒤에 칸이 남아 있으면 닫는 글자 대신 공백만
-    # 이어 쓰다 글자 수 한도에 잘렸다. read_as는 바꿔 읽은 말이 없을 때 null을 쓸 수 있어야 한다
-    # (목록만 허용하면 그 자리에서 막혀 잘렸다). 11/18 Gemma로 잘렸던 34건 시험:
-    #   read_as(목록만) → picks 14/34 잘림, picks → read_as(null 허용) 8/34 한도까지,
-    #   read_as 없음 1/34 해석 실패, read_as(null 허용) → picks 0/34 · 전부 정상 종료.
-    # reason을 맨 앞에 두면 판단이 엇나갔다
     return {
         "type": "object",
         "properties": {

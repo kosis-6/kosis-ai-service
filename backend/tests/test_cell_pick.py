@@ -1,5 +1,3 @@
-"""칸 고르기 LLM (app/services/cell_pick.py): 보낼 칸 줄이기 · 응답 검증. LLM은 부르지 않는다"""
-
 import asyncio
 
 import pytest
@@ -34,7 +32,7 @@ def test_narrow_keeps_total_and_cells_sharing_words() -> None:
     out = cell_pick.narrow("작년 음식점 수", cells)
     assert out == [("00", "계"), ("X", "음식점업")]
     small = cells[:10]
-    assert cell_pick.narrow("아무 말", small) == small  # 적으면 그대로
+    assert cell_pick.narrow("아무 말", small) == small
 
 
 GROUPS = [
@@ -53,7 +51,7 @@ def test_decide_maps_numbers_to_codes_and_keeps_real_readings() -> None:
     picked = cell_pick.decide(raw, GROUPS)
     assert picked.forced == {0: "T1", 2: "00"}
     assert picked.unsure == []
-    assert picked.read_as == [("결혼", "혼인")]  # 고른 칸에 없는 '출생'은 버린다
+    assert picked.read_as == [("결혼", "혼인")]
     assert picked.notice() == "질문의 '결혼'을(를) 표의 '혼인'(으)로 보고 계산했습니다"
 
 
@@ -92,8 +90,6 @@ def test_choose_records_and_survives_llm_errors(monkeypatch) -> None:
 
 
 def test_schema_puts_picks_last_and_lets_read_as_be_null() -> None:
-    # Gemma 응답 잘림 방지 (11/18): 핵심 답(picks)이 맨 뒤이고 그 뒤에 칸이 없다.
-    # read_as는 바꿔 읽은 말이 없으면 null을 쓸 수 있다
     shape = prompt.schema({"항목": 2})
     assert list(shape["properties"]) == ["fits", "reason", "read_as", "picks"]
     assert shape["required"] == ["fits", "reason", "read_as", "picks"]

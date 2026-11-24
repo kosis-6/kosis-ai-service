@@ -1,9 +1,3 @@
-"""통계 수치 저장 구조: catalog 표·칸·코드·단위, raw 수치·적재 상태
-
-Revision ID: 0001
-Revises:
-"""
-
 from collections.abc import Sequence
 
 import sqlalchemy as sa
@@ -79,7 +73,6 @@ def upgrade() -> None:
         schema="raw",
         postgresql_partition_by="LIST (tbl_key)",
     )
-    # 작은 표는 기본 파티션의 해시 묶음에 넣는다. 큰 표의 전용 파티션은 load_raw.py가 만든다
     op.execute(
         "CREATE TABLE raw.stat_value_small PARTITION OF raw.stat_value DEFAULT"
         " PARTITION BY HASH (tbl_key)"
@@ -119,7 +112,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_table("stat_load", schema="raw")
-    op.drop_table("stat_value", schema="raw")  # 하위 파티션도 함께 지워진다
+    op.drop_table("stat_value", schema="raw")
     op.drop_table("stat_unit", schema="catalog")
     op.drop_table("stat_code", schema="catalog")
     op.drop_table("stat_dimension", schema="catalog")

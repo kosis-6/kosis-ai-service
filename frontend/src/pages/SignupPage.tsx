@@ -1,5 +1,3 @@
-// 회원가입: ① 인증번호 받기 → ② 인증번호 확인 → ③ 가입
-// (POST /auth/email-code → /auth/email-code/verify → /auth/register)
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import type { EmailCodeSent } from "../api/types";
@@ -9,7 +7,7 @@ import { Field, type Note } from "../components/Field";
 import { usePage } from "../components/usePage";
 
 type Notes = Partial<Record<"nickname" | "email" | "code" | "password" | "confirm", Note>>;
-type Step = "idle" | "sent" | "verified"; // 이메일 인증 단계
+type Step = "idle" | "sent" | "verified";
 
 export function SignupPage() {
   usePage("account", "회원가입");
@@ -23,8 +21,8 @@ export function SignupPage() {
   const [notes, setNotes] = useState<Notes>({});
   const [error, setError] = useState("");
   const [step, setStep] = useState<Step>("idle");
-  const [verified, setVerified] = useState(""); // 인증을 마친 이메일
-  const [wait, setWait] = useState(0); // 인증번호를 다시 받을 수 있을 때까지(초)
+  const [verified, setVerified] = useState("");
+  const [wait, setWait] = useState(0);
   const [busy, setBusy] = useState<"" | "send" | "verify" | "submit">("");
 
   const emailRef = useRef<HTMLInputElement>(null);
@@ -41,7 +39,6 @@ export function SignupPage() {
     return () => clearTimeout(timer);
   }, [wait]);
 
-  // 브라우저 기본 검사 문구로 "비밀번호가 서로 달라요"를 알린다
   useEffect(() => {
     confirmRef.current?.setCustomValidity(
       confirm === password ? "" : "비밀번호가 서로 달라요. 다시 확인해 주세요.",
@@ -56,7 +53,6 @@ export function SignupPage() {
     note("code");
   }
 
-  // 이메일을 고치면 인증을 처음부터 다시 한다
   function changeEmail(value: string) {
     setEmail(value);
     if (step !== "idle" || wait) resetVerify();
@@ -131,7 +127,6 @@ export function SignupPage() {
       if (r.fields[name]) note(name, { text: r.fields[name], kind: "bad" });
     }
     if (r.status === 400 || r.status === 409) {
-      // 400: 인증한 지 30분이 지남 → 다시 인증. 409: 그사이 누가 같은 이메일로 가입함
       resetVerify();
       note("email", { text: r.message, kind: "bad" });
     } else if (!Object.keys(r.fields).length) {
@@ -207,7 +202,7 @@ export function SignupPage() {
             }}
             onKeyDown={(e) => {
               if (e.key !== "Enter") return;
-              e.preventDefault(); // 가입 폼이 제출되지 않게
+              e.preventDefault();
               void verifyCode();
             }}
             action={

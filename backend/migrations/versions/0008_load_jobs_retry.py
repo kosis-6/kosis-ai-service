@@ -1,12 +1,3 @@
-"""app.load_jobs: 다시 시도할 시각(run_after)과 수동 등록(reason=manual)
-
-일시 오류(네트워크·시간 초과)로 실패한 작업은 queued로 되돌리고 run_after 뒤에 다시 꺼낸다.
-구글 드라이브에서 받아 둔 표를 직접 넣을 때는 reason을 manual로 둔다 (pipeline/load_worker.py).
-
-Revision ID: 0008
-Revises: 0007
-"""
-
 from collections.abc import Sequence
 
 import sqlalchemy as sa

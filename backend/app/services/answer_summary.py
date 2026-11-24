@@ -1,33 +1,12 @@
-"""답변 요약: 계산 결과(qa.ask의 result)에서 핵심 한 문장과 덧붙일 사실 몇 개를 뽑는다
-
-LLM을 쓰지 않는다. 문장에 들어가는 숫자는 모두 계산 결과에 있는 값이거나, 그 값을 세거나
-고른 것(증가한 곳 수, 가장 크게 변한 지역)이다. 새로 조회하거나 추정하지 않는다.
-
-  build(result) → {"headline": 한 문장, "points": [문장], "cautions": [문장]}  (답변 불가면 None)
-  text(summary, one_line) → "요약해줘"에 돌려줄 글
-
-  결과 모양             headline                      points
-  값 하나               그 값                         뜻풀이, 전체 대비 비중, 합친 지역별 값
-  series (추이)         기간 전체 변화(처음 → 끝)     물은 것, 방향, 최고·최저 해, 해마다 평균
-  지역마다 series       증가·감소한 곳 수             가장 크게 변한 곳, 마지막 해 비교
-  values (지역 비교)    가장 높은·낮은 곳과 차이      높은 순 목록, 자료 없는 지역
-  ranking (순위)        1위 (또는 물은 지역의 순위)   2~3위, 반대쪽 끝
-  parts (구성비)        가장 큰 비중                  나머지 비중, 전체 수
-  cautions              인과 판단 안 함, 추계값, 묶음 지역 기준, 주의사항(notes)
-
-qa.summary(답변 문장)는 그대로 둔다. 요약은 그 문장보다 짧게, 여러 지역·여러 해를 한눈에 보게
-하려는 것이다 (지역 6곳 추이는 답변 문장이 지역마다 세 문장씩 이어진다).
-"""
-
 import re
 from typing import Any
 
 from app.services import qa
 
 MAX_POINTS = 4
-MAX_HEADLINE = 110  # 두 갈래의 문장을 이어 이보다 길면 둘째는 덧붙임으로 내린다
+MAX_HEADLINE = 110
 MAX_CAUTIONS = 2
-MAX_LISTED = 5  # 목록(높은 순, 합친 지역)은 이만큼까지만 적는다
+MAX_LISTED = 5
 SENTENCE_END = re.compile(r"(?<=니다\.)\s+")
 ONE_LINE = re.compile(r"한\s*(줄|마디|문장)")
 
@@ -37,7 +16,6 @@ def _sentences(text: str) -> list[str]:
 
 
 def _steps(series: list[dict]) -> list[tuple[int, str]]:
-    """해마다 앞 해보다 늘었는지 줄었는지 (qa._trend_text와 같은 기준)"""
     return [
         (
             s["year"],
@@ -66,7 +44,7 @@ def _trend_headline(r: dict) -> str:
 
 def _trend_points(r: dict) -> list[str]:
     asked, unit, c = r.get("asked") or {}, r.get("unit", ""), r["change"]
-    points = _sentences(qa._trend_answer(r))  # 질문이 콕 집어 물은 것이 먼저
+    points = _sentences(qa._trend_answer(r))
     steps = _steps(r["series"])
     dirs = {d for _, d in steps}
     steady = len(dirs) == 1 and "같음" not in dirs
@@ -93,7 +71,6 @@ def _trend_points(r: dict) -> list[str]:
             word = "늘었습니다" if per > 0 else "줄었습니다"
             if unit == "세":
                 word = "늦어졌습니다" if per > 0 else "빨라졌습니다"
-            # 사람·건수는 소수 없이 적는다 (79,455.8명 → 79,456명)
             size = round(abs(per)) if r.get("kind") == "count" else abs(per)
             points.append(
                 f"해마다 평균 {qa._val(size, c['diff_unit'])}씩 {word}"
@@ -103,8 +80,6 @@ def _trend_points(r: dict) -> list[str]:
 
 
 def _region_trends(result: dict) -> tuple[str, list[str]] | None:
-    """여러 지역의 추이: 지역마다 문장을 잇지 않고 늘어난 곳·줄어든 곳으로 묶는다.
-    지역마다 기간이 다르면 묶지 않는다 (None → 지역별 요약을 나열)"""
     parts = result["split"]
     changes = [p.get("change") for p in parts]
     if not all(p.get("series") and c for p, c in zip(parts, changes, strict=True)):
@@ -167,7 +142,7 @@ def _composition(r: dict) -> tuple[str, list[str]]:
     else:
         whole = f"{qa._when(r)} {r['region']} {qa.SEX_WORDS.get(r.get('sex'), '')}인구"
         asked = []
-    if asked:  # "첫째는 몇 %?"처럼 한 항목을 물었으면 그 항목이 핵심이다
+    if asked:
         p = asked[0]
         headline = (
             f"{whole} 중 {qa._josa(p['label'], '은는')} {p['share']}%({p['count']:,}{unit})입니다."
@@ -204,7 +179,6 @@ def _compare_points(r: dict) -> list[str]:
 
 
 def _rank_points(r: dict) -> list[str]:
-    """전체 순위를 물었을 때만 2~3위를 덧붙인다 (개수를 물었으면 headline에 다 있다)"""
     items, unit = r["ranking"], r.get("unit", "")
     target = r.get("target")
     if target and target.get("rank") not in (None, 1) and items:
@@ -217,7 +191,6 @@ def _rank_points(r: dict) -> list[str]:
 
 
 def _leaf(r: dict) -> tuple[str, list[str]]:
-    """계산 결과 하나 (split이 아닌 것) → (headline, points)"""
     if "scenario" in r:
         return _sentences(qa._projection_text(r))[0], []
     if "series" in r:
@@ -240,8 +213,6 @@ def _leaf(r: dict) -> tuple[str, list[str]]:
 
 
 def _values_together(parts: list[dict]) -> str | None:
-    """같은 지역·시점의 값 여럿(남녀, 지표 여럿)을 한 문장으로.
-    예) 2023년 서울특별시의 출생아 수는 39,456명, 사망자 수는 51,446명입니다."""
     plain = all(
         p.get("value") is not None and not any(k in p for k in ("series", "scenario", "members"))
         for p in parts
@@ -252,7 +223,6 @@ def _values_together(parts: list[dict]) -> str | None:
     if len({(qa._when(p), p.get("region")) for p in parts}) != 1:
         return None
     units = [p.get("unit", "") for p in parts]
-    # 단위가 같으면 긴 단위("인구 1,000명당 건")는 처음 한 번만 풀어 쓴다
     listed = ", ".join(
         f"{qa._josa(n, '은는')} "
         + (
@@ -266,10 +236,6 @@ def _values_together(parts: list[dict]) -> str | None:
 
 
 def _trends_together(leaves: list[dict]) -> tuple[str, list[str]] | None:
-    """한 지역·같은 기간의 추이 여럿(남편·아내, 지표 여럿)을 한 문장으로. 처음 → 끝은 덧붙임으로.
-    예) 서울특별시의 평균 초혼연령(남편)은 2020~2025년에 0.57세 증가, 평균 초혼연령(아내)은
-        0.8세 증가했습니다.
-    갈래마다 문장을 이으면 핵심 문장이 150자를 넘는다"""
     changes = [r.get("change") for r in leaves]
     if not all(r.get("series") and c and c["diff"] for r, c in zip(leaves, changes, strict=True)):
         return None
@@ -299,15 +265,13 @@ def _split(result: dict) -> tuple[str, list[str]]:
     if result.get("split_by") == "region" and (grouped := _region_trends(result)):
         return grouped
     if together := _values_together(parts):
-        tail = _sentences(qa._split_text(result))[-1]  # 값 둘이면 어느 쪽이 높은지
+        tail = _sentences(qa._split_text(result))[-1]
         return together, [tail] if tail.endswith("더 높습니다.") else []
-    # 지역 안에서 성별·연령을 다시 나눈 결과도 맨 아래 계산 결과까지 펼친다.
     if 1 < len(qa._leaves(result)) <= MAX_POINTS and (
         together := _trends_together(qa._leaves(result))
     ):
         return together
     leaves = [_leaf(p) for p in qa._leaves(result)]
-    # 남녀·지표·연령 구간: 갈래마다 핵심 한 문장. 짧은 둘이면 한 줄에 함께, 아니면 첫 갈래 뒤로
     headlines = [h for h, _ in leaves]
     if len(leaves) == 2 and len(" ".join(headlines)) <= MAX_HEADLINE:
         return " ".join(headlines), []
@@ -328,18 +292,16 @@ def _cautions(result: dict) -> list[str]:
 
 
 def build(result: dict[str, Any] | None) -> dict[str, Any] | None:
-    """계산 결과 → 요약. 수치로 답하지 못한 결과(답변 불가, 통계표 안내, 직전 답 재사용)는 None"""
     result = result or {}
     cautions: list[str] = []
     suggestion = result.get("suggestion") or {}
     if result.get("status") == "out_of_range" and suggestion.get("status") == "ok":
-        # 수록 기간 밖이라 추계값을 대신 보여 준 답
         cautions.append("물은 연도는 수록 기간 밖이라 장래인구추계 값으로 답했습니다.")
         result = suggestion
     if result.get("status") != "ok":
         return None
     headline, points = _split(result) if result.get("split") else _leaf(result)
-    if lead := result.get("lead"):  # 물은 조사의 값이 없다는 이유를 먼저 (qa.summary와 같게)
+    if lead := result.get("lead"):
         basis = f"{result['lead_basis']} " if result.get("lead_basis") else ""
         headline = f"{lead} {basis}{headline}"
     cautions = list(dict.fromkeys(cautions + _cautions(result)))[:MAX_CAUTIONS]
@@ -351,13 +313,10 @@ def build(result: dict[str, Any] | None) -> dict[str, Any] | None:
 
 
 def one_line(question: str) -> bool:
-    """ "한 줄로 요약해줘", "한마디로 하면?"처럼 한 문장만 달라는 말인지"""
     return bool(ONE_LINE.search(question))
 
 
 def text(summary: dict[str, Any], one_line: bool = False) -> str:
-    """요약을 화면에 보여 줄 글로. 빈 줄을 넣지 않는다
-    (화면은 첫 빈 줄 앞까지를 답변 말풍선에 쓴다, Answer.tsx splitAnswer)"""
     if one_line:
         return summary["headline"]
     lines = [summary["headline"]]

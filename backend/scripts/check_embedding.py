@@ -32,9 +32,8 @@ from pipeline import search_docs
 
 RESULTS = Path(__file__).resolve().parent.parent / "eval" / "results"
 TOP_K = 10
-LENGTHS = (100, 200, 300, 400, 500, 2000, 20000)  # 입력 글자 수
+LENGTHS = (100, 200, 300, 400, 500, 2000, 20000)
 
-# (일상어 질문, 관련 표 규칙: 표명에 이 단어가 있으면 관련 표)
 PROBES = [
     ("노인 인구가 얼마나 늘었는지 볼 수 있는 표", r"고령자|고령인구|65세"),
     ("아기가 몇 명 태어났는지", r"출생"),
@@ -73,7 +72,7 @@ async def availability(model: str) -> dict[str, Any]:
         try:
             result = await embedding.embed_with_usage("인구 " * (n // 3), model)
             lengths[n] = result["inputTokens"]
-        except HcxError as e:  # 40003 Context length exceeded
+        except HcxError as e:
             lengths[n] = f"초과({e.code})"
     start = time.perf_counter()
     await embedding.embed([f"동시 호출 {i}" for i in range(20)], model)
@@ -127,7 +126,6 @@ async def probe(tables: list[dict[str, Any]], models: list[str]) -> list[dict[st
 
 
 def doc_lengths(tables: list[dict[str, Any]]) -> dict[str, list[int]]:
-    """검색 문서 구성별 글자 수 (API 호출 없음, pipeline/search_docs.py와 같은 문서)"""
     return {p: [len(search_docs.build(t, p)) for t in tables] for p in search_docs.PRESETS}
 
 

@@ -11,12 +11,11 @@ import httpx
 
 from app.services.kosis_client import KosisClient
 
-MAX_CELLS = 40_000  # KOSIS 1회 요청 최대 셀 수
-REQUEST_INTERVAL = 1.0  # 분당 호출 제한 대응 (초)
+MAX_CELLS = 40_000
+REQUEST_INTERVAL = 1.0
 RAW_DIR = Path("data/raw")
 OUT_DIR = Path("data/processed")
 
-# 메타데이터의 수록주기 이름 → 요청 파라미터 prdSe 값, 1년당 시점 수
 PERIOD_TYPES = {"년": ("Y", 1), "반년": ("H", 2), "분기": ("Q", 4), "월": ("M", 12)}
 
 
@@ -27,23 +26,17 @@ class KosisError(RuntimeError):
 async def call(
     client: KosisClient, path: str, params: dict[str, Any], pause: float = REQUEST_INTERVAL
 ) -> list[dict[str, Any]]:
-    """KOSIS 요청 하나. pause: 응답 뒤 쉬는 시간(분당 호출 제한 대응). 질문 처리 중 받을 때는
-    호출 간격을 RateLimiter가 맞추므로 0으로 둔다 (KOSIS 응답은 0.2초 안팎인데 1초씩 쉬면
-    요청 1번짜리 표도 몇 초가 걸린다)"""
     for wait in (5, 15, 30, None):
         try:
             data = await client.get(path, params)
             break
         except httpx.HTTPError:
-            # 일시적인 네트워크 오류는 잠시 쉬고 다시 시도
             if wait is None:
                 raise
             await asyncio.sleep(wait)
     if pause:
         await asyncio.sleep(pause)
-    # 오류는 {"err": "코드", "errMsg": "..."} 형태로 옴
     if isinstance(data, dict):
-        # 30 = 데이터 없음 (예: 폐지된 행정구역만 묶인 요청) → 빈 결과로 처리
         if data.get("err") == "30":
             return []
         raise KosisError(f"{data.get('err')}: {data.get('errMsg')} ({params})")
@@ -53,7 +46,6 @@ async def call(
 async def fetch_meta(
     client: KosisClient, org_id: str, tbl_id: str, pause: float = REQUEST_INTERVAL
 ) -> dict[str, Any]:
-    """표 이름·항목·분류·수록주기. 세 요청은 서로 독립이라 동시에 보낸다"""
     base = {"method": "getMeta", "orgId": org_id, "tblId": tbl_id}
     tbl, itm, prd = await asyncio.gather(
         *(
@@ -63,7 +55,6 @@ async def fetch_meta(
     )
 
     items = [x for x in itm if x["OBJ_ID"] == "ITEM"]
-    # 분류는 OBJ_ID_SN 순서가 요청 파라미터 objL1, objL2 ... 순서
     classes: dict[str, dict[str, Any]] = {}
     for x in itm:
         if x["OBJ_ID"] == "ITEM":
@@ -81,7 +72,6 @@ async def fetch_meta(
 
 
 def pick_period(periods: list[dict[str, Any]], prd_se: str) -> tuple[str, str, int]:
-    """요청할 수록주기의 시작·끝 시점과 예상 시점 수를 고른다."""
     for p in periods:
         code, per_year = PERIOD_TYPES.get(p["PRD_SE"], (None, 0))
         if code == prd_se:
@@ -93,12 +83,10 @@ def pick_period(periods: list[dict[str, Any]], prd_se: str) -> tuple[str, str, i
 
 
 def chunks(values: list[str], size: int) -> list[str]:
-    """여러 코드를 +로 이어 한 번에 요청 (예: T1+T2)"""
     return ["+".join(values[i : i + size]) for i in range(0, len(values), size)]
 
 
 def plan_requests(meta: dict[str, Any], n_periods: int) -> list[dict[str, str]]:
-    """셀 수 제한을 넘지 않게 항목을 묶어서, 그래도 크면 값이 가장 많은 분류를 나눠서 요청한다."""
     sizes = [len(c["values"]) for c in meta["classes"]]
     all_classes = {f"objL{i + 1}": "ALL" for i in range(len(sizes))}
     item_ids = [x["ITM_ID"] for x in meta["items"]]
@@ -121,7 +109,6 @@ def plan_requests(meta: dict[str, Any], n_periods: int) -> list[dict[str, str]]:
 
 
 def build_hierarchy(values: list[dict[str, Any]]) -> dict[str, tuple[int, str]]:
-    """분류값 코드 → (단계, 상위 경로). 예: 종로구 → (2, "서울특별시 > 종로구")"""
     by_id = {v["ITM_ID"]: v for v in values}
     result = {}
     for v in values:
@@ -158,7 +145,6 @@ def to_rows(records: list[dict[str, Any]], meta: dict[str, Any]) -> list[dict[st
             }
         row |= {
             "value": dt if is_number else "",
-            # 숫자가 아닌 값은 통계부호 (예: X = 비밀보호, - = 해당 없음)
             "value_flag": "" if is_number else dt,
             "unit": r.get("UNIT_NM", ""),
             "last_changed": r.get("LST_CHN_DE", ""),
@@ -209,7 +195,6 @@ async def collect(
     rows = to_rows(records, meta)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     out = OUT_DIR / f"{tbl_id}.csv"
-    # utf-8-sig: 엑셀에서 열어도 한글이 깨지지 않음
     with out.open("w", newline="", encoding="utf-8-sig") as f:
         writer = csv.DictWriter(f, fieldnames=rows[0].keys())
         writer.writeheader()
@@ -241,7 +226,6 @@ async def collect_all(
         try:
             await collect(client, org_id, tbl_id, prd_se, dry_run, save_raw)
         except (KosisError, httpx.HTTPError) as e:
-            # 한 표가 실패해도 나머지는 계속 받음
             print(f"{tbl_id} 실패: {e}")
             failed.append(tbl_id)
     print(f"완료 {len(targets) - len(failed)}개 / 실패 {len(failed)}개 {failed}")

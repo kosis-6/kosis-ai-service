@@ -1,12 +1,3 @@
-"""public 테이블을 성격에 맞는 스키마로 옮긴다: 검색용 표 정보 → catalog, 대화·로그 → app
-
-테이블이 아직 없는 DB에서도 실행된다 (IF EXISTS). 이후 적재 코드가 올바른 스키마에 만든다.
-alembic_version과 확장(vector, pg_trgm)은 public에 그대로 둔다.
-
-Revision ID: 0003
-Revises: 0002
-"""
-
 from collections.abc import Sequence
 
 from alembic import op

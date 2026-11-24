@@ -1,9 +1,3 @@
-"""JSONL 기록: 비밀값을 가리고, 쓰기와 기간 정리가 겹쳐도 기록을 잃지 않는다.
-
-서비스 실행 환경(Linux/macOS)의 파일 잠금을 쓴다. 파일을 교체해도 같은 잠금 파일을 사용하므로
-여러 서버 프로세스의 추가 기록과 정리가 서로 덮어쓰지 않는다.
-"""
-
 import fcntl
 import json
 import os
@@ -35,7 +29,6 @@ def append(path: Path, record: dict) -> None:
 
 
 def purge(path: Path, cutoff: datetime) -> None:
-    """기한 지난 행을 지우고 기존 비밀값도 가린다. 시각 불명·손상된 행은 남기지 않는다."""
     if not path.exists():
         return
     with locked(path):

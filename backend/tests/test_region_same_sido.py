@@ -1,5 +1,3 @@
-"""시도 약칭과 같은 이름의 시가 그 시도 안에 있으면 시도로 답한다 (resolve_region, 11/18)"""
-
 import pytest
 
 from app.core.stats_db import StatsTableMissing

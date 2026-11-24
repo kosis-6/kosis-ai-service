@@ -1,21 +1,3 @@
-"""되묻기 후보 찾기: 챗봇이 기본값으로 답할 수 없어 되물어야 하는 표 묶음 (검색 규칙 2.3)
-
-되묻기는 '기본값이 없을 때만' 한다. 기본값 = 대상 '전체', 성별 '계', 전국 표, 수식어 없는 표.
-기본값이 없는 경우를 세 종류로 찾는다.
-
-  A 대상으로 나뉜 묶음에 '전체' 표가 없음     '차별 받은 경험 - 병원 / - 식당 / …'
-  B 지역으로 나뉜 묶음에 전국 표가 없음        '통근통학 인구(강원) / (대구,경북) / …'
-  C 한 단어만 바뀐 형제 표에 기본 표가 없음    '평균초혼연령 / 평균재혼연령' (평균혼인연령 표 없음)
-                                               '1년 전 거주지별 / 5년 전 거주지별 이동 인구'
-
-묶음은 scripts/family_check.py와 같이 현재 build_families 결과 + 미구현 규칙(R1~R3)으로 만든다.
-C는 같은 조사에서 표명이 양쪽에 한 단어씩만 다른 쌍 중, 공통 부분만 가진 표가 없는 경우다.
-
-입력: data/catalog/population_table_catalog_with_meta.jsonl
-출력: eval/results/clarify_candidates_YYYYMMDD.md
-실행: python -m scripts.clarify_candidates  (family_check를 먼저 실행해 묶음 CSV가 있어야 함)
-"""
-
 import csv
 import re
 from collections import Counter, defaultdict
@@ -61,12 +43,11 @@ def final_groups(tables: list[dict[str, Any]]) -> list[list[str]]:
 def no_default_groups(
     tables: list[dict[str, Any]], by: dict[str, dict[str, Any]]
 ) -> list[tuple[str, list[str], list[str]]]:
-    """(종류, 표 ID들, 멤버 이름들)"""
     out = []
     for ids in final_groups(tables):
         names = sorted({member_name(by[i]["table_name"]) for i in ids})
         if len({fc.loose_key(n) for n in names}) < 2:
-            continue  # 판·성별만 다른 묶음은 기본값(최신판·계)이 있다
+            continue
         regional = [n for n in names if fc.SIDO_RE.search(n)]
         if regional:
             if len(regional) == len(names):
@@ -78,13 +59,10 @@ def no_default_groups(
     return out
 
 
-# 성별 멤버·지역 단위 표기는 패밀리 선택과 지역 조건이 처리한다
 SKIP = {"계", "남", "여", "전국", "시도", "시군구", "읍면동", "행정구역"}
 
 
 def axis_words(tables: list[dict[str, Any]]) -> set[str]:
-    """분류 이름으로 쓰이는 단어 ('연령', '산업', '혼인상태' …). 이런 단어끼리 바뀐 쌍은
-    사용자가 원하는 기준을 말하므로 되묻기 대상이 아니다"""
     words: set[str] = set()
     for t in tables:
         for c in t["classifications"]:
@@ -93,8 +71,6 @@ def axis_words(tables: list[dict[str, Any]]) -> set[str]:
 
 
 def sibling_swaps(tables: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """같은 조사에서 표명이 양쪽에 한 단어씩만 다르고, 공통 부분만 가진 기본 표가 없는 쌍.
-    유사도와 상관없이 표명 단어로 직접 찾는다 ('평균초혼연령' / '평균재혼연령')"""
     axes = axis_words(tables)
     shapes: dict[str, set[frozenset[str]]] = defaultdict(set)
     buckets: dict[tuple[str, frozenset[str]], list[tuple[str, dict[str, Any]]]] = defaultdict(list)
@@ -134,7 +110,8 @@ def main() -> None:
     lines = [
         f"# 되묻기 후보 ({date.today():%Y-%m-%d})",
         "",
-        "챗봇은 기본값(대상 '전체', 성별 '계', 전국 표, 수식어 없는 표, 최신판)이 있으면 그걸로 답하고,"
+        "챗봇은 기본값(대상 '전체', 성별 '계', 전국 표, 수식어 없는 표, 최신판)이 있으면"
+        " 그걸로 답하고,"
         " **기본값이 없을 때만** 되묻는다. 아래는 카탈로그에서 기본값이 없는 경우를 찾은 것이다.",
         "",
         f"## A. 대상으로 나뉘었는데 '전체' 표가 없음 ({sum(g[0] == 'A 대상' for g in groups)}묶음)",

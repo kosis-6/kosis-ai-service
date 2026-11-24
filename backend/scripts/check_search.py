@@ -1,18 +1,3 @@
-"""통계표 검색 점검: 키워드만 vs 하이브리드 (실전 2 F-04, 가중치·기준값 1차 조정용)
-
-일상어 질문(check_embedding.PROBES)과 범위 밖 질문을 검색 전체 흐름(search.find)에 넣어
-상태, 최종 표, 1순위 패밀리 점수와 2순위와의 차이를 나란히 본다.
-슬롯은 HCX 없이 원문 규칙으로 만든다 (HCX 슬롯과 규칙 슬롯의 흐름 성공률이 같았음, 팀원 실험 10/31).
-
-관련 여부는 '최종 표명에 규칙 단어가 있는가'라서 골든셋 평가가 아니다.
-search.py의 HYBRID_* 값을 정할 때 분포를 보는 용도이고, 정식 비교는 골든셋으로 한다.
-
-결과: eval/results/search_check_YYYYMMDD.md
-실행 (표 벡터가 DB에 있어야 함, pipeline.build_embeddings)
-  python -m scripts.check_search                     # 질문 임베딩: 설정 EMBEDDING_BACKEND
-  EMBEDDING_BACKEND=local uv run --with sentence-transformers python -m scripts.check_search
-"""
-
 import asyncio
 import re
 from collections import Counter
@@ -38,8 +23,7 @@ OUT_OF_SCOPE = [
 def summarize(result: dict[str, Any], rule: str | None) -> dict[str, Any]:
     candidates = result.get("candidates") or []
     others = result.get("other_families") or []
-    top = candidates[0]["score"] if candidates else None  # 1순위 표 점수 = 1순위 패밀리 점수
-    # 표를 정하지 못한 상태(clarify·ambiguous)는 안내하는 1순위 패밀리 이름으로 본다
+    top = candidates[0]["score"] if candidates else None
     table = result.get("table") or {}
     options = result.get("options") or [{}]
     name = (

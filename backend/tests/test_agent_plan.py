@@ -1,5 +1,3 @@
-"""계획의 코드 보정(app/agent/plan.py): LLM이 내놓은 계획을 질문 원문으로 다시 확인한다"""
-
 from datetime import date
 
 from app.agent import plan as pl
@@ -19,7 +17,6 @@ def test_parse_broken_output_is_an_empty_plan() -> None:
     for content in ("", "지표는 두 개입니다", "[1, 2]", '{"indicators": "없음", "shared": null}'):
         p = pl.parse(content)
         assert (p["shared"], p["indicators"], p["combine"]) == ({}, [], {"op": "none"})
-    # 모양이 다른 지표는 버린다
     assert pl.parse('{"indicators": [{"span": "혼인"}, "이혼"]}')["indicators"] == [
         {"span": "혼인"}
     ]
@@ -42,7 +39,6 @@ def test_conditions_the_question_states_are_kept() -> None:
     p = _plan([_ind("사망자 수", age="80세 이상")], year_from=2015, year_to=2025, sex="남")
     assert pl.ground_plan("2015~2025년 남성 80세 이상 사망자 수", p) == []
     assert p["shared"] == {"year_from": 2015, "year_to": 2025, "sex": "남"}
-    # 연령 집단 이름으로 물었으면 숫자로 푼 연령도 근거가 있다
     p = _plan([_ind("노인 인구", age="65세 이상")])
     assert pl.ground_plan("시도별 노인 인구", p) == []
 
@@ -60,7 +56,6 @@ def test_each_indicator_takes_the_year_written_before_it() -> None:
     years = [(i["override"]["year_from"], i["override"]["year_to"]) for i in p["indicators"]]
     assert years == [(2020, 2020), (2025, 2025)]
     assert "year_from" not in p["shared"]
-    # 기간으로 물었으면 나누지 않는다
     p = _plan([_ind("출생아 수"), _ind("사망자 수")], year_from=2020, year_to=2025)
     pl.fix_periods_and_level("2020년부터 2025년까지 출생아 수와 사망자 수", p, TODAY)
     assert (p["shared"]["year_from"], p["shared"]["year_to"]) == (2020, 2025)
@@ -70,7 +65,6 @@ def test_region_level_follows_the_question() -> None:
     p = _plan([_ind("혼인 건수")], region_level="시도")
     pl.fix_periods_and_level("시군구별 혼인 건수", p, TODAY)
     assert p["shared"]["region_level"] == "시군구"
-    # 질문에 지역 단위가 없으면 LLM이 붙인 단위는 지운다
     p = _plan([_ind("혼인 건수")], region_level="시군구")
     pl.fix_periods_and_level("혼인 건수와 이혼 건수", p, TODAY)
     assert "region_level" not in p["shared"]
@@ -88,7 +82,7 @@ def test_population_indicator_marked_out_of_scope_comes_back() -> None:
         [_ind("고용률", "시도별 고용률", scope="out"), _ind("집값", "주택 가격", scope="out")]
     )
     pl.fix_indicators("고용률이 높은데 집값이 싼 지역", p)
-    assert [i["scope"] for i in p["indicators"]] == ["out", "out"]  # 인구 낱말이 없으면 그대로
+    assert [i["scope"] for i in p["indicators"]] == ["out", "out"]
     p = _plan([_ind("청년 인구", "시도별 청년 인구", scope="out")])
     pl.fix_indicators("청년 인구", p)
     assert p["indicators"][0]["scope"] == "in"
@@ -134,7 +128,6 @@ def test_render_makes_a_one_table_question() -> None:
     assert (
         pl.render({"search": "사망자 수"}, cond) == "2015~2025년 시군구별 80세 이상 남자 사망자 수"
     )
-    # 검색어에 이미 있는 말은 다시 붙이지 않는다
     assert pl.render({"search": "시도별 성별 인구"}, {"region_level": "시도", "sex": "남녀"}) == (
         "시도별 성별 인구"
     )

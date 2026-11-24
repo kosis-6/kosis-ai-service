@@ -1,18 +1,3 @@
-"""전처리 데이터 사용 여부에 따른 HCX 답변 비교
-
-같은 질문을 세 가지 조건으로 HCX-007에 보내고, 원본 CSV로 직접 계산한 정답과 비교한다.
-
-  service  우리 서비스: HCX 질문 해석 + 전처리 DB(PostgreSQL) + 코드 계산·템플릿 답변 (qa.ask)
-  raw      전처리 없이 원본 CSV 행을 프롬프트에 그대로 넣고 HCX가 직접 계산
-  none     데이터 없이 질문만 HCX에 보냄
-
-정답: 원본 CSV(data/raw/kosis_zip/)를 pandas로 직접 계산 (전처리·DB를 거치지 않음)
-결과: data/eval/compare_YYYYMMDD_HHMMSS.{json,md}
-
-실행: python -m scripts.compare_llm               (전체, HCX 약 45회 호출, 수 분 소요)
-      python -m scripts.compare_llm --only q1 q6  (일부 질문만)
-"""
-
 import argparse
 import asyncio
 import json
@@ -30,11 +15,10 @@ from app.services.hcx_client import HcxClient, HcxError
 RAW_CSV = Path("data/raw/kosis_zip/processed/DT_1B04006.csv")
 OUT_DIR = Path("data/eval")
 MODEL = "HCX-007"
-CALL_INTERVAL = 5  # 호출 제한(42901) 대응 (초)
+CALL_INTERVAL = 5
 RETRY_WAITS = (20, 60, 120)
 COLUMNS = ["period", "item_nm", "c1_nm", "c1_path", "c2_nm", "value", "unit"]
 
-# raw·none 조건에 공통으로 붙이는 답변 형식 (채점용)
 ANSWER_FORMAT = """
 
 답변 마지막 줄은 반드시 아래 형식으로 쓰세요.
@@ -48,8 +32,6 @@ RAW_SYSTEM = (
 )
 NONE_SYSTEM = "당신은 통계 분석가입니다. 질문에 답하세요."
 
-# ---- 정답 계산 (원본 CSV 직접 계산) ------------------------------------------------
-
 
 def load_raw() -> pd.DataFrame:
     df = pd.read_csv(RAW_CSV, dtype=str, encoding="utf-8-sig", usecols=[*COLUMNS, "c1_level"])
@@ -59,7 +41,7 @@ def load_raw() -> pd.DataFrame:
 def _age(label: str) -> int | None:
     if label == "계":
         return None
-    return int(re.match(r"\d+", label).group())  # "100세 이상" → 100
+    return int(re.match(r"\d+", label).group())
 
 
 def components(df: pd.DataFrame, path: str, year: int) -> dict[str, int]:
@@ -85,11 +67,6 @@ def aging_index(c: dict[str, int]) -> float:
 
 def sido_paths(df: pd.DataFrame) -> list[str]:
     return sorted(set(df[(df.c1_level == "1") & (df.c1_path != "전국")].c1_path))
-
-
-# ---- 질문 ---------------------------------------------------------------------------
-# kind: number(수치) / regions(지역 목록) / refuse(답변 불가가 정답) / manual(사람이 확인)
-# raw: 전처리 없는 검색 단계 흉내. 질문의 지역·연도에 맞는 원본 행을 그대로 가져온다
 
 
 def cases(df: pd.DataFrame) -> list[dict[str, Any]]:
@@ -189,7 +166,6 @@ def cases(df: pd.DataFrame) -> list[dict[str, Any]]:
             "type": "답변 불가: 수록 기간 밖",
             "question": "2030년 서울의 고령인구 비율은?",
             "kind": "refuse",
-            # 2030년 행은 없으므로 가장 가까운 연도를 가져온 상황
             "raw": rows([seoul], [2024, 2025]),
             "service": lambda r: r.get("status") != "ok",
         },
@@ -212,14 +188,11 @@ def cases(df: pd.DataFrame) -> list[dict[str, Any]]:
     ]
 
 
-# ---- HCX 호출 -------------------------------------------------------------------------
-
 usage_log: list[dict[str, Any]] = []
 _original_chat = HcxClient.chat
 
 
 async def _logged_chat(self: HcxClient, model: str, messages: list, **options: Any):
-    """모든 HCX 호출의 토큰 사용량을 기록하고, 호출 제한에 걸리면 기다렸다가 다시 시도"""
     for wait in (*RETRY_WAITS, None):
         await asyncio.sleep(CALL_INTERVAL)
         try:
@@ -264,7 +237,7 @@ async def run_condition(name: str, case: dict[str, Any]) -> dict[str, Any]:
             out["raw_rows"] = len(case["raw"])
         else:
             out = {"answer": await ask_llm(NONE_SYSTEM, case["question"] + ANSWER_FORMAT)}
-    except Exception as e:  # 한 조건이 실패해도 나머지는 계속
+    except Exception as e:
         out = {"answer": "", "error": f"{type(e).__name__}: {e}"}
     calls = usage_log[n_calls:]
     out["seconds"] = round(time.monotonic() - start, 1)
@@ -274,22 +247,17 @@ async def run_condition(name: str, case: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-# ---- 채점 ---------------------------------------------------------------------------
-
-
 def _final(answer: str) -> str | None:
     found = re.findall(r"최종답\s*[:：]\s*(.+)", answer)
     return found[-1].strip().strip("*` ") if found else None
 
 
 def _norm_region(text: str) -> str:
-    # "부산광역시", "부산" → "부산" / "서울특별시 > 중구" → "서울중구"
     text = re.sub(r"\s|>", "", text)
     return re.sub(r"(특별자치시|특별자치도|특별시|광역시|도)$", "", text)
 
 
 def grade(case: dict[str, Any], name: str, out: dict[str, Any]) -> tuple[str, Any]:
-    """(판정, 비교에 쓴 값). 판정: 정확 / 근사 / 오답 / 거절 / 답함 / 확인필요 / 오류"""
     if out.get("error"):
         return "오류", None
     kind = case["kind"]
@@ -327,8 +295,6 @@ def grade(case: dict[str, Any], name: str, out: dict[str, Any]) -> tuple[str, An
     got = [_norm_region(x) for x in picked][: len(truth)]
     return ("정확" if got == truth else "오답"), picked
 
-
-# ---- 실행 ---------------------------------------------------------------------------
 
 CONDITIONS = ["service", "raw", "none"]
 

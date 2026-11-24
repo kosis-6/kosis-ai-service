@@ -1,7 +1,3 @@
-"""사용자 조회·생성. 라우터는 DB를 직접 다루지 않고 이 함수만 부른다
-(테스트에서 이 함수들만 바꿔 끼우면 DB 없이 API를 확인할 수 있다)
-"""
-
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -38,7 +34,7 @@ async def create(
     session.add(user)
     try:
         await session.commit()
-    except IntegrityError as e:  # 동시에 같은 이메일로 가입한 경우도 여기서 잡힌다
+    except IntegrityError as e:
         await session.rollback()
         raise EmailTaken(email) from e
     await session.refresh(user)
@@ -53,7 +49,6 @@ async def authenticate(session: AsyncSession, email: str, password: str) -> User
 
 
 async def change_password(session: AsyncSession, user: User, new_password: str) -> User:
-    """새 비밀번호로 바꾸고 토큰 번호를 올린다 (다른 기기에 남은 예전 토큰이 끊긴다)"""
     user.password_hash = hash_password(new_password)
     user.token_version += 1
     await session.commit()
@@ -69,7 +64,6 @@ async def set_nickname(session: AsyncSession, user: User, nickname: str) -> User
 
 
 async def list_users(session: AsyncSession, limit: int, offset: int) -> tuple[list[User], int]:
-    """가입 순서대로 사용자 목록과 전체 수"""
     total = await session.scalar(select(func.count()).select_from(User)) or 0
     rows = await session.scalars(select(User).order_by(User.id).limit(limit).offset(offset))
     return list(rows), total
@@ -78,8 +72,6 @@ async def list_users(session: AsyncSession, limit: int, offset: int) -> tuple[li
 async def update(
     session: AsyncSession, user: User, is_active: bool | None = None, is_admin: bool | None = None
 ) -> User:
-    """관리자가 계정을 정지·복구하거나 관리자 권한을 주고 뺀다.
-    정지할 때는 토큰 번호도 올린다: 나중에 다시 풀어도 정지 전 토큰은 살아나지 않는다"""
     if is_active is not None:
         if user.is_active and not is_active:
             user.token_version += 1

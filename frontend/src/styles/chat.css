@@ -1,4 +1,3 @@
-/* 통계표 찾기 화면 (Figma 01·04·05·07·08, M01, 추가 상태) */
 body[data-page="chat"] {
   display: flex;
   gap: 20px;
@@ -23,7 +22,6 @@ body[data-page="chat"] {
 }
 .text-btn:hover { color: var(--ink); }
 
-/* ---- 사이드바 ---- */
 .sidebar {
   flex: none;
   display: flex;
@@ -97,7 +95,6 @@ body[data-page="chat"] {
 .account-name { flex: 1; min-width: 0; font-size: 13px; font-weight: 500; line-height: 20px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .account .text-btn { font-size: 12px; line-height: 16px; }
 
-/* 지난 대화 (로그인 유저). 사이드바에서 남는 높이를 쓰고, 넘치면 목록만 내린다 */
 .history { flex: 1 1 auto; display: flex; flex-direction: column; gap: 8px; min-height: 120px; }
 .history-head { padding: 0 12px; color: var(--muted); font-size: 12px; font-weight: 500; line-height: 16px; }
 .history .history-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
@@ -124,7 +121,6 @@ body[data-page="chat"] {
 .history-title { flex: 1; min-width: 0; font-size: 13px; line-height: 20px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .history-open[aria-current="page"] .history-title { font-weight: 500; }
 .history-when { flex: none; color: var(--muted); font-size: 11px; line-height: 16px; font-variant-numeric: tabular-nums; }
-/* 지우기 버튼은 그 줄에 마우스·초점이 있을 때만 (터치 기기는 늘) */
 .history-del {
   flex: none;
   display: grid;
@@ -149,7 +145,6 @@ body[data-page="chat"] {
 .text-btn.danger { color: var(--bad); font-weight: 500; }
 .history-empty { padding: 0 12px; color: var(--muted); font-size: 12px; line-height: 18px; }
 
-/* ---- 서비스 메인 ---- */
 .main {
   flex: 1;
   min-width: 0;
@@ -176,7 +171,6 @@ body[data-page="chat"] {
 .source { color: var(--muted); font-size: 12px; line-height: 16px; white-space: pre; }
 .head-name { font-size: 13px; font-weight: 500; line-height: 20px; white-space: nowrap; }
 
-/* ---- 대화 영역 ---- */
 .log {
   flex: 1;
   min-height: 0;
@@ -188,7 +182,6 @@ body[data-page="chat"] {
   overflow-y: auto;
 }
 
-/* 첫 화면: 로고 → 제목 → 설명 → 예시가 차례로 떠오른다 */
 .welcome {
   display: flex;
   flex-direction: column;
@@ -239,7 +232,6 @@ body[data-page="chat"] {
 .example-q { font-size: 14px; line-height: 22px; }
 .more-examples { font-size: 12px; line-height: 16px; }
 
-/* 말풍선: 새 질문·답이 아래에서 떠오른다. 답은 통째로가 아니라 덩어리마다 차례로 (아래 .reply) */
 .msg.user, .msg.typing, .msg.error { animation: rise var(--slow) var(--ease) both; }
 .msg.bot:not(.typing, .error) > .avatar { animation: fade var(--slow) var(--ease) both; }
 .msg.user { display: flex; justify-content: flex-end; }
@@ -264,7 +256,6 @@ body[data-page="chat"] {
 }
 .avatar .logo { height: 24px; border-radius: 0; }
 .reply { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 12px; }
-/* 답의 덩어리(문장 → 조건 → 차트 → 출처)도 차례로 */
 .msg.bot:not(.typing, .error) .reply > * { animation: rise var(--slow) var(--ease) both; }
 .msg.bot .reply > :nth-child(2) { animation-delay: 60ms; }
 .msg.bot .reply > :nth-child(3) { animation-delay: 120ms; }
@@ -285,7 +276,6 @@ body[data-page="chat"] {
 .typing .dots::after { content: "…"; animation: blink 1s steps(3) infinite; }
 @keyframes blink { 0% { opacity: .2; } 50% { opacity: 1; } 100% { opacity: .2; } }
 
-/* 일부 조건 불일치·확인 필요 */
 .notice {
   display: flex;
   flex-direction: column;
@@ -297,7 +287,6 @@ body[data-page="chat"] {
 .notice-title { font-size: 16px; font-weight: 600; line-height: 24px; }
 .notice-text { color: var(--muted); line-height: 22px; white-space: pre-line; }
 
-/* 추천 통계표 카드 */
 .card {
   display: flex;
   flex-direction: column;
@@ -325,7 +314,6 @@ body[data-page="chat"] {
 .card-link { height: 44px; }
 .card-notes { margin: 0; padding-left: 16px; color: var(--muted); font-size: 12px; line-height: 18px; }
 
-/* 좁은 화면의 메뉴 (사이드바 대신) */
 .mode-tabs { gap: 4px; padding: 8px 20px; border-bottom: 1px solid var(--line); background: var(--sidebar); }
 .mode-tabs a {
   flex: 1;
@@ -341,9 +329,7 @@ body[data-page="chat"] {
 }
 .mode-tabs a[aria-current="page"] { background: var(--accent-soft); color: var(--ink); }
 
-/* ---- 수치 답변 (통계 수치 묻기): 차트 카드, 수치·계산식, 출처 ---- */
 .reply > .chart-card, .reply > .answer-detail, .reply > .sources { width: 100%; }
-/* 알림 (이어받은 조건, 세션 만료)과 적용한 조건 */
 .answer-notice { padding: 0 4px; color: var(--muted); font-size: 12px; line-height: 18px; }
 .conditions { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; padding: 0 4px; list-style: none; }
 .conditions li {
@@ -378,7 +364,6 @@ body[data-page="chat"] {
 .chart-unit, .chart-note { color: var(--muted); font-size: 12px; line-height: 16px; }
 .chart-views { display: flex; gap: 4px; }
 .chart-card .recharts-wrapper:focus, .chart-card .recharts-surface:focus { outline: 0; }
-/* 꺾은선 ↔ 막대 ↔ 표를 바꿀 때 새 그림이 살짝 떠오른다 */
 .chart-body { animation: fade var(--mid) var(--ease) both; }
 .chart-tip {
   display: flex;
@@ -393,7 +378,6 @@ body[data-page="chat"] {
 .chart-tip strong { font-size: 14px; font-weight: 600; line-height: 20px; font-variant-numeric: tabular-nums; }
 .chart-tip span { color: var(--muted); font-size: 12px; line-height: 16px; }
 
-/* 구성비: 나뉜 막대 + 범례 */
 .parts { display: flex; flex-direction: column; gap: 12px; }
 .parts-bar { display: flex; gap: 2px; height: 28px; }
 .parts-seg {
@@ -401,14 +385,12 @@ body[data-page="chat"] {
   min-width: 2px;
   display: flex;
   align-items: center;
-  /* 안쪽 여백을 주면 조각 폭이 비중과 달라진다 → 글자만 들여 쓴다 */
   text-indent: 8px;
   border-radius: 4px;
   font-size: 12px;
   font-weight: 500;
   white-space: nowrap;
   overflow: hidden;
-  /* 왼쪽에서부터 펼쳐진다 (폭이 아니라 transform 이라 끊기지 않는다) */
   transform-origin: left center;
   animation: grow-x 600ms var(--ease) both;
 }
@@ -416,13 +398,11 @@ body[data-page="chat"] {
 .parts-legend { display: flex; flex-wrap: wrap; gap: 8px 16px; margin: 0; padding: 0; list-style: none; font-size: 12px; line-height: 18px; }
 .parts-legend li { display: flex; align-items: center; gap: 8px; }
 .parts-key { flex: none; width: 10px; height: 10px; border-radius: 2px; }
-/* 여러 꺾은선: 범례는 차트 위, 선 모양 표시. 툴팁은 지역마다 한 줄 */
 .chart-legend { margin-bottom: 8px; color: var(--ink); }
 .line-key { flex: none; width: 16px; height: 3px; border-radius: 2px; }
 .chart-tip .chart-tip-row { display: flex; align-items: center; gap: 8px; color: var(--ink); font-size: 12px; }
 .chart-tip .chart-tip-row strong { margin-left: auto; padding-left: 12px; font-size: 13px; line-height: 20px; }
 
-/* 지역이 많은 추이: 지역마다 작은 꺾은선 (칸 제목 = 지역, 머리에 마지막 값·증감률) */
 .chart-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 12px; margin: 0; padding: 0; list-style: none; }
 .chart-cell { padding: 12px 12px 8px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
 .chart-cell-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
@@ -437,7 +417,6 @@ body[data-page="chat"] {
 .chart-table tbody th { font-weight: 500; }
 .chart-table tbody tr:last-child > * { border-bottom: 0; }
 
-/* 수치와 계산식: 접기 표시는 꺾쇠가 돌아가고, 펼친 내용은 서서히 나타난다 */
 .answer-detail { padding: 12px 16px; border-radius: 16px; background: var(--accent-soft); }
 .answer-detail summary {
   display: flex;
@@ -496,7 +475,6 @@ body[data-page="chat"] {
 .source-link:hover { text-decoration: underline; }
 .source-link:hover .icon { transform: translate(1px, -1px); }
 
-/* 조건 알약 */
 .pills { display: flex; flex-wrap: wrap; gap: 8px; }
 .pill {
   display: inline-flex;
@@ -520,7 +498,6 @@ button.pill {
 button.pill:not(.on):hover { border-color: var(--accent-mid); }
 button.pill:active { transform: scale(0.97); }
 
-/* 추가 조건 선택 */
 .choices {
   display: flex;
   flex-direction: column;
@@ -554,7 +531,6 @@ button.pill:active { transform: scale(0.97); }
 
 .reply .ask-again { height: 48px; min-width: 220px; }
 
-/* ---- 질문 입력 ---- */
 .composer {
   flex: none;
   display: flex;
@@ -605,7 +581,6 @@ button.pill:active { transform: scale(0.97); }
 .send:disabled { background: var(--accent-mid); cursor: default; }
 .composer-note { display: flex; flex-wrap: wrap; gap: 0 48px; color: var(--muted); font-size: 12px; line-height: 16px; }
 
-/* ---- 추가 상태 패널 (다른 후보·다른 질문 예시·지난 대화) ---- */
 .sheet {
   width: min(800px, calc(100vw - 32px));
   max-height: min(85dvh, 760px);
@@ -638,7 +613,6 @@ button.pill:active { transform: scale(0.97); }
 .alt-card .btn { height: 40px; }
 .sheet-body > .btn.secondary { height: 52px; white-space: normal; }
 
-/* ---- 높이가 낮은 노트북: 첫 화면이 입력창 아래로 잘리지 않게 줄인다 ---- */
 @media (min-width: 861px) and (max-height: 860px) {
   .head { min-height: 72px; padding: 12px 32px; }
   .log { padding-block: 8px; }
@@ -655,7 +629,6 @@ button.pill:active { transform: scale(0.97); }
   .emblem { display: none; }
 }
 
-/* ---- 모바일 (M01) ---- */
 @media (max-width: 860px) {
   body[data-page="chat"] { padding: 0; gap: 0; background: var(--workspace); }
   .only-wide { display: none !important; }
@@ -668,7 +641,6 @@ button.pill:active { transform: scale(0.97); }
   body:not(.in-chat) .in-chat-only { display: none !important; }
   .head { min-height: 72px; padding: 12px 20px; gap: 12px; background: var(--sidebar); }
   .head .logo { height: 36px; }
-  /* 버튼이 늘어나면 서비스 이름을 줄여 겹치지 않게 한다 */
   .head .brand { flex: 0 1 auto; overflow: hidden; }
   .head-actions { flex: none; gap: 4px; }
   .head-btn { height: 36px; padding: 0 12px; white-space: nowrap; }
@@ -679,7 +651,6 @@ button.pill:active { transform: scale(0.97); }
   .source-link { grid-column: 2; grid-row: auto; }
   .card-link, .card .btn { max-width: 100%; }
   .composer { padding: 16px; }
-  /* iOS 는 16px 미만 입력창에 포커스하면 화면을 확대한다 */
   .composer textarea { font-size: 16px; }
   .composer textarea::placeholder { font-size: 13px; }
   .composer-note { font-size: 11px; line-height: 16px; }
@@ -708,7 +679,6 @@ button.pill:active { transform: scale(0.97); }
   body.in-chat .head .brand-text { display: none; }
 }
 
-/* 터치 기기: 시안의 크기는 두고 눌리는 범위만 44px 로 넓힌다 */
 @media (pointer: coarse) {
   .pill, .head-btn, .send, .more-examples { position: relative; }
   .pill::after, .head-btn::after, .send::after, .more-examples::after {

@@ -1,5 +1,3 @@
-"""메일 만들기: 보낸 사람 이름, 스팸으로 보지 않게 하는 머리글, 글자·HTML 본문 (보내지는 않는다)"""
-
 import pytest
 
 from app.core.config import get_settings

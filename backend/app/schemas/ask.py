@@ -39,8 +39,6 @@ class ChartRow(BaseModel):
 
 
 class Chart(BaseModel):
-    """화면이 그릴 차트 (app/services/charts.py). 값은 result에 있는 숫자 그대로다"""
-
     type: Literal["line", "bar", "parts"] = Field(
         description="line: 연도별 꺾은선 / bar: 가로 막대 (큰 순·순위 순) / parts: 구성비 나뉜 막대"
     )
@@ -60,8 +58,6 @@ class Chart(BaseModel):
 
 
 class Applied(BaseModel):
-    """이번 답에 적용한 조건 하나"""
-
     name: str = Field(description="지표 / 지역 / 기간 / 성별")
     value: str
     source: Literal["user", "inherited", "default"] = Field(
@@ -70,8 +66,6 @@ class Applied(BaseModel):
 
 
 class Summary(BaseModel):
-    """답의 요약 (app/services/answer_summary.py). 계산 결과에서 코드로 뽑는다"""
-
     headline: str = Field(description="핵심 한 문장")
     points: list[str] = Field(default_factory=list, description="덧붙일 사실 (최대 4개)")
     cautions: list[str] = Field(
@@ -80,7 +74,6 @@ class Summary(BaseModel):
 
 
 class QuestionClarification(BaseModel):
-    # alternative: 조건을 모두 만족하는 값이 없어 가까운 연도 · 다른 표의 값을 제안 (alternative.py)
     kind: Literal["local_region", "move_scope", "table_cell", "alternative"]
     prompt: str
     options: list[str] = Field(default_factory=list)

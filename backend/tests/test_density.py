@@ -1,5 +1,3 @@
-"""인구밀도 = 주민등록인구 ÷ 행정구역 면적 (면적: pipeline/load_area.py → mart.area)"""
-
 import pytest
 
 from app.core.stats_db import StatsTableMissing
@@ -38,15 +36,15 @@ def test_area_rows_are_matched_by_sido_and_name() -> None:
         [
             row(2025, "전국", "전국", 100_472.4),
             row(2025, "서울", "서울", 605.2),
-            row(2025, "서울", "중구", 10.0),  # 같은 이름(부산 중구)과 시도로 구분
+            row(2025, "서울", "중구", 10.0),
             row(2025, "부산", "중구", 2.8),
-            row(2011, "울산", "합계", 1_060.0),  # 어떤 해는 시도 행 이름이 '합계'
-            row(2025, "경북", "포항시남구", 394.1),  # 일반구: 앞의 시 이름을 뗀다
-            row(2020, "경북", "군위군", 614.3),  # 그해 있던 지역 (2023년 대구 편입 전)
+            row(2011, "울산", "합계", 1_060.0),
+            row(2025, "경북", "포항시남구", 394.1),
+            row(2020, "경북", "군위군", 614.3),
             row(2025, "대구", "군위군", 614.3),
-            row(2015, "경남", "창원시(계)", 747.8),  # '(계)'·'(통합)' 꼬리는 뗀다
-            row(2012, "인천", "미추홀구", 24.8),  # 2012년의 '미추홀구'는 당시 남구
-            row(2020, "세종특별자치시", "세종특별자치시", 464.9),  # 세종은 시도이자 시군구
+            row(2015, "경남", "창원시(계)", 747.8),
+            row(2012, "인천", "미추홀구", 24.8),
+            row(2020, "세종특별자치시", "세종특별자치시", 464.9),
             row(2025, "서울", "없는구", 1.0),
         ],
         REGIONS,
@@ -81,10 +79,8 @@ needs_area = pytest.mark.skipif(
 def test_density_is_population_over_area() -> None:
     r = indicators.value("인구밀도", "서울", 2025)
     assert r["status"] == "ok" and r["unit"] == "명/㎢"
-    # area_km2는 소수 둘째 자리로 줄여 보여 줘서 다시 나누면 조금 다르다
     assert r["value"] == pytest.approx(r["population"] / r["area_km2"], rel=1e-4)
     assert [s["tbl_id"] for s in r["extra_sources"]] == ["DT_MLTM_2300"]
-    # 별칭
     assert indicators.value("인구 밀도", "서울", 2025)["value"] == r["value"]
     assert indicators.canonical_name("빽빽") == "인구밀도"
 
@@ -113,12 +109,11 @@ def test_density_without_area_table(monkeypatch: pytest.MonkeyPatch) -> None:
     r = indicators.value("인구밀도", "서울", 2025)
     assert r["status"] == "missing_data" and "면적" in r["reason"]
     assert indicators.rank("인구밀도", 2025)["status"] == "missing_data"
-    assert indicators.value("고령인구 비율", "서울", 2025)["status"] == "ok"  # 다른 지표는 그대로
+    assert indicators.value("고령인구 비율", "서울", 2025)["status"] == "ok"
 
 
 @pytest.mark.needs_data
 def test_annual_year_has_no_monthly_note(monkeypatch: pytest.MonkeyPatch) -> None:
-    """연간 자료가 있는 해에는 최신 달 기준 안내를 붙이지 않는다 (KOSIS에 묻지도 않는다)"""
     calls = []
     monkeypatch.setattr(
         indicators, "_month_values", lambda codes, sex, year: calls.append(year) or {}

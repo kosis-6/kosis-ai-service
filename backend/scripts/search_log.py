@@ -1,19 +1,3 @@
-"""통계표 검색 요청 로그 보기 (실전 2): 틀린 안내가 어느 단계 문제인지 추적한다
-
-POST /search 요청마다 PostgreSQL search_logs에 한 행씩 쌓인다 (app/services/search_log.py).
-  slots       슬롯 + 보정 내역      → 질문을 잘못 읽었는지 (주제·대상·연도·지역 수준·성별)
-  candidates  후보 상위 10개 점수   → 정답 표가 후보에 없었는지(검색), 있는데 밀렸는지(재순위)
-              (키워드·임베딩·조건 판정)
-  response    최종 응답             → 후보는 맞는데 패밀리·판 선택이나 상태 판단이 틀렸는지
-  timings     단계별 시간           → 느린 단계 (슬롯 추출 HCX / 질문 임베딩 / 검색)
-
-실행 (서버 컨테이너 안, 또는 DATABASE_URL을 맞춘 내 PC)
-  docker compose exec api python -m scripts.search_log                    # 요약 + 최근 10건
-  docker compose exec api python -m scripts.search_log --status ambiguous # 이 상태만
-  docker compose exec api python -m scripts.search_log --last 3 --detail  # 후보 10개·HCX 원문까지
-  docker compose exec api python -m scripts.search_log --session S_abc123 # 한 대화의 턴 순서대로
-"""
-
 import argparse
 import json
 import statistics
@@ -32,7 +16,6 @@ COLUMNS = (
 def load(
     url: str, last: int, status: str | None = None, session: str | None = None
 ) -> list[dict[str, Any]]:
-    """최근 last건 (오래된 것부터). 테이블이 아직 없으면 빈 목록"""
     import psycopg
     from psycopg.rows import dict_row
 
@@ -55,7 +38,6 @@ def load(
 
 
 def retrieval(record: dict[str, Any]) -> str:
-    """후보에 임베딩 점수가 있으면 hybrid (응답의 debug는 요청할 때만 남으므로 후보로 본다)"""
     candidates = record.get("candidates") or []
     if not candidates:
         return "-"
@@ -63,7 +45,6 @@ def retrieval(record: dict[str, Any]) -> str:
 
 
 def summarize(records: list[dict[str, Any]]) -> str:
-    """상태별 건수·평균 응답 시간, 검색 방식, 단계별 시간 중앙값"""
     counts = Counter(r["status"] or "실패" for r in records)
     lines = [f"요청 {len(records)}건", "", "| status | 건수 | 평균 응답(ms) |", "|---|---|---|"]
     for status, n in counts.most_common():

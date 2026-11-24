@@ -14,8 +14,6 @@ logger = logging.getLogger(__name__)
 
 @router.post("/search", summary="통계표 안내")
 async def search_tables(body: SearchRequest, user: OptionalUser) -> SearchResponse:
-    """질문에 맞는 통계표를 안내한다. 고를 것이 있으면 선택지를 돌려준다.
-    로그인 없이도 쓸 수 있고, 로그인하면 기록에 사용자 id가 남는다"""
     start = time.perf_counter()
     session_id = body.session_id or f"S_{uuid4().hex[:12]}"
     trace: dict = {}
@@ -29,7 +27,7 @@ async def search_tables(body: SearchRequest, user: OptionalUser) -> SearchRespon
         response = search_answer.respond(
             result, tables, session_id, body.top_k, trace, debug=body.debug
         )
-    except Exception as e:  # 예상 못 한 오류도 기록은 남긴다
+    except Exception as e:
         error = f"{type(e).__name__}: {e}"
         raise
     finally:
@@ -46,6 +44,6 @@ async def search_tables(body: SearchRequest, user: OptionalUser) -> SearchRespon
                 error,
                 user_id=user.id if user else None,
             )
-        except Exception:  # 기록 실패가 답변을 막지 않게
+        except Exception:
             logger.exception("검색 요청 기록 실패")
     return SearchResponse(**response)

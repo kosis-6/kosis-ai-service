@@ -1,10 +1,7 @@
-"""연간 자료 다음 해의 인구: 같은 표(DT_1B04006)의 최신 달 값으로 답한다 (장래추계 대신)"""
-
 import pytest
 
 from app.services import charts, indicators, population_latest, qa
 
-# 실제 통계 데이터(DB)가 있어야 돈다. CI는 데이터 없이 돌아서 뺀다 (pyproject.toml markers)
 pytestmark = pytest.mark.needs_data
 
 ROWS = [
@@ -21,7 +18,7 @@ def test_parse_latest_month() -> None:
     comp = population_latest._parse(ROWS)
     assert (comp["year"], comp["month"], comp["total"]) == (2026, 10, 9274392)
     assert comp["young"] == 49818 + 50000 and comp["working"] == 60000
-    assert comp["old"] == 70000 + 1504  # "100세 이상"도 65세 이상에 넣는다
+    assert comp["old"] == 70000 + 1504
     assert population_latest.band(comp, 20, 29) is None
     assert population_latest._parse([]) is None
 
@@ -33,12 +30,12 @@ def test_fetch_failure_is_cached_as_none(monkeypatch: pytest.MonkeyPatch) -> Non
         calls.append(code)
         raise RuntimeError("40: 호출 초과 (https://x?apiKey=SECRET)")
 
-    monkeypatch.undo()  # conftest의 no_latest_month를 걷어 내고 진짜 components를 쓴다
+    monkeypatch.undo()
     monkeypatch.setattr(population_latest, "_fetch_month", boom)
     monkeypatch.setattr(population_latest, "_cache", {})
     assert population_latest.components("11") is None
     assert population_latest.components("11") is None
-    assert calls == ["11"]  # 실패한 뒤 잠시는 다시 부르지 않는다
+    assert calls == ["11"]
 
 
 def test_many_regions_are_fetched_in_chunks(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -53,9 +50,9 @@ def test_many_regions_are_fetched_in_chunks(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(population_latest, "_cache", {})
     monkeypatch.setattr(population_latest, "CHUNK", 2)
     got = population_latest.components_many(["11", "26", "27", "99"])
-    assert calls == ["11+26", "27+99"] and set(got) == {"11", "26", "27"}  # 99: 자료 없음
+    assert calls == ["11+26", "27+99"] and set(got) == {"11", "26", "27"}
     population_latest.components_many(["11", "26", "99"])
-    assert len(calls) == 2  # 받은 지역(자료 없음 포함)은 다시 부르지 않는다
+    assert len(calls) == 2
 
 
 @pytest.fixture
@@ -74,14 +71,12 @@ def test_next_year_is_answered_with_latest_month(october: dict) -> None:
     year = october["year"]
     r = indicators.value("총인구", "서울", year)
     assert r["status"] == "ok" and r["value"] == 9274392
-    assert r["tbl_id"] == "DT_1B04006" and "DT_1BPB002" not in r["url"]  # 추계표가 아니다
+    assert r["tbl_id"] == "DT_1B04006" and "DT_1BPB002" not in r["url"]
     assert r["as_of"] == f"{year}년 10월 말" and "월별" in r["basis"]
     assert qa.summary(r).startswith(f"{year}년 10월 말 서울특별시의 총인구는 9,274,392명")
 
 
 def test_latest_month_keeps_region_validity_check(october: dict) -> None:
-    # 최신 달로 답하는 해까지 물어도, 그 지역이 없던 해부터 물으면 안내한다
-    # (2023년에 대구로 편입된 군위군을 2020년부터 물음)
     year = october["year"]
     r = indicators.trend("총인구", "대구 군위군", 2020, year)
     assert r["status"] == "region_not_in_year" and "2023년부터" in r["reason"]
@@ -89,7 +84,7 @@ def test_latest_month_keeps_region_validity_check(october: dict) -> None:
 
 def test_without_latest_month_projection_is_kept() -> None:
     year = indicators._data_years()[1] + 1
-    r = indicators.value("총인구", "서울", year)  # conftest: 최신 달을 받지 못함
+    r = indicators.value("총인구", "서울", year)
     assert r["status"] == "out_of_range"
 
 
@@ -108,8 +103,6 @@ def test_recent_question_uses_latest_month(october: dict) -> None:
 def test_rank_with_latest_month(october: dict) -> None:
     r = indicators.rank("총인구", october["year"], "시도", top=3)
     assert r["status"] == "ok" and r["as_of"] == f"{october['year']}년 10월 말"
-    # 최신 달 순위는 그해 지역으로: 2026년은 광주·전남이 전남광주통합특별시(12)로 합쳐져 16곳
-    # (예전에는 연간 마지막 해의 지역 29·46으로 찾아 최신 달 자료에 없어 조용히 빠졌다)
     assert r["total_regions"] == 16 and r["ranking"][0]["value"] == 9274392
     every = indicators.rank("총인구", october["year"], "시도")["ranking"]
     assert "전남광주통합특별시" in [i["region"] for i in every]
@@ -118,7 +111,6 @@ def test_rank_with_latest_month(october: dict) -> None:
 
 
 def test_latest_month_rank_notes_regions_it_could_not_get(monkeypatch: pytest.MonkeyPatch) -> None:
-    # 최신 달 자료를 일부 지역만 받으면 빠진 지역을 알린다 (전체 순위처럼 보이지 않게)
     hi = indicators._data_years()[1]
     comp = population_latest._parse([{**r, "PRD_DE": f"{hi + 1}10"} for r in ROWS])
     monkeypatch.setattr(
@@ -143,7 +135,6 @@ def test_recent_rank_and_composition_use_latest_month(october: dict) -> None:
         {"type": "rank", "indicator": "총인구", "regions": ["서울"], "year": 2025, "sex": "계"},
     )
     assert qa.compute(rank)["year"] == october["year"]
-    # 시도 순위: 최신 달은 광주 · 전남이 전남광주통합특별시로 합쳐져 지역이 빠진다 → 연간 마지막 해
     rank = qa.correct(
         "현재 시도별 인구 순위", {"type": "rank", "indicator": "총인구", "year": 2025, "sex": "계"}
     )
@@ -156,7 +147,6 @@ def test_recent_rank_and_composition_use_latest_month(october: dict) -> None:
 
 
 def test_year_already_passed_uses_december(monkeypatch: pytest.MonkeyPatch) -> None:
-    """최신 달이 다음 해로 넘어갔으면 (2027년 1월) 연간 자료에 없는 해(2026년)는 그해 12월 값"""
     hi = indicators._data_years()[1]
     jan = population_latest._parse([{**r, "PRD_DE": f"{hi + 2}01"} for r in ROWS])
     dec = population_latest._parse([{**r, "PRD_DE": f"{hi + 1}12"} for r in ROWS])

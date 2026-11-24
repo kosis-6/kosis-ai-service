@@ -1,10 +1,3 @@
-// 답변의 차트 (POST /ask 의 chart). 서버가 종류와 행을 정하고 여기서는 그리기만 한다
-//   line   연도별 꺾은선 (막대로 바꿔 볼 수 있다. 다시 조회하지 않는다)
-//          series 가 있으면 지역마다 선 하나 (범례·툴팁·표가 이름을 함께 전한다)
-//          지역이 MAX_OVERLAP(선 색 개수)보다 많으면 지역마다 작은 그래프를 나란히 (GridView)
-//   bar    지역별 가로 막대 (큰 순·순위 순)
-//   parts  구성비 나뉜 막대
-// 모든 차트는 "표"로도 볼 수 있다 (색이나 마우스 없이도 같은 값을 읽을 수 있게)
 import { useState } from "react";
 import {
   Bar,
@@ -37,7 +30,6 @@ import {
   withUnit,
 } from "./chartFormat";
 
-// styles/base.css 의 토큰과 같은 값 (SVG 속성에는 CSS 변수를 쓸 수 없는 브라우저가 있다)
 const INK = "#173b2e";
 const MUTED = "#5f7265";
 const GRID = "#e1e9df";
@@ -47,14 +39,11 @@ const HOVER = "#e7f1e5";
 
 const TICK = { fontSize: 11, fill: MUTED };
 
-// 선은 왼쪽에서부터 그려지고 막대는 바닥에서 자란다 (값이 어디서 어디로 가는지 눈으로 따라가게).
-// 움직임 줄이기를 켠 사용자에게는 처음부터 다 그린 상태로 보여 준다
 const MOTION = typeof window !== "undefined" && !window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
 const DRAW = { isAnimationActive: MOTION, animationDuration: 700, animationEasing: "ease-out" } as const;
 
 type TipProps = { active?: boolean; payload?: readonly { value?: unknown }[]; label?: unknown };
 
-// 마우스를 올린 위치의 값. 값을 크게, 이름을 작게 (읽는 사람은 이름을 알고 값을 찾는다)
 function Tip({ active, payload, label, chart }: TipProps & { chart: Chart }) {
   const value = payload?.[0]?.value;
   if (!active || typeof value !== "number") return null;
@@ -67,7 +56,6 @@ function Tip({ active, payload, label, chart }: TipProps & { chart: Chart }) {
 }
 
 function LineView({ chart }: { chart: Chart }) {
-  // 가로축은 연도를 숫자로 놓는다: 자료가 5년마다 있다가 매년 있는 지표도 간격이 실제 햇수와 맞는다
   const rows = chart.rows.map((r) => ({ ...r, year: Number(r.label) }));
   const last = rows.length - 1;
   const top = maxAbs(rows);
@@ -79,7 +67,6 @@ function LineView({ chart }: { chart: Chart }) {
           dataKey="year"
           type="number"
           domain={["dataMin", "dataMax"]}
-          // 눈금은 자료가 있는 해에만 찍는다 (겹치면 Recharts 가 일부를 숨긴다)
           ticks={rows.map((r) => r.year)}
           interval="preserveStartEnd"
           allowDecimals={false}
@@ -104,17 +91,14 @@ function LineView({ chart }: { chart: Chart }) {
           strokeWidth={2}
           strokeLinecap="round"
           strokeLinejoin="round"
-          // 점이 많으면 선만 그린다. 점에는 바탕색 테두리를 둘러 선과 겹쳐도 보이게 한다
           dot={rows.length <= 24 ? { r: 4, fill: SERIES, stroke: SURFACE, strokeWidth: 2 } : false}
           activeDot={{ r: 6, fill: SERIES, stroke: SURFACE, strokeWidth: 2 }}
           {...DRAW}
         >
-          {/* 값은 처음과 끝에만 적는다 (모든 점에 적으면 읽히지 않는다). 나머지는 축·툴팁·표 */}
           <LabelList
             dataKey="value"
             content={({ x, y, index, value }) =>
               (index === 0 || index === last) && typeof value === "number" ? (
-                // 첫 값은 점 오른쪽으로 적어 세로축 눈금과 겹치지 않게 한다
                 <text
                   x={Number(x) + (index === 0 ? 8 : 0)}
                   y={Number(y) - 12}
@@ -134,7 +118,6 @@ function LineView({ chart }: { chart: Chart }) {
   );
 }
 
-// 연도별 값을 세로 막대로 (꺾은선에서 바꿔 볼 때). 막대는 0에서 시작해야 길이가 값과 맞는다
 function ColumnView({ chart }: { chart: Chart }) {
   const top = maxAbs(chart.rows);
   return (
@@ -156,7 +139,6 @@ type SeriesTipProps = {
   label?: unknown;
 };
 
-// 여러 꺾은선: 그 해의 지역별 값을 큰 순으로. 색 표시와 이름을 함께 둔다 (색만으로 구분하지 않는다)
 function SeriesTip({ active, payload, label, chart }: SeriesTipProps & { chart: Chart }) {
   if (!active || !payload?.length) return null;
   const names = chart.series ?? [];
@@ -192,7 +174,6 @@ function SeriesLegend({ chart }: { chart: Chart }) {
   );
 }
 
-// 지역마다 선 하나. 가로축은 연도를 숫자로 (LineView 와 같은 이유)
 function MultiLineView({ chart }: { chart: Chart }) {
   const rows = seriesRows(chart);
   const top = seriesMax(chart);
@@ -247,7 +228,6 @@ function MultiLineView({ chart }: { chart: Chart }) {
 
 type PointTipProps = { active?: boolean; payload?: readonly { value?: unknown }[]; label?: unknown };
 
-// 작은 그래프의 툴팁: 그 해 값
 function PointTip({ active, payload, label, unit }: PointTipProps & { unit: string }) {
   const value = payload?.[0]?.value;
   if (!active || typeof value !== "number") return null;
@@ -259,8 +239,6 @@ function PointTip({ active, payload, label, unit }: PointTipProps & { unit: stri
   );
 }
 
-// 지역이 많을 때: 지역마다 작은 꺾은선. 색은 한 가지(지역 이름이 칸 제목이라 색으로 구분하지 않는다).
-// 지역 크기가 수십 배 차이 나서(서울·세종) 세로축은 지역마다 따로 둔다. 비교는 칸 머리의 증감률로
 function GridView({ chart }: { chart: Chart }) {
   const all = panels(chart);
   const years = chart.rows.map((r) => Number(r.label));
@@ -309,7 +287,6 @@ function GridView({ chart }: { chart: Chart }) {
   );
 }
 
-// 여러 꺾은선을 막대로: 해마다 지역별 막대를 나란히 (막대 사이 2px 틈)
 function MultiColumnView({ chart }: { chart: Chart }) {
   const rows = seriesRows(chart);
   const top = seriesMax(chart);
@@ -371,7 +348,6 @@ function BarView({ chart }: { chart: Chart }) {
   );
 }
 
-// 전체 하나가 어떻게 나뉘는지: 28px 막대를 비중만큼 나눈다. 이름은 아래 범례가, 값은 조각 안 글자와 표가 전한다
 function PartsView({ chart }: { chart: Chart }) {
   const rows = chart.rows;
   const describe = (i: number) => {
@@ -407,7 +383,6 @@ function PartsView({ chart }: { chart: Chart }) {
   );
 }
 
-// 여러 꺾은선의 표: 연도마다 한 줄, 지역마다 한 칸
 function SeriesTableView({ chart }: { chart: Chart }) {
   const names = chart.series ?? [];
   return (
@@ -464,8 +439,7 @@ function TableView({ chart }: { chart: Chart }) {
 type View = "line" | "bar" | "table";
 
 export default function ChartCard({ chart }: { chart: Chart }) {
-  // 꺾은선은 막대로도 볼 수 있다. 가로 막대·구성비는 차트 하나와 표
-  const crowded = (chart.series?.length ?? 0) > MAX_OVERLAP; // 지역마다 작은 그래프
+  const crowded = (chart.series?.length ?? 0) > MAX_OVERLAP;
   const views: [View, string][] = crowded
     ? [
         ["line", "지역별"],
@@ -481,7 +455,6 @@ export default function ChartCard({ chart }: { chart: Chart }) {
           [chart.type === "bar" ? "bar" : "line", "차트"],
           ["table", "표"],
         ];
-  // "막대그래프로", "표로"라고 했으면 서버가 정한 모양으로 시작한다 (그릴 수 있는 모양일 때만)
   const asked = views.find(([key]) => key === chart.view)?.[0];
   const [view, setView] = useState<View>(asked ?? views[0][0]);
 
@@ -506,7 +479,6 @@ export default function ChartCard({ chart }: { chart: Chart }) {
           ))}
         </div>
       </figcaption>
-      {/* 보기 방식을 바꾸면 key 가 바뀌어 새 그림이 서서히 나타난다 */}
       <div className="chart-body" key={view}>
       {view === "table" ? (
         <TableView chart={chart} />

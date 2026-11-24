@@ -1,5 +1,3 @@
-"""머지된 PR의 잘못된 응답과 지표 연결을 회귀 검증한다. 통계 원자료는 필요 없다."""
-
 from datetime import date
 
 import pytest

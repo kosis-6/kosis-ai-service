@@ -1,5 +1,3 @@
-"""표 하나의 지역 대응 (pipeline/region_map.py): 지역 칸 찾기, 기준 지역 연결 규칙 (DB 없이)"""
-
 import pytest
 
 from pipeline.region_map import (
@@ -35,10 +33,10 @@ def idx() -> RegionIndex:
         ([(1, "행정구역별"), (2, "성별")], 1),
         ([(1, "성별"), (2, "시도별")], 2),
         ([(1, "연령별"), (2, "성별"), (3, "거주지별")], 3),
-        ([(1, "현거주지별"), (2, "5년전 거주지별")], 1),  # 앞 칸
-        ([(2, "행정구역별(시군구)"), (1, "성별")], 2),  # 순서 섞여도 칸 번호 순
+        ([(1, "현거주지별"), (2, "5년전 거주지별")], 1),
+        ([(2, "행정구역별(시군구)"), (1, "성별")], 2),
         ([(1, "전출지별"), (2, "전입지별")], 1),
-        ([(1, "국적(지역)별"), (2, "성별")], None),  # 국외
+        ([(1, "국적(지역)별"), (2, "성별")], None),
         ([(1, "특성별"), (2, "성별")], None),
         ([], None),
     ],
@@ -48,26 +46,21 @@ def test_find_region_dim(dims, expected) -> None:
 
 
 def test_find_region_dim_override() -> None:
-    # 장래추계는 c1이 시나리오, c2가 지역
     assert find_region_dim("DT_1BPB002", [(1, "시나리오별"), (2, "시도별")]) == 2
-    # 지역 분류 없는 표로 정해 둔 표는 이름과 상관없이 None
     assert find_region_dim("INH_1B8000F_01", [(1, "행정구역별")]) is None
 
 
 def test_total(idx) -> None:
     assert match_region(idx, "101", Source("00", "전국", 1, "전국")) == (["00"], "total")
-    # 1단계가 아닌 '계'는 전국이 아님
     assert match_region(idx, "101", Source("X", "계", 2, "서울특별시 > 계"))[0] != ["00"]
 
 
 def test_code_needs_same_name(idx) -> None:
     assert match_region(idx, "101", Source("11680", "강남구", 2, None)) == (["11680"], "code")
-    # 예전 코드 체계: 31 = 경기도 (현재 31 = 울산광역시) → 코드로 잇지 않고 이름으로
     assert match_region(idx, "101", Source("31", "경기도", 1, "경기도")) == (["41"], "sido")
 
 
 def test_code_only_for_statistics_korea(idx) -> None:
-    # 행정안전부(110) 표는 코드가 같아도 경로로 확인
     src = Source("11680", "강남구", 2, "서울특별시 > 강남구")
     assert match_region(idx, "110", src) == (["11680"], "path")
 

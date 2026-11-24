@@ -1,16 +1,3 @@
-"""골든셋 반복 채점 비교: 같은 코드·DB로 여러 번 돌렸을 때 문항마다 결과가 같은지
-
-HCX는 같은 질문도 실행마다 해석이 달라질 수 있다(시드 고정 없음). 회차 사이 점수 차이에
-코드 수정 효과와 이 흔들림이 섞이므로, 같은 조건으로 반복한 결과를 비교해 흔들림을 따로 잰다.
-
-  행동 일치   매번 같은 행동(답변/명확화/범위안내/대안안내)으로 답했는지
-  답변 일치   매번 답변 문장 첫 줄까지 같은지 (지표·지역·기간 해석이 같으면 같다)
-  기대 행동   매번 기대 행동과 맞았는지
-
-실행: python -m scripts.eval_stability data/eval/golden_r4-1_*.csv data/eval/golden_r4-2_*.csv ...
-결과: data/eval/stability_<시각>.md
-"""
-
 import argparse
 import csv
 from collections import Counter
@@ -21,7 +8,6 @@ OUT_DIR = Path("data/eval")
 
 
 def load(paths: list[Path]) -> dict[str, list[dict[str, str]]]:
-    """문항 id → 실행별 결과 목록"""
     runs: dict[str, list[dict[str, str]]] = {}
     for path in paths:
         with path.open(encoding="utf-8-sig") as f:

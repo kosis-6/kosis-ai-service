@@ -1,7 +1,3 @@
-"""조회 지표는 연 단위 시점만 읽는다. 표 전체를 적재하면 월·분기 행(시점 202401 등)이 같은 표에
-섞여 들어와, 거르지 않으면 수록 기간이 2000~202402년처럼 잡혀 정상 질문이 답변 불가가 된다
-(2026-11-09 로컬 DB에 월 행을 넣어 확인: 조건 없이 5,438개 중 4,522개 결과가 바뀜)"""
-
 import inspect
 import re
 import sqlite3
@@ -47,7 +43,6 @@ def test_every_stat_value_query_filters_period_type() -> None:
 def test_value_uses_only_mapped_regions_when_region_axis_exists(
     monkeypatch, region_code, source_code, region, level, expected
 ) -> None:
-    # 합계와 상세 행이 있는 표에 기준 지역 매핑이 없거나 하나만 있다.
     with closing(sqlite3.connect(":memory:")) as db:
         db.row_factory = sqlite3.Row
         db.executescript("""

@@ -1,5 +1,3 @@
-"""LLM JSON 읽기: 글자 수 한도에 잘린 응답의 온전한 앞부분 살리기 (llm_json.py, 11/18)"""
-
 import pytest
 
 from app.services import cell_pick, llm_json
@@ -11,15 +9,12 @@ def test_whole_json_is_read_as_is() -> None:
 
 
 def test_cut_after_whitespace_run_keeps_finished_fields() -> None:
-    # Gemma가 picks를 다 쓴 뒤 공백만 이어 쓰다 잘린 모양 (11/18)
     raw = '{"fits": "예", "picks": {"항목": \n"1", "국적별": "1"}, "read_as": \n' + " " * 800
     obj, salvaged = llm_json.loads(raw)
     assert salvaged and obj == {"fits": "예", "picks": {"항목": "1", "국적별": "1"}}
 
 
 def test_cut_inside_a_string_drops_only_that_field() -> None:
-    # 끝까지 쓴 칸(id)은 살리고 잘린 칸(label)만 버린다.
-    # 대안 판단은 label이 없으면 코드의 설명을 쓴다
     obj, salvaged = llm_json.loads('{"action": "offer", "offers": [{"id": "A1", "label": "2024')
     assert salvaged and obj == {"action": "offer", "offers": [{"id": "A1"}]}
 
@@ -39,8 +34,7 @@ GROUPS = [Group(0, "항목", [("T1", "혼인")], 1)]
         ({"fits": "예", "picks": {"항목": "정할 수 없음"}}, True, "정할 수 없음"),
         ({"fits": "아니오", "picks": {}}, False, "표에 없음"),
         (None, False, "응답 해석 실패"),
-        ({"fits": "예"}, False, "응답 해석 실패"),  # 잘린 응답이 아닌데 picks가 없음
-        # 잘려서 picks가 없으면 모두 "정할 수 없음"으로 채운다 (되묻기로 넘김)
+        ({"fits": "예"}, False, "응답 해석 실패"),
         ({"fits": "예", "reason": "r", "_salvaged": True}, True, "정할 수 없음 (응답 잘림)"),
         ({"fits": "아니오", "_salvaged": True}, False, "표에 없음"),
     ],

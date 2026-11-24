@@ -1,13 +1,3 @@
-"""계획: 질문 → 지표 목록·조건·결합 방식 (HCX-007 1회) + 코드 보정
-
-  call(question)                 계획 LLM 호출 (보정 전)
-  correct(question, plan)        코드 보정: 근거 없는 조건 삭제 → 시점·지역 단위 → 빠진 지표
-  merged_conditions / render     지표 하나를 '조건을 붙인 단일 질문 문장'으로
-
-LLM이 내놓은 계획을 그대로 믿지 않는다. 질문 원문에 근거가 없는 조건은 지우고,
-질문에 있는데 빠뜨린 지표는 채운다.
-"""
-
 import json
 import re
 from datetime import date
@@ -18,7 +8,6 @@ from app.services import llm_calls, search, search_llm, timeref
 from app.services import slots as slot_parser
 
 MODEL = "HCX-007"
-# 실제 출력은 최대 306토큰이었다. 호출 한도는 요청한 최대치만큼 깎이므로 넉넉하게만 둔다
 MAX_TOKENS = 512
 
 Plan = dict[str, Any]
@@ -28,7 +17,6 @@ IND_KEYS = ("span", "search", "dict", "scope", "role", "override", "no_inherit")
 
 @llm_calls.staged("plan")
 async def call(question: str) -> Plan:
-    """계획 LLM 호출 (보정 전). 실패하면 HcxError가 그대로 올라간다"""
 
     def request(llm: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         system = SYSTEM_GEMMA if llm == "gemma" else SYSTEM
@@ -44,7 +32,6 @@ async def call(question: str) -> Plan:
 
 
 def parse(content: str) -> Plan:
-    """HCX 출력 → 계획. JSON이 깨졌거나 모양이 다르면 지표 없는 빈 계획"""
     try:
         p = json.loads(content)
     except (TypeError, ValueError):
@@ -61,7 +48,6 @@ def parse(content: str) -> Plan:
 
 
 def correct(question: str, p: Plan, today: date | None = None) -> Plan:
-    """계획을 코드로 보정한다. 지운 조건은 _dropped, 고친 내용은 _fixed에 남긴다"""
     p["_dropped"] = ground_plan(question, p)
     p["_fixed"] = fix_periods_and_level(question, p, today) + fix_indicators(question, p)
     fill_dict(p)
@@ -108,13 +94,10 @@ def fill_dict(p: Plan) -> None:
 
 
 def _conditions(p: Plan) -> list[dict[str, Any]]:
-    """공통 조건과 지표별 조건 dict들 (고치면 계획에 그대로 반영된다)"""
     shared = p.get("shared")
     overrides = [(i.get("override") or {}) for i in p.get("indicators") or []]
     return [shared if isinstance(shared, dict) else {}, *overrides]
 
-
-# ---- 근거 없는 조건 지우기 ------------------------------------------------------------
 
 MALE = re.compile(r"남성|남자|남녀|남편|아버지|부(?![가-힣])")
 FEMALE = re.compile(r"여성|여자|남녀|아내|어머니|산모|모(?![가-힣])")
@@ -125,7 +108,6 @@ AGE_HINT = re.compile(r"\d+\s*(세|대|살)|청년|노인|고령|미성년|아�
 
 
 def ground_plan(question: str, p: Plan) -> list[tuple[str, Any]]:
-    """질문에 근거 없는 조건(지어낸 연도·성별·연령)을 지운다"""
     years = {int(y) for y in re.findall(r"(?:19|20)\d\d", question)}
     relative = bool(RELATIVE_TIME.search(question))
     male, female = bool(MALE.search(question)), bool(FEMALE.search(question))
@@ -156,21 +138,16 @@ def _age_grounded(age: str, question: str) -> bool:
     return bool(AGE_GROUP.search(age) and AGE_GROUP.search(question))
 
 
-# ---- 시점·지역 단위 ------------------------------------------------------------------
-
 YEAR_MARK = re.compile(r"(?:19|20)\d\d(?=\s*년)")
 RANGE_WORD = re.compile(r"~|부터|까지|사이|대비|동안|와\s*(?:19|20)\d\d년\s*(?:비교|사이)")
-# 현재를 가리키는 말 (지표 구절 안이나 바로 앞에 있으면 그 지표는 공통 연도를 물려받지 않는다)
 PRESENT = re.compile(r"지금|현재|요즘|최신")
 
 
 def _level(question: str) -> str | None:
-    """질문이 말한 지역 단위 (슬롯 규칙과 같은 낱말)"""
     return next((lv for lv, pat in slot_parser.LEVEL_WORDS if pat.search(question)), None)
 
 
 def fix_periods_and_level(question: str, p: Plan, today: date | None = None) -> list[tuple]:
-    """상대 시점은 시점 규칙이 풀고, 지역 단위는 슬롯 규칙으로, 한쪽만 쓴 연도는 양쪽에"""
     today = today or date.today()
     shared = p["shared"] = p.get("shared") or {}
     fixes: list[tuple] = []
@@ -187,8 +164,6 @@ def fix_periods_and_level(question: str, p: Plan, today: date | None = None) -> 
         shared["year_from"], shared["year_to"] = lo, hi
         fixes.append(("상대시점", ref.expr, lo, hi))
 
-    # 연도가 여럿이고 기간 표현이 없으면 지표마다 바로 앞에 나온 연도를 붙인다
-    # ('2020년 A와 2025년 B')
     marks = [(m.start(), int(m[0])) for m in YEAR_MARK.finditer(question)]
     inds = [i for i in p.get("indicators") or [] if i.get("scope") != "out"]
     found = [question.find(i.get("span") or "@@") for i in inds]
@@ -209,9 +184,6 @@ def fix_periods_and_level(question: str, p: Plan, today: date | None = None) -> 
         by_indicator = [(i.get("span"), (i.get("override") or {}).get("year_from")) for i in inds]
         fixes.append(("지표별 연도", by_indicator))
 
-    # '2050년 총인구 전망을 지금 주민등록인구와 비교'처럼 현재를 가리키는 지표는 공통 연도를
-    # 물려받지 않는다 (최신 연도로 찾는다). 물려받으면 두 지표가 같은 연도 조건이 되어 같은 표
-    # 묶음으로 합쳐지거나(2026-11-13 결함 3), 2050년 자료가 없는 표를 놓쳤다(측정 x02)
     if shared.get("year_from") or shared.get("year_to"):
         for ind in inds:
             if (ind.get("override") or {}).get("year_from"):
@@ -240,10 +212,6 @@ def fix_periods_and_level(question: str, p: Plan, today: date | None = None) -> 
     return fixes
 
 
-# ---- 빠진 지표·파생 지표 --------------------------------------------------------------
-
-# 파생 지표 → 기초 지표 검색어 (그 이름의 표가 없거나 계산으로 만드는 지표).
-# 원문 구절은 지우지 않고 덧붙인다
 DERIVED = [
     (r"고용률|취업률|일하는 (?:사람|비율)|실업률", "성 연령 경제활동상태별 인구"),
     (r"성비|성별 불균형|성비 불균형", "성별 인구"),
@@ -265,7 +233,6 @@ POPULATION_WORD = re.compile(
 )
 NOT_POPULATION = re.compile(r"가격|집값|전세|임금|소득|병원|의사")
 REGION_ASK = re.compile(r"지역|어디|곳|시도|시군구|상위\s*\d+\s*개|하위\s*\d+")
-# 질문에 나오면 반드시 지표 하나가 맡아야 하는 기초 지표 말 (계획이 빠뜨린 지표 채우기)
 INDICATOR_TERMS = re.compile(
     r"합계출산율|조출생률|조혼인율|조이혼율|출생아\s*수|사망자\s*수|혼인\s*건수|이혼\s*건수"
     r"|자연\s*(?:감소|증가)|순이동|순유출|평균\s*초혼\s*연령|초혼\s*연령|평균\s*출산\s*연령"
@@ -280,7 +247,6 @@ def _text(ind: dict[str, Any]) -> str:
 
 
 def fix_indicators(question: str, p: Plan) -> list[tuple]:
-    """빠진 지표 채우기, 범위 밖으로 잘못 본 인구 지표 되돌리기, 파생 지표 풀기"""
     fixes: list[tuple] = []
     shared = p["shared"] = p.get("shared") or {}
     inds: list[dict[str, Any]] = p.setdefault("indicators", [])
@@ -319,7 +285,7 @@ def fix_indicators(question: str, p: Plan) -> list[tuple]:
         at = question.find(span)
         after_whole = at > 0 and WHOLE_BEFORE.search(question[max(0, at - 4) : at])
         if after_whole or span.startswith("전체"):
-            keep = list(ind.get("no_inherit") or [])  # 현재 시점 지표의 연도 칸은 남긴다
+            keep = list(ind.get("no_inherit") or [])
             ind["no_inherit"] = [*keep, *(k for k in ("sex", "age") if k not in keep)]
             fixes.append(("전체 지표는 성별·연령 안 물려받음", span))
 
@@ -340,8 +306,6 @@ def fix_indicators(question: str, p: Plan) -> list[tuple]:
     return fixes
 
 
-# ---- 지표 하나를 단일 질문 문장으로 -----------------------------------------------------
-
 CONDITION_KEYS = ("region_level", "year_from", "year_to", "sex", "age")
 
 
@@ -350,8 +314,6 @@ def merged_conditions(
     override: dict[str, Any] | None,
     no_inherit: tuple[str, ...] | list[str] = (),
 ) -> dict[str, Any]:
-    """지표별 조건 > 공통 조건. '없음'·빈 값은 없는 것으로 본다.
-    no_inherit에 든 칸은 공통 조건을 물려받지 않는다"""
     out: dict[str, Any] = {}
     for k in CONDITION_KEYS:
         for src in (override or {}, {} if k in no_inherit else (shared or {})):
@@ -363,7 +325,6 @@ def merged_conditions(
 
 
 def render(ind: dict[str, Any], cond: dict[str, Any]) -> str:
-    """지표 검색어 + 조건 → 표 하나를 찾는 문장 ('2015~2025년 시군구별 80세 이상 남자 사망자 수')"""
     parts: list[str] = []
     year_from, year_to = cond.get("year_from"), cond.get("year_to")
     if year_from and year_to and year_from != year_to:

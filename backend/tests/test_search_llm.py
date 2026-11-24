@@ -46,10 +46,10 @@ def test_hcx_options_become_openai_fields() -> None:
         repetitionPenalty=1.1,
         responseFormat={"type": "json", "schema": {"type": "object"}},
     )
-    assert body["messages"][1] == {"role": "user", "content": "질문"}  # 목록 content 는 문자열로
+    assert body["messages"][1] == {"role": "user", "content": "질문"}
     assert body["max_tokens"] == 300 and body["top_p"] == 0.8
-    assert body["temperature"] == 0  # 0 을 기본값(0.1)으로 바꾸지 않는다
-    assert body["chat_template_kwargs"] == {"enable_thinking": False}  # 생각은 항상 끈다
+    assert body["temperature"] == 0
+    assert body["chat_template_kwargs"] == {"enable_thinking": False}
     assert body["response_format"] == {
         "type": "json_schema",
         "json_schema": {"name": "out", "schema": {"type": "object"}},
@@ -68,7 +68,7 @@ def test_gemma_chat_success() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/v1/chat/completions"
         assert request.headers["Authorization"] == "Bearer k"
-        assert json.loads(request.content)["model"] == "gemma-4-31b"  # HCX 모델 이름은 안 보낸다
+        assert json.loads(request.content)["model"] == "gemma-4-31b"
         return httpx.Response(200, json=OK_BODY)
 
     result = asyncio.run(make_client(handler).chat("HCX-007", [{"role": "user", "content": "x"}]))
@@ -102,7 +102,6 @@ def test_gemma_retries_server_error_then_succeeds() -> None:
 
 
 def test_gemma_failure_is_raised_as_hcx_error() -> None:
-    """부르는 쪽은 HcxError 만 잡는다. 잘못된 요청(400)은 다시 시도하지 않는다"""
     calls = []
 
     def bad_request(request: httpx.Request) -> httpx.Response:
@@ -130,7 +129,7 @@ def test_gemma_failure_is_raised_as_hcx_error() -> None:
 
 def test_gemma_without_base_url_fails_before_calling() -> None:
     client = GemmaClient(base_url="", api_key="")
-    client.base_url = ""  # .env 에 주소가 있어도 이 테스트는 빈 주소로
+    client.base_url = ""
     with pytest.raises(HcxError) as exc:
         asyncio.run(client.chat("HCX-007", [{"role": "user", "content": "x"}]))
     assert exc.value.code == "gemma_not_configured"
@@ -152,19 +151,16 @@ def test_chat_goes_to_the_configured_llm(monkeypatch, setting: str, expected: st
 
 
 def test_gemma_prompts_add_to_the_hcx_prompts_without_changing_them() -> None:
-    """HCX 프롬프트는 그대로 두고 Gemma 용만 문장을 더한다"""
     assert "1번 후보가 질문에 맞으면 1번을 고르고" in pick_prompt.SYSTEM_GEMMA
     assert "1번 후보가 질문에 맞으면" not in pick_prompt.SYSTEM
     assert "'우리 동네'는 지역 이름이 아니다" in slot_prompt.SLOT_SYSTEM_GEMMA
     assert "지역 이름이 아니다" not in slot_prompt.SLOT_SYSTEM
-    # 대상(target) 규칙은 Gemma 용만 좁힌다. HCX 용은 원래 문장 그대로
     assert "다음은 target 이 아니므로 null 로 둔다" in slot_prompt.SLOT_SYSTEM_GEMMA
     assert slot_prompt.TARGET_RULE in slot_prompt.SLOT_SYSTEM
     assert slot_prompt.TARGET_RULE not in slot_prompt.SLOT_SYSTEM_GEMMA
     assert "target 이 아니므로" not in slot_prompt.SLOT_SYSTEM
     for added in ("1-1. 단, KOSIS가", "대상 이름을 지우고", "age 칸에는 나이만", "예시 2-2)"):
         assert added in plan_prompt.SYSTEM_GEMMA and added not in plan_prompt.SYSTEM
-    # 더하기만 했으므로 Gemma 용에서 더한 문장을 빼면 원문과 길이가 같다
     assert len(slot_prompt.SLOT_SYSTEM_GEMMA) > len(slot_prompt.SLOT_SYSTEM)
     assert plan_prompt.SYSTEM_GEMMA.index("예시 2-2)") < plan_prompt.SYSTEM_GEMMA.index("예시 3)")
 
@@ -178,10 +174,10 @@ def test_swap_fails_loudly_when_the_sentence_is_gone() -> None:
 @pytest.mark.parametrize(
     ("setting", "base_url", "expected"),
     [
-        ("auto", "http://gemma.test/v1", "gemma"),  # 주소가 있으면 Gemma
-        ("auto", "", "hcx"),  # 없으면 HCX
+        ("auto", "http://gemma.test/v1", "gemma"),
+        ("auto", "", "hcx"),
         ("auto", "   ", "hcx"),
-        ("hcx", "http://gemma.test/v1", "hcx"),  # 직접 정하면 주소와 관계없이 그 모델
+        ("hcx", "http://gemma.test/v1", "hcx"),
         ("gemma", "", "gemma"),
     ],
 )
@@ -203,7 +199,6 @@ def test_default_setting_is_auto() -> None:
 
 @pytest.fixture
 def gemma_by_address(monkeypatch):
-    """기본 설정(auto) + Gemma 서버 주소가 있는 상태. Gemma · HCX 호출은 calls 에 적힌다"""
     settings = search_llm.get_settings()
     monkeypatch.setattr(settings, "search_llm", "auto", raising=False)
     monkeypatch.setattr(settings, "gemma_base_url", "http://gemma.test/v1", raising=False)
@@ -237,8 +232,8 @@ def test_gemma_down_falls_back_to_hcx_with_the_hcx_request(gemma_by_address) -> 
 
     state["gemma_up"] = False
     result, answered = asyncio.run(search_llm.ask("HCX-007", _request))
-    assert (result.content, answered) == ("hcx", "hcx")  # 그 호출을 HCX 로 다시 보낸다
-    assert calls[-2:] == ["gemma:gemma 프롬프트", "hcx:hcx 프롬프트"]  # HCX 에는 HCX 용 요청을
+    assert (result.content, answered) == ("hcx", "hcx")
+    assert calls[-2:] == ["gemma:gemma 프롬프트", "hcx:hcx 프롬프트"]
     assert search_llm.falling_back()
 
 
@@ -248,18 +243,17 @@ def test_gemma_is_skipped_while_down_and_tried_again_later(gemma_by_address, mon
     asyncio.run(search_llm.ask("HCX-007", _request))
     calls.clear()
     asyncio.run(search_llm.ask("HCX-007", _request))
-    assert calls == ["hcx:hcx 프롬프트"]  # 꺼진 서버를 질문마다 다시 부르지 않는다
+    assert calls == ["hcx:hcx 프롬프트"]
 
     state["gemma_up"] = True
-    monkeypatch.setattr(search_llm, "_down_until", 0.0)  # 건너뛰는 시간이 지났다
+    monkeypatch.setattr(search_llm, "_down_until", 0.0)
     calls.clear()
     _, answered = asyncio.run(search_llm.ask("HCX-007", _request))
-    assert answered == "gemma" and calls == ["gemma:gemma 프롬프트"]  # 서버가 돌아오면 다시 Gemma
+    assert answered == "gemma" and calls == ["gemma:gemma 프롬프트"]
     assert not search_llm.falling_back()
 
 
 def test_fixed_gemma_does_not_fall_back(gemma_by_address, monkeypatch) -> None:
-    """SEARCH_LLM=gemma 로 고정하면 실패를 그대로 올린다 (측정에 HCX 답이 섞이지 않게)"""
     calls, state = gemma_by_address
     monkeypatch.setattr(search_llm.get_settings(), "search_llm", "gemma", raising=False)
     state["gemma_up"] = False
@@ -269,7 +263,6 @@ def test_fixed_gemma_does_not_fall_back(gemma_by_address, monkeypatch) -> None:
 
 
 def test_fallback_does_not_wait_for_retries(monkeypatch) -> None:
-    """넘어갈 곳이 있으면 Gemma 를 기다렸다 다시 부르지 않는다"""
     settings = search_llm.get_settings()
     monkeypatch.setattr(settings, "search_llm", "auto", raising=False)
     monkeypatch.setattr(settings, "gemma_base_url", "http://gemma.test/v1", raising=False)
@@ -287,4 +280,3 @@ def test_fallback_does_not_wait_for_retries(monkeypatch) -> None:
     monkeypatch.setattr(HcxClient, "chat", hcx)
     _, answered = asyncio.run(search_llm.ask("HCX-007", _request))
     assert answered == "hcx" and len(tried) == 1
-

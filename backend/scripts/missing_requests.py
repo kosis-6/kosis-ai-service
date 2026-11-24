@@ -1,12 +1,3 @@
-"""DB에 없는 데이터 요청 집계: 다음 회차에 어떤 데이터를 추가할지 정할 때 본다
-
-/ask가 답하지 못한 질문 중 데이터가 없어서 거절한 것(qa.DATA_GAP)이 data/requests/missing.jsonl에
-쌓인다. 사유·지표·지역·연도가 같은 요청끼리 묶어 많이 나온 순서로 보여준다.
-
-실행: python -m scripts.missing_requests
-      python -m scripts.missing_requests --since 2026-10-26   (이 날짜 이후만)
-"""
-
 import argparse
 import json
 from collections import Counter
@@ -14,7 +5,6 @@ from pathlib import Path
 
 from app.services.qa import MISSING_LOG
 
-# 사유별로 무엇이 없어서 거절했는지
 REASONS = {
     "unknown_indicator": "지원하지 않는 지표",
     "out_of_range": "수록 기간 밖 연도",
@@ -22,7 +12,6 @@ REASONS = {
     "missing_data": "값이 비어 있음",
     "no_region_level": "없는 지역 단위",
 }
-# 지원하지 않는 지표의 구분: 수집한 표에 관련 자료가 있는지 (qa.compute가 기록)
 GAPS = {"not_implemented": "미구현 (수집한 표에 있음)", "not_collected": "수집 안 함"}
 
 

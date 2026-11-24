@@ -1,30 +1,3 @@
-"""수집한 표(CSV)를 숫자 키 구조로 PostgreSQL에 넣는다 (초안). 구조: app/models, migrations
-
-조회 지표(app/services/lookup.py)가 이 수치를 읽는다. run_all.py가 검증·교체 뒤 마지막에 실행한다.
-
-표 하나씩 처리한다: 임시 테이블에 COPY → 중복 검사 → CSV와 행 수·값 합계 대조 → 인덱스 → 교체.
-DB에 고유 인덱스가 없으므로(용량) 이 중복 검사가 중복을 막는 유일한 장치다.
-중간에 실패해도 그 표의 기존 값은 그대로 남고, 끝낸 표는 다시 처리하지 않아도 된다.
-
-  큰 표(BIG_ROWS 이상)  전용 파티션을 만들어 통째로 교체. 지우고 넣지 않아 빈 공간이 쌓이지 않는다
-  작은 표               기본 파티션의 해시 묶음에서 지우고 넣기
-
-갱신(일부만 받은 자료, merge=True)은 기존 표에 덧붙인다 (merge_into)
-  새 칸은 넣고, 이미 있던 칸은 새 값으로 바꾸며 값이 달랐으면 예전 값을 이력에 남긴다.
-  기존 행을 복사하지 않아 큰 표(수천만 행)도 받은 만큼만 일한다
-
-표 전체를 다시 넣을 때도 기존 값은 지우지 않는다 (carry_missing, archive_changed, archive_dropped)
-  새 자료에 없는 시점의 칸  예) KOSIS가 뺀 예전 시점. 새 표에 그대로 옮겨 질문에 계속 답한다
-  같은 시점에서 빠진 칸     예) 코드가 바뀐 지역(강원 42 → 51). 옮기면 두 번 세므로 이력에만 남긴다
-  값이 바뀐 칸              새 값으로 답하고, 예전 값은 raw.stat_value_history에 남긴다
-  CSV와의 행 수·합계 대조는 옮기기 전(새 자료만)에 한다.
-  raw.stat_load에는 옮긴 칸까지 센 값을 적는다
-
-실행: alembic upgrade head                          테이블이 없으면 먼저
-      python pipeline/load_raw.py                      data/processed(KOSIS_RAW_DIR)의 모든 표
-      python pipeline/load_raw.py DT_1B04006 DT_1MR2060  이 표만
-"""
-
 import argparse
 import csv
 import json
@@ -46,7 +19,6 @@ sys.path.insert(0, str(ROOT))
 
 from pipeline.stats_build import conninfo  # noqa: E402
 
-# run_all.py가 원본 폴더를 넘길 때 환경변수를 쓴다 (절대 경로면 그대로)
 CSV_DIR = ROOT / os.environ.get("KOSIS_RAW_DIR", "data/processed")
 BIG_ROWS = 1_000_000
 MAX_DIMS = 5
@@ -56,35 +28,23 @@ VALUE_COLUMNS = (
 )  # fmt: skip
 
 
-# 칸 하나를 정하는 값. 이 조합이 겹치면 중복이다
 CELL_KEY = ("item_key", "period", "prd_se", "c1", "c2", "c3", "c4", "c5")
 
 
 @dataclass
 class Scan:
-    """CSV를 한 번 읽어 얻은 코드 목록과 대조값"""
-
     row_count: int = 0
     value_sum: Decimal = Decimal(0)
     first_period: int | None = None
     last_period: int | None = None
     last_changed: date | None = None
-    # (칸 번호, 코드) → (이름, 단계, 경로). 칸 번호 0은 항목
     codes: dict[tuple[int, str], tuple[str, int | None, str | None]] = field(default_factory=dict)
     units: set[str] = field(default_factory=set)
-    # 합쳐진 단위를 고침표로도 나누지 못한 (단위, 항목 이름 · 칸 이름) — 적재 기록에 경고로 남긴다
     unsplit: set[tuple[str, str]] = field(default_factory=set)
-    fixed_units: int = 0  # 합쳐진 단위를 나눈 행 수
+    fixed_units: int = 0
 
-
-# ---- 합쳐진 단위 나누기 (config/unit_fixes.toml, 2026-11-18) ------------------------------
-# KOSIS가 항목 · 칸마다 다른 단위를 한 글자로 합쳐
-# 모든 행에 주는 표가 있다 ("명 가임여자 1명당 명").
-# 그 행만 단위를 다시 정한다: 표의 칸별 단위 → 칸 이름
-# 끝 괄호의 단위 → 표의 기본값 → 받은 그대로(경고)
 
 UNIT_FIXES = ROOT / "config" / "unit_fixes.toml"
-# 칸 이름 끝 괄호 안이 이 낱말이면 단위로 본다 ("출생아수(명)"). "일반혼인율(남편)"은 단위가 아니다
 BRACKET_UNIT = re.compile(
     r"\(\s*(명|건|가구|세대|세|%|천명당|천 명당|천명|천가구|개|호|원|배)\s*\)\s*$"
 )
@@ -104,7 +64,6 @@ def load_unit_fixes(path: Path = UNIT_FIXES) -> UnitFixes:
 
 
 def row_unit(r: dict[str, str], dims: int, tbl_id: str, fixes: UnitFixes) -> tuple[str, bool]:
-    """행의 단위 → (단위, 정했는가). 합쳐진 단위가 아니면 받은 그대로"""
     unit = r["unit"]
     if unit not in fixes.merged:
         return unit, True
@@ -123,7 +82,6 @@ def row_unit(r: dict[str, str], dims: int, tbl_id: str, fixes: UnitFixes) -> tup
 
 
 def dim_count(header: list[str]) -> int:
-    """CSV 머리글의 분류 칸 수. 구조가 담지 못하면 값을 버리지 않고 멈춘다"""
     n = sum(1 for c in header if c[0] == "c" and c.endswith("_id"))
     if n > MAX_DIMS:
         raise SystemExit(f"분류가 {n}개입니다. raw.stat_value는 {MAX_DIMS}개까지 담습니다.")
@@ -131,7 +89,6 @@ def dim_count(header: list[str]) -> int:
 
 
 def duplicate_message(name: str, found: list[tuple]) -> str:
-    """중복 칸 예시. 행은 CELL_KEY 순서의 값 + 횟수"""
     lines = [
         ", ".join(f"{c}={v}" for c, v in zip(CELL_KEY, r[:-1], strict=True) if v is not None)
         + f" ({r[-1]}번)"
@@ -191,7 +148,6 @@ def value_rows(
     units: dict[str, int],
     fixes: UnitFixes | None = None,
 ):
-    """CSV 행 → raw.stat_value 행. 합쳐진 단위는 scan_csv와 같은 방법으로 나눈다"""
     fixes = load_unit_fixes() if fixes is None else fixes
     with path.open(encoding="utf-8-sig", newline="") as f:
         reader = csv.DictReader(f)
@@ -266,7 +222,6 @@ def copy_rows(pg: psycopg.Connection, target: sql.Composable, rows) -> None:
 
 
 def check_duplicates(pg: psycopg.Connection, target: sql.Composable, name: str) -> None:
-    """같은 칸이 두 번 들어오면 합계가 틀어지므로 교체하지 않는다. GROUP BY는 NULL끼리 같게 본다"""
     query = sql.SQL(
         "SELECT {key}, count(*) FROM {target} GROUP BY {key} HAVING count(*) > 1 LIMIT 5"
     )
@@ -286,8 +241,6 @@ def check_loaded(pg: psycopg.Connection, target: sql.Composable, scan: Scan, nam
         raise SystemExit(f"{name}: 값 합계가 다릅니다 (CSV {scan.value_sum}, 적재 {total})")
 
 
-# 같은 칸인지: 분류가 없는 칸(NULL)끼리도 같게 본다. 키는 양수라 -1과 겹치지 않는다.
-# IS NOT DISTINCT FROM은 해시 조인을 못 써 큰 표에서 느려서 coalesce로 맞춘다
 SAME_CELL = sql.SQL(" AND ").join(
     [sql.SQL("n.{c} = o.{c}").format(c=sql.Identifier(c)) for c in ("item_key", "period", "prd_se")]
     + [
@@ -299,14 +252,12 @@ SAME_CELL = sql.SQL(" AND ").join(
 
 @dataclass
 class Kept:
-    """다시 적재할 때 남긴 기존 값"""
-
-    carried: int = 0  # 새 자료에 없어 그대로 옮긴 칸
+    carried: int = 0
     carried_sum: Decimal = Decimal(0)
     first_period: int | None = None
     last_period: int | None = None
-    archived: int = 0  # 값이 바뀌어 이력으로 보낸 예전 값
-    dropped: int = 0  # 새 자료의 같은 시점에서 빠진 칸 (코드가 바뀐 지역 등). 이력으로만 남긴다
+    archived: int = 0
+    dropped: int = 0
 
 
 def _old(tbl_key: int) -> sql.Composable:
@@ -322,8 +273,6 @@ _OLD_COLS = sql.SQL(", ").join(sql.SQL("o.{}").format(sql.Identifier(c)) for c i
 def archive_changed(
     pg: psycopg.Connection, new: sql.Composable, tbl_key: int, old: sql.Composable | None = None
 ) -> int:
-    """값이 바뀐 칸의 예전 값 → raw.stat_value_history. 교체와 같은 트랜잭션에서 부른다
-    (교체가 실패하면 이력도 남지 않게). old는 비교할 기존 행 (기본: 그 표 전체). 보낸 행 수"""
     return pg.execute(
         sql.SQL(
             "INSERT INTO raw.stat_value_history ({names}) SELECT {cols} FROM {old} JOIN {new} n"
@@ -334,17 +283,10 @@ def archive_changed(
 
 
 def _new_periods(new: sql.Composable) -> sql.Composable:
-    """새 자료에 있는 시점 (주기와 함께)"""
     return sql.SQL("(o.prd_se, o.period) IN (SELECT DISTINCT prd_se, period FROM {})").format(new)
 
 
 def carry_missing(pg: psycopg.Connection, new: sql.Composable, tbl_key: int) -> Kept:
-    """새 자료에 없는 시점의 기존 칸 → new에 옮겨 넣는다 (교체 뒤에도 남아 질문에 답한다).
-    예) KOSIS가 수록 기간에서 뺀 예전 시점.
-    새 자료에 있는 시점에서 빠진 칸은 옮기지 않는다 (archive_dropped가 이력으로만 남긴다):
-    KOSIS가 지역 코드를 바꾸면(강원 42 → 51) 예전 코드 칸이 새 자료에서 빠지는데,
-    그것을 옮기면 같은 지역·시점이 두 코드로 두 번 들어가 합계·순위가 틀어진다.
-    새 자료를 CSV와 대조한 뒤에 부른다. 처음 적재하는 표는 기존 칸이 없어 아무것도 하지 않는다"""
     pg.execute("DROP TABLE IF EXISTS pg_temp.carried")
     pg.execute(
         sql.SQL("CREATE TEMP TABLE carried AS SELECT {cols} FROM {old} WHERE NOT {periods}").format(
@@ -363,8 +305,6 @@ def carry_missing(pg: psycopg.Connection, new: sql.Composable, tbl_key: int) -> 
 
 
 def archive_dropped(pg: psycopg.Connection, new: sql.Composable, tbl_key: int) -> int:
-    """새 자료의 같은 시점에서 빠진 기존 칸 → raw.stat_value_history (교체와 같은 트랜잭션).
-    carry_missing이 옮기지 않은 칸이다. 지우기 전에 예전 값을 이력에 남긴다. 보낸 행 수"""
     return pg.execute(
         sql.SQL(
             "INSERT INTO raw.stat_value_history ({names}) SELECT {cols} FROM {old}"
@@ -381,7 +321,6 @@ def archive_dropped(pg: psycopg.Connection, new: sql.Composable, tbl_key: int) -
 
 
 def replace_big(pg: psycopg.Connection, tbl_key: int, rows, scan: Scan, name: str) -> Kept:
-    """전용 파티션을 새로 만들어 대조한 뒤 기존 파티션과 맞바꾼다"""
     part = f"stat_value_t{tbl_key}"
     new = sql.Identifier("raw", f"{part}__new")
     pg.execute(sql.SQL("DROP TABLE IF EXISTS {}").format(new))
@@ -394,14 +333,12 @@ def replace_big(pg: psycopg.Connection, tbl_key: int, rows, scan: Scan, name: st
     check_duplicates(pg, new, name)
     check_loaded(pg, new, scan, name)
     kept = carry_missing(pg, new, tbl_key)
-    # 부모의 stat_value_lookup과 같은 칸이어야 붙일 때 그 인덱스의 일부가 된다
     pg.execute(sql.SQL("CREATE INDEX ON {} (tbl_key, item_key, period, c1)").format(new))
     pg.execute(sql.SQL("ANALYZE {}").format(new))
     old = sql.Identifier("raw", part)
     with pg.transaction():
         kept.archived = archive_changed(pg, new, tbl_key)
         kept.dropped = archive_dropped(pg, new, tbl_key)
-        # 전에 작은 표였으면 기본 파티션에 남은 행을 지운다 (붙일 때 겹치면 실패한다)
         pg.execute("DELETE FROM raw.stat_value_small WHERE tbl_key = %s", [tbl_key])
         if pg.execute("SELECT to_regclass(%s)", [f"raw.{part}"]).fetchone()[0]:
             pg.execute(sql.SQL("DROP TABLE {}").format(old))
@@ -429,27 +366,22 @@ def replace_small(pg: psycopg.Connection, tbl_key: int, rows, scan: Scan, name: 
         pg.execute("DELETE FROM raw.stat_value WHERE tbl_key = %s", [tbl_key])
         part = sql.Identifier("raw", f"stat_value_t{tbl_key}")
         if pg.execute("SELECT to_regclass(%s)", [f"raw.stat_value_t{tbl_key}"]).fetchone()[0]:
-            pg.execute(sql.SQL("DROP TABLE {}").format(part))  # 전에 큰 표였으면 파티션을 없앤다
+            pg.execute(sql.SQL("DROP TABLE {}").format(part))
         pg.execute("INSERT INTO raw.stat_value SELECT * FROM new_rows")
     return kept
 
 
-MERGE_WORK_MEM = "256MB"  # 덧붙이기 비교(해시 조인)가 디스크로 넘치지 않게. 그 트랜잭션에서만
+MERGE_WORK_MEM = "256MB"
 
 
 @dataclass
 class Merged:
-    """덧붙이기 결과"""
-
-    replaced: int  # 이미 있던 칸 (새 값으로 바꿈)
-    replaced_sum: Decimal  # 바꾸기 전 값의 합계
-    archived: int  # 그중 값이 달라 이력으로 보낸 칸
+    replaced: int
+    replaced_sum: Decimal
+    archived: int
 
 
 def merge_into(pg: psycopg.Connection, tbl_key: int, rows, scan: Scan, name: str) -> Merged:
-    """받은 일부 자료를 기존 표에 덧붙인다 (갱신: 빠진 주기·새 시점만 받은 경우).
-    기존 칸은 건드리지 않아 큰 표도 기존 행을 복사하지 않는다.
-    이미 있는 칸이 오면 새 값으로 바꾸고, 값이 달랐으면 예전 값을 이력에 남긴다"""
     with pg.transaction():
         pg.execute(
             "CREATE TEMP TABLE new_rows (LIKE raw.stat_value INCLUDING DEFAULTS) ON COMMIT DROP"
@@ -460,8 +392,6 @@ def merge_into(pg: psycopg.Connection, tbl_key: int, rows, scan: Scan, name: str
         check_loaded(pg, target, scan, name)
         pg.execute(f"SET LOCAL work_mem = '{MERGE_WORK_MEM}'")
         pg.execute("ANALYZE new_rows")
-        # 겹칠 수 있는 기존 행은 새 자료와 주기·시점이 같은 것뿐이다.
-        # 빠진 주기·새 시점만 받으면 거의 없어서, 표 전체(수천만 행)와 맞대지 않고 먼저 골라 둔다
         pg.execute(
             sql.SQL(
                 "CREATE TEMP TABLE old_rows ON COMMIT DROP AS SELECT * FROM raw.stat_value"
@@ -486,13 +416,6 @@ def merge_into(pg: psycopg.Connection, tbl_key: int, rows, scan: Scan, name: str
 
 
 def sync_period_meta(pg: psycopg.Connection, tbl_key: int) -> None:
-    """적재한 값의 기간이 표 정보보다 넓으면 표 정보의 수록 기간과 판 이름을 넓힌다.
-
-    값만 새로 받고 catalog.table_meta·table_families가 옛 기간으로 남으면 통계표 찾기가
-    있는 연도를 없다고 본다 (2026-11-23, DT_1MB2081 2025년). 값이 더 짧은 경우는
-    어느 쪽이 맞는지 따로 확인해야 하므로 좁히지 않는다.
-    월·분기 시점(202610)은 앞 네 자리를 연도로 본다.
-    """
     pg.execute(
         """
         WITH l AS (
@@ -525,7 +448,6 @@ def sync_period_meta(pg: psycopg.Connection, tbl_key: int) -> None:
 
 
 def load_table(pg: psycopg.Connection, path: Path, merge: bool = False) -> None:
-    """표 하나 적재. merge면 기존 표에 덧붙인다 (적재된 표만. 처음 적재하는 표는 그냥 넣는다)"""
     start = time.perf_counter()
     fixes = load_unit_fixes()
     scan = scan_csv(path, fixes)
@@ -570,8 +492,6 @@ def load_table(pg: psycopg.Connection, path: Path, merge: bool = False) -> None:
             flush=True,
         )
         return
-    # 한 번 큰 표(전용 파티션)였으면 그대로 둔다. 갱신은 일부 시점만 받아 행 수가 적어도
-    # 기존 칸과 합치면 큰 표이고, 작은 표로 옮기면 전용 파티션이 없어진다
     was_big = pg.execute(
         "SELECT is_big FROM raw.stat_load WHERE tbl_key = %s", [tbl_key]
     ).fetchone()
@@ -592,7 +512,7 @@ def load_table(pg: psycopg.Connection, path: Path, merge: bool = False) -> None:
         """,
         [
             tbl_key,
-            scan.row_count + kept.carried,  # 표에 실제로 있는 행 (남긴 기존 칸 포함)
+            scan.row_count + kept.carried,
             scan.value_sum + kept.carried_sum,
             min(periods) if periods else None,
             max(periods) if periods else None,

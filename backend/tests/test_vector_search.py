@@ -25,7 +25,6 @@ def test_query_embedding_is_normalized_and_cached(monkeypatch) -> None:
     monkeypatch.setattr(embedding, "embed_once", fake)
     first = asyncio.run(vs.embed_query("돌아가신 분 수"))
     assert np.allclose(first, [0.6, 0.8])
-    # 같은 질문(앞뒤 공백만 다름)은 다시 부르지 않는다
     asyncio.run(vs.embed_query(" 돌아가신 분 수 "))
     assert calls == ["돌아가신 분 수"]
 
@@ -40,7 +39,7 @@ def test_query_embedding_failure_falls_back_and_is_not_cached(monkeypatch) -> No
     monkeypatch.setattr(embedding, "embed_once", rate_limited)
     assert asyncio.run(vs.embed_query("q")) is None
     assert asyncio.run(vs.embed_query("q")) is None
-    assert len(calls) == 2  # 실패는 저장하지 않아 다음 요청에서 다시 시도한다
+    assert len(calls) == 2
 
 
 def test_cache_keeps_recent_questions(monkeypatch) -> None:

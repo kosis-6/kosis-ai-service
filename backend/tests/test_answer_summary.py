@@ -1,7 +1,3 @@
-"""답변 요약(answer_summary): 계산 결과 → 핵심 한 문장 + 덧붙일 사실 + 주의
-
-DB 없이 보려고 계산 결과를 직접 만든다 (indicators.py·lookup.py가 돌려주는 모양)."""
-
 import re
 
 import pytest
@@ -13,9 +9,8 @@ SRC = {"source": "테스트 출처", "basis": "테스트 기준", "tbl_id": "DT_
 
 
 def trend(region: str, values: list[float], start: int = 2020, **more) -> dict:
-    """연도별 값으로 추이 결과를 만든다 (전년 대비·최고·최저 해는 qa가 붙이는 그대로)"""
     series = [{"year": start + i, "value": v} for i, v in enumerate(values)]
-    diff = round(values[-1] - values[0], 3)  # 실제 계산 결과도 반올림한 값이다
+    diff = round(values[-1] - values[0], 3)
     r = {
         "status": "ok",
         "indicator": "출생아 수",
@@ -127,7 +122,6 @@ def test_trend_headline_is_the_whole_change() -> None:
     assert s["headline"] == (
         "대구광역시의 출생아 수는 2020~2022년에 190명 감소했습니다(1,000명 → 810명, -19.0%)."
     )
-    # 매년 줄었으면 최고·최저 해는 처음과 끝이라 따로 적지 않는다
     assert s["points"] == [
         "이 기간 동안 매년 감소했습니다.",
         "해마다 평균 95명씩 줄었습니다((마지막 값 − 처음 값) ÷ 햇수).",
@@ -148,9 +142,7 @@ def test_trend_up_and_down_counts_the_years() -> None:
 def test_trend_puts_what_was_asked_first() -> None:
     s = a.build(trend("전국", [100, 80, 60, 70], asked={"extreme": "min"}))
     assert s["points"][0] == "2020~2023년 중 출생아 수가 가장 적었던 해는 2022년(60명)입니다."
-    assert not any(
-        p.startswith("가장 많았던 해") for p in s["points"]
-    )  # 같은 말을 두 번 하지 않는다
+    assert not any(p.startswith("가장 많았던 해") for p in s["points"])
 
 
 def test_trend_without_change_says_same() -> None:
@@ -237,7 +229,6 @@ def test_nested_region_and_sex_trends_summarize_every_leaf() -> None:
 
 def test_nested_splits_with_two_leaves_share_the_headline() -> None:
     parts = [trend("서울", [100, 110]), trend("부산", [100, 90])]
-    # 한 갈래만 있는 묶음도 중첩 깊이에 관계없이 처리한다.
     result = qa._combine([qa._combine([qa._combine([p])]) for p in parts])
     s = a.build(result)
     assert s["headline"] == " ".join(a.build(p)["headline"] for p in parts)
@@ -311,7 +302,7 @@ def test_values_of_one_place_share_a_sentence() -> None:
     deaths = {**births, "indicator": "사망자 수", "value": 500}
     s = a.build({"status": "ok", "split": [births, deaths], "split_by": "indicator", **SRC})
     assert s["headline"] == "2025년 부산광역시의 출생아 수는 300명, 사망자 수는 500명입니다."
-    assert s["points"] == []  # 다른 지표끼리는 크기를 견주지 않는다
+    assert s["points"] == []
 
 
 def test_sum_names_its_members() -> None:
@@ -381,8 +372,6 @@ def test_no_summary_without_numbers(result: dict | None) -> None:
     ],
 )
 def test_summary_adds_no_number_the_answer_lacks(result: dict) -> None:
-    """요약의 숫자는 답변(문장 + 수치 목록)에 이미 있는 숫자다.
-    요약이 새로 만드는 것은 개수(곳·번·위)와 해마다 평균뿐이다"""
     s = a.build(result)
     shown = numbers(f"{qa.summary(result)}\n{qa.render(result)}")
     made = re.compile(r"\d+곳|\d+번|\d+~\d+위|해마다 평균 [\d,.]+")
@@ -400,7 +389,6 @@ def test_text_has_no_blank_line_and_one_line_is_the_headline() -> None:
 
 
 def test_parallel_trends_share_one_short_sentence() -> None:
-    """남편·아내처럼 따로 공표되는 지표의 추이: 갈래마다 문장을 잇지 않는다 (전에는 150자 넘음)"""
     husband = trend("서울특별시", [33.0, 33.5, 34.0], indicator="평균 초혼연령(남편)", unit="세")
     wife = trend("서울특별시", [31.0, 31.2, 31.8], indicator="평균 초혼연령(아내)", unit="세")
     for r in (husband, wife):

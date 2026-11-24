@@ -1,7 +1,3 @@
-"""적재 안 된 표 → 적재 대기열 + data_loading 답변, 관리자 대기열 API
-(DB 없이 load_queue 함수를 바꿔 끼운다)
-"""
-
 import asyncio
 from types import SimpleNamespace
 
@@ -37,7 +33,7 @@ def queue(monkeypatch: pytest.MonkeyPatch) -> list:
         return {"id": 1, "status": "queued", "requested_count": len(calls), "created": True}
 
     async def fetch_now(tbl_id, org_id, trace=None):
-        return "too_big"  # 바로 받지 않는 경우 (바로 받기는 test_table_cache.py)
+        return "too_big"
 
     monkeypatch.setattr(load_queue, "table_info", table_info)
     monkeypatch.setattr(load_queue, "enqueue", enqueue)
@@ -65,18 +61,16 @@ def test_unloaded_table_is_queued_and_answered_as_loading(monkeypatch, queue) ->
     assert "몇 분 뒤 다시 질문해 주세요." in res["answer"]
     assert res["answer"].endswith(f"통계표: {INFO['url']}")
     assert res["sources"][0]["tbl_id"] == TBL
-    assert qa.log_missing("서울 전입자 수", res)  # 답하지 못한 질문 기록에도 남는다
+    assert qa.log_missing("서울 전입자 수", res)
 
 
 def test_missing_schema_still_raises(monkeypatch, queue) -> None:
-    # 표를 모르면(DB 자체가 비어 있음) 대기열에 넣지 않고 원래 오류 → /ask 503
     with pytest.raises(StatsTableMissing):
         _ask_with(monkeypatch, StatsTableMissing("통계 테이블이 없습니다"))
     assert queue == []
 
 
 def test_unknown_table_is_not_reported_as_loading(monkeypatch, queue) -> None:
-    # 메타데이터에 없는 표는 적재할 수 없으니 "준비 중"이라고 답하지 않는다
     with pytest.raises(StatsTableMissing):
         _ask_with(monkeypatch, StatsTableMissing("적재 안 됨", "DT_NOPE"))
     assert queue == []
@@ -100,7 +94,7 @@ def test_startup_survives_db_error(monkeypatch) -> None:
         raise RuntimeError("DB 없음")
 
     monkeypatch.setattr(load_queue, "enqueue_missing", broken)
-    asyncio.run(main._queue_indicator_tables())  # 서버 시작을 막지 않는다
+    asyncio.run(main._queue_indicator_tables())
 
 
 @pytest.mark.parametrize(("is_admin", "code"), [(True, 200), (False, 403)])

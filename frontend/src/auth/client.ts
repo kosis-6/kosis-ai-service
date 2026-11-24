@@ -1,22 +1,13 @@
-// 로그인 상태와 서버 로그인 API(/auth/*) 호출
-//
-// 토큰 보관
-//   Access Token   이 파일의 변수(메모리)에만 둔다. localStorage 에 두면 XSS 로 읽어 갈 수 있다
-//   Refresh Token  서버가 HttpOnly 쿠키로 준다. 화면 코드는 읽을 수 없고 /auth 요청에 브라우저가 붙인다
-// 화면을 새로 열면 메모리가 비므로 POST /auth/refresh 로 Access Token 을 다시 받는다.
-// 브라우저에는 표시 이름만 남긴다: 로그인한 적이 있는지 알아 refresh 를 부를지 정하고,
-// 머리글을 바로 그리려는 것이다. 진짜 로그인 확인은 요청마다 서버가 한다.
 import type { Token, UserRead } from "../api/types";
 
-// admin 은 관리자 메뉴를 보여 줄지만 정한다. 관리자 API 는 요청마다 서버가 다시 확인한다
 export type User = { name: string; admin: boolean };
 
 export type Failure = {
   ok: false;
-  status: number; // 0 이면 서버에 닿지 못함
+  status: number;
   message: string;
-  fields: Record<string, string>; // 입력값 검사(422): 칸 이름 → 문구
-  wait: number; // 429 일 때 다시 시도할 수 있을 때까지(초)
+  fields: Record<string, string>;
+  wait: number;
 };
 export type Result<T> = { ok: true; data: T } | Failure;
 
@@ -34,8 +25,8 @@ function readCache(): User | null {
 
 let token: string | null = null;
 let user: User | null = readCache();
-let refreshing: Promise<boolean> | null = null; // 요청 여러 개가 함께 401 을 받아도 한 번만 보낸다
-let sessionVersion = 0; // 로그아웃이나 다른 로그인 뒤에는 이전 요청의 갱신 결과를 버린다
+let refreshing: Promise<boolean> | null = null;
+let sessionVersion = 0;
 const listeners = new Set<() => void>();
 
 function remember(next: User | null): void {
@@ -44,7 +35,6 @@ function remember(next: User | null): void {
     if (next) localStorage.setItem(KEY, JSON.stringify(next));
     else localStorage.removeItem(KEY);
   } catch {
-    /* 저장 못 해도 화면은 동작 */
   }
   listeners.forEach((fn) => fn());
 }
@@ -60,7 +50,6 @@ function forget(): void {
   remember(null);
 }
 
-/** 서버 오류 응답 → Failure. FastAPI 는 detail 을 글자(직접 낸 오류) 또는 목록(입력값 검사 422)으로 준다 */
 export function toFailure(status: number, body: unknown, retryAfter: string | null = null): Failure {
   const detail = (body as { detail?: unknown } | null)?.detail;
   const fields: Record<string, string> = {};
@@ -86,12 +75,10 @@ async function failure(res: Response): Promise<Failure> {
   try {
     body = await res.json();
   } catch {
-    /* 본문 없음 */
   }
   return toFailure(res.status, body, res.headers.get("Retry-After"));
 }
 
-/** 로그인 없이 부르는 POST (가입·로그인). form 이면 OAuth2 폼으로 보낸다 */
 export async function post<T>(url: string, body: Record<string, string>, form = false): Promise<Result<T>> {
   try {
     const res = await fetch(url, {
@@ -149,7 +136,6 @@ function sessionUnavailable(version: number): Response {
   });
 }
 
-// 로그인 상태에서 시작한 요청은 갱신에 성공해 토큰을 확보한 뒤 전송한다
 async function call(url: string, options: RequestInit = {}, version = currentSession()): Promise<Response> {
   if (version !== null) {
     if (version === sessionVersion && !token) await refresh();
@@ -159,7 +145,7 @@ async function call(url: string, options: RequestInit = {}, version = currentSes
   const sent = token;
   const res = await fetch(url, withToken(options));
   if (res.status !== 401 || !sent || version !== sessionVersion) return res;
-  if (token === sent) token = null; // 이 토큰은 끝났다 (다른 요청이 먼저 새로 받았으면 그대로 둔다)
+  if (token === sent) token = null;
   if (!token) await refresh();
   if (version !== sessionVersion || !token) return res;
   return fetch(url, withToken(options));
@@ -175,13 +161,11 @@ async function loadMe(): Promise<boolean> {
   return true;
 }
 
-/** 화면을 열 때: 로그인한 적이 있으면 Access Token 을 다시 받는다 */
 export const ready: Promise<void> = (async () => {
   if (!user) return;
   if (await refresh()) await loadMe();
 })();
 
-/** 로그인했으면 Access Token 을 붙여 부른다 (화면을 열 때의 로그인 확인이 끝난 뒤에) */
 export async function authFetch(url: string, options?: RequestInit): Promise<Response> {
   const version = currentSession();
   await ready;
@@ -201,14 +185,11 @@ export async function logout(): Promise<void> {
   const options = withToken({ method: "POST" });
   forget();
   try {
-    // Access Token 이 없어도 쿠키만으로 서버의 로그인을 끊는다
     await fetch("/auth/logout", options);
   } catch {
-    /* 서버에 닿지 못해도 화면은 로그아웃 */
   }
 }
 
-// React 의 useSyncExternalStore 용
 export function subscribe(fn: () => void): () => void {
   listeners.add(fn);
   return () => listeners.delete(fn);

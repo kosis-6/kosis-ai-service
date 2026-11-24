@@ -1,15 +1,3 @@
-"""되묻기·대화 상태 (실전 2 F-14, 검색 규칙 2.3 가안)
-
-- 직전 응답이 clarify/ambiguous면 이번 질문을 먼저 선택지와 문자열로 맞춘다
-  ("혼인 귀화자, 여성, 2010년", "2번", "아무거나").
-  맞으면 검색을 다시 하지 않고 저장된 패밀리로 멤버·판만 고른다 (search.resolve).
-  안 맞으면 새 질문으로 보고 처음부터 검색한다.
-- 화면 버튼으로 고르면 selections로 받는다 (문자열 매칭 생략)
-  {"family_id": ..., "target": "혼인 귀화자", "sex": "여", "edition": "TX_11025_A022"}
-- 되묻기는 최대 2턴. 그래도 대상이 안 정해지면 기본값(전체)으로 답한다.
-- 대화 상태는 PostgreSQL chat_sessions에 저장한다 (처음 저장할 때 테이블을 만든다).
-"""
-
 import copy
 import json
 import re
@@ -55,11 +43,7 @@ ON CONFLICT (session_id) DO UPDATE SET
 _ready = False
 
 
-# ---- 답 맞추기 (DB 없이 동작) -------------------------------------------------------
-
-
 def pick_family(answer: str, options: list[dict[str, Any]]) -> str | None:
-    """ambiguous 선택지에서 고른 패밀리: '2번', '②', '두 번째', 표 이름 일부"""
     m = NUMBER.match(answer)
     n = None
     if m:
@@ -79,7 +63,6 @@ def pick_family(answer: str, options: list[dict[str, Any]]) -> str | None:
 
 
 def match_member(answer: str, asked: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """clarify 선택지에서 고른 값 → {target, sex, edition, year}. 아무것도 못 맞추면 None"""
     options = {a["axis"]: a["options"] for a in asked}
     said = norm(answer)
     picked: dict[str, Any] = {}
@@ -99,7 +82,6 @@ def match_member(answer: str, asked: list[dict[str, Any]]) -> dict[str, Any] | N
             picked["edition"] = years[0]
         else:
             picked["year"] = int(years[0])
-    # '전체'는 아직 안 정해진 대상·성별 모두에 쓴다 ('전체로 보여줘')
     if TOTAL.search(answer):
         if "target" in options and "target" not in picked:
             picked["target"] = "전체"
@@ -111,7 +93,6 @@ def match_member(answer: str, asked: list[dict[str, Any]]) -> dict[str, Any] | N
 
 
 def apply_answer(slots: dict[str, Any], picked: dict[str, Any], last_turn: bool) -> dict[str, Any]:
-    """저장된 슬롯에 답을 합친다. '아무거나'거나 마지막 턴이면 빠진 대상은 기본값(전체)"""
     slots = copy.deepcopy(slots)
     c = slots["conditions"]
     if "target" in picked:
@@ -126,7 +107,7 @@ def apply_answer(slots: dict[str, Any], picked: dict[str, Any], last_turn: bool)
         slots["tbl_id"] = picked["tbl_id"]
     if (picked.get("anything") or last_turn) and "target" not in picked:
         slots["target"] = "전체"
-        slots["target_default"] = True  # 답변에 '대상을 지정하지 않아 전체' 고지
+        slots["target_default"] = True
     return slots
 
 
@@ -137,8 +118,6 @@ def follow_up(
     selections: dict[str, Any] | None = None,
     dense: list[float] | None = None,
 ) -> dict[str, Any] | None:
-    """직전 되묻기에 대한 답이면 결과, 새 질문이면 None.
-    dense: 앞 질문의 임베딩 점수 (ambiguous에 조건만 답해 다시 검색할 때 하이브리드로)"""
     selections = {k: v for k, v in (selections or {}).items() if v}
     turns = state["clarify_turns"]
     last_turn = turns + 1 >= MAX_CLARIFY_TURNS
@@ -148,10 +127,9 @@ def follow_up(
         options = state["asked"]
         family_id = selections.get("family_id") or pick_family(answer, options)
         if family_id is None and ANYTHING.search(answer):
-            family_id = options[0]["family_id"]  # 1순위
+            family_id = options[0]["family_id"]
         if family_id is not None:
             return search.resolve(tables, slots, family_id, allow_clarify=not last_turn)
-        # '2010년', '여자'처럼 조건만 답하면 앞 질문에 조건을 더해 다시 검색한다
         picked = match_member(answer, [{"axis": "sex", "options": ["전체", "남", "여"]}])
         if picked and set(picked) <= {"sex", "year"}:
             merged = apply_answer(slots, picked, last_turn=False)
@@ -168,9 +146,6 @@ def follow_up(
         merged = apply_answer(slots, picked, last_turn)
         return search.resolve(tables, merged, state["family_id"], allow_clarify=not last_turn)
     return None
-
-
-# ---- 세션 저장 -------------------------------------------------------------------
 
 
 async def load_state(session_id: str) -> dict[str, Any] | None:
@@ -225,8 +200,6 @@ OWNER_KEY = "_session_user_id"
 
 
 async def owned_session(session_id: str, user_id: int | None) -> tuple[str, dict | None]:
-    """검색 상태는 시작한 계정만 이어 간다. 소유자 없는 옛 상태도 새 대화로 분리한다.
-    손님끼리는 대화 ID로 이어 가지만 로그인·로그아웃하면 새 ID로 시작한다."""
     state = await load_state(session_id)
     if state is not None:
         slots = state.get("slots") or {}
@@ -236,7 +209,6 @@ async def owned_session(session_id: str, user_id: int | None) -> tuple[str, dict
 
 
 def owned_result(result: dict, user_id: int | None) -> dict:
-    """소유자는 모델 출력 대신 인증된 계정에서 넣는다. 검색 응답에는 포함하지 않는다."""
     return {**result, "slots": {**result["slots"], OWNER_KEY: user_id}}
 
 
@@ -247,14 +219,12 @@ async def handle(
     trace: dict[str, Any] | None = None,
     user_id: int | None = None,
 ) -> dict[str, Any]:
-    """한 턴 처리: 되묻기 답이면 이어서, 아니면 새 검색. 결과의 turn에 몇 번째 되묻기인지 남긴다"""
     session_id, state = await owned_session(session_id, user_id)
     if trace is not None:
         trace["search_session_id"] = session_id
     result = None
     turns = 0
     if state and state["status"] in ("clarify", "ambiguous"):
-        # ambiguous에 조건만 답하면 앞 질문으로 다시 검색하므로 앞 질문의 임베딩이 필요하다
         dense = None
         if state["status"] == "ambiguous":
             dense = await search.dense_scores(state["slots"]["question"])
@@ -266,9 +236,6 @@ async def handle(
     if result is None:
         result = await search.search(question, trace)
         if state and state["status"] in ("clarify", "ambiguous") and result["status"] in REJECTED:
-            # 되묻기에 '초혼'처럼 짧게 답했는데 선택지와 못 맞추면 답만으로 찾아 범위 밖이 된다.
-            # 그럴 때만 앞 질문에 답을 붙여 다시 찾는다. 답이 표 이름에 가까운 말이면
-            # 답만으로 찾는 게 더 잘 맞아서 먼저 시도한다 (개발셋 d115·d127)
             retry = await search.search(f"{state['slots']['question']} {question}", trace)
             if retry["status"] not in REJECTED:
                 result = retry

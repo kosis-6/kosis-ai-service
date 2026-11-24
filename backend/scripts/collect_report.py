@@ -1,12 +1,3 @@
-"""수집 결과 표: scripts/tables.csv의 통계표별로 수록 기간, 행 수, 수집 시각을 정리한다
-
-값은 collect_kosis.py가 남긴 data/processed/<표ID>.meta.json에서 읽는다.
-meta.json이 없는 표는 '미수집'으로 표시한다.
-
-결과: data/reports/collect_YYYYMMDD_HHMMSS.md (보고서 붙여넣기용) / .csv (엑셀용)
-실행: python -m scripts.collect_report
-"""
-
 import argparse
 import csv
 import json
@@ -40,11 +31,9 @@ def summarize(tables: Path = TABLES, meta_dir: Path = META_DIR) -> list[dict[str
         if meta_path.exists():
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
             row |= {
-                # 표 이름은 KOSIS가 준 정식 이름을 우선
                 "tbl_nm": meta.get("tbl_nm") or t["tbl_nm"],
                 "period": f"{meta.get('start', '')}~{meta.get('end', '')}",
                 "rows": meta.get("rows", ""),
-                # 이전 버전 수집기로 받은 표는 collected_at이 없음
                 "collected_at": meta.get("collected_at", "기록 없음"),
                 "status": "수집" if meta.get("rows") else "0행",
             }

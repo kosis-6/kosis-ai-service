@@ -47,7 +47,6 @@ def test_status_messages_without_table() -> None:
         assert (
             response["recommendations"] == [] and response["answer"] == sa.STATUS_MESSAGES[status]
         )
-    # JSON을 못 읽고 찾지도 못했으면 parse_error
     s = _slots()
     s["parse_error"] = True
     response = sa.respond({"status": "out_of_scope", "slots": s, "reason": None}, [], "S_test")
@@ -55,7 +54,6 @@ def test_status_messages_without_table() -> None:
 
 
 def test_together_tables_are_listed_in_the_answer() -> None:
-    """한 통계가 여러 표로 나뉘면 함께 볼 표를 답과 응답 칸에 넣는다"""
     wife = {
         "tbl_id": "W", "org_id": "101", "table_name": "외국인 아내의 국적별 이혼",
         "survey_name": "인구동향조사", "organization": "국가데이터처", "edition": "2000~2024",
@@ -93,7 +91,6 @@ def _option(tbl_id: str, name: str, **more) -> dict:
 
 
 def test_ambiguous_options_show_how_they_differ() -> None:
-    """비슷한 표를 되물을 때 표 이름만이 아니라 서로 다른 점(기관·지역 단위·분류·주석)을 붙인다"""
     a = _option(
         "A", "시도별 주민 현황", organization="행정안전부",
         classifications=[{"name": "행정구역별"}, {"name": "성별"}],
@@ -119,13 +116,11 @@ def test_ambiguous_options_show_how_they_differ() -> None:
 
 
 def test_ambiguous_options_without_difference_add_no_line() -> None:
-    """선택지끼리 같은 특징은 차이가 아니다: 다른 것이 없으면 지금처럼 표 이름만 보여 준다"""
     a = _option("A", "서울특별시 시군구별 이동자수")
     b = _option("B", "부산광역시 시군구별 이동자수")
     assert sa.option_diffs([a, b], {"A": a, "B": b}) == {}
     result = {"status": "ambiguous", "slots": _slots(), "options": [a, b], "reason": None}
     response = sa.respond(result, [a, b], "S_test")
-    assert len(response["answer"].split("\n")) == 4  # 머리말 + 선택지 2줄 + 맺음말
+    assert len(response["answer"].split("\n")) == 4
     assert [f["diff"] for f in response["clarify"]["families"]] == [None, None]
-    # 카탈로그에 없는 표가 선택지에 있어도 답은 나간다
     assert sa.option_diffs([a, b], {"A": a}) == {}

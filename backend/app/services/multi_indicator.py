@@ -1,31 +1,3 @@
-"""지표가 여럿인 질문 계산 (구현 5): 통계표 찾기 꾸러미의 지표마다 계산해 combine.op대로 합친다
-
-통계표 찾기가 질문을 지표 여럿으로 읽으면 꾸러미(found["handoff"])의 targets가 지표 수만큼 온다.
-지표마다 계산하고 (사전에 있는 지표는 사전으로, 없는 지표는 넘기기 계산으로), 계획이 정한
-combine.op대로 합친다.
-
-  none · compare      지표마다 결과를 나란히 (qa._combine과 같은 split 모양).
-                      compare는 단위가 같은 값 둘이면 차이 한 줄
-  diff · ratio        두 값이 다 나오고 단위가 맞으면 빼거나 나눈다 (cross_indicator.combine_value).
-                      안 되면 나란히 + 직접 계산하지 않았다는 안내
-                      compare · diff에서 두 지표의 조사 기준이 다르면 (인구총조사 인구와
-                      주민등록인구) 빼거나 견주지 않고 나란히 + 직접 비교하지 않는다는 안내
-                      (cross_indicator.basis_gap). ratio는 다른 조사끼리도 나눈다
-  rank                지표마다 순위를 나란히
-  filter_then_lookup  거르는 지표(role filter)의 1위 지역을 구한 뒤 그 지역으로 다른 지표를 계산
-  intersect           지역을 거르는 질문("인구도 많고 출생아도 많은 시")이면 두 순위 상위 지역의
-                      교집합. 한 집단이 두 특성을 함께 가진 질문("1인 노인 가구 중 연금 수급자")은
-                      두 표의 숫자로 만들 수 없어 함께 집계한 통계가 없다고 안내한다
-                      (숫자를 만들지 않는다)
-
-연도를 말하지 않은 값 질문에서 지표마다 가장 최근 시점이 다르면 (주민등록인구 2026년 10월,
-등록외국인 2025년, 인구총조사 2020년) 모두 있는 해로 다시 계산해 맞춘다 (사전 지표끼리는
-qa._common_year · cross_indicator가 같은 일을 한다). 다시 계산이 하나라도 안 되면 처음 값 그대로.
-
-일부 지표만 계산되면 계산된 지표는 숫자로, 못 한 지표는 표 안내 한 줄로 같은 답에 넣는다.
-지표마다 대안 제안 LLM은 부르지 않는다 (HCX · Gemma 호출이 지표 수만큼 늘지 않게).
-"""
-
 import asyncio
 import logging
 import re
@@ -37,15 +9,13 @@ from app.services.josa import josa
 
 logger = logging.getLogger(__name__)
 
-MAX_TARGETS = 3  # 한 질문에서 계산할 지표 수 (그 밖은 표 안내)
-INTERSECT_TOP = 5  # 지역 교집합: 지표마다 상위 몇 곳을 볼지 (질문에 개수가 없으면)
+MAX_TARGETS = 3
+INTERSECT_TOP = 5
 KINDS = ("value", "trend", "compare", "rank", "composition")
-# 지역을 거르는 교집합 ("인구도 많고 출생아도 많은 시", "두 지표 모두 높은 지역")
 REGION_FILTER = re.compile(
     r"(시|군|구|도|지역|곳|도시|시도|시군구)\S*\s*(는|은|가|이|를)?\s*(어디|알려|$)|어디"
 )
 RATE_WORDS = re.compile(r"비율|비중|%|퍼센트|몇\s*프로")
-# "1인 가구가 가장 많은 시도의 통근 인구": 1위 지역을 고른 뒤 그 지역의 값 (계획이 intersect로 봐도)
 TOP_REGION_OF = re.compile(
     r"(가장|제일)\s*(많|높|적|낮|큰|작)\S*\s*(시도|시군구|지역|도시|시|군|구|곳|동네)\S*?\s*의"
 )
@@ -58,22 +28,18 @@ def _ok(res: dict | None) -> bool:
 
 
 def says_age(text: str) -> bool:
-    """말에 연령 조건이 있는가 ("70세 이상 1인 가구", "노인 1인 가구"). "전체 1인 가구"는 없다"""
     from app.services import agegroup
 
     return bool(qa.extract_ages(text) or agegroup.resolve(text))
 
 
 def without_unsaid_age(parsed: dict, phrase: str) -> dict:
-    """두 값을 나눌 때 한쪽 말이 연령을 말하지 않았으면 그쪽 해석에서 질문의 연령 조건을 뺀다
-    (질문의 연령은 다른 쪽 말의 것이다: "1인 가구 중 70세 이상" → 분모 "전체 1인 가구"는 전 연령)"""
     if says_age(phrase) or not (parsed.get("ages") or parsed.get("age_group")):
         return parsed
-    return {**parsed, "ages": None, "age_group": None}
+    return {**parsed, "ages": None, "age_group": None, "age_note": None}
 
 
 def target_parsed(parsed: dict, target: dict, kind: str | None = None) -> dict:
-    """지표 하나를 계산할 해석: 질문 전체 해석에서 지표 이름만 그 지표로 바꾼다"""
     span = target.get("span") or target.get("question") or ""
     # 계획의 dict(사전 지표 이름)가 있으면 그것으로. "젊은 사람 대비 노인 부담"처럼 구절로는
     # 사전에 못 잇지만 계획이 search를 '노년부양비'로 쓴 경우 (11/24 재계획 시험)
@@ -91,16 +57,15 @@ def target_parsed(parsed: dict, target: dict, kind: str | None = None) -> dict:
         "unsupported": None,
     }
     if target.get("unsaid_age"):
-        q.update(ages=None, age_group=None)
+        q.update(ages=None, age_group=None, age_note=None)
     k = kind or parsed.get("type")
     if k == "compare" and len(parsed.get("regions") or []) <= 1:
-        k = "value"  # 지역 하나의 '비교'는 지표끼리 비교: 지표마다 값
+        k = "value"
     q["type"] = k if k in KINDS else "value"
     return q
 
 
 async def _one(question: str, parsed: dict, found: dict, target: dict, kind: str | None = None):
-    """지표 하나 계산 → (답 또는 None, 기록). 사전에 있으면 사전, 없으면 캐시 → 넘기기 계산"""
     sub: dict = {"dynamic": []}
     p = target_parsed(parsed, target, kind)
     asked = target.get("question") or question
@@ -139,14 +104,12 @@ def _record(trace: dict, targets: list[dict], outcomes) -> None:
 
 
 def _missed_note(target: dict) -> str:
-    """계산하지 못한 지표: 표 안내 한 줄 (후보 1순위 표 이름)"""
     cands = target.get("candidates") or []
     where = f" ('{cands[0].get('tbl_nm')}' 표에서 확인할 수 있습니다)" if cands else ""
     return f"{josa(_span(target), '은는')} 통계표에서 바로 계산하지 못했습니다{where}"
 
 
 def _response(question: str, parsed: dict, result: dict, trace: dict, notes=(), names=()):
-    """qa.answer와 같은 모양의 답"""
     lines = [f"{qa.summary(result)}\n\n{qa.render(result)}".strip()]
     lines += [f"※ {n}" for n in notes if n]
     return {
@@ -179,8 +142,6 @@ def _side_by_side(question, parsed, ok, failed, trace, notes=()):
 
 
 def side_by_side(question: str, parsed: dict, answers: list[tuple[str, dict]], trace: dict):
-    """이미 계산한 지표별 답을 질문에 나온 순서대로 나란히 (사전 지표 답 + 함께 물은 사전 밖 지표
-    답). 계산된 답이 둘 미만이면 None"""
     ok = [({"span": span}, res) for span, res in answers if _ok(res)]
     if len(ok) < 2:
         return None
@@ -195,7 +156,6 @@ def side_by_side(question: str, parsed: dict, answers: list[tuple[str, dict]], t
 
 
 def _value(res: dict) -> dict | None:
-    """값 질문의 결과 (한 지역 · 한 해 값이 있을 때만)"""
     r = (res or {}).get("result") or {}
     return r if "value" in r and r.get("value") is not None else None
 
@@ -205,16 +165,13 @@ ALIGN_OPS = ("none", "compare", "diff", "ratio", "sum", "which_larger")
 
 
 def common_year(question: str, parsed: dict, ok) -> int | None:
-    """연도를 말하지 않은 값 질문에서 지표마다 답한 시점이 다르면 모두 있는 해.
-    맞출 것이 없으면 None. 최신 달 값(as_of)은 연간 값과 섞지 않으므로 연간 자료의
-    마지막 해로 본다"""
     if any(parsed.get(k) for k in ("year", "start_year", "end_year")) or qa._says_year(question):
         return None
     rows = [_value(r) for _, r in ok]
     if len(rows) < 2 or not all(rows) or not all(r.get("year") for r in rows):
         return None
     if len({(r["year"], r.get("as_of")) for r in rows}) <= 1:
-        return None  # 연도와 기준 달이 모두 같다 (둘 다 2026년 10월 말이면 그대로 둔다)
+        return None
     year = min(r["year"] for r in rows)
     if any(r.get("as_of") for r in rows):
         year = min(year, indicators._data_years()[1])
@@ -222,11 +179,7 @@ def common_year(question: str, parsed: dict, ok) -> int | None:
 
 
 async def _aligned(question: str, parsed: dict, found: dict, ok, year: int):
-    """ok였던 지표들을 year로 다시 계산한 결과. 모두 그 해의 값으로 나왔을 때만 돌려준다
-    (아니면 None)"""
     asked = {**(parsed.get("asked") or {}), "latest": False}
-    # 넘기기 계산은 지표의 조건(target.conditions)에서 연도를 읽는다. 질문 해석에만 넣으면
-    # '질문에 없는 연도'로 지워진다 (dynamic_indicator.drop_guessed_year)
     targets = [
         {**t, "conditions": {**(t.get("conditions") or {}), "year": year, "year_end": None}}
         for t, _ in ok
@@ -241,7 +194,6 @@ async def _aligned(question: str, parsed: dict, found: dict, ok, year: int):
 
 
 def _basis_gap(ok) -> str | None:
-    """차이 · 비교: 조사 기준이 다른 두 지표가 있으면 그 이유 (cross_indicator.basis_gap)"""
     for i, (ta, ra) in enumerate(ok):
         for tb, rb in ok[i + 1 :]:
             gap = cross_indicator.basis_gap(ra["result"], rb["result"], _span(ta), _span(tb))
@@ -276,7 +228,6 @@ def _larger(ok) -> dict | None:
 
 
 def _compare_line(ok) -> str | None:
-    """compare: 단위가 같은 값 둘이면 차이 한 줄"""
     if len(ok) != 2:
         return None
     (ta, ra), (tb, rb) = ok
@@ -291,11 +242,6 @@ def _compare_line(ok) -> str | None:
 
 
 def ratio_order(question: str, ta: dict, tb: dict, combine: dict) -> tuple[bool, str]:
-    """ratio에서 ta가 분자인가 → (ta가 분자, 정한 근거 'rule' · 'plan' · 'default').
-    1. 코드 문형 규칙 (cross_indicator와 같은 기준): 'A는 B의 몇 배' → A ÷ B,
-       'A당 B' · 'A 대비 B' · 'A 중 B 비율' → B ÷ A. 질문에서 두 지표 말을 찾았을 때만
-    2. 계획의 분자 · 분모 (계획 규칙 7-1, LLM): combine.num · den이 두 지표 span과 맞을 때만
-    3. 예전 규칙: 뒤 지표 ÷ 앞 지표"""
     x = cross_indicator
     text = indicators._norm(question)
     sa, sb = indicators._norm(_span(ta)), indicators._norm(_span(tb))
@@ -309,13 +255,13 @@ def ratio_order(question: str, ta: dict, tb: dict, combine: dict) -> tuple[bool,
         if s_start >= f_end:
             between, after = text[f_end:s_start], text[s_end:]
             if x.SUBJECT.match(between) and x.TIMES_AFTER.match(after):
-                return first is ta, "rule"  # 앞에 말한 지표 ÷ 뒤에 말한 지표
+                return first is ta, "rule"
             if (
                 x.PER.match(between)
                 or x.VERSUS.match(between)
                 or (x.WITHIN.match(between) and x.RATE_AFTER.match(after))
             ):
-                return second is ta, "rule"  # 뒤에 말한 지표 ÷ 앞에 말한 지표
+                return second is ta, "rule"
     num, den = (combine or {}).get("num"), (combine or {}).get("den")
     spans = {_span(ta), _span(tb)}
     if num and den and num != den and {num, den} == spans:
@@ -324,8 +270,6 @@ def ratio_order(question: str, ta: dict, tb: dict, combine: dict) -> tuple[bool,
 
 
 def _two(op: str, question: str, parsed: dict, ok, trace: dict, combine=None) -> dict | None:
-    """diff · ratio: 두 값이 다 나오고 단위가 맞으면 빼거나 나눈다.
-    안 되면 None (나란히 보여 준다)"""
     (ta, ra), (tb, rb) = ok
     a, b = _value(ra), _value(rb)
     if not a or not b:
@@ -357,10 +301,9 @@ def _two(op: str, question: str, parsed: dict, ok, trace: dict, combine=None) ->
 
 
 async def _filter_then_lookup(question, parsed, found, targets, trace) -> dict | None:
-    """거르는 지표의 1위 지역을 구한 뒤 그 지역으로 다른 지표를 계산"""
     flt = next((t for t in targets if t.get("role") == "filter"), targets[0])
     rest = [t for t in targets if t is not flt]
-    low = bool(re.search(r"(가장|제일)\s*(적|낮|작)", question))  # 가장 적은 지역의 값
+    low = bool(re.search(r"(가장|제일)\s*(적|낮|작)", question))
     asked = {**parsed, "top": 1, "regions": [], "ascending": low}
     ((res_f, sub_f),) = await _all(question, asked, found, [flt], "rank")
     trace["multi"]["targets"] = [{"span": _span(flt), "by": sub_f.get("by"), "role": "filter"}]
@@ -392,7 +335,6 @@ def _record_more(trace: dict, targets, outcomes) -> None:
 
 
 async def _intersect(question, parsed, found, targets, trace) -> dict | None:
-    """지역을 거르는 교집합만 계산한다. 집단의 교집합은 함께 집계한 통계가 없다고 안내"""
     names = [_span(t) for t in targets]
     if not REGION_FILTER.search(question) and parsed.get("type") != "rank":
         joined = " · ".join(f"'{n}'" for n in names)
@@ -494,7 +436,6 @@ async def _one_table_ratio(
 
 
 async def answer(question: str, parsed: dict, found: dict, trace: dict) -> dict | None:
-    """지표가 여럿인 꾸러미 → 합친 답 (qa.answer와 같은 모양). 하나도 계산하지 못하면 None"""
     h = found["handoff"]
     op = (h.get("combine") or {}).get("op") or "none"
     targets = [t for t in h.get("targets") or [] if (t.get("scope") or "in") == "in"]
@@ -503,14 +444,12 @@ async def answer(question: str, parsed: dict, found: dict, trace: dict) -> dict 
     if not targets:
         return None
     if op in ("intersect", "rank", "none") and len(targets) >= 2 and TOP_REGION_OF.search(question):
-        op = trace["multi"]["op"] = "filter_then_lookup"  # "가장 많은 시도의 B"는 1위 지역의 B
+        op = trace["multi"]["op"] = "filter_then_lookup"
     if op == "filter_then_lookup" and len(targets) >= 2:
         return await _filter_then_lookup(question, parsed, found, targets, trace)
     if op == "intersect" and len(targets) >= 2:
         return await _intersect(question, parsed, found, targets, trace)
     if op == "ratio":
-        # "A 중 B 비율": 연령을 말하지 않은 쪽("전체 1인 가구")에는 질문의 연령을 붙이지 않는다.
-        # 분모에도 70세 이상을 붙여 182,686 ÷ 182,686 = 100%로 답했다 (11/23)
         targets = [{**t, "unsaid_age": not says_age(_span(t))} for t in targets]
         if joint := joint_candidates(h, targets):
             # 분자 · 분모가 한 표에 다 있으면 그 표에서 원래 질문 그대로 분자 ÷ 분모 (11/25):
@@ -526,15 +465,12 @@ async def answer(question: str, parsed: dict, found: dict, trace: dict) -> dict 
         return None
     notes = []
     if op in ALIGN_OPS and (year := await run_in_threadpool(common_year, question, parsed, ok)):
-        # 지표마다 가장 최근 시점이 달랐다: 다른 해의 값을 나란히 놓거나 서로 계산하지 않는다
         if redo := await _aligned(question, parsed, found, ok, year):
             ok = redo
             notes.append(f"지표마다 가장 최근 자료의 시점이 달라 모두 있는 {year}년으로 맞췄습니다")
         trace["multi"]["aligned"] = {"year": year, "done": bool(redo)}
     gap = None
     if op in ("compare", "diff"):
-        # 조사 기준이 다른 통계(인구총조사 인구와 주민등록인구)는 빼거나 크기를 견주지 않고
-        # 값과 출처(기준)만 나란히 보여 준다 (답변 정책: 단위·조사 기준 차이)
         if gap := await run_in_threadpool(_basis_gap, ok):
             notes.append(gap)
     if op in ("diff", "ratio") and len(ok) == 2 and not failed and not gap:
@@ -560,5 +496,5 @@ async def answer(question: str, parsed: dict, found: dict, trace: dict) -> dict 
         out["result"]["verdict"] = verdict
         out["answer"] = f"{verdict['line']}\n{out['answer']}"
     if gap:
-        out["result"]["basis_gap"] = gap  # 요청 기록(result)에 남는다 (cross_indicator와 같은 칸)
+        out["result"]["basis_gap"] = gap
     return out

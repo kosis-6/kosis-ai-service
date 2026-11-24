@@ -1,12 +1,3 @@
-"""app.email_verifications: 회원가입 이메일 인증번호
-
-이메일마다 마지막으로 보낸 인증번호 하나(HMAC 값)와 만료 시각, 틀린 횟수, 확인한 시각을 둔다.
-가입이 끝나면 그 이메일의 줄을 지운다.
-
-Revision ID: 0010
-Revises: 0009
-"""
-
 from collections.abc import Sequence
 
 import sqlalchemy as sa
