@@ -65,6 +65,33 @@ def test_population_signal_is_not_refused(question: str) -> None:
     assert early(question) is None
 
 
+@pytest.mark.parametrize(
+    ("question", "outside"),
+    [
+        ("2024년 부산 출생아 수랑 아파트 매매가격 알려줘", "아파트 매매가격"),
+        ("서울 집값과 출생아 수 알려줘", "서울 집값"),
+        ("2024년 부산 출생아 수, 실업률 알려줘", "실업률"),
+    ],
+)
+def test_off_domain_indicator_asked_with_population_refuses_whole(question, outside) -> None:
+    # 출생아 수만 답하면 다른 질문의 답이 된다 (전에는 매매가격을 조용히 빼고 출생아 수만 답했다)
+    res = early(question)
+    assert res is not None and res["status"] == "out_of_scope"
+    assert f"'{outside}'" in res["answer"] and "인구 분야 통계가 아니라" in res["answer"]
+    assert "출생아 수" in res["answer"]  # 나머지 지표는 따로 물으면 볼 수 있다고 알린다
+
+
+def test_coordinated_words_finds_the_asked_phrase() -> None:
+    assert table_guide.coordinated_words("출생아 수랑 아파트 매매가격", ["매매가"]) == {
+        "매매가": "아파트 매매가격"
+    }
+    assert table_guide.coordinated_words("아파트 매매가격이랑 출생아 수", ["매매가"]) == {
+        "매매가": "아파트 매매가격"
+    }
+    # 꾸밈말은 나란히 물은 지표가 아니다
+    assert table_guide.coordinated_words("물가 비싼 서울에 사는 1인 가구", ["물가"]) == {}
+
+
 def test_plain_population_question_is_untouched() -> None:
     assert early("강남구 사람 몇 명이야?") is None
 

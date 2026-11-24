@@ -1831,6 +1831,15 @@ def test_region_only_rule_needs_nothing_but_regions() -> None:
     assert s.region_only_changes("부산 출생아 수는?", c) is None  # 지표를 말함
     assert s.region_only_changes("부산은 몇 명이야?", c) is None
     assert s.region_only_changes("부산은?", {"type": "rank", "regions": []}) is None  # 순위
+    # 받침 뒤의 '이랑'도 두 곳을 잇는 말이다 (전에는 지역만 말한 말로 보지 않았다)
+    both = {"regions": {"op": "set", "value": ["서울", "부산"]}}
+    assert s.region_only_changes("서울이랑 부산은?", c) == both
+
+
+def test_region_only_first_question_with_irang_asks_what_to_see(talk: Talk) -> None:
+    res = talk.say("서울이랑 부산은?")
+    assert res["request_type"] == s.UNCLEAR and res["answer"].startswith("서울 · 부산의 어떤 통계")
+    assert talk.asked == [] and talk.searched == []
 
 
 def test_people_question_does_not_inherit_other_indicator(talk: Talk) -> None:

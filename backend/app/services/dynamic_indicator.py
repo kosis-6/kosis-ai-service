@@ -91,6 +91,19 @@ SCHOOL_GOING = re.compile(r"(?:^|(?<=\s))학교\s*(?:에\s*)?(?:가는|가고|�
 MOVE_CONTEXT = re.compile(
     r"출근|출퇴근|통근|지하철|전철|버스|자가용|승용차|자전거|타고|걸어서|교통"
 )
+# 질문이 사는 곳 말고 다른 장소(출생지 · 전 거주지 · 이동 · 통근통학지)를 말하는 표현.
+# 이런 말이 없으면 질문의 지역 이름은 지역 분류만 고른다 (_drop_region_words)
+OTHER_PLACE = re.compile(
+    r"출생|태어|출신|고향|전\s*거주|년\s*전|이동|이사|전입|전출|옮겨|옮긴|들어온|나간|유입|유출"
+    r"|통근|통학|출근|출퇴근|등교|다니는|에서\s*온|(?:으로|로)\s*(?:간|가는|온|오는)|갔|왔|떠난"
+)
+# 지역 이름 목록에 있지만 칸 이름에서는 지역이 아닌 말 ("전체 출생아수(명)")
+NOT_PLACE_WORDS = {"전체"}
+# 지역 이름을 뺀 나머지가 이것뿐이면 지역 칸 ("부산직할시", "부산-구부", "서울특별시(계)")
+PLACE_REST = re.compile(
+    r"[()\[\]\-·_,./]|직할시|특별시|광역시|특별자치시|특별자치도|시부|군부|구부|동부|읍부|면부|미상"
+    r"|합계|소계|계|이외|외|지역|도|시|군|구"
+)
 TOTAL_SUFFIX = re.compile(r"(계|합계|소계|전체)$")  # 공백·기호를 뺀 이름 끝의 합계 표시
 PCT_ASK = re.compile(r"%|퍼센트|비율|비중|몇\s*프로")
 # 가구 수를 묻는 말 ("다문화가구 수는?", "다문화가구 몇 개인가요?", "몇 가구").
@@ -283,6 +296,37 @@ def table_words(question: str) -> str:
     return q
 
 
+def _is_place_cell(name: str) -> bool:
+    """지역 이름만으로 된 칸 ("서울", "부산광역시", "부산직할시", "부산-구부", "전국").
+    "전체 출생아수(명)"의 '전체'처럼 지역 이름 목록에 걸리는 다른 말이 든 칸은 아니다"""
+    n = _norm(name)
+    if n == "전국":
+        return True
+    found = [f for f in indicators.find_regions(name) if f not in NOT_PLACE_WORDS]
+    for f in sorted(found, key=len, reverse=True):
+        n = n.replace(f, "")
+    return bool(found) and not PLACE_REST.sub("", n)
+
+
+def _drop_region_words(
+    question: str, hits: dict[int, list[str]], dims: list[Dim], region_dim: int | None
+) -> dict[int, list[str]]:
+    """질문의 지역 이름이 지역 분류가 아닌 칸(출생지 '서울' 등)에 걸린 것을 뺀다.
+    '현 거주지별 … 출생지별 1인가구' 표에서 "서울 1인 가구 수"가 출생지도 서울인 434,920가구로
+    나왔다 (실제 1,390,701가구). 질문이 출생지 · 이동 · 통근처럼 다른 장소를 말하면 그대로 둔다.
+    지역 분류가 없는 표는 지역 이름 칸이 곧 지역이라 그대로 둔다"""
+    if region_dim is None or OTHER_PLACE.search(question):
+        return hits
+    by_no = {d.no: d for d in dims}
+    out = {}
+    for no, codes in hits.items():
+        d = by_no.get(no)
+        kept = [c for c in codes if d is None or not _is_place_cell(d.codes[c])]
+        if kept:
+            out[no] = kept
+    return out
+
+
 def _text_hits(question: str, dims: list[Dim], skip: set[int]) -> dict[int, list[str]]:
     """질문에 이름이 그대로 나온 칸 {분류 번호: [코드...]}. 더 긴 이름 안에 든 짧은 이름은 뺀다"""
     q = table_words(question)
@@ -416,9 +460,10 @@ def _label_name(label: str) -> str:
 
 
 def _term_name(term: str) -> str:
-    """질문에서 읽은 지표 표현을 이름으로: 원자료의 합계 표시를 뗀다
-    ("이주배경인구_계 수" → "이주배경인구 수"). 조회에 쓰는 칸은 그대로다"""
-    name = TERM_TOTAL.sub("", term)
+    """질문에서 읽은 지표 표현을 이름으로: 원자료의 합계 표시와 전국 범위 말을 뗀다
+    ("이주배경인구_계 수" → "이주배경인구 수", "전국 1인 가구 수" → "1인 가구 수").
+    조회에 쓰는 칸은 그대로다"""
+    name = TERM_TOTAL.sub("", indicators.without_national(term))
     return " ".join(name.replace("_", " ").split()) or term
 
 
@@ -485,7 +530,7 @@ def choose(
     if plan.age_dim is None and parsed.get("ages"):
         return None, "표에 연령 구분이 없음"
     skip = {region_dim} | ({plan.age_dim.no} if plan.age_dim else set())
-    hits = _text_hits(question, dims, skip)
+    hits = _drop_region_words(question, _text_hits(question, dims, skip), dims, region_dim)
     household_table = HOUSEHOLD_CELL.search(_table_target(tbl_nm))
     asks: list[Ask] = []
     ranked = _rank_dim(question, dims, region_dim, tbl_nm)
@@ -773,10 +818,28 @@ def uncovered(
             return f"질문의 대상 '{slots['target']}'이 표나 고른 칸에 없음"
     # 성별, 그리고 질문에 연령 구간이 있을 때의 '연령'은 나눠 보기가 아니라 조건이다
     skip = {"성별"} | ({"연령", "나이"} if parsed.get("ages") else set())
-    classes = [c for c in cond.get("classes") or [] if _norm(c) not in skip]
+    classes = [
+        c
+        for c in cond.get("classes") or []
+        if _norm(c) not in skip and not _class_narrowed(c, plan, dims)
+    ]
     if classes and parsed.get("type") not in ("composition", "rank", "trend"):
         return f"나눠 보기({', '.join(classes)}별)는 값 하나로 답할 수 없음"
     return None
+
+
+def _class_narrowed(cls: str, plan: Plan, dims: list[Dim]) -> bool:
+    """나눠 보기로 읽힌 분류(cls)에서 질문이 한 칸을 직접 골랐는가. "2세대가구 수"의 '세대'는
+    세대구성별로 나눠 보라는 말이 아니라 그 안의 2세대가구다 (표 안내로 끝났다)"""
+    word = _norm(cls)
+    if len(word) < 2:
+        return False
+    return any(
+        d.no in plan.matched
+        and plan.matched[d.no] != d.total()
+        and (word in _norm(d.name) or word in _norm(d.codes[plan.matched[d.no]]))
+        for d in dims
+    )
 
 
 def _item_left(item: str, names: list[str], read: list[str], plan: Plan, parsed: dict) -> bool:
@@ -869,19 +932,21 @@ def _name(
         words = [tail.sub("", w) or w for w in words]
     # "통학-계"처럼 이름 끝의 합계 표시는 떼고 쓴다 ("통학 인구"와 맞추고, 답에도 "통학")
     words = [_label_name(w) for w in words]
-    words = [
-        w for w in words if w not in TOTAL_NAMES
-    ] or words  # 합계 칸("계")은 이름에 쓰지 않는다
-    for term in (parsed.get("term"), parsed.get("indicator")):
+    informative = [w for w in words if w not in TOTAL_NAMES]
+    words = informative or words  # 합계 칸("계")은 이름에 쓰지 않는다
+    for source in ("term", "indicator"):
+        term = parsed.get(source)
         # 사전 지표 이름도 고른 칸 이름을 모두 담으면 쓴다 (옛 연도: 이혼 ⊂ 이혼 건수).
         # 근거 없이 고른 사전 지표(총인구 ⊅ 1인가구)는 아래 담김 검사에서 걸러진다
         if not term or re.search(r"\d{4}", str(term)):
             continue
-        if indicators.find_regions(str(term)):  # "전국 평균 가구원 수"처럼 지역까지 담은 표현
+        if indicators.find_regions(str(term)):  # "서울 평균 가구원 수"처럼 지역까지 담은 표현
             continue
-        # 질문의 표현도 원자료 합계 표시("이주배경인구_계 수")는 떼고 쓴다
+        # 질문의 표현도 원자료 합계 표시("이주배경인구_계 수")와 전국 범위 말은 떼고 쓴다
         named = _term_name(str(term))
-        if all(_norm(w) in _norm(named) for w in words):
+        # 고른 칸이 모두 합계(전국 · 계)면 질문의 표현이 이름이다 (사전 지표 이름은 담김 검사)
+        needed = informative if source == "term" else words
+        if all(_norm(w) in _norm(named) for w in needed):
             return _without_age_words(named) if strip_age else named
     name = " ".join(words)
     return f"{name} 수" if counted and not name.endswith("수") else name
@@ -1102,8 +1167,10 @@ def _item_whole(d: Dim, tbl_nm: str) -> str | None:
     # 첫 칸만 본다 (KOSIS는 전체를 맨 앞에 둔다). "상주(야간) · 주간 인구" 표의 "주간 인구"처럼
     # 표 이름에 든 세부 칸을 전체로 보지 않게
     code, name = next(iter(d.codes.items()), (None, ""))
-    if len(_norm(name)) >= 4 and _norm(name) in _norm(tbl_nm):
-        return code
+    # 합계 표시를 뗀 이름도 본다: '…별 가구(일반가구)' 표의 첫 칸 "일반가구-계"
+    for n in {_norm(name), _norm(_label_name(name))}:
+        if len(n) >= 4 and n in _norm(tbl_nm):
+            return code
     # 이름 끝에 합계 표시가 붙은 첫 칸 ("이혼건수-계"): 다른 칸 이름에는 합계 표시가 없을 때만
     marked = [c for c, n in d.codes.items() if TOTAL_SUFFIX.search(_norm(n)) and "-" in n]
     return code if marked == [code] else None

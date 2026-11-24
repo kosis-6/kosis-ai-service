@@ -1594,6 +1594,121 @@ def test_household_table_uses_general_households_when_dwelling_is_unspecified(
         assert spec["sources"][0]["filters"] == {"c2_id": "60"}
 
 
+@pytest.mark.parametrize(
+    ("term", "name"),
+    [
+        ("전국 1인 가구 수", "1인 가구 수"),  # "2020년 전국의 전국 1인 가구 수"로 답했다
+        ("우리나라 1인 가구 수", "1인 가구 수"),
+        ("전국의 1인 가구 수", "1인 가구 수"),
+        ("국내이동자 수", "국내이동자 수"),  # 지표 이름의 '국내'는 그대로
+        ("전국민 1인 가구 수", "전국민 1인 가구 수"),  # 낱말 속 '전국'은 그대로
+    ],
+)
+def test_name_drops_nationwide_words_from_term(term: str, name: str) -> None:
+    item = d.Dim(0, "항목", {"T00": "1인가구", "T10": "국내이동자"})
+    code = "T10" if "이동" in term else "T00"
+    plan = d.Plan(pick={0: code}, matched={0: code})
+    assert d._name({"term": term}, [item], plan, True, unit="가구") == name
+
+
+def test_name_uses_term_when_only_total_cells_were_matched() -> None:
+    # 고른 칸이 합계(전국)뿐이면 질문의 표현이 이름이다 ("전국 수"가 되지 않게)
+    item = d.Dim(0, "출생지별", {"00": "전국", "11": "서울"})
+    plan = d.Plan(pick={0: "00"}, matched={0: "00"})
+    assert d._name({"term": "전국 1인 가구 수"}, [item], plan, True, unit="가구") == "1인 가구 수"
+
+
+BIRTHPLACE = [  # '현 거주지별 … 출생지별 1인가구': 항목이 출생지, 지역 분류는 현 거주지
+    d.Dim(0, "항목", {"00": "전국", "11": "서울", "21": "부산"}),
+    d.Dim(1, "행정구역별", {"00": "전국", "11": "서울특별시", "21": "부산광역시"}),
+]
+
+
+@pytest.mark.parametrize(
+    ("question", "ok"),
+    [
+        ("2020년 서울 1인 가구 수는?", False),  # 출생지 '서울'로 434,920가구가 나왔다
+        ("2020년 전국 1인 가구 수는?", False),
+        ("2020년 부산 출생 1인 가구 수는?", True),  # 출생지를 말하면 그 칸을 쓴다
+    ],
+)
+def test_region_words_do_not_pick_birthplace_cells(
+    fake_table, monkeypatch, question: str, ok: bool
+) -> None:
+    names = ("서울특별시", "부산광역시", "서울", "부산")
+    monkeypatch.setattr(indicators, "find_regions", lambda t: [n for n in names if n in t][:1])
+    fake_table["tables"]["BIRTH"] = (BIRTHPLACE, 1, "시도")
+    fake_table["units"]["BIRTH"] = ("가구", True)
+    spec, why = d.build("BIRTH", question, {**BASE, "indicator": "1인 가구", "term": "1인 가구"})
+    if ok:
+        assert spec is not None, why
+        assert spec["sources"][0]["item_id"] == "21"
+    else:
+        assert spec is None and why == "질문의 말과 맞는 칸이 없음"
+
+
+@pytest.mark.parametrize(
+    ("name", "place"),
+    [
+        ("부산", True),
+        ("부산직할시", True),
+        ("부산-구부", True),
+        ("전국", True),
+        ("전체 출생아수(명)", False),  # 지역 이름 목록의 '전체'에 걸리지만 지역 칸이 아니다
+        ("남편-전체혼인건수", False),
+        ("1인가구", False),
+    ],
+)
+def test_place_cell_is_made_of_region_words_only(monkeypatch, name: str, place: bool) -> None:
+    known = ["부산", "전체"]
+    monkeypatch.setattr(
+        indicators, "find_regions", lambda t: [n for n in known if n in t.replace(" ", "")]
+    )
+    assert d._is_place_cell(name) is place
+
+
+def test_region_words_pick_cells_when_table_has_no_region_dim(fake_table, monkeypatch) -> None:
+    # 지역 분류가 없는 표는 지역 이름 칸이 곧 지역이다
+    monkeypatch.setattr(indicators, "find_regions", lambda t: ["서울"] if "서울" in t else [])
+    fake_table["tables"]["NOREGION"] = ([BIRTHPLACE[0]], None, "전국")
+    fake_table["units"]["NOREGION"] = ("가구", True)
+    spec, why = d.build("NOREGION", "2020년 서울 1인 가구 수는?", {**BASE, "regions": []})
+    assert spec is not None, why
+    assert spec["sources"][0]["item_id"] == "11"
+
+
+GENERATIONS = [  # '세대구성별/거처의종류별/점유형태별 가구(일반가구)': 두 분류 모두 합계 칸이 없다
+    d.Dim(0, "항목", {"T10": "일반가구-계", "T20": "활동제약자 없는 가구-계"}),
+    d.Dim(1, "행정구역별", {"00": "전국", "11": "서울특별시"}),
+    d.Dim(2, "세대구성별", {"000": "일반가구", "100": "1세대가구-계", "200": "2세대가구-계"}),
+]
+
+
+@pytest.mark.parametrize(
+    ("question", "classes", "ok"),
+    [
+        # 조건 추출이 "2세대가구"의 '세대'를 나눠 보기로 읽어 표 안내로 끝났다
+        ("2020년 서울 2세대가구 수는?", ["세대"], True),
+        ("2020년 서울 2세대가구 수는?", [], True),
+        ("2020년 서울 세대구성별 가구 수는?", ["세대구성"], False),  # 나눠 보기는 그대로 막는다
+    ],
+)
+def test_named_cell_is_not_a_split_view(fake_table, monkeypatch, question, classes, ok) -> None:
+    title = "세대구성/가구원 수/활동제약자수별 가구(일반가구)-시도"
+    monkeypatch.setattr(lookup, "_table", lambda _: {"tbl_nm": title})
+    fake_table["tables"]["GEN"] = (GENERATIONS, 1, "시도")
+    fake_table["units"]["GEN"] = ("가구", True)
+    slots = {"conditions": {"classes": classes}}
+    spec, why = d.build("GEN", question, {**BASE, "indicator": "", "term": ""}, slots=slots)
+    if ok:
+        assert spec is not None, why
+        # 항목은 합계 표시를 뗀 이름이 표 이름에 든 첫 칸(일반가구-계)이 전체다
+        assert spec["sources"][0]["item_id"] == "T10"
+        assert spec["sources"][0]["filters"] == {"c2_id": "200"}
+    else:
+        assert spec is None
+
+
 def test_name_from_underscored_total_cell() -> None:
     # "2023년 서울 이주배경인구 어때?": 질문 해석이 지표 표현을 비워 칸 이름으로 이름을 지었다
     item = d.Dim(0, "항목", {"T10": "이주배경인구_계", "T20": "내국인(귀화)_계"})

@@ -244,7 +244,12 @@ async def off_domain_early(question: str) -> dict | None:
     rest = question
     for word in words:
         rest = re.sub(rf"\S*\s*{re.escape(word)}", " ", rest)
-    if POPULATION_SIGNAL.search(rest) or indicators.find_in_text(question):
+    population = bool(POPULATION_SIGNAL.search(rest) or indicators.find_in_text(question))
+    # 인구 통계도 묻는 질문은 범위 밖 말이 인구 지표와 나란히 물은 지표일 때만 거절한다
+    # ("출생아 수랑 아파트 매매가격": 출생아 수만 답하면 다른 질문의 답이 된다).
+    # "물가 비싼 서울에 사는 1인 가구"처럼 꾸밈말이면 지금처럼 뒤 단계로
+    asked = coordinated_words(question, words) if population else {}
+    if population and not asked:
         return None
     tables = await search.load_tables()
     catalog = [t["name_n"] + t["meta_n"] + t["path_n"] for t in tables]
@@ -252,19 +257,52 @@ async def off_domain_early(question: str) -> dict | None:
         n = search.norm(word)
         if any(n in text for text in catalog):
             continue  # 안전장치 1: 인구 표에 있는 말
+        if population and word not in asked:
+            continue
+        if population:
+            from app.services import refusal
+
+            inside = list(dict.fromkeys(name for *_, name in indicators.find_in_text(question)))
+            answer = refusal._outside_text([asked[word]], inside)
+            reason = f"'{asked[word]}'은 인구 통계 범위 밖입니다 (함께 물은 지표, LLM 호출 전 검사)"
+        else:
+            answer = out_of_scope_text(word, question)
+            reason = f"'{word}'은 인구 통계 범위 밖입니다 (LLM 호출 전 단어 검사)"
         found = {
             "session_id": None,
             "status": "out_of_scope",
-            "answer": out_of_scope_text(word, question),
+            "answer": answer,
             "parsed": {},
             "clarify": None,
             "recommendations": [],
             "together": [],
             "notice": None,
-            "reason": f"'{word}'은 인구 통계 범위 밖입니다 (LLM 호출 전 단어 검사)",
+            "reason": reason,
         }
         return tables_answer(found)
     return None
+
+
+# 지표 둘을 나란히 묻는 말 ("출생아 수랑 아파트 매매가격", "집값과 인구")
+CONJ = r"(?:이랑|랑|와|과|하고|및|그리고|,)"
+PHRASE_JOSA = re.compile(r"(?:을|를|은|는|이|가|도|의)$")
+
+
+def coordinated_words(question: str, words: list[str]) -> dict[str, str]:
+    """범위 밖 말 중 다른 지표와 '랑 · 와 · 과 · 하고 · 및 · ,'로 이어 물은 것 {말: 지표 표현}.
+    "출생아 수랑 아파트 매매가격 알려줘" → {"매매가": "아파트 매매가격"}"""
+    out = {}
+    for word in words:
+        w = re.escape(word)
+        m = re.search(rf"{CONJ}\s*((?:[^\s,]+\s+)?[^\s,]*{w}[^\s,]*)", question) or re.search(
+            rf"((?:[^\s,]+\s+)?[^\s,]*{w}[^\s,]*?)\s*{CONJ}(?=\s)", question
+        )
+        if m is None:
+            continue
+        phrase = m.group(1).strip()
+        trimmed = PHRASE_JOSA.sub("", phrase)
+        out[word] = trimmed if word in trimmed else phrase  # "매매가"의 '가'는 조사가 아니다
+    return out
 
 
 def waiting_choice(found: dict | None) -> bool:

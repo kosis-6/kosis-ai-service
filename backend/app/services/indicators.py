@@ -980,6 +980,21 @@ def find_regions(text):
     return [name for _, name in sorted(found)]
 
 
+# 지표 표현 속 전국 범위 말 ("전국 1인 가구 수"의 "전국"). "전국민"은 낱말이라 두고,
+# 국내이동 · 다문화 자녀의 국내출생은 지표 · 분류 이름이라 둔다 (qa.NATIONWIDE와 같은 기준)
+NATIONAL_WORDS = re.compile(
+    r"(?<![가-힣])(?:전국|우리\s*나라|대한민국|한국\s*전체"
+    r"|국내(?!\s*(?:이동|인구\s*이동|출생(?!\s*아))))(?:의|에서)?(?![가-힣])"
+)
+
+
+def without_national(term):
+    """지표 표현에서 전국 범위 말을 뺀다 ("전국 1인 가구 수" → "1인 가구 수"). 범위는 지역 조건이
+    맡는다. HCX가 지표 표현에 '전국'을 넣으면 "전국의 전국 1인 가구 수"로 답했다"""
+    rest = " ".join(NATIONAL_WORDS.sub(" ", str(term)).split())
+    return rest or str(term)
+
+
 def _base_name(name):
     """비교용 지역 이름: "창원시(통합)" → "창원시", "포항시(계)" → "포항시"
     (load_area.SUFFIX와 같은 꼬리)"""
