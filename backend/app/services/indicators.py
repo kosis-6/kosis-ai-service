@@ -977,19 +977,31 @@ def _region_names():
     return sorted((_norm(n) for n in names if len(_norm(n)) >= 2), key=len, reverse=True)
 
 
-def find_regions(text):
-    """문장에 나온 지역 이름들 (나온 순서). HCX가 지역을 빠뜨렸을 때 쓴다
-    더 긴 이름 안에 든 짧은 이름(예: "광주광역시" 안의 "광주")은 세지 않는다"""
-    s = _norm(text)
+def _region_matches(text):
+    """공백을 뺀 문장에서 지역 이름이 나온 범위. 긴 이름 안의 짧은 이름은 세지 않는다"""
     taken, found = [], []
     for name in _region_names():
-        for m in re.finditer(re.escape(name), s):
-            if m.start() and s[m.start() - 1].isdigit():
+        for m in re.finditer(re.escape(name), text):
+            if m.start() and text[m.start() - 1].isdigit():
                 continue  # "30대 전체"의 '대전': 앞에 숫자가 붙은 것은 연령대 · 수량이다
             if not any(a < m.end() and m.start() < b for a, b in taken):
                 taken.append((m.start(), m.end()))
-                found.append((m.start(), name))
-    return [name for _, name in sorted(found)]
+                found.append((m.start(), m.end(), name))
+    return sorted(found)
+
+
+def find_regions(text):
+    """문장에 나온 지역 이름들 (나온 순서). HCX가 지역을 빠뜨렸을 때 쓴다"""
+    return [name for _, _, name in _region_matches(_norm(text))]
+
+
+def region_mentions(text: str) -> list[tuple[int, int, str]]:
+    """원문에서 지역 이름이 나온 위치 (시작, 끝, 이름). 같은 이름도 언급마다 돌려준다"""
+    positions = [i for i, char in enumerate(text) if not char.isspace()]
+    return [
+        (positions[start], positions[end - 1] + 1, name)
+        for start, end, name in _region_matches(_norm(text))
+    ]
 
 
 # 지표 표현 속 전국 범위 말 ("전국 1인 가구 수"의 "전국"). "전국민"은 낱말이라 두고,

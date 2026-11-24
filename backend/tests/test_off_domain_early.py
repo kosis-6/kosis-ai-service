@@ -70,6 +70,8 @@ def test_population_signal_is_not_refused(question: str) -> None:
     [
         ("2024년 부산 출생아 수랑 아파트 매매가격 알려줘", "아파트 매매가격"),
         ("서울 집값과 출생아 수 알려줘", "서울 집값"),
+        ("2024년 서울 집값과 부산 출생아 수 알려줘", "서울 집값"),
+        ("서울 집값,부산 출생아 수 알려줘", "서울 집값"),
         ("2024년 부산 출생아 수, 실업률 알려줘", "실업률"),
     ],
 )
@@ -109,8 +111,17 @@ def test_catalog_check_uses_the_word_the_user_wrote(catalog) -> None:
     assert table_guide.asked_word("집값이 비싼", "집값") == "집값"
 
 
-def test_off_domain_modifier_after_conjunction_is_not_refused() -> None:
-    assert early("2020년 서울과 집값이 비싼 부산의 1인 가구 수는?") is None
+@pytest.mark.parametrize(
+    "question",
+    [
+        "2020년 서울과 집값이 비싼 부산의 1인 가구 수는?",
+        "2020년 서울과 집값이 정말 비싼 부산의 1인 가구 수는?",
+        "2020년 서울과 집값이 예전보다 많이 오른 부산의 1인 가구 수는?",
+        "2020년 서울과 집값이 비싸지 않은 부산의 1인 가구 수는?",
+    ],
+)
+def test_off_domain_modifier_after_conjunction_is_not_refused(question: str) -> None:
+    assert early(question) is None
 
 
 def test_plain_population_question_is_untouched() -> None:

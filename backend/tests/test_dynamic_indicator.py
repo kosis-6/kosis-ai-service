@@ -39,7 +39,7 @@ def fake_table(monkeypatch: pytest.MonkeyPatch) -> dict:
     monkeypatch.setattr(d, "schema", lambda tbl_id: tables[tbl_id])
     monkeypatch.setattr(d, "_unit", lambda tbl_id, item, cells=None: units[tbl_id])
     monkeypatch.setattr(lookup, "_dim_labels", lambda tbl_id, dim: tuple(sorted(AGES.items())))
-    monkeypatch.setattr(indicators, "find_regions", lambda text: [])
+    monkeypatch.setattr(indicators, "_region_names", lambda: [])
     projection: set[str] = set()
     monkeypatch.setattr(d, "is_projection", lambda tbl_id: tbl_id in projection)
     monkeypatch.setattr(indicators, "_data_years", lambda: (2008, 2025))
@@ -1622,6 +1622,7 @@ BIRTHPLACE = [  # '현 거주지별 … 출생지별 1인가구': 항목이 출�
     d.Dim(0, "항목", {"00": "전국", "11": "서울", "21": "부산"}),
     d.Dim(1, "행정구역별", {"00": "전국", "11": "서울특별시", "21": "부산광역시"}),
 ]
+BIRTHPLACE_TITLE = "현 거주지별/성별/연령별/출생지별 1인가구(일반가구)-시도"
 
 
 @pytest.mark.parametrize(
@@ -1639,7 +1640,8 @@ def test_region_words_do_not_pick_birthplace_cells(
     fake_table, monkeypatch, question: str, ok: bool
 ) -> None:
     names = ("서울특별시", "부산광역시", "서울", "부산")
-    monkeypatch.setattr(indicators, "find_regions", lambda t: [n for n in names if n in t])
+    monkeypatch.setattr(indicators, "_region_names", lambda: names)
+    monkeypatch.setattr(lookup, "_table", lambda _: {"tbl_nm": BIRTHPLACE_TITLE})
     fake_table["tables"]["BIRTH"] = (BIRTHPLACE, 1, "시도")
     fake_table["units"]["BIRTH"] = ("가구", True)
     spec, why = d.build("BIRTH", question, {**BASE, "indicator": "1인 가구", "term": "1인 가구"})
@@ -1682,14 +1684,57 @@ def test_place_cell_name_uses_question_phrase_and_table_target(
 ) -> None:
     # 출생지가 '항목' 분류에 든 표: 칸 이름으로만 지으면 "서울특별시의 대구 수는 46,248가구"
     names = ("서울특별시", "부산광역시", "서울", "부산")
-    monkeypatch.setattr(indicators, "find_regions", lambda t: [n for n in names if n in t])
-    title = "현 거주지별/성별/연령별/출생지별 1인가구(일반가구)-시도"
-    monkeypatch.setattr(lookup, "_table", lambda _: {"tbl_nm": title})
+    monkeypatch.setattr(indicators, "_region_names", lambda: names)
+    monkeypatch.setattr(lookup, "_table", lambda _: {"tbl_nm": BIRTHPLACE_TITLE})
     fake_table["tables"]["BIRTH"] = (BIRTHPLACE, 1, "시도")
     fake_table["units"]["BIRTH"] = ("가구", True)
     spec, why = d.build("BIRTH", question, {**BASE, "indicator": "", "term": ""})
     assert spec is not None, why
     assert spec["name"] == name and spec["sources"][0]["item_id"] == "21"
+
+
+def test_birthplace_and_residence_can_share_the_same_name(fake_table, monkeypatch) -> None:
+    names = ("서울특별시", "부산광역시", "서울", "부산")
+    monkeypatch.setattr(indicators, "_region_names", lambda: names)
+    fake_table["tables"]["BIRTH"] = (BIRTHPLACE, 1, "시도")
+    fake_table["units"]["BIRTH"] = ("가구", True)
+    monkeypatch.setattr(
+        lookup,
+        "_table",
+        lambda tbl_id: {
+            "tbl_nm": BIRTHPLACE_TITLE if tbl_id == "BIRTH" else "성 및 연령별 1인가구"
+        },
+    )
+    question = "2020년 서울과 부산에 사는 서울 출신 1인 가구 수를 비교해줘"
+    parsed = {**BASE, "type": "compare", "regions": ["서울특별시", "부산"]}
+    spec, why = d.build("BIRTH", question, parsed)
+    assert spec is not None, why
+    assert spec["name"] == "서울 출신 1인가구 수"
+    assert spec["sources"][0]["item_id"] == "11"
+    resolved = d._with_spec(parsed, spec)
+    assert resolved["type"] == "compare" and resolved["regions"] == parsed["regions"]
+    assert d.build("DT_1PL1502", question, parsed, {0: "T00"}, {"cells_by_llm": True}) == (
+        None,
+        "질문의 출생지 조건을 적용할 분류가 이 통계표에 없음",
+    )
+    assert d.build("BIRTH", question, parsed, {0: "00"}) == (
+        None,
+        "질문의 출생지 조건이 선택한 칸에 반영되지 않음",
+    )
+
+
+def test_birthplace_condition_is_covered_by_compared_cells(fake_table, monkeypatch) -> None:
+    monkeypatch.setattr(indicators, "_region_names", lambda: ("서울", "부산", "대구"))
+    monkeypatch.setattr(lookup, "_table", lambda _: {"tbl_nm": BIRTHPLACE_TITLE})
+    item = d.Dim(0, "항목", {**BIRTHPLACE[0].codes, "22": "대구"})
+    fake_table["tables"]["BIRTH"] = ([item, BIRTHPLACE[1]], 1, "시도")
+    fake_table["units"]["BIRTH"] = ("가구", True)
+    question = "2020년 서울에 사는 서울 출신과 부산 출신 1인 가구 수 비교"
+    parsed = {**BASE, "type": "compare", "regions": ["서울", "부산"]}
+    spec, why = d.build("BIRTH", question, parsed)
+    assert spec is not None, why
+    assert spec["parts_op"]["codes"] == ["11", "21"]
+    assert d._with_spec(parsed, spec)["regions"] == ["서울"]
 
 
 @pytest.mark.parametrize(
@@ -1702,11 +1747,14 @@ def test_place_cell_name_uses_question_phrase_and_table_target(
         ("고향이 대구인 서울 사람", ["대구"]),
         ("서울에서 1인 가구 수", []),  # 장소를 나타내는 '~에서'
         ("서울 이동 인구", []),
+        ("서울에서 부산 출생 1인 가구", ["부산"]),
+        ("서울 출생아 수와 부산 출생률", []),
+        ("서울 특별시에서 태어난 부산 거주 인구", ["서울특별시"]),
     ],
 )
 def test_other_places_are_read_per_region_mention(monkeypatch, question, places) -> None:
-    known = ["서울", "부산", "대구", "경기도"]
-    monkeypatch.setattr(indicators, "find_regions", lambda t: [n for n in known if n in t])
+    known = ["서울특별시", "서울", "부산", "대구", "경기도"]
+    monkeypatch.setattr(indicators, "_region_names", lambda: known)
     assert d._other_places(question) == places
 
 
@@ -1714,7 +1762,7 @@ def test_destination_region_is_not_a_residence_condition(fake_table, monkeypatch
     # "경기도에서 서울로 통근하는 사람": HCX가 지역 [경기도, 서울]로 읽어 두 지역을 비교했고
     # 통근지 칸도 경기도를 골랐다 (경기도 5,966,491 vs 서울 523,388)
     known = ["서울특별시", "경기도", "서울"]
-    monkeypatch.setattr(indicators, "find_regions", lambda t: [n for n in known if n in t])
+    monkeypatch.setattr(indicators, "_region_names", lambda: known)
     dims = [
         d.Dim(0, "항목", {"T1": "통근통학인구"}),
         d.Dim(1, "현 거주지별", {"00": "전국", "11": "서울특별시", "41": "경기도"}),
@@ -1849,7 +1897,8 @@ def test_forced_place_cells_need_the_question_to_ask_them(
     fake_table, monkeypatch, question: str, forced: dict, item: str | None
 ) -> None:
     names = ("서울특별시", "부산광역시", "서울", "부산")
-    monkeypatch.setattr(indicators, "find_regions", lambda t: [n for n in names if n in t])
+    monkeypatch.setattr(indicators, "_region_names", lambda: names)
+    monkeypatch.setattr(lookup, "_table", lambda _: {"tbl_nm": BIRTHPLACE_TITLE})
     fake_table["tables"]["BIRTH"] = (BIRTHPLACE, 1, "시도")
     fake_table["units"]["BIRTH"] = ("가구", True)
     parsed = {**BASE, "indicator": "1인 가구", "term": "1인 가구"}

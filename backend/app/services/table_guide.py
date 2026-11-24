@@ -21,7 +21,7 @@ from uuid import uuid4
 
 from app.agent import graph, multi
 from app.core.config import get_settings
-from app.services import flow, search, search_answer, search_llm, search_log
+from app.services import flow, search, search_answer, search_llm, search_log, synonyms
 from app.services import slots as slot_parser
 
 logger = logging.getLogger(__name__)
@@ -256,7 +256,7 @@ async def off_domain_early(question: str) -> dict | None:
     for word in words:
         # 안전장치 1: 인구 표에 있는 말이면 거절하지 않는다. 정규식에 걸린 조각이 아니라 사용자가
         # 쓴 낱말로 본다 ('전세가'는 '전세가구' 안에 있지만 물은 말은 '전세가격'이다)
-        n = search.norm(asked_word(question, word))
+        n = search.norm(asked_word(asked.get(word, question), word))
         if any(n in text for text in catalog):
             continue
         if population and word not in asked:
@@ -290,25 +290,36 @@ async def off_domain_early(question: str) -> dict | None:
 
 
 # 지표 둘을 나란히 묻는 말 ("출생아 수랑 아파트 매매가격", "집값과 인구")
-CONJ = r"(?:이랑|랑|와|과|하고|및|그리고|,)"
 PHRASE_JOSA = re.compile(r"(?:을|를|은|는|이|가|도|의)$")
 
 
 def coordinated_words(question: str, words: list[str]) -> dict[str, str]:
     """범위 밖 말 중 다른 지표와 '랑 · 와 · 과 · 하고 · 및 · ,'로 이어 물은 것 {말: 지표 표현}.
     "출생아 수랑 아파트 매매가격 알려줘" → {"매매가": "아파트 매매가격"}"""
+    tokens = synonyms.tokenize(question)
+    joins = [t for t in tokens if t.tag == "JC" or t.form in {",", "및", "그리고"}]
     out = {}
-    for word in words:
-        w = re.escape(word)
-        m = re.search(rf"{CONJ}\s*((?:[^\s,]+\s+)?[^\s,]*{w}[^\s,]*)", question) or re.search(
-            rf"((?:[^\s,]+\s+)?[^\s,]*{w}[^\s,]*?)\s*{CONJ}(?=\s)", question
-        )
-        if m is None or modifies_next(question, word):
-            continue
-        phrase = m.group(1).strip()
-        trimmed = PHRASE_JOSA.sub("", phrase)
-        out[word] = trimmed if word in trimmed else phrase  # "매매가"의 '가'는 조사가 아니다
+    bounds = [0, *(join.end for join in joins), len(question)]
+    for i, join in enumerate(joins):
+        left = question[bounds[i] : join.start].rstrip()
+        right = question[join.end : joins[i + 1].start if i + 1 < len(joins) else bounds[-1]]
+        for word in words:
+            if word in out:
+                continue
+            phrase = rf"(?:[^\s,]+\s+)?[^\s,]*{re.escape(word)}[^\s,]*"
+            if m := re.search(rf"{phrase}$", left):
+                out[word] = _trim_phrase(m[0], word)
+            elif (m := re.match(rf"\s*({phrase})", right)) and not _modifies_next(
+                tokens, join.end + m.end()
+            ):
+                out[word] = _trim_phrase(m[1], word)
     return out
+
+
+def _trim_phrase(phrase: str, word: str) -> str:
+    phrase = phrase.rstrip("?.!~,")
+    trimmed = PHRASE_JOSA.sub("", phrase)
+    return trimmed if word in trimmed else phrase  # "매매가"의 '가'는 조사가 아니다
 
 
 def asked_word(question: str, word: str) -> str:
@@ -320,26 +331,23 @@ def asked_word(question: str, word: str) -> str:
     j = i + len(word)
     while j < len(question) and not question[j].isspace():
         j += 1
-    token = question[i:j].rstrip("?.!~,")
-    trimmed = PHRASE_JOSA.sub("", token)
-    return trimmed if word in trimmed else token
+    return _trim_phrase(question[i:j], word)
 
 
-def modifies_next(question: str, word: str) -> bool:
-    """범위 밖 말이 뒤의 말을 꾸미는가 ("집값이 비싼 부산의", "집값 오른 지역의"): 말 다음
-    낱말이 꾸미는 꼴(-ㄴ/-은/-는, 받침 ㄴ)이고 그 뒤에 꾸밈을 받는 낱말이 있다.
-    "서울과 집값이 비싼 부산의 1인 가구 수"가 '과' 뒤의 집값을 따로 물은 지표로 읽혀 거절됐다"""
-    i = question.find(word)
-    if i < 0:
-        return False
-    j = i + len(word)
-    while j < len(question) and not question[j].isspace():
-        j += 1  # 말이 든 낱말 끝까지 ("집값이")
-    rest = question[j:].split()
-    if len(rest) < 2:
-        return False
-    last = rest[0].rstrip("?.!~,")[-1:]
-    return bool(last) and "가" <= last <= "힣" and (ord(last) - 0xAC00) % 28 == 4  # 받침 ㄴ
+def _modifies_next(tokens: list, end: int) -> bool:
+    """뒤에 관형사형 어미와 그 꾸밈을 받는 명사가 이어지는가 ("집값이 정말 비싼 부산")."""
+    tail = [t for t in tokens if t.start >= end]
+    noun = ("NN", "NP", "NR", "SN")
+    for token, following in zip(tail, tail[1:], strict=False):
+        if token.tag == "ETM":
+            return following.tag.startswith((*noun, "MM"))
+        if token.tag in {"JC", "MAJ", "SP", "SF", "EF"}:
+            return False
+        if token.tag.startswith(noun) and not (
+            following.tag == "JKB" and token.end == following.start
+        ):
+            return False  # "생각보다"는 부사어지만 "부산 출생아"는 다음 명사구다
+    return False
 
 
 def waiting_choice(found: dict | None) -> bool:
