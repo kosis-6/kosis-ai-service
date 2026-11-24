@@ -1,13 +1,3 @@
-"""app.chat_turns: 수치 대화(/ask)의 턴 기록
-
-대화를 이어 갈 때(멀티턴) 턴마다 사용자가 무엇을 요청했고 조건이 어떻게 바뀌었는지 남긴다.
-세션 상태(app.chat_sessions)는 1시간 뒤 이어 가지 않지만 이 기록은 30일 보관한다
-(app/services/ask_session.py). 사용자를 지우면 기록은 남고 user_id만 비운다.
-
-Revision ID: 0015
-Revises: 0014
-"""
-
 from collections.abc import Sequence
 
 import sqlalchemy as sa

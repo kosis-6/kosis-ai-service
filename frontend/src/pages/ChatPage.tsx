@@ -1,9 +1,3 @@
-// 채팅 화면: 질문 하나에 POST /ask 한 번. 답 한 건에 수치·차트·통계표 카드·선택지가 함께 나온다 (Answer)
-//   수치로 답할 수 있으면  답변 문장 + 차트 + 이 수치의 통계표 + 출처
-//   수치로 답할 수 없으면  통계표 찾기 결과 (표 카드, 대상·성별·판 선택지)
-// 대화 id 를 이어 보내 "서울도 같이", "막대그래프로"처럼 바뀐 것만 말해도 된다 (서버 ask_session.py)
-// 로그인 유저의 대화는 서버에 남는다 (chat/conversations.ts): 주소가 /chat/c/{대화 id} 로 바뀌어
-// 새로고침해도 그 대화를 다시 그리고, 사이드바의 지난 대화에서 다시 열어 이어 물을 수 있다
 import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import type { AskResponse, ConversationRead, Parsed, Recommendation } from "../api/types";
@@ -54,31 +48,26 @@ export function ChatPage() {
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [busy, setBusy] = useState(false);
-  const [opening, setOpening] = useState(false); // 지난 대화를 불러오는 중
+  const [opening, setOpening] = useState(false);
   const [question, setQuestion] = useState("");
   const [sheet, setSheet] = useState<SheetState | null>(null);
   const [history, setHistory] = useState<ConversationRead[] | null>(null);
 
-  // 서버에 남는 대화인가: 로그인 유저의 대화만 남는다 (손님 대화는 남지 않는다)
   const saved = user !== null;
 
-  const sessionId = useRef<string | null>(null); // 화면에 보이는 대화의 id
-  // 보이는 대화가 바뀔 때마다 1 올린다. 늦게 온 답·기록이 지금 대화에 붙지 않게 한다
+  const sessionId = useRef<string | null>(null);
   const view = useRef(0);
   const nextId = useRef(1);
-  const busyRef = useRef(false); // 같은 순간의 두 번 보내기를 막는다 (state 는 다음 그리기에야 바뀐다)
+  const busyRef = useRef(false);
   const logRef = useRef<HTMLElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   const inChat = messages.length > 0 || opening;
 
-  // 대화 중에만 보이는 버튼(모바일의 "새 대화")을 CSS 가 body.in-chat 으로 가린다
   useEffect(() => {
     document.body.classList.toggle("in-chat", inChat);
     return () => document.body.classList.remove("in-chat");
   }, [inChat]);
-  // 새 질문은 맨 아래로, 새 답은 그 답의 첫 줄이 보이게 내린다
-  // (답이 길면 맨 아래로 내렸을 때 문장과 차트가 위로 밀려 출처만 보인다)
   useEffect(() => {
     const log = logRef.current;
     if (!log) return;
@@ -95,13 +84,11 @@ export function ChatPage() {
     setMessages((prev) => [...prev, { ...message, id: nextId.current++ } as Message]);
   }
 
-  // 지난 대화 목록. 목록을 못 불러와도 대화는 된다
   const refreshHistory = useCallback(async () => {
     if (!saved) return;
     try {
       setHistory((await listConversations()).conversations);
     } catch {
-      /* 목록만 비워 둔다 */
     }
   }, [saved]);
   useEffect(() => {
@@ -109,7 +96,6 @@ export function ChatPage() {
     else setHistory(null);
   }, [saved, refreshHistory]);
 
-  // 화면의 대화를 비운다. 보내 둔 질문의 답이 늦게 와도 이 화면에는 붙이지 않는다 (서버 기록에는 남는다)
   function clear(id: string | null = null) {
     view.current += 1;
     sessionId.current = id;
@@ -119,7 +105,6 @@ export function ChatPage() {
     setMessages([]);
   }
 
-  // 주소의 대화를 서버 기록으로 다시 그린다 (새로고침, 지난 대화 열기, 뒤로 가기)
   async function open(id: string) {
     clear(id);
     const v = view.current;
@@ -137,7 +122,6 @@ export function ChatPage() {
       if (v !== view.current) return;
       sessionId.current = null;
       navigate("/", { replace: true });
-      // 로그인이 풀렸으면(401) 빈 새 대화로 둔다
       if (!(e instanceof HistoryError && e.status === 401)) {
         add({ kind: "error", text: e instanceof Error ? e.message : String(e) });
       }
@@ -148,14 +132,13 @@ export function ChatPage() {
 
   useEffect(() => {
     if (routeId === null) {
-      if (sessionId.current !== null && saved) clear(); // 뒤로 가기로 새 대화 주소에 왔다
+      if (sessionId.current !== null && saved) clear();
       return;
     }
-    if (routeId === sessionId.current) return; // 방금 받은 답으로 주소만 바꿨다
+    if (routeId === sessionId.current) return;
     void open(routeId);
-  }, [routeId]); // 주소가 바뀔 때만
+  }, [routeId]);
 
-  // 로그아웃하면 그 계정의 대화를 화면에서 내린다
   const signedIn = user !== null;
   const wasSignedIn = useRef(signedIn);
   useEffect(() => {
@@ -165,25 +148,21 @@ export function ChatPage() {
 
   async function send(text: string, selections?: Record<string, string>) {
     const q = text.trim();
-    if (!q || busyRef.current || opening) return; // 불러오는 중에 보내면 불러온 기록이 그 질문을 덮는다
+    if (!q || busyRef.current || opening) return;
     const v = view.current;
     busyRef.current = true;
     setBusy(true);
     add({ kind: "user", text: q });
     try {
-      // 대화 id 를 이어 보낸다. "새 대화"를 누르면 조건이 초기화된다.
-      // 통계표 선택지 버튼으로 고른 값은 selections 로 함께 보낸다
       const has = selections && Object.keys(selections).length > 0;
       const data = await ask({ question: q, session_id: sessionId.current, ...(has ? { selections } : {}) });
       if (v !== view.current) {
-        // 기다리는 사이 다른 대화로 옮겼다: 답은 서버 기록에만 남는다
         void refreshHistory();
         return;
       }
       sessionId.current = data.session_id ?? null;
       add({ kind: "answer", data });
       if (saved && data.session_id) {
-        // 새로고침해도 이 대화가 다시 열리게 주소에 남긴다 (서버가 새 대화로 시작했으면 id 가 바뀐다)
         if (data.session_id !== routeId) navigate(`/c/${data.session_id}`, { replace: true });
         void refreshHistory();
       }
@@ -199,7 +178,6 @@ export function ChatPage() {
     }
   }
 
-  // 새 대화: 화면을 비우고 첫 화면 주소로. 지난 대화는 목록에 남아 있다
   function reset() {
     clear();
     if (routeId !== null) navigate("/");
@@ -215,7 +193,7 @@ export function ChatPage() {
     try {
       await deleteConversation(id);
     } catch {
-      void refreshHistory(); // 지우지 못했다: 목록을 서버 기준으로 되돌린다
+      void refreshHistory();
       return;
     }
     setHistory((prev) => prev?.filter((c) => c.session_id !== id) ?? null);
@@ -235,7 +213,6 @@ export function ChatPage() {
       e.currentTarget.form?.requestSubmit();
     }
   }
-  // 입력한 줄 수에 맞춰 입력창 높이를 늘린다 (최대 140px)
   function grow(el: HTMLTextAreaElement) {
     el.style.height = "";
     el.style.height = `${Math.min(el.scrollHeight, 140)}px`;

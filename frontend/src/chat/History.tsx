@@ -1,18 +1,16 @@
-// 지난 대화 목록 (로그인 유저만). 넓은 화면은 사이드바, 좁은 화면은 머리글 "기록" 버튼의 패널에 그린다
 import { useState } from "react";
 import type { ConversationRead } from "../api/types";
 import { Icon } from "../components/Icon";
 import { when } from "./conversations";
 
 type Props = {
-  items: ConversationRead[] | null; // null: 아직 불러오는 중이거나 불러오지 못함
-  current: string | null; // 지금 보고 있는 대화
+  items: ConversationRead[] | null;
+  current: string | null;
   onOpen: (sessionId: string) => void;
   onDelete: (sessionId: string) => void;
 };
 
 export function History({ items, current, onOpen, onDelete }: Props) {
-  // 지우기는 한 번 더 묻는다 (브라우저 확인 창 대신 그 줄에서)
   const [asking, setAsking] = useState<string | null>(null);
 
   if (items === null) return <p className="history-empty">지난 대화를 불러오고 있어요</p>;

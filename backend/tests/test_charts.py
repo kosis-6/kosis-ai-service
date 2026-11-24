@@ -1,5 +1,3 @@
-"""차트 정보(charts.build): 계산 결과의 모양에 따라 차트 종류와 행을 고른다"""
-
 from app.schemas.ask import Chart
 from app.services import charts
 
@@ -13,11 +11,10 @@ def test_series_is_line() -> None:
     assert chart["title"] == "서울특별시 합계출산율 2022~2023년"
     assert chart["rows"] == [{"label": "2022", "value": 0.593}, {"label": "2023", "value": 0.552}]
     assert chart["unit"] == "가임여성 1명당 명"
-    Chart(**chart)  # 응답 스키마에 맞는다
+    Chart(**chart)
 
 
 def test_series_keeps_missing_year_as_gap() -> None:
-    """자료가 없는 연도는 값을 채우지 않고 비워 둔다 (화면에서 선이 끊긴다)"""
     series = [{"year": y, "value": v} for y, v in ((2020, 1.0), (2021, None), (2022, 3.0))]
     assert [r["value"] for r in charts.build({**BASE, "series": series})["rows"]] == [
         1.0,
@@ -25,13 +22,13 @@ def test_series_keeps_missing_year_as_gap() -> None:
         3.0,
     ]
     one = [{"year": 2020, "value": 1.0}, {"year": 2021, "value": None}]
-    assert charts.build({**BASE, "series": one}) is None  # 점 하나로는 추이를 그릴 수 없다
+    assert charts.build({**BASE, "series": one}) is None
 
 
 def test_region_values_are_bars() -> None:
     values = [
         {"region": "부산광역시", "value": 23.9},
-        {"region": "세종특별자치시", "value": None},  # 값이 없는 지역은 그리지 않는다
+        {"region": "세종특별자치시", "value": None},
         {"region": "서울특별시", "value": 19.44},
     ]
     chart = charts.build(
@@ -72,9 +69,7 @@ def test_composition_is_parts_or_bars() -> None:
 
     many = [{"label": f"항목{i}", "count": i, "share": float(i)} for i in range(1, 9)]
     chart = charts.build({**result, "count_unit": "건", "parts": many})
-    assert (
-        chart["type"] == "bar" and chart["rows"][0]["label"] == "항목8"
-    )  # 조각이 많으면 큰 순 막대
+    assert chart["type"] == "bar" and chart["rows"][0]["label"] == "항목8"
     assert chart["count_unit"] == "건"
 
 
@@ -86,7 +81,6 @@ def test_no_chart_for_single_value_or_refusal() -> None:
 
 
 def test_region_trends_are_several_lines() -> None:
-    """여러 지역의 추이: 행은 연도, values는 series(지역) 순서. 한쪽에만 있는 해는 비운다"""
     seoul = {
         **BASE,
         "region": "서울특별시",
@@ -102,13 +96,12 @@ def test_region_trends_are_several_lines() -> None:
     assert chart["title"] == "합계출산율 2022~2024년" and chart["unit"] == "가임여성 1명당 명"
     assert [r["values"] for r in chart["rows"]] == [[0.59, None], [0.55, 0.66], [None, 0.68]]
     Chart(**chart)
-    # 겹쳐 그리기에는 많은 지역도 차트를 만든다 (화면이 지역마다 작은 그래프로 그린다)
     names = [f"지역{i}" for i in range(charts.MAX_LINES + 2)]
     many = {"status": "ok", "split_by": "region",
             "split": [{**seoul, "region": n} for n in names]}  # fmt: skip
     assert charts.build(many)["series"] == names
     nested = {"status": "ok", "split_by": "region", "split": [{"split": [seoul]}, busan]}
-    assert charts.build(nested) is None  # 지역마다 남녀까지 나뉘면 그리지 않는다
+    assert charts.build(nested) is None
 
 
 def test_region_trends_require_comparable_indicators_units_and_sexes():

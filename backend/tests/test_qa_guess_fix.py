@@ -1,10 +1,3 @@
-"""질문 해석 보정 (qa.correct·_ground_regions) 회귀 테스트
-
-- 연도: 질문에 연도를 말했으면 HCX가 읽은 연도를 지우지 않는다
-- 지역: 짧게 부른 이름("강남")은 허용, 다른 시도·흔한 낱말·지표 이름 속 글자는 막고,
-  여러 곳이면 되묻는다
-"""
-
 import pytest
 
 from app.services import qa

@@ -1,21 +1,3 @@
-"""키워드 검색어 만들기: 질문 원문 → 군더더기 말 지우기 → 일상어 사전으로 통계 용어 덧붙이기 (F-15)
-
-HCX가 요약한 topic·target에서 단어를 뽑으면 지역·분류 단어('시군구별', '연령대별')가 빠지고,
-'돌싱'·'혼자 사는 집' 같은 일상어는 표 이름에 없어 키워드가 표와 만나지 못한다.
-그래서 키워드 검색어는 질문 원문에서 만들고, 사전으로 통계 용어를 질문 뒤에 덧붙인다 (치환이 아님).
-
-  "돌싱이 몇 명인지 알려 줘" → clean → "돌싱이" → 원문의 사전 용어 추가 → "돌싱이 재혼 이혼 …"
-
-사전 config/synonyms.json = {일상 표현: 통계 용어(공백으로 여러 개)}, 약 3천 항목.
-  - 팀원 실험실(kosis-search-lab src/synonyms.py)의 주제별 사전 + 손으로 쓴 157항목,
-    한 글자 키·오발화 항목 제거 (2026-10-31 최세진 전달, synonyms_all.json)
-  - 손으로 쓴 항목은 개발셋·팀원셋 오답을 보고 넣은 것이라 그 두 셋 수치는 낙관적이다.
-    새 질문에서 엉뚱하게 걸리는 항목은 이 파일에서 빼면 된다
-  - 키는 질문의 부분 문자열로 맞춘다. 한 글자 키는 넣지 않는다 ('배' → 선박이 '배우자'에 걸림)
-
-실행: python -m app.services.synonyms "결혼 안 하고 낳은 아기가 1년에 몇 명인지"
-"""
-
 import json
 import logging
 import re
@@ -27,8 +9,6 @@ from app.services import agegroup
 
 SYNONYMS_PATH = Path(__file__).resolve().parents[2] / "config" / "synonyms.json"
 
-# 검색에 방해되는 말 (실험실 정규식). 부분 문자열로 지우므로 단어 안에서도 지워진다.
-# 띄어쓰기가 있든 없든 잡는다 ('찾아 줘' = '찾아줘'). '표'는 따로 쓴 것만 ('생명표'는 남김)
 FILLER = re.compile(
     r"(?:제일|가장)\s*(?:최신|최근)|최신(?:\s*(?:데이터|자료|버전|기준))?|최근(?!\s*\d)|"
     r"(?:통계표|통계|자료|데이터|현황)(?:으로|로|를|을|는|은|가|이|도)?(?![가-힣])|통계표|통계|자료|데이터|현황|찾아\s*줘|찾아\s*주세요|알려\s*줘|알려\s*주세요|알고\s*싶어|"
@@ -45,14 +25,12 @@ def load(path: Path = SYNONYMS_PATH) -> dict[str, str]:
         return json.load(f)
 
 
-# Kiwi 형태소 분석으로 어절 끝 조사 · 어미를 떼고, 기능어만인 어절은 버린다
 try:
     from kiwipiepy import Kiwi
 
     _KIWI = Kiwi()
 except Exception as e:  # noqa: BLE001  설치 안 됐으면 정규식만
     _KIWI = None
-    # 오류 없이 검색 품질만 떨어지므로 알린다 (/health/search의 morph도 regex가 된다)
     logging.getLogger(__name__).warning(
         "Kiwi 형태소 분석기를 쓸 수 없어 검색어에서 조사를 떼지 못합니다 (%s: %s). "
         "uv sync로 kiwipiepy를 설치하세요",
@@ -62,24 +40,18 @@ except Exception as e:  # noqa: BLE001  설치 안 됐으면 정규식만
 
 
 def morph_backend() -> str:
-    """검색어 정리에 쓰는 방식: kiwi(형태소 분석) 또는 regex(Kiwi가 없어 정규식만)"""
     return "kiwi" if _KIWI is not None else "regex"
 
 
 def tokenize(text: str) -> list:
-    """Kiwi 형태소 목록 (form · tag · start · end). Kiwi 가 없으면 빈 목록"""
     return _KIWI.tokenize(text) if _KIWI is not None else []
 
 
-# 이 품사로만 된 어절은 검색어가 아니다 (부사 · 접속부사 · 관형사 · 감탄사 · 보조용언 · 의존명사)
 KIWI_DROP = {"MAG", "MAJ", "MM", "IC", "VX", "NNB"}
 KIWI_NOUNISH = ("NN", "NR", "NP", "XR", "SN", "SL", "SH", "XP")
 
 
 def kiwi_clean(text: str) -> str:
-    """문장 전체를 한 번에 분석(문맥)한 뒤 어절마다: 명사로 시작하면 끝의 조사 · 어미만 떼고,
-    용언(동사 · 형용사)으로 시작하거나 기능어만인 어절은 버린다
-    (용언의 뜻은 사전이 원문에서 잡는다)"""
     if _KIWI is None:
         return text
     toks = _KIWI.tokenize(text)
@@ -97,12 +69,11 @@ def kiwi_clean(text: str) -> str:
             continue
         if not mine[0].tag.startswith(KIWI_NOUNISH):
             continue
-        out.append(text[ws: max(t.start + t.len for t in content)])
+        out.append(text[ws : max(t.start + t.len for t in content)])
     return " ".join(out)
 
 
 def clean_query(question: str) -> str:
-    """군더더기 말을 공백으로 바꾸고 공백을 하나로, 이어서 Kiwi 로 조사 · 어미 · 기능어 제거"""
     words = FILLER.sub(" ", kiwi_clean(question)).split()
     return " ".join(w for w in words if (len(w) > 1 or w.isdigit()) and w != "1년")
 
@@ -117,11 +88,6 @@ def expand(
     exclude: list[str] | None = None,
     source: str | None = None,
 ) -> str:
-    """source(없으면 q)에 들어 있는 표현을 긴 것부터 찾아 통계 용어를 q 뒤에 덧붙인다.
-    긴 표현이 맞으면 그 자리를 비워 짧은 표현이 겹쳐 맞지 않게 한다 ('혼자 사는' 뒤 '사는').
-    exclude: 빼 달라고 한 단어. 그 단어가 든 항목('귀화자' → 국적취득)은 건너뛴다.
-    항목 자체가 부정 표현('귀화자가 아닌' → 한국국적을 가지지 않은 자)이면 그 뜻을 담은
-    용어이므로 그대로 쓴다"""
     table = load() if table is None else table
     rest = q if source is None else source
     extra: list[str] = []
@@ -143,14 +109,9 @@ def expand(
 def keyword_text(
     question: str, table: dict[str, str] | None = None, exclude: list[str] | None = None
 ) -> str:
-    """키워드 검색어: 정리한 질문 + 원문에서 찾은 사전 용어.
-    사전 키에 군더더기 말이 들어 있어('우리 동네', '몇 명 태어') 정리한 글에서 찾으면 안 맞는다"""
-    # 고유어 나이는 표가 쓰는 꼴로 ('서른 살' → '30세')
     question = agegroup.native_to_digits(question)
     table = load() if table is None else table
     if agegroup.said(question):
-        # 나이를 말한 질문의 '출산율'은 나이를 합친 합계출산율이 아니라 연령별 출산율이다
-        # ('서른 살 여성의 출산율' → '모의 연령별 출산율' 표가 7위에서 1위로)
         table = {k: "연령별 출산율" if FERTILITY.fullmatch(k) else v for k, v in table.items()}
     return expand(clean_query(question), table, exclude, source=question)
 

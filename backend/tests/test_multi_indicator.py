@@ -1,8 +1,3 @@
-"""지표가 여럿인 질문 계산 (multi_indicator.py, 구현 5): 지표마다 계산해 combine.op대로 합친다
-
-지표 하나 계산(사전 · 캐시 · 넘기기 계산)은 가짜로 바꾸고 합치기만 본다. 예문은 일반 예문이다.
-"""
-
 import asyncio
 
 import pytest
@@ -60,7 +55,6 @@ def _rank(name, regions):
 
 @pytest.fixture
 def world(monkeypatch):
-    """지표마다의 결과를 정해 둔다: state["values"][지표] = 답 또는 None (못 함)"""
     state: dict = {"values": {}, "asked": []}
 
     async def fake_target(question, parsed, found, target, trace, multi=False):
@@ -73,7 +67,7 @@ def world(monkeypatch):
 
     monkeypatch.setattr(d, "_compute_target", fake_target)
     monkeypatch.setattr(d, "cached_answer", no_cache)
-    monkeypatch.setattr(indicators, "spec", lambda name: None)  # 모두 사전에 없는 지표로
+    monkeypatch.setattr(indicators, "spec", lambda name: None)
     monkeypatch.setattr(indicators, "canonical_name", lambda name: None)
     return state
 
@@ -99,7 +93,6 @@ def test_several_indicators_side_by_side(world) -> None:
 
 
 def test_partial_success_keeps_numbers_and_points_to_table(world) -> None:
-    # 하나만 계산되면 그 숫자는 내고, 못 한 지표는 표 안내 한 줄
     world["values"] = {"1인 가구 수": _value("1인 가구 수", 100), "통근 인구": None}
     res, _ = run("질문", _found([_target("1인 가구 수"), _target("통근 인구", cands=("T9",))]))
     assert res["status"] == "ok" and res["result"]["value"] == 100
@@ -108,7 +101,7 @@ def test_partial_success_keeps_numbers_and_points_to_table(world) -> None:
 
 def test_nothing_computed_is_none(world) -> None:
     res, _ = run("질문", _found([_target("가"), _target("나")]))
-    assert res is None  # 지금처럼 표 안내
+    assert res is None
 
 
 def test_out_of_scope_targets_are_not_computed(world) -> None:
@@ -131,7 +124,6 @@ def test_diff_with_different_units_is_side_by_side(world) -> None:
 
 
 def test_ratio_later_indicator_is_numerator(world) -> None:
-    # "1인 가구 중 노인 1인 가구 비율": 뒤에 말한 지표가 분자
     world["values"] = {
         "1인 가구": _value("1인 가구", 400),
         "노인 1인 가구": _value("노인 1인 가구", 100),
@@ -158,14 +150,12 @@ def two_counts(world):
 
 @pytest.mark.usefixtures("two_counts")
 def test_ratio_times_is_first_over_second() -> None:
-    # "A는 B의 몇 배" = A ÷ B (11/18 전에는 늘 뒤 ÷ 앞이라 0.25배가 나왔다)
     res, trace = run("2020년 서울 1인 가구 수는 통근 인구의 몇 배야", _ratio_found())
     assert res["result"]["value"] == 4.0 and trace["multi"]["ratio_by"] == "rule"
 
 
 @pytest.mark.usefixtures("two_counts")
 def test_rule_wins_over_the_plan() -> None:
-    # 계획(LLM)이 분자 · 분모를 거꾸로 적어도 문형 규칙이 확실하면 규칙대로
     found = _ratio_found(num="통근 인구", den="1인 가구 수")
     res, trace = run("2020년 서울 1인 가구 수는 통근 인구의 몇 배야", found)
     assert res["result"]["value"] == 4.0 and trace["multi"]["ratio_by"] == "rule"
@@ -173,7 +163,6 @@ def test_rule_wins_over_the_plan() -> None:
 
 @pytest.mark.usefixtures("two_counts")
 def test_plan_decides_when_no_rule_matches() -> None:
-    # 규칙이 모르는 말투 ("B에 비해 A는"): 계획의 분자 · 분모를 쓴다
     found = _ratio_found(num="1인 가구 수", den="통근 인구")
     res, trace = run("2020년 서울 통근 인구에 비해 1인 가구 수는 얼마나 되나", found)
     assert res["result"]["value"] == 4.0 and trace["multi"]["ratio_by"] == "plan"
@@ -181,18 +170,15 @@ def test_plan_decides_when_no_rule_matches() -> None:
 
 @pytest.mark.usefixtures("two_counts")
 def test_default_is_later_over_earlier() -> None:
-    # 규칙도 계획도 없으면 예전처럼 뒤 ÷ 앞. 계획이 지표에 없는 말을 적었으면 쓰지 않는다
     found = _ratio_found(num="외국인", den="통근 인구")
     res, trace = run("2020년 서울 통근 인구에 비해 1인 가구 수는 얼마나 되나", found)
     assert res["result"]["value"] == 0.25 and trace["multi"]["ratio_by"] == "default"
 
 
-# ---- 연도를 말하지 않은 값 질문: 지표마다 최신 시점이 다르면 모두 있는 해로 맞춘다 ----
 NO_YEAR = {"type": "value", "regions": ["서울특별시"], "year": None, "sex": "계"}
 
 
 def _by_year(name, values, unit="명", as_of=None):
-    """말한 연도가 없으면 가장 최근 값, 있으면 그 해 값 (없는 해는 계산 못 함)"""
     latest = max(values)
 
     def got(parsed):
@@ -242,7 +228,6 @@ def test_latest_month_value_is_aligned_to_the_last_annual_year(world, monkeypatc
 
 
 def test_values_of_the_same_month_are_not_realigned(world) -> None:
-    # 둘 다 2026년 10월 말 값이면 같은 시점: 2025년으로 되돌리지 않는다
     month = "2026년 10월 말"
     world["values"] = {
         "주민": _by_year("주민", {2026: 110, 2025: 100}, as_of=month),
@@ -254,7 +239,6 @@ def test_values_of_the_same_month_are_not_realigned(world) -> None:
 
 
 def test_alignment_keeps_first_values_when_recompute_fails(world) -> None:
-    # 한 지표가 맞춘 해에는 값이 없다: 처음 값 그대로 (답을 잃지 않는다)
     world["values"] = {
         "가": _by_year("가", {2025: 30}),
         "나": _by_year("나", {2020: 5}),
@@ -276,7 +260,7 @@ def test_no_alignment_when_the_question_says_a_year(world) -> None:
     same = {"가": _value("가", 1, year=2020), "나": _value("나", 2, year=2020)}
     world["values"] = same
     _, trace = run("서울 가와 나", found, NO_YEAR)
-    assert "aligned" not in trace["multi"]  # 시점이 같으면 다시 계산하지 않는다
+    assert "aligned" not in trace["multi"]
 
 
 def test_compare_same_unit_adds_gap_line(world) -> None:
@@ -293,12 +277,11 @@ def test_filter_then_lookup_uses_top_region(world) -> None:
     found = _found([_target("인구", role="filter"), _target("출생아")], "filter_then_lookup")
     res, _ = run("인구가 가장 많은 시도의 출생아 수", found)
     assert ("인구", "rank", ()) in world["asked"]
-    assert ("출생아", "value", ("경기도",)) in world["asked"]  # 1위 지역으로 다시 계산
+    assert ("출생아", "value", ("경기도",)) in world["asked"]
     assert "인구가 가장 높은 지역은 경기도입니다" in res["answer"]
 
 
 def test_filter_then_lookup_lowest_region_says_lowest(world) -> None:
-    # "가장 적은 시도의 B": 안내문도 '가장 낮은' (11/18 전에는 늘 '가장 높은'이었다)
     world["values"] = {
         "인구": lambda p: _rank("인구", ["세종특별자치시", "제주특별자치도"]),
         "출생아": lambda p: _value("출생아", 3, "명", region=p["regions"][0]),
@@ -321,7 +304,6 @@ def test_intersect_of_regions(world) -> None:
 
 
 def test_intersect_of_one_group_has_no_number(world) -> None:
-    # 한 집단이 두 특성을 함께 가진 값은 두 표의 숫자로 만들 수 없다
     found = _found([_target("노인 1인 가구"), _target("연금 수급자")], "intersect")
     res, _ = run("2020년 서울 노인 1인 가구 중 연금 수급자 수", found)
     assert res["status"] == "no_joint_table" and "value" not in res["result"]
@@ -339,7 +321,6 @@ def test_target_parsed_keeps_whole_question_conditions() -> None:
 
 
 def test_dictionary_target_uses_dictionary(monkeypatch) -> None:
-    # 사전에 있는 지표는 사전으로 (넘기기 계산으로 다시 보내지 않는다)
     used = []
 
     async def fake_answer(parsed, trace, question):
@@ -360,7 +341,6 @@ def test_dictionary_target_uses_dictionary(monkeypatch) -> None:
 
 
 def test_top_region_of_question_is_filter_then_lookup(world) -> None:
-    # 계획이 intersect로 봐도 "A가 가장 많은 시도의 B"는 1위 지역의 B
     world["values"] = {
         "1인 가구": lambda p: _rank("1인 가구", ["경기도", "서울특별시"]),
         "통근 인구": lambda p: _value("통근 인구", 7, "명", region=p["regions"][0]),
@@ -374,7 +354,6 @@ def test_top_region_of_question_is_filter_then_lookup(world) -> None:
 
 @pytest.fixture
 def surveys(monkeypatch):
-    """표마다 조사 이름 (catalog.comparable이 DB 대신 쓴다). _value의 표 ID는 T_<지표>"""
     from app.services import catalog
 
     by_table: dict = {}
@@ -388,7 +367,6 @@ def surveys(monkeypatch):
 
 
 def test_compare_of_different_surveys_has_no_gap_line(world, surveys) -> None:
-    # 답변 정책: 기준이 다른 조사의 값은 나란히 보여 주되 크기를 견주지 않는다
     surveys.update({"T_주민등록 인구": "주민등록인구현황", "T_인구총조사 인구": "인구총조사"})
     world["values"] = {
         "주민등록 인구": _value("주민등록 인구", 9_386_034, "명"),
@@ -409,7 +387,7 @@ def test_diff_of_different_surveys_is_side_by_side(world, surveys) -> None:
     res, _ = run("2020년 서울 가구와 세대 차이", _found([_target("가구"), _target("세대")], "diff"))
     assert res["result"]["split_by"] == "indicator" and "value" not in res["result"]
     assert "직접 비교하지 않습니다" in res["answer"]
-    assert "직접 계산하지 않고 나란히" not in res["answer"]  # 이유를 따로 적었다
+    assert "직접 계산하지 않고 나란히" not in res["answer"]
 
 
 def test_compare_of_same_survey_keeps_gap_line(world, surveys) -> None:
@@ -428,7 +406,6 @@ def test_ratio_of_different_surveys_still_divides(world, surveys) -> None:
 
 
 def test_ratio_whole_side_does_not_take_question_age() -> None:
-    # "1인 가구 중 70세 이상 비율": 분모 "전체 1인 가구"에도 70세 이상을 붙여 100%가 됐다 (11/23)
     parsed = {"indicator": "1인 가구 중 70세 이상 비율", "type": "value", "ages": [[70, None]]}
     whole = {"span": "전체 1인 가구", "unsaid_age": True}
     part = {"span": "70세 이상 1인 가구", "unsaid_age": False}
@@ -439,3 +416,13 @@ def test_ratio_whole_side_does_not_take_question_age() -> None:
     assert not multi_indicator.says_age("전체 1인 가구")
     assert multi_indicator.without_unsaid_age(parsed, "전체 1인 가구")["ages"] is None
     assert multi_indicator.without_unsaid_age(parsed, "70세 이상 1인 가구") is parsed
+
+
+def test_age_note_only_applies_to_the_age_filtered_measure() -> None:
+    note = "'20대 후반'은 27~29세로 계산했습니다"
+    parsed = {"type": "value", "ages": [[27, 29]], "age_note": note}
+    whole = {"span": "전체 1인 가구", "unsaid_age": True}
+    part = {"span": "20대 후반 1인 가구", "unsaid_age": False}
+    assert multi_indicator.target_parsed(parsed, whole)["age_note"] is None
+    assert multi_indicator.target_parsed(parsed, part)["age_note"] == note
+    assert multi_indicator.without_unsaid_age(parsed, whole["span"])["age_note"] is None

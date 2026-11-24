@@ -43,20 +43,25 @@ from pipeline.search_docs import build as build_doc
 ROOT = Path(__file__).resolve().parent.parent
 RESULTS = ROOT / "eval" / "results"
 
-# 표명을 단어로 나누는 구분자 ('시도/성/연령별', '성, 연령 및 세대구성별', '…-시군구')
 SPLIT = re.compile(r"[/,·ㆍ\s\-()]+|및")
-# 구분 단어 유형 (위에서부터 먼저 맞는 것)
 KINDS: list[tuple[str, re.Pattern[str]]] = [
     ("지역 단위", re.compile(r"^(시도|시군구|읍면동|행정구역|전국|권역|도시|동|읍|면|시|군|구)$")),
-    ("기준·정의", re.compile(r"기준|발생|신고|등록|주민등록|현거주지|상주|내국인|외국인|전수|표본")),
-    ("모집단 수식어", re.compile(r"초혼|재혼|첫|쌍|다태|북한|귀화|이혼|사별|미혼|1인|고령|아동|청년|여성|남성|장애|다문화")),  # noqa: E501
+    (
+        "기준·정의",
+        re.compile(r"기준|발생|신고|등록|주민등록|현거주지|상주|내국인|외국인|전수|표본"),
+    ),
+    (
+        "모집단 수식어",
+        re.compile(
+            r"초혼|재혼|첫|쌍|다태|북한|귀화|이혼|사별|미혼|1인|고령|아동|청년|여성|남성|장애|다문화"
+        ),
+    ),  # noqa: E501
     ("지표 형태", re.compile(r"율|률|비|수$|건수|지수|평균|중위|구성비|비중|비율|인구$|가구$")),
 ]
 OTHER_KIND = "분류 축·기타"
 
 
 def name_tokens(name: str) -> set[str]:
-    """판 표기를 지운 표명 → 단어 집합 (끝의 '별' 제거, '연령별' → '연령')"""
     words = (w.removesuffix("별") for w in SPLIT.split(edition_name(name)))
     return {w for w in words if w}
 
@@ -126,7 +131,6 @@ def _folder(t: dict[str, Any]) -> str:
 
 
 def groups(found: list[dict[str, Any]]) -> list[set[str]]:
-    """헷갈리는 쌍을 이어 만든 표 묶음 (union-find)"""
     parent: dict[str, str] = {}
 
     def root(x: str) -> str:
@@ -154,7 +158,6 @@ def report(
 ) -> str:
     names = {t["tbl_id"]: t["table_name"] for t in tables}
     n = len(tables)
-    # 표마다 다른 패밀리 중 가장 가까운 표와의 유사도
     same = np.array([[fam[a["tbl_id"]] == fam[b["tbl_id"]] for b in tables] for a in tables])
     other = np.where(same, -1.0, sim)
     nearest = other.max(axis=1)
@@ -228,7 +231,9 @@ def report(
         "",
         "## 5. 표기만 다른데 다른 패밀리인 쌍 (구분자·'및'·'별'만 다름)",
         "",
-        "검색 규칙 1.1 기준 ②(표기 변형은 같은 판)대로라면 같은 패밀리여야 하는데, 현재 name_key는 기호·띄어쓰기만 지우고 '및'·'별'은 남겨 갈라진 경우다. 예: '성, 연령 및 직업별' / '성별/연령별/직업별'.",
+        "검색 규칙 1.1 기준 ②(표기 변형은 같은 판)대로라면 같은 패밀리여야 하는데,"
+        " 현재 name_key는 기호·띄어쓰기만 지우고 '및'·'별'은 남겨 갈라진 경우다."
+        " 예: '성, 연령 및 직업별' / '성별/연령별/직업별'.",
         "",
     ]
     same_name = [p for p in found if p["diff_size"] == 0]
@@ -257,7 +262,9 @@ def main() -> None:
 
     RESULTS.mkdir(parents=True, exist_ok=True)
     stamp = f"{date.today():%Y%m%d}"
-    with open(RESULTS / f"confusable_pairs_{stamp}.csv", "w", newline="", encoding="utf-8-sig") as f:
+    with open(
+        RESULTS / f"confusable_pairs_{stamp}.csv", "w", newline="", encoding="utf-8-sig"
+    ) as f:
         if found:
             w = csv.DictWriter(f, fieldnames=list(found[0]))
             w.writeheader()

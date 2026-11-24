@@ -27,6 +27,5 @@ async def health_db(
 
 @router.get("/health/search", summary="통계표 검색 준비 상태")
 async def health_search() -> dict[str, str | int | bool]:
-    """통계표 검색 준비 상태. retrieval이 keyword면 표 벡터가 없는 것 (pipeline.build_search)"""
     await search.load_tables()
     return {"status": "ok", **search.status()}

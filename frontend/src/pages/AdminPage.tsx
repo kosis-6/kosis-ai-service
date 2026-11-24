@@ -1,5 +1,3 @@
-// 관리자 화면: 사용 기록 (대화 · 통계표 찾기). 통계 찾기 화면과 같은 틀(사이드바 + 본문)을 쓴다
-// 주소는 /chat/admin, /chat/admin/searches. 관리자가 아니면 서버가 403 을 주고, 화면은 그 안내를 보여 준다
 import { Link, NavLink } from "react-router-dom";
 import { SearchesView } from "../admin/SearchesView";
 import { SessionsView } from "../admin/SessionsView";

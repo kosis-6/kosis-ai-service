@@ -1,18 +1,11 @@
-"""수치 계산 전에 확인해야 할 지역·이사 범위. 추가 LLM 호출 없이 판별한다."""
-
 import re
 
 VAGUE_REGION = re.compile(
     r"우리\s*(?:동네|지역|구(?=에서|의|는|에|\s|$|[?.])|시(?=에서|의|는|에|\s|$|[?.]))"
     r"|내가\s*사는\s*(?:곳|지역)"
-    # "여기 인구 얼마나 돼?", "이 동네 1인 가구 비율": 지금 있는 곳을 가리키는 말
     r"|(?:^|\s)(?:여기|이곳|이\s*동네|이\s*지역)(?:는|은|에는?|에서|서|의|\s)"
-    # "특정 시군구에서 가장 많은 …": 지역 자리를 비워 둔 질문
     r"|특정\s*(?:읍면동|시군구|시도|지역|동네)"
 )
-# "시군구별 ○○은 어떻게 변했어?": 시군구(약 250곳)마다의 추이는 한 번에 보여 줄 수 없어 어느
-# 시군구인지 좁혀 묻는다 (11/23 세진). 순위 · 조건으로 거르는 질문("시군구별 ○○이 가장 높은 곳",
-# "○○ 이상인 시군구를 찾아")은 답이 몇 곳으로 줄어들므로 묻지 않는다. 시도별(17곳)도 묻지 않는다
 EACH_SIGUNGU = re.compile(r"(?:전국\s*)?(?:각\s*)?시\s*군\s*구\s*(?:별|마다)(?:로)?")
 TREND_WORDS = re.compile(r"추이|변화|변했|변해|바뀌|달라졌|늘었|줄었")
 NARROWING_WORDS = re.compile(
@@ -26,7 +19,6 @@ WHOLE_COUNTRY = ("전체", "전국", "우리나라", "대한민국", "한국")
 
 
 def too_many_regions(question: str) -> bool:
-    """시군구마다의 추이를 거르는 조건 없이 물었는가"""
     return bool(
         EACH_SIGUNGU.search(question)
         and TREND_WORDS.search(question)
@@ -34,7 +26,6 @@ def too_many_regions(question: str) -> bool:
     )
 
 
-# 출발 지역을 말한 이사 질문만 다룬다. '수원으로 이사 온' 질문을 전출로 바꾸지 않는다.
 MOVE_COUNT = re.compile(r"에서\s*.{0,25}이사(?!\s*(?:온|오는|오신))")
 MOVE_SPECIFIC = re.compile(
     r"순이동|순유입|순유출|전입|전출|사유|이유|왜|직업|주택|교육|"
@@ -42,11 +33,10 @@ MOVE_SPECIFIC = re.compile(
     r"에서.{0,25}(?:으로|로)\s*이사"
 )
 MOVE_OPTIONS = ["지역 안에서의 이사도 포함", "지역 밖으로 나간 이사만"]
-OUT_WORDS = re.compile(r"나간|나가는|나갔|떠난|떠나는|빠져나")  # 밖으로 나간 이사만
+OUT_WORDS = re.compile(r"나간|나가는|나갔|떠난|떠나는|빠져나")
 NATIONWIDE = re.compile(r"전국|우리\s*나라|국내\s*전체")
-MAX_ASKS = 2  # 같은 되묻기는 이만큼까지 (통계표 찾기 dialog.MAX_CLARIFY_TURNS와 같다)
+MAX_ASKS = 2
 
-# 이사 범위 답: 정해진 문구가 아니라 핵심 낱말로 읽는다
 INCLUDE_WORDS = re.compile(r"포함|전부|모두|둘\s*다|(?:^|\s)다(?:\s|$|요|포함)|안에서|내부|안쪽")
 EXCLUDE_WORDS = re.compile(r"밖|나간|나가|제외|빼고|빼|외부|떠난")
 NOT_INCLUDE = re.compile(r"포함\s*(?:하지|안|말|x|X)|안\s*포함|포함\s*없이")
@@ -60,7 +50,6 @@ def detect(question: str, regions: list[str]) -> dict | None:
             "prompt": "어느 지역을 말씀하시나요? 시·군·구 이름을 알려 주세요 (예: 수원시).",
             "options": [],
         }
-    # "30대 전체 인구"의 '전체'처럼 전국을 가리키는 말은 지역을 정한 것이 아니다
     if too_many_regions(question) and not [r for r in regions if r not in WHOLE_COUNTRY]:
         return {
             "kind": "local_region",
@@ -68,7 +57,6 @@ def detect(question: str, regions: list[str]) -> dict | None:
             "어느 시군구를 볼까요? (예: 수원시)",
             "options": [],
         }
-    # 범위를 이미 말했거나("이사 나간") 전국이면(지역 밖이 없음) 묻지 않는다
     if (
         MOVE_COUNT.search(question)
         and not MOVE_SPECIFIC.search(question)
@@ -84,9 +72,6 @@ def detect(question: str, regions: list[str]) -> dict | None:
 
 
 def stated_scope(question: str) -> str | None:
-    """이사 건수 질문에서 범위를 이미 말했으면 그 범위 (되묻지 않는다).
-    "수원에서 이사 나간 사람" → "exclude". "전국에서 이사한 사람"은 지역 밖이 없어 "nation".
-    순이동·전입 사유처럼 다른 지표를 물은 질문이면 None"""
     if not MOVE_COUNT.search(question) or MOVE_SPECIFIC.search(question):
         return None
     if NATIONWIDE.search(question):
@@ -97,9 +82,6 @@ def stated_scope(question: str) -> str | None:
 
 
 def scope_reply(reply: str) -> str | None:
-    """이사 범위 답 → "include"(지역 안 이사도 포함) / "exclude"(밖으로 나간 것만) / None(모름).
-    "1번·첫 번째"는 첫 선택지, "2번·두 번째"는 둘째 선택지. "A 말고 B"는 B로 읽는다.
-    포함·제외 낱말이 함께 있으면(예: "밖으로 나간 것도 포함") 짐작하지 않는다"""
     text = reply.strip()
     if "말고" in text:
         text = text.rsplit("말고", 1)[1].strip()
@@ -117,9 +99,7 @@ def scope_reply(reply: str) -> str | None:
 
 
 def merge_scope(question: str, scope: str) -> str:
-    # 선택의 뜻을 질문에 명시해 통계표 찾기에도 그대로 전달한다.
-    # "제외·말고"는 쓰지 않는다: 통계표 찾기가 그 말이 든 표(이동 표 전체)를 감점한다
-    if scope == "nation":  # 전국은 지역 안팎 구분이 없다
+    if scope == "nation":
         return question
     condition = (
         "집계 범위: 해당 지역에서 출발한 이동 중 지역 내 이동과 지역 밖으로 나간 이동 모두 포함"
@@ -142,8 +122,6 @@ def region_reply(reply: str, regions: list[str], has_indicator: bool) -> str | N
 
 
 def bare_region(reply: str) -> str | None:
-    """지역 답에서 지역 이름만 남긴다 ("수원이요" → "수원").
-    짧은 답만 (긴 문장은 새 질문으로 본다)"""
     name = re.sub(
         r"(?:이에요|예요|에요|입니다|이요|요|으로|로|기준|지역)$", "", reply.strip(" .?!")
     )
@@ -154,4 +132,4 @@ def bare_region(reply: str) -> str | None:
 def merge_region(question: str, region: str) -> str:
     if VAGUE_REGION.search(question):
         return VAGUE_REGION.sub(region, question)
-    return EACH_SIGUNGU.sub(region, question, count=1)  # "시군구별 ○○" → "수원시 ○○"
+    return EACH_SIGUNGU.sub(region, question, count=1)

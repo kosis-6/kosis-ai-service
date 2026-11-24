@@ -48,7 +48,6 @@ def test_ask_errors(monkeypatch: pytest.MonkeyPatch, error: Exception, status_co
     monkeypatch.setattr(qa, "ask", fail)
     r = client.post("/ask", json={"question": "서울 인구"})
     assert r.status_code == status_code
-    # 오류 원문(DB 주소 · HCX 메시지)은 화면에 보내지 않는다
     assert "DB 없음" not in r.text and "Unauthorized" not in r.text
 
 
@@ -70,7 +69,6 @@ def test_question_clarification_is_exposed_without_ai(monkeypatch):
 
 
 def test_ask_hcx_error_detail_hides_raw_message(monkeypatch: pytest.MonkeyPatch) -> None:
-    # 화면에는 HCX 원문 오류 대신 다시 질문하라는 안내만
     async def fail(question: str, adjust=None) -> dict:
         raise HcxError("network", "HCX에 연결하지 못했습니다 (ConnectError)")
 

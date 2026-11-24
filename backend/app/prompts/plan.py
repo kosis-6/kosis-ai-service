@@ -1,5 +1,3 @@
-"""통계표 찾기의 계획 프롬프트: 질문 → 지표 목록·조건·결합 방식 (app/agent/plan.py 에서 쓴다)"""
-
 from app.prompts import swap
 
 SYSTEM = """너는 KOSIS 인구 통계 질문을 '필요한 통계 지표 목록'으로 바꾸는 계획기다. 계산은 하지 않는다.
@@ -53,10 +51,6 @@ SYSTEM = """너는 KOSIS 인구 통계 질문을 '필요한 통계 지표 목록
                 {"span": "통근 인구", "search": "시도별 통근 인구", "scope": "in", "role": "measure", "override": {}}],
  "combine": {"op": "ratio", "num": "1인 가구 수", "den": "통근 인구", "note": "A는 B의 몇 배 = A ÷ B"}}"""
 
-# Gemma 4 31B 용 (SEARCH_LLM=gemma). 아래 네 군데에 문장을 더한다.
-# Gemma 는 '파생 지표는 풀어라'(1번) · 'search 는 표 제목처럼'(3번)을 글자 그대로 따라, KOSIS 가 그 이름으로
-# 공표하는 지표(출생성비 · 일반이혼율)와 질문의 대상 이름(한부모 가구)을 기초 건수 · 짐작한 분류 이름으로 바꿨다
-# (11/15 실험실, 여러 표 125조각의 지표별 1위: HCX 100, Gemma 원문 91 → 아래 수정 뒤 104)
 _RULE_1_END = "   증감률·상승폭 → 그 지표의 연도별 추이, 고용률 → 성·연령·경제활동상태별 인구, 순유출 → 순이동자 수, 상쇄율 → 각 구성 지표."
 _RULE_1_1 = """
 1-1. 단, KOSIS가 그 이름으로 직접 공표하는 지표는 풀지 말고 이름 그대로 search 에 쓴다:
@@ -88,7 +82,6 @@ for _old, _new in (
 ):
     SYSTEM_GEMMA = swap(SYSTEM_GEMMA, _old, _new)
 
-# 조건 칸 (공통 조건 shared 와 지표별 조건 override 가 같은 모양)
 COND = {
     "type": "object",
     "properties": {
@@ -132,7 +125,6 @@ SCHEMA = {
                         "diff",
                     ],
                 },
-                # ratio일 때 분자 · 분모 지표의 span (규칙 7-1). 필수가 아니다: 빠지면 코드가 '없음'으로 읽는다
                 "num": {"anyOf": [{"type": "null"}, {"type": "string"}]},
                 "den": {"anyOf": [{"type": "null"}, {"type": "string"}]},
                 "note": {"type": "string"},

@@ -1,5 +1,3 @@
-"""사용 기록의 저장·조회 마스킹과 요청 없는 동안의 보관 기간 정리."""
-
 import asyncio
 import copy
 import json

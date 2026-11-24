@@ -1,8 +1,3 @@
-"""적재 때 표 정보의 수록 기간·판 이름을 값에 맞춰 넓힌다 (load_raw.sync_period_meta)
-
-실제 DB의 적재된 표 하나로 시험하고, 끝나면 모두 되돌린다(rollback).
-"""
-
 import os
 
 import psycopg
@@ -12,7 +7,7 @@ from pipeline.load_raw import sync_period_meta
 
 pytestmark = pytest.mark.needs_data
 
-TBL = "DT_1MB2081"  # 이주배경인구 - 시도
+TBL = "DT_1MB2081"
 
 
 @pytest.fixture
@@ -26,7 +21,6 @@ def pg():
 
 
 def loaded(pg):
-    """(tbl_key, 값 시작 연도, 값 끝 연도). 적재 안 된 표면 건너뛴다"""
     r = pg.execute(
         "select s.tbl_key, s.first_period, s.last_period from raw.stat_load s"
         " join catalog.stat_table t using (tbl_key) where t.tbl_id = %s",

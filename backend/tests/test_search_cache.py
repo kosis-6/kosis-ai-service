@@ -1,5 +1,3 @@
-"""검색 대상 목록이 바뀌면 이전 목록의 분류 값 캐시를 재사용하지 않는다."""
-
 from app.services import search as se
 
 
@@ -14,7 +12,6 @@ def table(tbl_id, name, values):
 
 
 def test_compound_scores_after_table_list_id_reuse(monkeypatch):
-    # 해제된 목록의 주소를 새 목록이 재사용하는 상황을 결정적으로 재현한다.
     monkeypatch.setattr(se, "id", lambda _: 1, raising=False)
     monkeypatch.setattr(se, "_value_index", None)
     se.value_index([table("OLD", "다른표", ["지체"])])

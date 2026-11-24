@@ -1,19 +1,3 @@
-"""KOSIS 수집 CSV → 정제된 통계 테이블 생성 (PostgreSQL)
-
-입력: data/raw/kosis_zip/processed/*.csv, *.meta.json  (환경변수 KOSIS_RAW_DIR로 변경)
-출력: PostgreSQL build 스키마 (검증 후 publish_stats.py가 서비스 스키마로 옮긴다)
-
-만들어지는 테이블
-  catalog         통계표 목록 (수록 기간, 분류, 추계표 여부)
-  regions         지역 코드 계층 (전국/시도/시군구/일반구/출장소, 존속 기간)
-  region_aliases  지역 별칭 → 지역 코드 (질문 속 지역명 해석용)
-  region_changes  행정구역 변경 이력 (답변 안내 문구용)
-  facts           통계표 20개를 합친 세로형 테이블 (지역 코드 통일, 결측·단위·추계 구분)
-  population      1세별 주민등록인구 (연령·성별 분석용)
-
-실행: python pipeline/preprocess.py   (가상환경 활성화 후, README 참고. 보통은 run_all.py로 실행)
-"""
-
 import csv
 import json
 import os
@@ -34,16 +18,13 @@ from pipeline.region_map import (  # noqa: E402
 )
 from pipeline.stats_build import Build  # noqa: E402
 
-# run_all.py가 수집 결과 폴더를 넘길 때 환경변수를 쓴다 (절대 경로면 그대로)
 RAW_DIR = ROOT / os.environ.get("KOSIS_RAW_DIR", "data/raw/kosis_zip/processed")
 
 ORG_NAMES = {"101": "국가데이터처 (구 통계청)", "110": "행정안전부"}
 
-# 장래인구추계(2022년 기준): 2022년까지는 기준인구, 2023년부터가 추계값
 PROJECTION_TABLES = {"DT_1BPB002", "DT_1BPB003", "DT_1BPB101"}
 PROJECTION_BASE_YEAR = 2022
 
-# 지표 이름이 item_nm이 아니라 다른 분류 컬럼에 들어 있는 표
 LABEL_COLUMN = {
     "INH_1B8000F_01": "c1_nm",
     "DT_1BPB002": "c3_nm",
@@ -51,7 +32,6 @@ LABEL_COLUMN = {
     "DT_1BPB101": "c3_nm",
 }
 
-# 연령 분류 단위 (답변 불가 사례 2: 분류 기준 불일치 판단용)
 AGE_UNIT = {
     "DT_1B04006": "1세",
     "DT_1BPB101": "1세",
@@ -60,7 +40,6 @@ AGE_UNIT = {
     "DT_1MR2060": "5세",
 }
 
-# KOSIS 결측 기호 (답변 불가 사례 5: 결측 안내용)
 MISSING_REASONS = {
     "-": "해당 자료 없음",
     "*": "비밀보호 (5 미만)",
@@ -68,38 +47,31 @@ MISSING_REASONS = {
     "X": "비밀보호",
     "…": "미상",
 }
-# 수집 과정에서 결측 기호가 빠진 표의 기본 결측 사유 (통계표 주석 기준)
 TABLE_MISSING_REASON = {"DT_1MR2060": "비밀보호 (개인정보 보호를 위해 5 미만 값 비공개)"}
 
-# ---- 단위 정리 규칙 --------------------------------------------------------
-# 원본 unit이 비어 있거나 여러 단위가 한 칸에 합쳐져 있어서 직접 정한다.
 UNIT_OVERRIDES = {
     ("DT_1B81A21", "T1"): "가임여성 1명당 명",
     **{("DT_1B81A21", f"T{i}"): "해당 연령 여자인구 1천 명당 명" for i in range(2, 9)},
     ("DT_1B81A23", "T1"): "명",
 }
-# 지표 이름이 이 정규식에 맞으면 해당 단위 (위에서부터 먼저 맞는 것 적용)
 LABEL_UNIT_RULES = [
     ("합계출산율", "가임여성 1명당 명"),
     ("TFR", "가임여성 1명당 명"),
     ("출생성비", "여아 100명당 남아 수"),
-    ("(?<!구)성비", "여자 100명당 남자 수"),  # '구성비(%)'는 제외
+    ("(?<!구)성비", "여자 100명당 남자 수"),
     ("부양비", "생산연령인구 100명당 명"),
     ("노령화지수", "유소년인구 100명당 명"),
 ]
-# 지표 이름 안 괄호에 단위가 있는 경우. 예: "출생건수 (명)", "고령인구(천명): 65세+"
 UNIT_IN_PARENS = re.compile(r"\((명|천명|건|%|천명당|세)\)")
-# 원본 unit도 비어 있을 때 쓰는 표 기본 단위
 TABLE_DEFAULT_UNIT = {"DT_1BPB101": "여자 1명당 명", "TX_11025_A000_A": "명"}
 
-# ---- 지역 별칭·변경 이력 ---------------------------------------------------
 SIDO_ALIASES = {
     "00": ["전국", "전체", "계", "합계"],
     "11": ["서울", "서울시"],
     "26": ["부산", "부산시"],
     "27": ["대구", "대구시"],
     "28": ["인천", "인천시"],
-    "29": ["광주"],  # "광주시"는 경기도 광주시와 겹쳐서 제외
+    "29": ["광주"],
     "30": ["대전", "대전시"],
     "31": ["울산", "울산시"],
     "36": ["세종", "세종시"],
@@ -112,10 +84,8 @@ SIDO_ALIASES = {
     "50": ["제주", "제주도"],
     "51": ["강원", "강원도"],
     "52": ["전북", "전라북도"],
-    # 붙여 쓴 이름만 통합특별시로 본다. "광주 전남", "광주, 전남"은 두 지역(29, 46)으로 해석
     "12": ["전남광주", "광주전남"],
 }
-# 지역 연결 규칙(REGION_COLUMN, 예전 시도 이름, 전국 이름, 경로 보정)은 pipeline/region_map.py
 
 REGION_CHANGES = [
     (2010, "경남 창원시·마산시·진해시가 창원시로 통합", "48110,48160,48190,48120"),
@@ -148,13 +118,9 @@ REGION_CHANGES = [
     ),
 ]
 
-# 연간(연말 기준) 통계에서 마지막 해. 이후 연도에는 연결하지 않는다.
-# 2026년 연간 통계는 연말 기준 행정구역(전남광주통합특별시, 인천 개편 후 구)으로 집계됨
-# (국내인구이동통계 주석)
 REGION_LAST_YEAR = {
     "29": 2025,
-    "46": 2025,  # 광주광역시, 전라남도
-    # 광주 5개 구·전남 22개 시군: 2026-07-01부터 12xxx 새 코드 (NEW_REGIONS)
+    "46": 2025,
     "29110": 2025,
     "29140": 2025,
     "29155": 2025,
@@ -182,65 +148,55 @@ REGION_LAST_YEAR = {
     "46890": 2025,
     "46900": 2025,
     "46910": 2025,
-    # 화성시 동부·동탄출장소: 2026-02-01 일반구 신설로 없어짐 (범위가 달라 새 구와 잇지 않음)
     "41592": 2025,
     "41594": 2025,
     "28110": 2025,
     "28114": 2025,
-    "28118": 2025,  # 인천 중구 (영종·용유 출장소 포함)
-    "28140": 2025,  # 인천 동구
+    "28118": 2025,
+    "28140": 2025,
     "28260": 2025,
-    "28265": 2025,  # 인천 서구 (검단 출장소 포함)
+    "28265": 2025,
 }
 
-# 기준 표(2008~2025 주민등록)에는 없지만 이후 출범한 지역.
-# 유효 기간이 시작 전이면 자료에 연결하지 않는다.
 NEW_REGIONS = [
-    # (코드, 이름, 종류, 유효 시작 연도)
     ("12", "전남광주통합특별시", "시도", 2026),
-    # 인천 행정체제 개편 (2026-07-01): 중구·동구 → 제물포구·영종구, 서구 → 서해구·검단구
     ("28125", "제물포구", "시군구", 2026),
     ("28155", "영종구", "시군구", 2026),
     ("28275", "서해구", "시군구", 2026),
     ("28290", "검단구", "시군구", 2026),
-    # 화성시 일반구 신설 (2026-02-01). 화성시(41590)는 그대로 있음
     ("41591", "만세구", "일반구", 2026),
     ("41593", "효행구", "일반구", 2026),
     ("41595", "병점구", "일반구", 2026),
     ("41597", "동탄구", "일반구", 2026),
-    # 전남광주통합특별시 시군구 (2026-07-01): 이름은 같고 코드만 바뀜.
-    # 옛 코드는 REGION_LAST_YEAR에서 2025까지
-    ("12110", "목포시", "시군구", 2026),  # 옛 46110
-    ("12130", "여수시", "시군구", 2026),  # 옛 46130
-    ("12150", "순천시", "시군구", 2026),  # 옛 46150
-    ("12170", "나주시", "시군구", 2026),  # 옛 46170
-    ("12190", "광양시", "시군구", 2026),  # 옛 46230
-    ("12210", "동구", "시군구", 2026),  # 옛 29110
-    ("12240", "서구", "시군구", 2026),  # 옛 29140
-    ("12270", "남구", "시군구", 2026),  # 옛 29155
-    ("12300", "북구", "시군구", 2026),  # 옛 29170
-    ("12330", "광산구", "시군구", 2026),  # 옛 29200
-    ("12710", "담양군", "시군구", 2026),  # 옛 46710
-    ("12720", "곡성군", "시군구", 2026),  # 옛 46720
-    ("12730", "구례군", "시군구", 2026),  # 옛 46730
-    ("12740", "고흥군", "시군구", 2026),  # 옛 46770
-    ("12750", "보성군", "시군구", 2026),  # 옛 46780
-    ("12760", "화순군", "시군구", 2026),  # 옛 46790
-    ("12770", "장흥군", "시군구", 2026),  # 옛 46800
-    ("12780", "강진군", "시군구", 2026),  # 옛 46810
-    ("12790", "해남군", "시군구", 2026),  # 옛 46820
-    ("12800", "영암군", "시군구", 2026),  # 옛 46830
-    ("12810", "무안군", "시군구", 2026),  # 옛 46840
-    ("12820", "함평군", "시군구", 2026),  # 옛 46860
-    ("12830", "영광군", "시군구", 2026),  # 옛 46870
-    ("12840", "장성군", "시군구", 2026),  # 옛 46880
-    ("12850", "완도군", "시군구", 2026),  # 옛 46890
-    ("12860", "진도군", "시군구", 2026),  # 옛 46900
-    ("12870", "신안군", "시군구", 2026),  # 옛 46910
+    ("12110", "목포시", "시군구", 2026),
+    ("12130", "여수시", "시군구", 2026),
+    ("12150", "순천시", "시군구", 2026),
+    ("12170", "나주시", "시군구", 2026),
+    ("12190", "광양시", "시군구", 2026),
+    ("12210", "동구", "시군구", 2026),
+    ("12240", "서구", "시군구", 2026),
+    ("12270", "남구", "시군구", 2026),
+    ("12300", "북구", "시군구", 2026),
+    ("12330", "광산구", "시군구", 2026),
+    ("12710", "담양군", "시군구", 2026),
+    ("12720", "곡성군", "시군구", 2026),
+    ("12730", "구례군", "시군구", 2026),
+    ("12740", "고흥군", "시군구", 2026),
+    ("12750", "보성군", "시군구", 2026),
+    ("12760", "화순군", "시군구", 2026),
+    ("12770", "장흥군", "시군구", 2026),
+    ("12780", "강진군", "시군구", 2026),
+    ("12790", "해남군", "시군구", 2026),
+    ("12800", "영암군", "시군구", 2026),
+    ("12810", "무안군", "시군구", 2026),
+    ("12820", "함평군", "시군구", 2026),
+    ("12830", "영광군", "시군구", 2026),
+    ("12840", "장성군", "시군구", 2026),
+    ("12850", "완도군", "시군구", 2026),
+    ("12860", "진도군", "시군구", 2026),
+    ("12870", "신안군", "시군구", 2026),
 ]
 
-# 출범 전 기간이 0으로 채워진 자리값 → 결측으로 처리 (0을 실제 값으로 답하지 않도록)
-# 코드: (원본 지역 이름, 출범 연도, 결측 사유)
 PLACEHOLDER_REGIONS = {
     "12": (
         "전남광주통합특별시",
@@ -251,7 +207,6 @@ PLACEHOLDER_REGIONS = {
 
 
 def resolve_unit(tbl_id, item_id, label, raw_unit):
-    """표·항목·지표 이름을 보고 정리된 단위 하나를 정한다."""
     if (tbl_id, item_id) in UNIT_OVERRIDES:
         return UNIT_OVERRIDES[(tbl_id, item_id)]
     for pattern, unit in LABEL_UNIT_RULES:
@@ -266,7 +221,6 @@ def resolve_unit(tbl_id, item_id, label, raw_unit):
 
 
 def build_catalog(con):
-    """1. *.meta.json → catalog 테이블"""
     rows = []
     for path in sorted(RAW_DIR.glob("*.meta.json")):
         meta = json.loads(path.read_text(encoding="utf-8"))
@@ -284,7 +238,6 @@ def build_catalog(con):
                 "items": json.dumps(meta["items"], ensure_ascii=False),
                 "classes": json.dumps(meta["classes"], ensure_ascii=False),
                 "rows": meta["rows"],
-                # 수집기가 기록한 수집 시각. 예전 수집 결과에는 없어서 비어 있다
                 "collected_at": meta.get("collected_at"),
             }
         )
@@ -297,13 +250,11 @@ def build_catalog(con):
 
 
 def load_raw(con):
-    """CSV 20개를 한 번에 읽어 raw 테이블로. 코드값 앞자리 0을 지키려고 전부 문자열로 읽는다."""
     files = sorted(RAW_DIR.glob("*.csv"))
     headers = {}
     for path in files:
         with path.open(encoding="utf-8-sig", newline="") as f:
             headers[path] = next(csv.reader(f))
-    # 표마다 분류 칸 수가 달라 모든 칸을 합친 테이블을 만든다
     columns = list(dict.fromkeys(c for header in headers.values() for c in header))
     con.sql(f"create temp table raw ({', '.join(f'{c} text' for c in columns)})")
     for path in files:
@@ -315,14 +266,6 @@ def load_raw(con):
 
 
 def build_regions(con):
-    """3. 1세별 주민등록인구 표의 지역 코드로 regions 테이블 생성
-
-    kind 구분
-      전국 / 시도
-      시군구 : 기초자치단체. 시도 합계 = 시군구 합계 (2008~2025 전 연도 확인)
-      일반구 : 자치구가 아닌 시 아래 구 (예: 수원시 장안구). 합산하면 중복
-      출장소 : 행정 출장소. 합산하면 중복
-    """
     con.sql("""
         create temp table r0 as
         select c1_id as region_code, any_value(c1_nm) as region_name,
@@ -358,9 +301,6 @@ def build_regions(con):
         update regions set path = case when sido_name is null then region_name
                                        else sido_name || ' > ' || region_name end;
     """)
-    # 유효 기간: 기준 표 수록 기간(2008~2025)의 처음/끝까지 있던 지역은
-    # 그 이전/이후도 유효(NULL)로 본다.
-    # 예) 서울특별시 valid_from=NULL → 1970년 자료도 연결, 군위군(대구) valid_from=2023
     con.sql("""
         alter table regions add column valid_from int;
         alter table regions add column valid_to int;
@@ -372,9 +312,7 @@ def build_regions(con):
     """)
     for code, last in REGION_LAST_YEAR.items():
         con.execute("update regions set valid_to = ? where region_code = ?", [last, code])
-    # 기준 표 이후 출범한 지역 추가 (자료가 없으니 first_year/last_year는 비워 둔다)
     for code, name, kind, valid_from in NEW_REGIONS:
-        # 시군구·일반구는 소속 시도를 기존 지역과 같은 모양으로 채운다
         sido_code = None if kind == "시도" else code[:2]
         sido_name = None
         if sido_code:
@@ -398,8 +336,6 @@ def build_regions(con):
         )
 
     alias_rows = [(a, code) for code, names in SIDO_ALIASES.items() for a in names]
-    # 시도와 이름이 같은 시군구(세종특별자치시 36110)는 별칭에서 뺀다
-    # 같은 별칭이 시도 36과 시군구 36110을 함께 가리켜 "어느 지역이냐"고 되묻게 되므로
     alias_rows += con.sql(
         "select region_name, region_code from regions "
         "where sido_name is null or region_name != sido_name"
@@ -416,13 +352,6 @@ def build_regions(con):
 
 
 def build_region_map(con):
-    """표마다 다른 지역 코드를 regions.region_code로 맞추는 대응표 (region_code_map)
-
-    연결 규칙은 pipeline/region_map.match_region (적재 후 단계와 같은 규칙).
-    같은 경로에 코드가 둘 이상이면(예: 부천시 원미구 41195 → 41192) 후보를 모두 남기고
-    facts에서 연도로 하나를 고른다. 연결하지 못하면 unmatched_reason을 남긴다.
-    src_dim은 지역이 들어 있는 분류 칸 번호(c1 → 1)로, 서비스가 raw.stat_value의 그 칸과 연결한다.
-    """
     parts = []
     for (tbl_id,) in con.sql("select distinct tbl_id from raw").fetchall():
         col = REGION_COLUMN.get(tbl_id, "c1")
@@ -453,7 +382,6 @@ def build_region_map(con):
 
 
 def build_facts(con):
-    """2. 모든 표를 하나의 세로형 facts 테이블로 (지역 코드·단위·결측·추계 정리)"""
     keys = con.sql("select distinct tbl_id, item_id, label, unit from raw").df()
     keys["clean_unit"] = [
         resolve_unit(
@@ -473,7 +401,6 @@ def build_facts(con):
     )
     src_code = f"case r.tbl_id {region_sql} else r.c1_id end"
     src_name = f"case r.tbl_id {region_nm_sql} else r.c1_nm end"
-    # 출범 전 자리값이면 사유 문자열, 아니면 NULL
     placeholder_reason = (
         "case "
         + " ".join(
@@ -532,7 +459,6 @@ def build_facts(con):
 
 
 def build_population(con):
-    """4. 1세별 주민등록인구 → population (age가 NULL이면 전체 연령 합계)"""
     con.sql("""
         create table population as
         select period::int as year,

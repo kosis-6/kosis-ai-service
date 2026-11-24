@@ -1,15 +1,11 @@
-/* 로그인·회원가입·가입 완료 화면 (Figma 02·03·06, M02~M04) */
-/* 화면마다 body 배치가 달라 data-page 로 나눈다 (pages/*.tsx 의 usePage) */
 body[data-page="account"] {
   display: flex;
   gap: 20px;
-  /* base.css 의 height: 100% 를 풀어, 폼이 화면보다 길면(인증번호 칸·오류 문구) 패널도 함께 늘어나게 한다 */
   height: auto;
   min-height: 100dvh;
   padding: 20px;
 }
 
-/* ---- 브랜드 패널 ---- */
 .story {
   flex: 0 0 auto;
   display: flex;
@@ -25,7 +21,6 @@ body[data-page="account"] {
 .brand.on-dark { color: var(--panel); }
 .brand.on-dark .brand-tag { color: var(--accent-mid); }
 .story-body { display: flex; flex-direction: column; gap: 24px; }
-/* 브랜드 패널: 로고 → 문구 → 주제가 차례로 떠오른다 */
 .story-body > * { animation: rise var(--slow) var(--ease) both; }
 .story-body > :nth-child(2) { animation-delay: 60ms; }
 .story-body > :nth-child(3) { animation-delay: 120ms; }
@@ -54,7 +49,6 @@ body[data-page="account"] {
 }
 .story-foot { color: var(--accent-mid); font-size: 12px; line-height: 16px; white-space: pre; }
 
-/* ---- 계정 패널 ---- */
 .panel {
   flex: 1;
   min-width: 0;
@@ -88,7 +82,6 @@ body[data-page="account"] {
 .lead { color: var(--muted); line-height: 22px; }
 .panel-foot { color: var(--muted); font-size: 12px; line-height: 16px; text-align: center; }
 
-/* SIX / Input */
 .fields { display: flex; flex-direction: column; gap: 16px; }
 .compact .fields { gap: 12px; }
 .field { display: flex; flex-direction: column; gap: 8px; }
@@ -119,7 +112,6 @@ body[data-page="account"] {
 .eye { flex: none; display: grid; place-items: center; padding: 0; border: 0; background: none; color: var(--muted); transition: color var(--fast) var(--ease); }
 .eye:hover, .eye[aria-pressed="true"] { color: var(--ink); }
 
-/* 칸 안의 글자 버튼 (인증번호 받기·확인), 칸 아래 안내·오류 문구. 시안에 없어 SIX / Input 에 맞춰 둠 */
 .field-btn {
   flex: none;
   padding: 6px 0;
@@ -148,7 +140,6 @@ body[data-page="account"] {
 }
 .btn[aria-busy="true"] { cursor: progress; }
 
-/* 체크박스 */
 .agrees { display: flex; flex-direction: column; gap: 8px; }
 .agree {
   display: flex;
@@ -181,7 +172,6 @@ body[data-page="account"] {
 .switch a { color: var(--ink); font-weight: 500; text-decoration: none; }
 .switch a:hover { text-decoration: underline; }
 
-/* 가입 완료 */
 .done { align-items: center; gap: 24px; text-align: center; }
 .done h1 { font-size: 28px; line-height: 36px; }
 .done-mark {
@@ -196,7 +186,6 @@ body[data-page="account"] {
 .later { color: var(--muted); font-size: 13px; line-height: 20px; text-decoration: none; }
 .later:hover { color: var(--ink); }
 
-/* ---- 모바일 (M02~M04) ---- */
 @media (max-width: 860px) {
   body[data-page="account"] { display: block; padding: 0; background: var(--workspace); }
   .story, .back, .panel-foot { display: none; }
@@ -217,12 +206,10 @@ body[data-page="account"] {
   .views { padding: 24px; }
   .view { max-width: 424px; }
   .view h1 { font-size: 28px; line-height: 36px; }
-  /* iOS 는 16px 미만 입력창에 포커스하면 화면을 확대한다 */
   .field-box input { font-size: 16px; }
   .field-box input::placeholder { font-size: 14px; }
 }
 
-/* 터치 기기: 시안의 크기는 두고 눌리는 범위만 44px 로 넓힌다 */
 @media (pointer: coarse) {
   .eye, .field-btn { position: relative; }
   .eye::after { content: ""; position: absolute; inset: -13px; }

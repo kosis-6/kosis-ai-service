@@ -1,7 +1,3 @@
-"""관리자용 사용자 기록 조회: 거르는 조건 만들기, /admin/logs API
-(DB 대신 services.user_logs 의 조회 함수를 바꿔 끼운다)
-"""
-
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
@@ -63,7 +59,6 @@ def admin(client: TestClient) -> TestClient:
 
 @pytest.fixture
 def calls(monkeypatch: pytest.MonkeyPatch) -> dict:
-    """조회 함수 대신 받은 인자를 적어 두고 정해 둔 줄을 돌려준다"""
     seen: dict = {}
 
     async def turns(session, limit, offset, **filters):
@@ -128,9 +123,6 @@ def calls(monkeypatch: pytest.MonkeyPatch) -> dict:
     return seen
 
 
-# ---- 거르는 조건 -------------------------------------------------------------------------
-
-
 def test_no_filter_is_no_where() -> None:
     assert user_logs.conditions(user_logs.TURN_COLUMNS) == ("", {})
 
@@ -148,7 +140,6 @@ def test_filters_are_bound_not_pasted() -> None:
         " where t.user_id = :user_id and t.status = :status and t.request_type = :request_type"
         " and t.message ilike :q escape '\\' and t.created_at >= :since"
     )
-    # 사용자가 넣은 % 와 _ 는 글자 그대로 찾는다
     assert params["q"] == "%100\\% 인구\\_수%"
     assert "100%" not in where and params["user_id"] == 3
 
@@ -164,15 +155,12 @@ def test_search_logs_have_no_request_type_but_have_error() -> None:
         user_logs.SEARCH_COLUMNS, request_type="new", has_error=True
     )
     assert where == " where s.error is not null" and params == {}
-    # 턴 기록에는 오류 칸이 없다
     assert user_logs.conditions(user_logs.TURN_COLUMNS, has_error=True) == ("", {})
 
 
 def test_blank_word_is_ignored() -> None:
     assert user_logs.conditions(user_logs.TURN_COLUMNS, q="   ") == ("", {})
 
-
-# ---- API ---------------------------------------------------------------------------------
 
 PATHS = [
     "/admin/logs/summary",
@@ -207,7 +195,6 @@ def test_turns_pass_filters(admin: TestClient, calls: dict) -> None:
     assert body["turns"][0]["user_email"] == "user@b.co"
     seen = calls["turns"]
     assert (seen["limit"], seen["offset"], seen["user_id"], seen["status"]) == (10, 0, 3, "ok")
-    # 시간대 없이 온 시각은 UTC 로 본다
     assert seen["since"] == datetime(2026, 11, 15, tzinfo=UTC)
     assert seen["guest"] is None and seen["until"] is None
 
@@ -226,7 +213,6 @@ def test_session_detail_in_order_with_user(admin: TestClient, calls: dict) -> No
     body = r.json()
     assert [t["turn_no"] for t in body["turns"]] == [1, 2]
     assert body["turns"][0]["conditions_after"] == {"regions": ["서울"]}
-    # 중간에 로그인한 대화는 로그인한 턴의 사용자를 대화의 사용자로 본다
     assert body["user_email"] == "user@b.co"
     assert admin.get("/admin/logs/sessions/A_none").status_code == 404
 
@@ -236,7 +222,7 @@ def test_searches_list_and_detail(admin: TestClient, calls: dict) -> None:
     assert r.status_code == 200
     assert r.json()["searches"][0]["elapsed_ms"] == 4200
     assert calls["searches"]["has_error"] is False
-    assert "slots" not in r.json()["searches"][0]  # 목록에는 무거운 칸을 싣지 않는다
+    assert "slots" not in r.json()["searches"][0]
 
     one = admin.get("/admin/logs/searches/11")
     assert one.status_code == 200 and one.json()["timings"] == {"slots_ms": 1500}
@@ -256,9 +242,6 @@ def test_summary(admin: TestClient, calls: dict) -> None:
 def test_limit_is_capped(admin: TestClient, calls: dict) -> None:
     assert admin.get("/admin/logs/turns", params={"limit": 201}).status_code == 422
     assert admin.get("/admin/logs/turns", params={"q": "가" * 101}).status_code == 422
-
-
-# ---- 보안 --------------------------------------------------------------------------------
 
 
 def test_error_text_hides_keys() -> None:
@@ -332,7 +315,6 @@ def test_audit_keeps_filter_values_short() -> None:
 
 
 def test_values_the_database_cannot_take_are_refused(admin: TestClient, calls: dict) -> None:
-    """NUL 글자나 bigint 를 넘는 수가 DB 까지 가면 500 이 난다. 그 전에 422 로 돌려보낸다"""
     for path, params in (
         ("/admin/logs/turns", {"q": "a\x00b"}),
         ("/admin/logs/turns", {"session_id": "\x00"}),
@@ -352,7 +334,6 @@ def test_values_the_database_cannot_take_are_refused(admin: TestClient, calls: d
 
 
 def test_session_detail_shows_flow(admin: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    # 턴마다 처리 흐름(거친 단계와 순서). 흐름을 기록하기 전의 턴은 null
     steps = [
         {"stage": "질문 이해", "result": "HCX", "detail": "지표=총인구 지역=서울"},
         {"stage": "사전 계산", "result": "ok", "detail": "총인구 값=1명 표=DT_1B040A3"},
@@ -370,7 +351,6 @@ def test_session_detail_shows_flow(admin: TestClient, monkeypatch: pytest.Monkey
 
 
 def test_people_groups_conversations_by_user(admin: TestClient, monkeypatch) -> None:
-    # 로그인 사용자는 한 사람이 한 줄 (창 여러 개), 비로그인 사용자는 user_id 가 빈 한 줄
     seen: dict = {}
 
     async def people(session, limit, offset, guest, q, since, until):

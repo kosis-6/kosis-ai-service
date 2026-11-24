@@ -1,16 +1,3 @@
-"""골든셋 재생 검증: 지난 채점에서 기록한 HCX 해석을 지금 코드에 다시 넣어 결과를 확인한다
-
-HCX를 부르지 않으므로 1분 안에 끝난다. 질문 해석 보정(qa.correct)·계산(qa.compute)을 고친 뒤,
-지금까지 HCX가 실제로 낸 여러 가지 해석(실행마다 달라짐)을 모두 견디는지 회귀 확인용으로 쓴다.
-채점 결과 CSV의 hcx_raw 칸(scripts/eval_golden.py가 남김)이 있는 행만 재생한다.
-
-  답변 불가 판단·기대 행동, 질의 이해, 데이터 정확성을 eval_golden.py와 같은 규칙으로 채점한다.
-  (표 선택·답변 신뢰성은 문장 생성까지 같은 코드라 따로 보지 않는다)
-
-실행: python -m scripts.eval_replay                       (data/eval의 모든 채점 결과)
-      python -m scripts.eval_replay data/eval/golden_r5_*.csv
-"""
-
 import argparse
 import csv
 from collections import Counter
@@ -29,12 +16,11 @@ def load_cases() -> dict[str, dict[str, str]]:
 
 
 def replay(question: str, hcx_raw: str) -> dict[str, Any] | None:
-    """기록된 HCX 출력 → qa.ask와 같은 모양의 결과 (HCX 출력에 JSON이 없으면 None)"""
     objects = qa._json_objects(hcx_raw)
     if not objects:
         return None
     parsed = objects[0]
-    if len({str(o.get("sex")) for o in objects}) > 1:  # qa.understand와 같은 처리
+    if len({str(o.get("sex")) for o in objects}) > 1:
         parsed["sex"] = "계"
     parsed = qa.correct(question, parsed)
     result = qa.compute(parsed)
@@ -48,7 +34,6 @@ def replay(question: str, hcx_raw: str) -> dict[str, Any] | None:
 
 
 def check(case: dict[str, str], res: dict[str, Any]) -> list[str]:
-    """틀린 내용 목록 (비어 있으면 통과)"""
     problems = []
     refuse_ok, reason_ok = ev.grade_refusal(case, res["status"], res)
     if not (refuse_ok and reason_ok):

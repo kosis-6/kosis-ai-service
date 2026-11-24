@@ -1,27 +1,8 @@
-"""차트 정보: 계산 결과(qa.ask의 result)에서 화면이 그릴 차트를 고른다
-
-서버는 그림을 만들지 않는다. 차트 종류와 행(이름, 값)만 JSON으로 넘기고 화면(Recharts)이 그린다.
-값은 계산 결과에 있는 숫자를 그대로 옮긴다 (새로 계산하거나 채우지 않는다).
-
-  결과에 있는 것        차트             이유
-  series (연도별 값)    line  꺾은선     시간에 따른 변화
-  지역마다 series       line  여러 꺾은선 지역별 추이 (series에 지역 이름, 행마다 지역별 값)
-                                        MAX_LINES곳이 넘으면 화면이 지역마다 작은 그래프로
-  values (지역별 값)    bar   가로 막대  크기 비교 (값이 큰 순)
-  ranking (순위)        bar   가로 막대  크기 비교 (순위 순, 많으면 위에서 MAX_BARS개)
-  parts (구성비)        parts 나뉜 막대  전체가 어떻게 나뉘는지
-  값 하나·답변 불가     없음            숫자 하나는 문장이 더 잘 전한다
-
-"막대그래프로 보여줘" 같은 뒤 요청은 다시 조회하지 않고 화면이 종류만 바꾼다 (line ↔ bar).
-"""
-
 from math import isfinite
 from typing import Any
 
-MAX_BARS = 15  # 시군구 순위(200개가 넘는다)는 위에서 이만큼만 그린다
-MAX_PARTS = 6  # 나뉜 막대는 조각이 이보다 많으면 읽기 어렵다 → 가로 막대로
-# 한 그래프에 겹쳐 그리는 선은 이만큼까지 (색을 돌려 쓰지 않는다). 더 많으면 화면이 지역마다
-# 작은 그래프를 나란히 그린다 (Chart.tsx GridView. 행·series 모양은 같다)
+MAX_BARS = 15
+MAX_PARTS = 6
 MAX_LINES = 6
 
 
@@ -30,7 +11,6 @@ def _title(*parts: Any) -> str:
 
 
 def _when(result: dict) -> str | None:
-    """제목의 시점: 연간 값은 "2025년", 최신 달 값은 "2026년 10월 말" (indicators._mark_monthly)"""
     if result.get("as_of"):
         return result["as_of"]
     return f"{result['year']}년" if result.get("year") else None
@@ -46,7 +26,6 @@ def _number(value: Any) -> bool:
 
 
 def omission_reason(result: dict | None) -> str | None:
-    """여러 지역 추이를 그리지 못하는 이유. 원래 수치 결과는 수정하지 않는다."""
     if not result or result.get("status") != "ok" or result.get("split_by") != "region":
         return None
     parts = result.get("split") or []
@@ -93,8 +72,6 @@ def _line(result: dict) -> dict | None:
 
 
 def _lines(result: dict) -> dict | None:
-    """여러 지역의 추이 → 꺾은선 여러 개. 행은 연도, values는 series(지역) 순서의 값.
-    지역마다 남녀를 또 나눈 결과처럼 겹이 더 있으면 그리지 않는다 (문장·수치 목록이 전한다)"""
     parts = result["split"]
     if omission_reason(result):
         return None
@@ -150,7 +127,6 @@ def _parts(result: dict) -> dict | None:
         return None
     year = _when(result)
     return {
-        # 조각이 많으면 나뉜 막대 대신 가로 막대 (큰 순)
         "type": "parts" if len(rows) <= MAX_PARTS else "bar",
         "title": _title(year, result.get("region"), result.get("indicator"), _sex(result)),
         "category": "항목",
@@ -161,7 +137,6 @@ def _parts(result: dict) -> dict | None:
 
 
 def build(result: dict | None) -> dict | None:
-    """계산 결과 → 차트 정보. 그릴 것이 없으면 None (값 하나, 답변 불가, 여러 지표를 묶은 답)"""
     if not result or result.get("status") != "ok":
         return None
     if result.get("split"):

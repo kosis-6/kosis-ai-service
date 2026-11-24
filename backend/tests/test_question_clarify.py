@@ -1,5 +1,3 @@
-"""모호한 질문 감지와 답변 병합. 숫자를 계산하거나 AI·DB를 호출하지 않는다."""
-
 import pytest
 
 from app.services import question_clarify as c
@@ -60,7 +58,6 @@ def test_explicit_or_different_movement_question_is_not_overridden(question):
         ("포함하지 마", "exclude"),
         ("1번 말고 2번", "exclude"),
         ("2024년 서울 출생아 수", None),
-        # 리뷰에서 받은 자유로운 답 (핵심 낱말·번호·서수로 읽는다)
         ("밖으로 나간 사람만", "exclude"),
         ("나간 것만", "exclude"),
         ("밖으로만", "exclude"),
@@ -74,7 +71,6 @@ def test_explicit_or_different_movement_question_is_not_overridden(question):
         ("모두요", "include"),
         ("첫 번째", "include"),
         ("둘 다요", "include"),
-        # 뜻을 알 수 없거나 서로 어긋나면 짐작하지 않는다
         ("응", None),
         ("모르겠어", None),
         ("수원", None),
@@ -115,8 +111,8 @@ def test_bare_region_keeps_only_the_name(reply, name):
         ("수원에서 이사 나간 사람 몇 명이야?", "exclude"),
         ("부산에서 이사 떠난 사람 수", "exclude"),
         ("전국에서 이사한 사람 수", "nation"),
-        ("수원에서 이사한 사람 몇 명이야?", None),  # 범위를 안 말함 → 되묻는다
-        ("수원에서 이사한 이유는?", None),  # 다른 지표
+        ("수원에서 이사한 사람 몇 명이야?", None),
+        ("수원에서 이사한 이유는?", None),
     ],
 )
 def test_stated_scope_skips_asking(question, scope):

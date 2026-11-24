@@ -1,8 +1,3 @@
-"""LangGraph 흐름(app/agent): 기존 통계표 찾기와 결과가 같은지, 지표별 검색이 덧붙는지
-
-HCX·임베딩·DB 없이 돈다. 조건 추출은 원문 규칙만, 최종 검토는 그대로 통과, 세션은 메모리.
-"""
-
 import asyncio
 import json
 from types import SimpleNamespace
@@ -33,13 +28,12 @@ def _tables() -> list[dict]:
         _t("D1", "시도별 이혼", 2015, 2024, "FD", survey_name="혼인조사"),
     ]
     for row in rows:
-        row["org_id"] = "101"  # 표 카드에 쓰는 칸
+        row["org_id"] = "101"
     return se.prepare(rows)
 
 
 @pytest.fixture
 def world(monkeypatch):
-    """HCX·임베딩·DB를 뺀 세계. plans에 질문별 계획을 넣으면 계획 LLM이 그것을 돌려준다"""
     tables = _tables()
     sessions: dict[str, str] = {}
     plans: dict[str, dict] = {}
@@ -102,14 +96,12 @@ def test_search_session_cannot_be_read_or_overwritten_by_another_user(world, han
     trace = {}
     asyncio.run(handle(TARGET_Q, "S_owner", trace=trace, user_id=1))
     original = world.sessions["S_owner"]
-    # 다른 계정과 로그아웃한 손님 모두 앞 질문을 붙여 검색하거나 선택지를 읽으면 안 된다.
     found = asyncio.run(handle("여자", "S_owner", trace=trace, user_id=other_user))
     new_id = trace["search_session_id"]
     assert new_id != "S_owner" and world.sessions["S_owner"] == original
     assert found["slots"]["question"] == "여자" and found["turn"] == 0
     assert not trace.get("follow_up") and not trace.get("follow_up_merged")
     assert json.loads(world.sessions[new_id])["slots"][dl.OWNER_KEY] == other_user
-    # 원래 계정은 기존 선택지에 계속 답할 수 있다.
     reply = asyncio.run(handle("혼인 귀화자", "S_owner", user_id=1))
     assert reply["table"]["tbl_id"].startswith("혼인 귀화자")
 
@@ -191,11 +183,11 @@ SCENARIOS = [
     [TARGET_Q, "혼인 귀화자, 여성, 2010년"],
     [TARGET_Q, "아무거나"],
     [TARGET_Q, ("선택", {"target": "혼인 귀화자", "sex": "여"})],
-    [TARGET_Q, "여자", "2010년"],  # 두 번 묻고 기본값
-    [TARGET_Q, "여자", "남자"],  # 선택지와 안 맞는 답은 새 질문
-    [TARGET_Q, "시도별 혼인"],  # 되묻는 중에 새 질문
+    [TARGET_Q, "여자", "2010년"],
+    [TARGET_Q, "여자", "남자"],
+    [TARGET_Q, "시도별 혼인"],
     [TARGET_Q, "혼인 귀화자", "시도별 혼인"],
-    ["외국인 현황", "2번"],  # 비슷한 표 묶음 고르기
+    ["외국인 현황", "2번"],
     ["오늘 점심 메뉴"],
 ]
 
@@ -211,7 +203,6 @@ def test_graph_gives_the_same_result_as_dialog_handle(world, turns) -> None:
 
 @pytest.mark.parametrize("turns", SCENARIOS)
 def test_plan_branch_does_not_change_the_existing_result(world, turns) -> None:
-    """계획 가지를 얹어도 기존 결과는 그대로다 (multi만 덧붙는다)"""
     expected = _run(dl.handle, turns, "dialog")
     got = _run(multi.handle, turns, "multi")
     for g in got:
@@ -239,9 +230,9 @@ def test_several_indicators_each_get_their_own_tables(world) -> None:
     found = result["multi"]
     assert (found["mode"], found["n_planned"], found["n_indicators"]) == ("multi", 2, 2)
     tops = [ind["candidates"][0]["tbl_id"] for ind in found["indicators"]]
-    assert tops == ["M1", "W1"]  # 계획이 나눈 순서대로
+    assert tops == ["M1", "W1"]
     assert found["plan"]["out_of_scope"] == ["집값"]
-    assert found["whole"]  # 지표를 잘못 나눴을 때를 대비한 질문 전체 검색 후보
+    assert found["whole"]
 
 
 def test_one_indicator_runs_no_indicator_search(world) -> None:
@@ -250,7 +241,6 @@ def test_one_indicator_runs_no_indicator_search(world) -> None:
     }
     found = asyncio.run(multi.handle("시도별 혼인", "S"))["multi"]
     assert (found["mode"], found["indicators"]) == ("single", [])
-    # 지표가 하나여도 질문 전체 검색의 표 묶음 상위 후보는 넘긴다 (뒤 단계가 계산해 볼 재료)
     assert found["whole"][0]["tbl_id"] == "M1"
     assert all("checks" in c for c in found["whole"])
 
@@ -280,7 +270,7 @@ def test_reply_to_a_choice_does_not_call_the_plan(world) -> None:
     done = asyncio.run(multi.handle("혼인 귀화자", "S"))
     assert done["table"]["tbl_id"].startswith("혼인 귀화자")
     assert "multi" not in done
-    assert world.planned == [TARGET_Q]  # 되묻기 답 턴에는 계획 LLM을 부르지 않는다
+    assert world.planned == [TARGET_Q]
 
 
 def test_merge_same_keeps_first_and_records_spans() -> None:

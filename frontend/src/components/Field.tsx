@@ -1,4 +1,3 @@
-// SIX / Input: 이름표 + 입력 칸 + 칸 아래 안내·오류 문구
 import { useState, type InputHTMLAttributes, type ReactNode, type Ref } from "react";
 import { Icon } from "./Icon";
 
@@ -7,13 +6,13 @@ export type Note = { text: string; kind?: "bad" | "ok" };
 type Props = InputHTMLAttributes<HTMLInputElement> & {
   ref?: Ref<HTMLInputElement>;
   label: string;
-  note?: Note | null; // 없으면 hint 를 보여 준다
+  note?: Note | null;
   hint?: string;
-  action?: ReactNode; // 칸 안 오른쪽 버튼 (인증번호 받기·확인)
+  action?: ReactNode;
 };
 
 export function Field({ ref, label, note, hint, action, type, ...input }: Props) {
-  const [showing, setShowing] = useState(false); // 비밀번호 보기
+  const [showing, setShowing] = useState(false);
   const password = type === "password";
   const text = note?.text || hint;
   return (

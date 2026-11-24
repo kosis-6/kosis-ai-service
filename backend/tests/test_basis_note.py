@@ -1,6 +1,3 @@
-"""기준이 여럿인 말: 되묻지 않고 기본 기준으로 답하고 다른 기준을 안내한다
-(qa.basis_note · age_basis_note)"""
-
 import tomllib
 
 import pytest
@@ -10,7 +7,6 @@ from app.services import indicators, qa
 
 @pytest.fixture(autouse=True)
 def no_statistics_db(monkeypatch: pytest.MonkeyPatch) -> None:
-    """기준 안내와 질문 보정만 검증한다. 통계 원자료는 CI에 없다."""
     monkeypatch.setattr(indicators, "find_regions", lambda *a: [])
     monkeypatch.setattr(indicators, "_data_years", lambda: (1990, 2025))
     monkeypatch.setattr(qa.lookup, "refresh_if_reloaded", lambda: None)
@@ -39,15 +35,12 @@ def test_ambiguous_term_gets_basis_note(term, name, default):
 
 @pytest.mark.parametrize(("term", "name"), [("조이혼율", "조이혼율"), ("합계출생율", "합계출산율")])
 def test_exact_or_misspelled_name_has_no_basis_note(term, name):
-    """정확한 이름이나 오타는 기준을 고른 것이 아니라 안내하지 않는다
-    (오타는 기존 '…로 보고 답했습니다')"""
     sp = indicators.spec(term)
     assert sp["name"] == name
     assert qa.basis_note(sp, term) is None
 
 
 def test_basis_terms_are_aliases():
-    """basis_terms는 그 지표의 이름·별칭이어야 한다 (안 그러면 안내가 붙을 일이 없다)"""
     with open(indicators.NOTES_PATH, "rb") as f:
         rows = tomllib.load(f)["indicators"]
     for ind in rows:
@@ -68,17 +61,16 @@ def test_age_basis_note():
 @pytest.mark.parametrize(
     "question, llm, indicator, pair",
     [
-        ("요즘 애를 얼마나 낳아?", "출생아 수", "합계출산율", True),  # D-096
+        ("요즘 애를 얼마나 낳아?", "출생아 수", "합계출산율", True),
         ("요즘 아이 몇 명 낳아?", None, "합계출산율", True),
         ("서울은 애를 얼마나 낳아?", "합계출산율", "합계출산율", True),
         ("출산 얼마나 해?", "출생아 수", "합계출산율", True),
         ("여자 한 명이 애를 몇 명 낳아?", "출생아 수", "합계출산율", False),
-        ("작년에 애 몇 명 낳았어?", "출생아 수", "출생아 수", False),  # 몇 명 태어났는지
+        ("작년에 애 몇 명 낳았어?", "출생아 수", "출생아 수", False),
         ("작년에 애기 몇 명 태어났어?", "출생아 수", "출생아 수", False),
     ],
 )
 def test_how_many_babies(question: str, llm: str | None, indicator: str, pair: bool) -> None:
-    """ "얼마나 낳아"는 합계출산율로 답하고 출생아 수를 함께. 뜻이 분명한 말은 그 지표 하나"""
     p = qa.correct(question, {"type": "value", "indicator": llm, "regions": [], "sex": "계"})
     assert p["indicator"] == indicator
     assert (p.get("indicators") == ["합계출산율", "출생아 수"]) is pair
