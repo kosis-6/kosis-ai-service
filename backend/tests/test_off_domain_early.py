@@ -38,6 +38,9 @@ def early(question: str):
         "오늘 대전 미세먼지 심해?",
         "올해 물가 상승률 알려 줘",
         "작년 GDP 얼마야",
+        # 집 · 땅의 가격 (11/24: 인구총조사 주택 표의 '전세금 평균'으로 답했다)
+        "서울 아파트 평균 가격은?",
+        "강남 아파트 시세 알려줘",
     ],
 )
 def test_refuses_topics_outside_population_without_llm(question: str) -> None:
