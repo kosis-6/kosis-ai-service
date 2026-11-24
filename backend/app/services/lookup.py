@@ -375,13 +375,15 @@ def _sum(src, codes, y0, y1, item_key, filters, age_codes, group_dim=None, month
     return {key(r): (r["v"] if r["n"] else None) for r in rows}
 
 
-def _fetch(src, codes, y0, y1, age_codes=None):
-    """{(연도, 지역 코드): 값}. 분모가 있으면 비율(%)"""
+def _fetch(src, codes, y0, y1, age_codes=None, parts=None):
+    """{(연도, 지역 코드): 값}. 분모가 있으면 비율(%). parts(dict)를 주면 분자 · 분모 값도 담는다"""
     num = _sum(src, codes, y0, y1, "item_id", src.get("filters", {}), age_codes)
     if not src.get("den_item_id"):
         return num
     den_filters = src.get("den_filters") or src.get("filters", {})
     den = _sum(src, codes, y0, y1, "den_item_id", den_filters, age_codes)
+    if parts is not None:
+        parts["num"], parts["den"] = num, den
     # den_scale 1: 비율이 아니라 평균 (가구원 ÷ 가구 = 가구당 평균 가구원 수)
     scale = src.get("den_scale", 100)
     return {
@@ -583,12 +585,29 @@ def _prepare(spec, names, y0, y1, sex, ages):
 # ---- 공개 함수 -------------------------------------------------------------------
 
 
+def _operands(src, num, den):
+    """두 칸을 나눈 사전 지표의 분자 · 분모 (qa._body가 "계산: A ÷ B × 100" 줄로 보여 준다).
+    이름은 출처의 num_label · den_label, 없으면 칸 코드"""
+    unit = src.get("operand_unit", "명")
+    num_label = src.get("num_label") or str(src.get("item_id"))
+    den_label = src.get("den_label") or str(src.get("den_item_id"))
+    return [
+        {"label": num_label, "value": ind_mod._operand(num), "unit": unit},
+        {"label": den_label, "value": ind_mod._operand(den), "unit": unit},
+    ]
+
+
 def value(spec, region, year, sex="계", ages=None):
     prep = _prepare(spec, [region], year, year, sex, ages)
     if isinstance(prep, dict):
         return prep
     (reg,), src, age_codes, label, notes = prep
-    v = _fetch(src, [reg["region_code"]], year, year, age_codes).get((year, reg["region_code"]))
+    key = (year, reg["region_code"])
+    parts: dict = {}
+    v = _fetch(src, [reg["region_code"]], year, year, age_codes, parts).get(key)
+    extra = {}
+    if v is not None and parts:  # 분자 ÷ 분모 지표 (den_item_id): 나눈 두 값을 답에 보여 준다
+        extra["operands"] = _operands(src, parts["num"].get(key), parts["den"].get(key))
     return _base(
         spec,
         src,
@@ -598,6 +617,7 @@ def value(spec, region, year, sex="계", ages=None):
         sex="계" if src.get("label") else sex,
         value=_round(v, spec),
         notes=notes,
+        **extra,
     )
 
 
@@ -931,7 +951,20 @@ def _labels():
 
 # ---- 캐시 갱신 -----------------------------------------------------------------------------
 
+
 # 표가 다시 적재되면 바뀔 수 있는 캐시 (지표 사전 파일을 읽는 indicators.specs는 해당 없음)
+@lru_cache
+def _month_range(tbl_id, item_ids):
+    """월별 행의 수록 범위 (시점 202501꼴의 최소 · 최대). 없으면 (None, None)"""
+    cond, keys = _in("item_key", tbl_id, 0, item_ids)
+    r = _rows(
+        "select min(period) as lo, max(period) as hi from stat_value"
+        f" where tbl_key = ? and {MONTHLY} and {cond}",
+        [_tbl_key(tbl_id), *keys],
+    )[0]
+    return r["lo"], r["hi"]
+
+
 TABLE_CACHES = (
     _table,
     _tbl_key,
@@ -941,6 +974,7 @@ TABLE_CACHES = (
     _item_years_db,
     _dim_labels_db,
     _labels,
+    _month_range,
 )
 CHECK_EVERY = 30.0  # 초. 질문마다 DB를 보지 않도록 이 간격으로만 확인한다
 _reload = {"checked_at": None, "version": None}
@@ -1024,18 +1058,6 @@ def data_gap(term):
 
 
 # ---- 달 묶음 합 (월별 자료) --------------------------------------------------------
-
-
-@lru_cache
-def _month_range(tbl_id, item_ids):
-    """월별 행의 수록 범위 (시점 202501꼴의 최소 · 최대). 없으면 (None, None)"""
-    cond, keys = _in("item_key", tbl_id, 0, item_ids)
-    r = _rows(
-        "select min(period) as lo, max(period) as hi from stat_value"
-        f" where tbl_key = ? and {MONTHLY} and {cond}",
-        [_tbl_key(tbl_id), *keys],
-    )[0]
-    return r["lo"], r["hi"]
 
 
 def _pick_monthly(spec, level):

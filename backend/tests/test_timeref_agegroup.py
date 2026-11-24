@@ -197,3 +197,18 @@ def test_age_said() -> None:
     assert all(agegroup.said(q) for q in ("서른 살 여성", "20대 인구", "노인 인구"))
     assert not agegroup.said("몇 살에 결혼하는지") and not agegroup.said("서울 인구")
 
+
+@pytest.mark.parametrize(
+    ("text", "bands"),
+    [
+        ("강릉에 스무 살 안 됐는데 혼자 사는 사람", [[0, 19]]),
+        ("열 살이 못 된 아이 수", [[0, 9]]),
+        ("30세가 안 되는 여성", [[0, 29]]),
+        ("20세 안 됐다가 된 사람", [[0, 19]]),
+    ],
+)
+def test_not_yet_age_is_under(text: str, bands: list) -> None:
+    # "N살 안 됐는데"는 N세 미만 (연령을 못 읽으면 사전이 연령 없이 전체 값으로 답했다, 11/25)
+    from app.services import qa
+
+    assert qa.extract_ages(text) == bands

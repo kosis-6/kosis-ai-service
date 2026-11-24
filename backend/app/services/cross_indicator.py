@@ -288,6 +288,20 @@ def _right_phrase(tokens: list[str]) -> str:
     return JOSA_END.sub("", ENDING.sub("", " ".join(tokens)).strip()).strip()
 
 
+def _names_ratio(phrase: str) -> bool:
+    """말 전체가 사전의 비율 지표 이름인가 ("혼자 사는 집 비율" → 1인 가구 비율).
+    'A 중 B 비율'에서 A가 사전 지표가 아니고 B 비율이 비율 지표면 B를 떼어 A로 나누지 않는다:
+    "전체 가구 중 혼자 사는 집 비율"을 1인 가구 수 ÷ 가구(총가구, 집단가구 포함)로 나눠 지표 정의와
+    다른 값을 냈다 (11/25). A가 사전 지표면("인구 중 외국인주민 비율") 말한 분모로 나눈다"""
+    spans = indicators.find_in_text(phrase) or []
+    if len(spans) != 1:
+        return False
+    start, end, name = spans[0]
+    text = indicators._norm(phrase)
+    rest = re.sub(r"의", "", text[:start] + text[end:])
+    return (not rest or rest in PLAIN_WORDS) and (indicators.spec(name) or {}).get("unit") == "%"
+
+
 def _side(phrase: str) -> tuple[str | None, str | None]:
     """(사전 지표 이름, 사전에 없는 말). 둘 다 None이면 쓸 수 없는 말"""
     if not phrase:
@@ -338,9 +352,13 @@ def detect_partial(question: str, both: bool = False) -> Cross | None:
         else:
             continue
         right_phrase = _right_phrase(right)
-        if form != "per":
-            right_phrase = re.sub(r"\s*(?:의\s*)?(?:비율|비중)$", "", right_phrase).strip()
         den_name, den_new = _side(_left_phrase(left))
+        if form != "per":
+            if not den_name and _names_ratio(right_phrase):
+                # "전체 가구 중 1인 가구 비율": 분모가 사전 지표가 아니면 비율 지표 자체를 물은 것.
+                # 분모를 사전 지표로 말하면("인구 중 외국인주민 비율") 그 분모로 나눈다
+                return None
+            right_phrase = re.sub(r"\s*(?:의\s*)?(?:비율|비중)$", "", right_phrase).strip()
         num_name, num_new = _side(right_phrase)
         if den_name and num_new:
             return Cross(num=num_new, den=den_name, scale=scale, form=form, dynamic="num")

@@ -783,6 +783,8 @@ def age_spans(question):
         add(m, [agegroup.lower_age(m[1], m[2]), None])
     for m in AGE_UNDER.finditer(question):
         add(m, [0, int(m[1]) - 1])
+    for m in agegroup.AGE_NOT_YET.finditer(question):  # "스무 살 안 됐는데": 20세 미만
+        add(m, [0, int(m[1]) - 1])
     for m in AGE_UNDER_EQ.finditer(question):
         add(m, [0, int(m[1])])
     for m in AGE_DECADE_RANGE.finditer(question):

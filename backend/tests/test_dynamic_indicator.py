@@ -84,7 +84,8 @@ def test_value_picks_item_by_name_and_totals_elsewhere() -> None:
         "남": {"item_id": "T10"},
         "여": {"item_id": "T20"},
     }
-    assert spec["dynamic"] and d.NOTE == spec["note"]
+    # 1인 가구 수는 사전 지표(11/25, 가구원수별 가구 표)라 이 표는 '같은 통계의 다른 표'다
+    assert spec["dynamic"] and d.OTHER_TABLE_NOTE == spec["note"]
 
 
 def test_ratio_of_sex_within_table() -> None:
