@@ -1013,6 +1013,11 @@ def build(
     except Exception:
         tbl_nm = ""
     target = _table_target(tbl_nm)
+    housing = qa.housing_population_condition(question) or parsed.get("housing_condition")
+    if housing and "고령자" in target:
+        ages = qa.resolved_ages(question)
+        if not ages or any(lo < 60 for lo, _ in ages):
+            return None, "이 통계표의 집계 대상은 고령자로 한정됨"
     household_asked = HOUSEHOLD_ASK.search(question) and not PERSON_ASK.search(question)
     if household_asked and POPULATION_TARGET.search(target):
         return None, "가구 수를 물었는데 이 통계표의 집계 대상은 사람 수"
@@ -1022,7 +1027,7 @@ def build(
     if birthplaces and not birthplace_axes:
         return None, "질문의 출생지 조건을 적용할 분류가 이 통계표에 없음"
     if (
-        not birthplaces
+        not (birthplaces or housing)
         and PER_AVERAGE.search(question)
         and (avg := _per_average(tbl_id, dims, region_dim, level))
     ):
@@ -1085,6 +1090,15 @@ def build(
             display_unit = household_unit
         elif household_asked:
             return None, "가구 수를 물었는데 고른 칸은 사람 수(단위 명)를 센 칸"
+    if housing:
+        if not counted or display_unit not in ("명", "천명"):
+            return None, "거주 인원을 물었는데 고른 칸은 사람 수를 집계하지 않음"
+        if not any(
+            _norm(housing) in _norm(d.codes[plan.pick[d.no]])
+            for d in dims
+            if d.no != region_dim and d.no in plan.pick
+        ):
+            return None, f"'{housing}' 조건이 선택한 칸에 반영되지 않음"
     strip_age = bool(
         plan.age_dim
         and parsed.get("ages")

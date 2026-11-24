@@ -232,6 +232,7 @@ def apply_changes(conditions: dict, changes: dict) -> tuple[dict, set[str]]:
             "ages",
             "age_group",
             "age_note",
+            "housing_condition",
             "unsupported",
             "share_of",
             "aggregate",
@@ -358,6 +359,41 @@ def with_recent(conditions: dict, changed: set[str], n: int) -> tuple[dict, set[
     if c.get("type") in ("value", "compare"):
         c["type"] = "trend"
     return c, changed | {"period"}
+
+
+AGE_REPLY_TAIL = re.compile(
+    r"\s*(?:사람(?:들)?|인구)?\s*(?:으로|로)?\s*(?:은|는|도|만|이?요)?\s*"
+    r"(?:(?:보여|알려|바꿔)\s*(?:줘요?|주세요)|어때요?)?"
+    r"\s*[?.!~]*"
+)
+
+
+def age_only_change(question: str, conditions: dict) -> dict | None:
+    if (
+        conditions.get("indicator") != "총인구"
+        or conditions.get("type") not in ("value", "trend", "compare", "rank")
+        or any(
+            conditions.get(k)
+            for k in ("cross", "indicators", "dynamic_spec", "unsupported", "housing_condition")
+        )
+    ):
+        return None
+    text = re.sub(r"^만\s*", "", agegroup.native_to_digits(question).strip())
+    spans = qa.age_spans(text)
+    if not spans and (single := agegroup.SINGLE_AGE.match(text)):
+        age = int(single[1])
+        spans = [(0, single.end(), [age, age])]
+    if len(spans) != 1:
+        return None
+    start, end, band = spans[0]
+    if start or not AGE_REPLY_TAIL.fullmatch(text[end:]):
+        return None
+    changed = {**conditions, "ages": [band], "term": "총인구"}
+    for key in ("age_group", "age_note", "born"):
+        changed.pop(key, None)
+    if note := qa.decade_part_note(question):
+        changed["age_note"] = note
+    return changed
 
 
 VIEW_WORDS = {
@@ -1164,10 +1200,15 @@ async def _new(
         refused["request_type"], refused["question"] = NEW, question
         return refused, {}, None
     res = await qa.ask(question, adjust=adjust)
-    sources = kept.get("sources") or sources_of(question, res.get("parsed") or {})
-    notice = inherited_notice(res.get("parsed") or {}, sources)
-    if sources.get("indicator") == "inherited" and not scoped_age_ratio:
-        res["search_question"] = inherited_question(res.get("parsed") or {})
+    parsed = res.get("parsed") or {}
+    sources = kept.get("sources") or sources_of(question, parsed)
+    notice = inherited_notice(parsed, sources)
+    if parsed.get("housing_condition"):
+        when = period_text(parsed) if sources.get("period") == "inherited" else None
+        regions = parsed.get("regions") or [] if sources.get("regions") == "inherited" else []
+        res["search_question"] = " ".join(filter(None, (when, ", ".join(regions), question)))
+    elif sources.get("indicator") == "inherited" and not scoped_age_ratio:
+        res["search_question"] = inherited_question(parsed)
     if res.get("status") in {
         "out_of_range",
         "region_not_in_year",
@@ -1421,10 +1462,19 @@ async def _turn(
     if not usable:
         return await _new(question, None)
 
-    if HOUSEHOLD_AGE_RATIO.fullmatch(question) or await asyncio.to_thread(
-        complete_question, question
+    if (
+        HOUSEHOLD_AGE_RATIO.fullmatch(question)
+        or qa.housing_population_condition(question)
+        or await asyncio.to_thread(complete_question, question)
     ):
         return await _new(question, state)
+
+    if (state.get("last") or {}).get("status") == "ok" and (
+        aged := age_only_change(question, state["conditions"])
+    ):
+        res = await _answer(aged)
+        res["request_type"] = CHANGE
+        return res, state["sources"], None
 
     if switched := await asyncio.to_thread(survey_switch, question, state["conditions"]):
         res = await _answer(switched)

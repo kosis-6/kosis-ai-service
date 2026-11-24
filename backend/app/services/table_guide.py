@@ -134,13 +134,23 @@ def indicator_tables(multi_result: dict | None, tables: list[dict]) -> dict | No
 
 
 def tables_answer(found: dict, refused: dict | None = None) -> dict:
+    parsed = (refused or {}).get("parsed") or {}
     lines = [found["answer"]]
-    if refused and found["status"] in ("ok", "partial_match"):
+    if (
+        (housing := parsed.get("housing_condition"))
+        and found.get("recommendations")
+        and not waiting_choice(found)
+    ):
+        lines = [
+            f"'{housing}' 조건에 맞는 인원 수를 확인하지 못했습니다.",
+            "아래는 주거 조건과 관련된 참고 통계표입니다.",
+        ]
+    elif refused and found["status"] in ("ok", "partial_match"):
         lines.append("이 통계는 아직 수치를 바로 계산하지 못해 통계표를 안내합니다.")
     return {
         "status": found["status"] if found["status"] in REFUSED else "tables",
         "answer": "\n".join(lines),
-        "parsed": (refused or {}).get("parsed") or {},
+        "parsed": parsed,
         "result": {"status": "tables", "search_status": found["status"]},
         "sources": [],
         "chart": None,

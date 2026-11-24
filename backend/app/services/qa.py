@@ -198,7 +198,7 @@ SEX_IMPLIED = re.compile(
 NO_REGION_TYPES = {"rank", "other", "parse_error"}
 
 AGE_RANGE = re.compile(r"(?:만\s*)?(\d+)\s*(?:세|살)?\s*[~\-]\s*(\d+)\s*(?:세|살)")
-AGE_UNDER = re.compile(r"(?:만\s*)?(\d+)\s*(?:세|살)\s*(?:미만|도?\s*안\s*(?:된|되는))")
+AGE_UNDER = re.compile(r"(?:만\s*)?(\d+)\s*(?:세|살)\s*(?:미만|[이도]?\s*안\s*(?:된|되는))")
 AGE_UNDER_EQ = re.compile(r"(?:만\s*)?(\d+)\s*(?:세|살)\s*이하")
 AGE_SPAN = re.compile(
     r"(?:만\s*)?(\d{1,3})\s*(?:세|살)?\s*"
@@ -552,6 +552,20 @@ OTHER_PEOPLE = re.compile(
     r"근로|이민|입국|출국|취업|학생|"
     r"혼자|홀로|독거|장애|아파트|주택|단독|연립|다세대|오피스텔|거처|셋방|기숙사"
 )
+HOUSING_CONDITION = re.compile(
+    r"(?:아파트|단독\s*주택|연립\s*주택|다세대\s*주택|다가구\s*주택|빌라|오피스텔|기숙사|고시원"
+    r"|(?<![가-힣])(?:주택|전세|월세|자가))"
+    r"(?=\s*(?:(?:에서?|으?로)(?:는|도|만)?\s*)?(?:살|사는|거주|인구|주민|사람|몇\s*명))"
+)
+HOUSING_PEOPLE = re.compile(r"인구(?!\s*(?:주택\s*)?총조사)|주민|사람|거주자|가구원|몇\s*명")
+
+
+def housing_population_condition(question: str) -> str | None:
+    if HOUSING_PEOPLE.search(question) and (match := HOUSING_CONDITION.search(question)):
+        return match[0]
+    return None
+
+
 FOCUS_WORDS = {
     "일자리": "직업",
     "직장": "직업",
@@ -1096,6 +1110,8 @@ def correct(question, parsed, today=None):
     if parsed.get("type") == "rank" and other_axis:
         parsed["rank_axis"] = OTHER_AXIS.search(question)[1]
         parsed["grounded"] = False
+    if housing := housing_population_condition(question):
+        parsed["housing_condition"] = housing
     _one_region_years(parsed, fix)
     if fixes:
         parsed["corrections"] = fixes
@@ -2067,6 +2083,13 @@ def _compute(q):
             "status": "not_supported_question",
             "reason": "지역별 인구통계 질문에만 답할 수 있습니다.",
             "supported": list(indicators.specs()),
+        }
+
+    if (housing := q.get("housing_condition")) and not _dynamic_fits(q):
+        return {
+            "status": "unknown_indicator",
+            "indicator": f"{housing} 거주 인구",
+            "reason": f"'{housing}' 조건의 인원 수를 확인할 수 없습니다.",
         }
 
     names = q.get("indicators") or []
