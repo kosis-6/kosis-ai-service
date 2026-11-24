@@ -1984,3 +1984,14 @@ def test_switching_to_all_sexes_removes_stale_filter_from_search(term):
     changed, _ = s.apply_changes(prev, {"sex": "여"})
     assert "남성" not in s.inherited_question(changed)
     assert "여성" in s.inherited_question(changed)
+
+
+def test_same_number_matches_value_unit_and_year_only() -> None:
+    # '사전 근거 없음' 규칙이 표 경로로 다시 계산했는데 같은 숫자면 사전 답을 둔다 (11/24 평가)
+    a = {"status": "ok", "value": 12802, "unit": "건", "year": 2025}
+    assert s.same_number(a, {**a, "indicator": "다른 이름"})
+    assert not s.same_number(a, {**a, "value": 12803})
+    assert not s.same_number(a, {**a, "unit": "명"})
+    assert not s.same_number(a, {**a, "year": 2024})
+    assert not s.same_number(a, {"status": "ok", "values": [1, 2]})  # 값 하나가 아니다
+    assert not s.same_number(a, None)

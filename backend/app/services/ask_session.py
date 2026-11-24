@@ -2632,6 +2632,15 @@ async def _dynamic_instead(res: dict, state: dict | None, asked: str, user_id: i
         # (변형셋 1차: 사전 표를 고르고도 안내로 끝남)
         trace["dynamic_kept"] = {"indicator": parsed.get("indicator"), "tbl_id": same}
         return False
+    if res.get("status") == "ok" and same_number(res.get("result"), (computed or {}).get("result")):
+        # 바로 계산이 다른 표에서 같은 값 · 단위 · 연도를 다시 냈다: 사전 답을 둔다 (이름이 깔끔하고
+        # 부부 단위 같은 안내가 붙는다). 11/24 평가: 혼인 건수를 부부 혼인종류 표의 남편 · 아내
+        # 총계로 다시 내고, 판정이 그 요약을 막아 51초를 썼다. 값이 다르면 전처럼 바꾼다
+        trace["dynamic_kept"] = {
+            "indicator": parsed.get("indicator"),
+            "same_value": (res.get("result") or {}).get("value"),
+        }
+        return False
     months = (res.get("result") or {}).get("months")
     if (
         res.get("status") == "ok"
@@ -2706,6 +2715,18 @@ async def _axis_rank(asked: str, parsed: dict, trace: dict) -> dict | None:
             trace["axis_rank"] = {"tbl_id": src["table"], "axis": parsed.get("rank_axis")}
             return part
     return None
+
+
+def same_number(a: dict | None, b: dict | None) -> bool:
+    """두 결과가 값 하나짜리이고 값 · 단위 · 연도가 같은가 (사전 답과 표 경로 답이 같은 숫자인지)"""
+    if not a or not b or a.get("status") != "ok" or b.get("status") != "ok":
+        return False
+    va, vb = a.get("value"), b.get("value")
+    if not isinstance(va, (int, float)) or not isinstance(vb, (int, float)):
+        return False
+    if a.get("unit") != b.get("unit") or a.get("year") != b.get("year"):
+        return False
+    return abs(float(va) - float(vb)) <= max(1e-9, 1e-6 * abs(float(va)))
 
 
 def _one_indicator(computed: dict | None) -> bool:

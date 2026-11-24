@@ -120,8 +120,13 @@ def _part(p: dict[str, Any], top: int | None) -> str:
     if p.get("unit"):
         one.append(f"단위: {p['unit']}")
     notes = " ".join(str(n) for n in p.get("notes") or [])
+    formula = str(p.get("formula") or "")
     if "부부 단위" in notes:
         one.append("참고: 부부 단위 건수라 남자 칸 값이 전체 건수와 같음")
+    elif "남편" in formula and "아내" in formula:
+        # 표 경로가 부부 혼인 · 이혼 표에서 남편 쪽 · 아내 쪽 총계 칸을 함께 고른 답: 판정이
+        # "둘 중 하나를 고르거나 합쳐야 함"으로 막았다 (11/24 평가, 51초). 둘은 같은 전체 건수다
+        one.append("참고: 부부 단위 표라 남편 쪽과 아내 쪽 총계는 같은 전체 건수 (더하지 않음)")
     if "장래추계" in notes:
         one.append("참고: 장래추계 통계표의 추계값")
     return " / ".join(one)

@@ -259,3 +259,18 @@ def test_describe_says_which_of_two_split_values_is_larger() -> None:
     )
     split = [{**part, "region": "가", "value": 5}, {**part, "region": "나", "value": 5}]
     assert "가와 나가 같음" in answer_judge.describe({"status": "ok", "split": split})
+
+
+def test_describe_explains_couple_table_totals() -> None:
+    # 부부 혼인 표에서 남편 · 아내 총계 두 칸을 고른 답: 둘이 같은 전체 건수라는 것을 요약에 적는다
+    res = {
+        "status": "ok",
+        "indicator": "혼인",
+        "formula": "KOSIS 공표 값 (남편의 혼인종류별 총계, 아내의 혼인종류별 총계)",
+        "value": 100,
+        "unit": "건",
+        "year": 2025,
+    }
+    assert "참고: 부부 단위 표라 남편 쪽과 아내 쪽 총계는 같은 전체 건수" in answer_judge.describe(
+        res
+    )
