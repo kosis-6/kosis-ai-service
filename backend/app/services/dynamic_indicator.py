@@ -1806,12 +1806,15 @@ async def _compute_target(
         return slots, handoff_notice(entry, u, h.get("combine") or {}, found.get("notice"))
 
     def wants_llm(res, ask, sub: dict) -> bool:
-        """규칙이 칸을 못 골라 칸 고르기 LLM이 도울 수 있는 표인가"""
+        """규칙이 칸을 못 골라 칸 고르기 LLM이 도울 수 있는 표인가.
+        규칙 단계의 기록으로 본다: 잇기로 다시 계산(by='binding')이 실패해 그 기록이 마지막이 되면
+        LLM으로 넘어가지 못했다 (BINDING_USE 기본 켬 시험에서 찾음, 11/24)"""
+        rule = next((x for x in reversed(sub["dynamic"]) if not x.get("by")), None)
         return (
             res is None
             and ask is None
-            and bool(sub["dynamic"])
-            and cell_pick.needs_llm(sub["dynamic"][-1].get("skip"))
+            and rule is not None
+            and cell_pick.needs_llm(rule.get("skip"))
         )
 
     async def compute(entry: dict, q_used: dict, sub: dict, llm: bool = True):

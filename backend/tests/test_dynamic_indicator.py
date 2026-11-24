@@ -1891,3 +1891,18 @@ def test_cell_name_unit_wins_over_count_unit() -> None:
     assert d._name_unit(d.Plan(pick={0: "T1", 1: "1"}), dims, "가구") == "가구"
     # 표가 이미 수 아닌 단위를 적었으면 그대로
     assert d._name_unit(d.Plan(pick={0: "T2"}), dims, "%") == "%"
+
+
+def test_cell_llm_still_called_when_binding_retry_fails(cell_llm, monkeypatch) -> None:
+    # BINDING_USE: 잇기로 다시 계산이 실패해 그 기록이 마지막이 돼도 칸 고르기 LLM으로 넘어간다
+    # (규칙 단계의 실패 이유로 판단. 전에는 답이 없었다, 11/24)
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "binding_use", True)
+    cell_llm["reply"] = {"fits": "예", "reason": "r", "picks": {"항목": "1"}}
+    u = _understanding(target="해외 유학생")
+    cands = [_cand("A", 1, picked=True, checks={"year": True}, review={"match": "partial"})]
+    trace: dict = {}
+    res = asyncio.run(d.compute_from_handoff(Q1, BASE, _found(cands, u), trace))
+    assert res is not None and res["status"] == "ok"
+    assert cell_llm["groups"] is not None  # LLM을 불렀다
