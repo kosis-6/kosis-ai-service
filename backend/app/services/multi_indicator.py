@@ -86,6 +86,9 @@ def target_parsed(parsed: dict, target: dict, kind: str | None = None) -> dict:
         "cross": None,
         "dynamic_spec": None,
         "grounded": None,
+        # 질문 전체 해석이 '지원하지 않는 지표'로 끝났어도(unsupported) 이 지표는 따로 본다: 그대로
+        # 두면 qa._compute 가 사전 지표(총인구)를 무시하고 unknown_indicator 를 냈다 (11/25)
+        "unsupported": None,
     }
     if target.get("unsaid_age"):
         q.update(ages=None, age_group=None)

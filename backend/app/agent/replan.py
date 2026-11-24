@@ -14,6 +14,7 @@ LLM 이 못 바꾸고 계산 · 연도 · 숫자는 코드가 한다.
 import copy
 import json
 import logging
+import re
 from typing import Any
 
 from app.agent import plan as planner
@@ -130,6 +131,7 @@ def resolve(new: dict, question: str, first: dict, kind: str) -> tuple[dict | No
             c[key] = spans[v] if 0 <= v < len(spans) else None
         elif v not in spans:
             c[key] = None
+    _collapse_split(p)
     first_filled = copy.deepcopy(first)
     planner.fill_dict(first_filled)  # 처음 계획에도 같은 dict 채우기를 적용해 같은 조건으로 견준다
     if _signature(p) == _signature(first_filled):
@@ -139,13 +141,84 @@ def resolve(new: dict, question: str, first: dict, kind: str) -> tuple[dict | No
     return p, str(new.get("changed") or "")
 
 
-def runnable(p: dict) -> str | None:
+# 같은 지표를 "사망자 수(남)" · "사망자 수(여)"처럼 성별 · 시점 표시만 다르게 둘로 적은 계획의 표시
+_SPLIT_SEX = re.compile(r"[\s(（]*(남자|여자|남성|여성|남|여)[)）]?\s*$")
+_SPLIT_YEAR = re.compile(r"[\s(（]*((?:19|20)\d{2})\s*년?[)）]?\s*$")
+
+
+def _collapse_split(p: dict) -> None:
+    """which_larger 에서 LLM 이 한 지표를 성별 · 시점 표시만 다른 두 지표로 적었으면 지표 하나 +
+    pair(sex · year)로 접는다 (11/25: "사망자 수(남)" · "사망자 수(여)" + pair=indicator 로 와서
+    둘 다 전체 값을 셌다). 조건이 override 가 아니라 span 끝 괄호에만 있어 코드가 pair 로 옮긴다"""
+    c = p.get("combine") or {}
+    inds = [i for i in p.get("indicators") or [] if i.get("scope") != "out"]
+    if c.get("op") != "which_larger" or len(inds) != 2:
+        return
+    keys = {(i.get("dict") or i.get("search") or "") for i in inds}
+    if len(keys) != 1:
+        return
+    spans = [str(i.get("span") or "") for i in inds]
+    for pair, pattern in (("sex", _SPLIT_SEX), ("year", _SPLIT_YEAR)):
+        marks = [pattern.search(s) for s in spans]
+        if all(marks) and marks[0].group(1) != marks[1].group(1):
+            base = pattern.sub("", spans[0]).strip() or spans[0]
+            kept = {**inds[0], "span": base}
+            kept.pop("override", None)
+            p["indicators"] = [kept] + [
+                i for i in p.get("indicators") or [] if i.get("scope") == "out"
+            ]
+            c["pair"] = pair
+            c["collapsed"] = spans
+            return
+
+
+def _word_years(parsed: dict) -> list[int]:
+    """해석이 푼 낱말 시점(작년 · 재작년 …)의 연도들, 작은 해부터"""
+    refs = parsed.get("time_refs") or []
+    return sorted({r["year"] for r in refs if r.get("kind") == "word" and r.get("year")})
+
+
+def _splits_by_sex(ind: dict) -> bool:
+    """사전 지표가 남 · 여를 따로 계산할 수 있는가 (qa._splits_by_sex 와 같은 기준).
+    사전에 없는 지표는 표 경로가 성별 칸을 고르므로 True 로 둔다"""
+    from app.services import indicators
+
+    sp = indicators.spec(ind.get("dict") or ind.get("search") or "")
+    if sp is None:
+        return True
+    if sp.get("method") == "lookup":
+        return any(s.get("by_sex") for s in sp.get("sources") or [])
+    return True
+
+
+def pair_ready(p: dict, parsed: dict) -> str | None:
+    """which_larger 를 지표 하나로 낼 때 견줄 두 값의 재료가 해석에 있는가. 없으면 그 이유.
+    year: 낱말 시점 둘 / sex: 늘 됨 (남 · 여 따로 계산) / region: 지역 둘 이상"""
+    c = p.get("combine") or {}
+    live = [i for i in p.get("indicators") or [] if i.get("scope") != "out"]
+    if c.get("op") != "which_larger" or len(live) != 1:
+        return None
+    pair = c.get("pair")
+    if pair == "year" and len(_word_years(parsed)) < 2:
+        return "큰 쪽 비교: 견줄 두 시점을 질문에서 읽지 못함"
+    if pair == "region" and len(parsed.get("regions") or []) < 2:
+        return "큰 쪽 비교: 견줄 두 지역이 없음"
+    if pair == "sex" and not _splits_by_sex(live[0]):
+        return "큰 쪽 비교: 이 지표는 사전에 성별 자료가 없음"
+    if pair not in ("year", "sex", "region"):
+        return f"큰 쪽 비교: 지표 하나인데 무엇끼리 견줄지(pair) 없음 ({pair})"
+    return None
+
+
+def runnable(p: dict, parsed: dict | None = None) -> str | None:
     """코드로 계산할 수 있는 계획인가. 없는 종류면 그 이름"""
     c = p.get("combine") or {}
     if c.get("op") == NOT_COMPUTABLE:
         return None  # 계산하지 않고 답변 불가 사유로 (ask_session._replan_compute)
     if not [i for i in p.get("indicators") or [] if i.get("scope") != "out" and i.get("search")]:
         return "검색할 지표가 없음"
+    if parsed is not None and (why := pair_ready(p, parsed)):
+        return why
     return None
 
 
@@ -174,6 +247,18 @@ def apply_to_parsed(p: dict, parsed: dict, question: str = "") -> dict:
             out["sido"], out["level"] = c["within"], "시군구"
         if c.get("axis"):
             out["rank_axis"] = c["axis"]
+    if op == "which_larger" and not pair_ready(p, parsed):
+        # 지표 하나의 큰 쪽 비교: 계산은 사전 경로가 이미 한다 (연도 둘 → 추이 2점의 변화량,
+        # 남 · 여 → split_sex 로 따로 계산해 "여성이 N명 더 많습니다", 지역 둘 → compare 의
+        # 차이 · 배수). 재계획의 pair 를 그 해석 칸으로 옮기기만 한다 (11/25)
+        pair = c.get("pair")
+        if pair == "year":
+            years = _word_years(parsed)
+            out.update(type="trend", start_year=years[0], end_year=years[-1], year=years[-1])
+        elif pair == "sex":
+            out.update(type="value", sex="계", split_sex=True)
+        elif pair == "region":
+            out["type"] = "compare"
     return out
 
 
@@ -214,7 +299,7 @@ async def call(
     record["note"] = note
     if p is None:
         return None
-    if why := runnable(p):
+    if why := runnable(p, parsed):
         record["not_runnable"] = why
         return None
     record["plan"] = {k: p.get(k) for k in ("shared", "indicators", "combine", "measure")}

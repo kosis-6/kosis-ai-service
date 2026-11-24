@@ -106,3 +106,79 @@ def test_apply_to_parsed_reads_month_range_for_month_sums() -> None:
         p, base, "올해 돌아가신 분"
     )  # 달 표현이 없으면 그대로
     assert replan.runnable(p) is None  # 월 합은 이제 코드가 계산한다
+
+
+def test_which_larger_with_one_indicator_moves_pair_into_parsed() -> None:
+    base = {"indicator": "이혼 건수", "type": "value", "regions": ["부산광역시"], "year": 2025}
+    refs = [
+        {"expr": "재작년", "kind": "word", "year": 2024},
+        {"expr": "작년", "kind": "word", "year": 2025},
+    ]
+    p = {**FIRST, "combine": {"op": "which_larger", "pair": "year"}}
+    out = replan.apply_to_parsed(p, {**base, "time_refs": refs}, "q")
+    assert (out["type"], out["start_year"], out["end_year"]) == ("trend", 2024, 2025)
+    p = {**FIRST, "combine": {"op": "which_larger", "pair": "sex"}}
+    out = replan.apply_to_parsed(p, base, "q")
+    assert out["split_sex"] is True and out["sex"] == "계" and out["type"] == "value"
+    p = {**FIRST, "combine": {"op": "which_larger", "pair": "region"}}
+    two = {**base, "regions": ["서울특별시", "부산광역시"]}
+    assert replan.apply_to_parsed(p, two, "q")["type"] == "compare"
+    # 재료가 없으면 계획을 돌리지 않는다 (연도 둘 · 지역 둘이 해석에 없음)
+    year_plan = {**FIRST, "combine": {"op": "which_larger", "pair": "year"}}
+    assert "두 시점" in replan.runnable(year_plan, base)
+    assert "두 지역" in replan.runnable(p, base)
+    assert replan.runnable(p, two) is None
+
+
+def test_same_indicator_split_by_sex_marks_collapses_into_pair_sex() -> None:
+    # LLM 이 "사망자 수(남)" · "사망자 수(여)" 두 지표 + pair=indicator 로 적어도
+    # 지표 하나 + pair=sex 로
+    new = {
+        "measure": "count",
+        "changed": "combine, indicators",
+        "shared": {"year_from": 2025, "year_to": 2025},
+        "indicators": [
+            {"span": "통근 인구(남)", "search": "통근 인구", "scope": "in", "role": "measure"},
+            {"span": "통근 인구(여)", "search": "통근 인구", "scope": "in", "role": "measure"},
+        ],
+        "combine": {"op": "which_larger", "pair": "indicator"},
+    }
+    p, _ = replan.resolve(new, "작년에 결혼한 남자가 많아 여자가 많아", FIRST, "count")
+    assert p is not None and len(p["indicators"]) == 1 and p["indicators"][0]["span"] == "통근 인구"
+    assert p["combine"]["pair"] == "sex" and p["combine"]["collapsed"] == [
+        "통근 인구(남)",
+        "통근 인구(여)",
+    ]
+    out = replan.apply_to_parsed(p, {"indicator": "통근 인구", "type": "value", "regions": []}, "q")
+    assert out["split_sex"] is True
+    # 시점 표시면 pair=year
+    new["indicators"] = [
+        {"span": "통근 인구(2024년)", "search": "통근 인구", "scope": "in", "role": "measure"},
+        {"span": "통근 인구(2025년)", "search": "통근 인구", "scope": "in", "role": "measure"},
+    ]
+    p, _ = replan.resolve(new, "q", FIRST, "count")
+    assert p["combine"]["pair"] == "year" and len(p["indicators"]) == 1
+
+
+def test_pair_sex_needs_an_indicator_that_splits_by_sex(monkeypatch) -> None:
+    from app.services import indicators
+
+    specs = {
+        "사망자 수": {"name": "사망자 수", "method": "lookup", "sources": [{"table": "A"}]},
+        "총인구": {"name": "총인구", "method": "computed", "sources": [{"table": "B"}]},
+    }
+    monkeypatch.setattr(indicators, "spec", lambda name: specs.get(name))
+    base = {"indicator": "x", "type": "value", "regions": ["전국"]}
+    plan = {**FIRST, "combine": {"op": "which_larger", "pair": "sex"}}
+    dead = {
+        **plan,
+        "indicators": [
+            {"span": "사망자 수", "search": "사망자 수", "dict": "사망자 수", "scope": "in"}
+        ],
+    }
+    assert "성별 자료가 없음" in replan.runnable(dead, base)
+    pop = {
+        **plan,
+        "indicators": [{"span": "인구", "search": "인구", "dict": "총인구", "scope": "in"}],
+    }
+    assert replan.runnable(pop, base) is None

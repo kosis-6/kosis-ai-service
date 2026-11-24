@@ -461,3 +461,10 @@ def test_which_larger_says_which_is_bigger_with_gap_and_ratio(world) -> None:
     v = res["result"]["verdict"]
     assert (v["larger"], v["gap"], v["ratio"]) == ("가", 180, 2.5)
     assert res["answer"].startswith("가가 나보다 많습니다 (차이 180명, 2.5배)")
+
+
+def test_target_parsed_drops_unsupported_mark_of_the_whole_question() -> None:
+    # 질문 전체가 '지원하지 않는 지표'였어도 계획이 사전 지표(dict)를 적으면 그 지표로 계산한다
+    parsed = {**BASE, "indicator": "남자와 여자", "unsupported": True}
+    q = multi_indicator.target_parsed(parsed, {"span": "x", "dict": "총인구"})
+    assert q["indicator"] == "총인구" and q["unsupported"] is None

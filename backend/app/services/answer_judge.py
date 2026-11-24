@@ -147,10 +147,35 @@ def describe(result: dict[str, Any] | None, parsed: dict[str, Any] | None = None
         if v := result.get("verdict"):
             # which_larger (multi_indicator._larger): 어느 쪽이 큰지 판정까지 한 답
             lines.append(f"형태: 두 값 비교 — 큰 쪽 판정 ({v.get('line')})")
+        elif (pair := _two_values(parts)) is not None:
+            # 남 · 여 · 지역 둘을 따로 계산한 답: 답 문장은 "여성이 N명 더 많습니다"를 붙이지만
+            # 결과에는 없어 판정이 "비교해야 함"으로 막았다. 큰 쪽은 코드가 세어 요약에만 적는다
+            lines.append(pair)
         if notes := [str(n) for n in result.get("notes") or []]:
             # 지표끼리 비교한 답의 "A가 B보다 N명 많습니다" 같은 줄 (multi_indicator._side_by_side)
             lines.append("함께 적은 것: " + " / ".join(notes[:3]))
     return "\n".join(lines)
+
+
+def _two_values(parts: list[dict[str, Any]]) -> str | None:
+    """값 두 개를 따로 답한 결과(남 · 여, 지역 둘)의 큰 쪽 · 차이 한 줄. 아니면 None"""
+    if len(parts) != 2 or any(not isinstance(p.get("value"), (int, float)) for p in parts):
+        return None
+    a, b = parts
+    if a.get("unit") != b.get("unit"):
+        return None
+
+    def label(p: dict[str, Any]) -> str:
+        if p.get("sex") in ("남", "여") and a.get("sex") != b.get("sex"):
+            return {"남": "남성", "여": "여성"}[p["sex"]]
+        return str(p.get("region") or p.get("indicator") or "값")
+
+    if a["value"] == b["value"]:
+        return f"형태: 두 값 비교 — {label(a)}와 {label(b)}가 같음"
+    hi, lo = (a, b) if a["value"] > b["value"] else (b, a)
+    gap = hi["value"] - lo["value"]
+    gap_text = f"{gap:,}" if float(gap).is_integer() else f"{round(gap, 2):,}"
+    return f"형태: 두 값 비교 — 큰 쪽 {label(hi)} (차이 {gap_text}{hi.get('unit') or ''})"
 
 
 def time_read(parsed: dict[str, Any] | None, result: dict[str, Any] | None) -> str:

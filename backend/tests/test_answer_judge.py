@@ -248,3 +248,14 @@ def test_describe_month_sum_says_all_months_were_added() -> None:
         "members": [{"region": f"{m}월", "value": 1} for m in range(1, 7)],
     }
     assert "형태: 합계 — 1~6월 6개 달의 값을 모두 더한 값" in answer_judge.describe(res)
+
+
+def test_describe_says_which_of_two_split_values_is_larger() -> None:
+    # 남 · 여를 따로 계산한 답: 결과에 비교 줄이 없어도 요약이 큰 쪽과 차이를 적는다
+    part = {"status": "ok", "indicator": "이혼 건수", "unit": "건", "year": 2025}
+    split = [{**part, "sex": "남", "value": 120}, {**part, "sex": "여", "value": 300}]
+    assert "형태: 두 값 비교 — 큰 쪽 여성 (차이 180건)" in answer_judge.describe(
+        {"status": "ok", "split": split}
+    )
+    split = [{**part, "region": "가", "value": 5}, {**part, "region": "나", "value": 5}]
+    assert "가와 나가 같음" in answer_judge.describe({"status": "ok", "split": split})

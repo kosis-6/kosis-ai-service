@@ -2408,6 +2408,9 @@ async def _replan_compute(
         computed = await _axis_rank(asked, base, trace)
     targets = (found2.get("handoff") or {}).get("targets") or []
     live = [i for i in new_plan.get("indicators") or [] if i.get("scope") != "out"]
+    if computed is None and len(live) == 1 and not targets and live[0].get("dict"):
+        # 표 찾기가 후보를 못 냈어도(꾸러미 비어 있음) 계획이 사전 지표를 적었으면 사전으로 계산한다
+        targets = [{"span": live[0].get("span"), "dict": live[0]["dict"], "candidates": []}]
     if computed is None and len(live) == 1 and len(targets) == 1:
         # 지표 하나: 사전에 있으면 사전으로(sido · aggregate · months 같은 해석 칸을 qa 가 읽는다),
         # 없으면 표로. compute_from_handoff 의 지표 하나 길은 표로만 가서 사전 지표의 시도 안 순위를
@@ -2420,6 +2423,9 @@ async def _replan_compute(
         computed = await dynamic_indicator.compute_from_handoff(asked, base, found2, trace)
     if not computed or computed.get("status") != "ok" or computed.get("clarification"):
         record["replan"]["computed"] = {
+            "via": trace.get("by") or ("handoff" if targets else "none"),
+            "targets": len(targets),
+            "indicator": base.get("indicator"),
             "status": (computed or {}).get("status"),
             "reason": str((computed or {}).get("reason") or (computed or {}).get("answer") or "")[
                 :160
