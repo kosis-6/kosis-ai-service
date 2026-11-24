@@ -382,10 +382,12 @@ SURVEY_ASK = [
     ),
 ]
 BIRTH_HOW_MANY = re.compile(
-    r"(?:애|아이|아기|애기)(?:들)?(?:을|를)?\s*(?:얼마나|몇\s*명(?:씩)?)\s*(?:을|를)?\s*낳"
+    r"(?:애|아이|아기|애기)(?:들)?(?:을|를)?\s*(?:얼마나|몇\s*명(?:씩)?|많이|적게)\s*(?:을|를)?"
+    r"\s*(?:안\s*)?낳"
     r"|출산(?:을)?\s*(?:얼마나|많이)"
 )
-TFR_MEANING = "합계출산율은 여자 한 명이 평생(15~49세) 낳을 것으로 예상되는 아이 수입니다"
+BIRTH_TOPIC = ("저출산", "저출생", "출산", "출생", "출산율", "출생률")
+TFR_MEANING = indicators.spec("합계출산율")["definition"]
 BIRTH_PAIR_NOTE = (
     f"{TFR_MEANING}. '얼마나 낳는지'는 합계출산율로 답하고, "
     "그해 태어난 아이 수(출생아 수)를 함께 보여 드립니다"
@@ -549,7 +551,7 @@ PEOPLE_COUNT = re.compile(
 )
 OTHER_PEOPLE = re.compile(
     r"외국|등록|이사|전입|전출|이동|통근|통학|결혼|혼인|이혼|사망|돌아가|태어|출생|낳|가구|유학|귀화|"
-    r"근로|이민|입국|출국|취업|학생|"
+    r"근로|이민|입국|출국|취업|학생(?!\s*나이)|"
     r"혼자|홀로|독거|장애|아파트|주택|단독|연립|다세대|오피스텔|거처|셋방|기숙사"
 )
 FOCUS_WORDS = {
@@ -924,7 +926,10 @@ def correct(question, parsed, today=None):
         kind = parsed.get("type")
         chosen = indicators.canonical_name(parsed.get("indicator") or "")
         parsed["grounded"] = (chosen in names) if chosen else None
-        if chosen == "총인구" and parsed["grounded"] is False and _plain_people_question(question):
+        plain = _plain_people_question(question) or (
+            _both_sexes(question) and not OTHER_PEOPLE.search(question)
+        )
+        if chosen == "총인구" and parsed["grounded"] is False and plain:
             parsed["grounded"] = True
         if chosen == "총인구" and population_modifier(question):
             parsed["grounded"] = False
@@ -1058,7 +1063,7 @@ def correct(question, parsed, today=None):
     elif (
         BIRTH_PER_WOMAN.search(question)
         and re.search(r"낳", question)
-        and parsed.get("indicator") in (None, "합계출산율", "출생아 수", "조출생률")
+        and parsed.get("indicator") in (None, "합계출산율", "출생아 수", "조출생률", *BIRTH_TOPIC)
     ):
         if parsed.get("indicator") != "합계출산율":
             fix("indicator", "합계출산율", "'한 명이 몇 명 낳는지'는 합계출산율")
@@ -1066,7 +1071,7 @@ def correct(question, parsed, today=None):
         parsed["grounded"] = True
         parsed.setdefault("asked", {})["birth_explain"] = True
     elif BIRTH_HOW_MANY.search(question) and not BIRTH_CLEAR.search(question):
-        if parsed.get("indicator") in (None, "합계출산율", "출생아 수", "조출생률"):
+        if parsed.get("indicator") in (None, "합계출산율", "출생아 수", "조출생률", *BIRTH_TOPIC):
             fix("indicator", "합계출산율", "'얼마나 낳아'는 합계출산율 + 출생아 수")
             parsed["term"] = "합계출산율"
             parsed["grounded"] = True
@@ -1576,10 +1581,17 @@ def _guard_indicator(question, parsed, names, fix):
         elif parsed.get("type") == "composition" and "총인구" in names:
             fix("indicator", "총인구", "인구 구성을 물음")
             parsed.pop("unsupported", None)
+        elif _both_sexes(question) and not OTHER_PEOPLE.search(question):
+            fix("indicator", "총인구", "남녀 인구를 견줌")
         else:
             term = parsed.get("term") or parsed.get("indicator")
             fix("indicator", term, "질문에 근거가 없는 지표")
             parsed["unsupported"] = True
+
+
+def _both_sexes(question):
+    genders = [sex for sex, pattern in GENDER_WORDS.items() if pattern.search(question)]
+    return len(genders) == 2 or (not genders and bool(SEX_SPLIT.search(question)))
 
 
 def _region_list(question, parsed, fix):
@@ -1929,6 +1941,7 @@ def compute(q):
             if not reason.startswith(survey):
                 result["reason"] = f"{survey} {reason}"
     _add_latest_note(q, result)
+    _add_definition_note(result)
     if result.get("sub_future") and not q.get("guess"):
         result["status"] = "out_of_range"
     return result
@@ -1949,6 +1962,7 @@ def _monthly_empty(result):
 def _add_latest_note(q, result):
     if result.get("status") != "ok" or q.get("prediction"):
         return
+    asked_year = q.get("year") and not q.get("year_filled")
     for r in _leaves(result):
         if r.get("series"):
             if q.get("end_year"):
@@ -1957,7 +1971,7 @@ def _add_latest_note(q, result):
             when = last.get("as_of") or f"{last['year']}년"
             name = r.get("indicator") or "이"
             note = f"{name} 자료는 {when}이 가장 최근입니다"
-        elif q.get("year"):
+        elif asked_year:
             continue
         elif r.get("as_of") or r.get("year"):
             note = f"가장 최근 자료인 {_when(r)} 기준으로 답했습니다"
@@ -1972,6 +1986,20 @@ def _add_latest_note(q, result):
             continue
         if note not in (notes := r.setdefault("notes", [])):
             notes.append(note)
+
+
+def _add_definition_note(result):
+    if result.get("status") != "ok":
+        return
+    for r in _leaves(result):
+        if r.get("method") == "dynamic" or r.get("status", "ok") != "ok":
+            continue
+        sp = indicators.spec(r.get("indicator"))
+        if not sp or not (definition := sp.get("definition")):
+            continue
+        notes = r.setdefault("notes", [])
+        if not any(definition in n for n in notes):
+            notes.insert(0, definition)
 
 
 def _add_default_value(q, result):
@@ -3235,6 +3263,9 @@ def render(result):
         lines = ["지원 지표: " + ", ".join(result.get("supported", []))]
 
     notes = list(src.get("notes") or [])
+    notes = [n for n in notes if not any(n != m and n in m for m in notes)]
+    defs = {sp.get("definition") for sp in indicators.specs().values()}
+    notes.sort(key=lambda n: not any(d and d in n for d in defs))
     if src.get("formula"):
         notes.insert(0, f"계산식: {src['formula']}")
     lines += [f"※ {n}" for n in notes]
@@ -3400,6 +3431,13 @@ async def answer(parsed, trace=None, question=""):
     trace["compute_ms"] = round((time.perf_counter() - start) * 1000)
     if not parsed.get("dynamic_spec"):
         flow.add("사전 계산", result.get("status"), flow_result(result))
+        from app.core.config import get_settings
+
+        if get_settings().binding_dict_shadow and result.get("status") == "ok" and question:
+            from app.services import dict_binding
+
+            if (rec := await dict_binding.shadow(question, parsed, result)) is not None:
+                trace["dict_binding"] = rec
     return {
         "status": result.get("status"),
         "answer": f"{summary(result)}\n\n{render(result)}".strip(),

@@ -1624,6 +1624,19 @@ def test_year_words_skip_verb_endings(question: str, said: bool) -> None:
     assert qa._says_year(question) is said
 
 
+def test_both_sexes_people_question_is_population(monkeypatch) -> None:
+    monkeypatch.setattr(indicators, "_alias_map", REAL_ALIASES)
+    q = "경기도는 남자가 많아 여자가 많아? 얼마나 차이 나?"
+    p = qa.correct(q, parsed(type="compare", indicator="성비", regions=["경기도"]), TODAY)
+    assert p["indicator"] == "총인구" and p.get("split_sex") and p["grounded"] is True
+
+
+def test_student_age_band_is_population() -> None:
+    q = "강원도 초등학생 나이(6~11살) 애들 최근 5년 동안 얼마나 줄었어?"
+    p = qa.correct(q, parsed(type="trend", indicator="초등학생 인구", regions=["강원도"]), TODAY)
+    assert p["indicator"] == "총인구" and p["ages"] == [[6, 11]]
+
+
 def test_age_of_unlisted_measure_stays_with_it() -> None:
     q = "2020년 서울 출생아 수랑 고령자 가구 비율 알려줘"
     p = qa.correct(q, parsed(indicator="출생아 수", regions=["서울"], year=2020), TODAY)

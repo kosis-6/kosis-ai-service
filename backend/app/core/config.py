@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     understand_merged: Literal["off", "gemma"] = "off"
     binding_shadow: bool = False
     binding_use: bool = True
+    binding_dict_shadow: bool = False
 
     search_llm: Literal["auto", "hcx", "gemma"] = "auto"
     gemma_base_url: str = ""
