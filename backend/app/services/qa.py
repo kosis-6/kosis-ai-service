@@ -1330,9 +1330,29 @@ def correct(question, parsed, today=None):
         # 하므로 그 지표의 표에서 분류 순위를 계산한다 (ask_session._dynamic_instead)
         parsed["rank_axis"] = OTHER_AXIS.search(question)[1]
         parsed["grounded"] = False
+    _one_region_years(parsed, fix)
     if fixes:
         parsed["corrections"] = fixes
     return parsed
+
+
+def _one_region_years(parsed, fix):
+    """ "2010년과 2025년 서울 인구 비교": 한 지역의 두 연도 비교는 그 기간의 추이다.
+    계산 단계도 같은 규칙으로 추이를 계산하지만(_compute_population · _compute_lookup), 조건에
+    '비교'가 남으면 화면의 조건 칩이 끝 해 하나('2025년')로만 보였다 (11/24).
+    남녀 비교 · 여러 지표 · 지역 묶음은 그대로 둔다"""
+    y0, y1 = parsed.get("start_year"), parsed.get("end_year")
+    if (
+        parsed.get("type") == "compare"
+        and len(parsed.get("regions") or []) == 1
+        and y0
+        and y1
+        and y0 != y1
+        and not parsed.get("split_sex")
+        and not parsed.get("indicators")
+        and not parsed.get("group")
+    ):
+        fix("type", "trend", "한 지역의 두 연도 비교는 그 기간의 추이")
 
 
 def _change_rank(question, parsed, fix):
