@@ -16,8 +16,8 @@
   give_up   —                위 어느 것도 아니거나 상한 초과 → 처음 답 유지 또는 답변 불가 사유
 
 이 모듈은 행동 이름과 근거만 돌려준다. 실제 호출은 ask_session._judged가 한다. 지금 돌아가는
-행동은 reroute · retable · give_up이고, replan · requery · recell은 이름만 내고 호출부가
-비어 있어 retable로 떨어진다 (재계획 프롬프트 · 연결 단계가 들어오면 채운다).
+행동은 replan(agent/replan.py) · reroute · retable · give_up이고, requery · recell은 이름만 내고
+호출부가 비어 있어 대체 행동으로 떨어진다 (재검색 게이트 · 연결 단계가 들어오면 채운다).
 설계: 인계_2026-11-17/A_설계서.md 4절.
 """
 
@@ -106,6 +106,7 @@ def choose(
     if reason == "기간이 다름":
         # 연도는 코드 규칙표(timeref)가 세므로 LLM 계획 전에 그 규칙을 다시 태운다.
         # 여기서는 replan으로 넘기되 호출부가 먼저 timeref를 다시 돌리게 표시한다
+        # (11/24: timeref는 해석 때 이미 돌아 다시 돌려도 같다. 호출부는 지금 바로 replan으로 간다)
         if llm_ok:
             return Action(
                 REPLAN,

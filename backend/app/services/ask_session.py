@@ -56,6 +56,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.concurrency import run_in_threadpool
 
+from app.agent import replan
 from app.prompts.qa import FOLLOW_SYSTEM
 from app.services import (
     agent_action,
@@ -2206,6 +2207,50 @@ async def _recompute(
     return again, how
 
 
+async def _replan_compute(
+    res: dict, verdict: dict, asked: str, user_id: int | None
+) -> tuple[dict | None, str]:
+    """replan: 처음 계획 + 판정의 지적으로 계산 계획을 다시 세워(Gemma 1회) 그 계획으로 표를 찾고
+    계산한 답 → (답, 방법). 새 계획을 못 세웠거나 계산하지 못하면 (None, 방법).
+    이유는 res["trace"]["answer_judge"]["replan"] 에 남는다 (agent/replan.py)"""
+    parsed = res.get("parsed") or {}
+    found = _found_now.get()
+    first = replan.first_plan_of(found, parsed)
+    tried = list(
+        dict.fromkeys(s.get("tbl_id") for s in res.get("sources") or [] if s.get("tbl_id"))
+    )
+    record = res.setdefault("trace", {}).setdefault("answer_judge", {})
+    new_plan = await replan.call(asked, first, verdict, parsed, tried, record)
+    how = "계획 다시"
+    if new_plan is None:
+        return None, how
+    sid = table_guide.new_search_session()  # 새 계획은 새 질문처럼 찾는다 (되묻기 상태를 잇지 않음)
+    found2 = await table_guide.find_tables(asked, sid, None, user_id, plan=new_plan)
+    trace: dict = {}
+    base = {**parsed, "dynamic_spec": None}
+    computed = await dynamic_indicator.compute_from_handoff(asked, base, found2, trace)
+    if not computed or computed.get("status") != "ok" or computed.get("clarification"):
+        record["replan"]["computed"] = False
+        return None, how
+    again = dict(computed)
+    again.setdefault("trace", trace)
+    again["search_session"] = sid
+    return again, how
+
+
+async def _retry(
+    action, res: dict, verdict: dict, state: dict | None, asked: str, user_id: int | None
+) -> tuple[dict | None, str]:
+    """행동대로 한 번 다시 계산. replan 이 새 계획을 못 내면 대체 행동(표 · 경로)으로 떨어진다.
+    requery · recell 은 호출부가 아직 없어 바로 대체 행동으로 간다"""
+    if action.name == agent_action.REPLAN:
+        again, how = await _replan_compute(res, verdict, asked, user_id)
+        if again is not None or action.fallback is None:
+            return again, how
+        flow.add("다시 계산", "대체", f"{how}: 새 계획 없음 → {action.fallback}")
+    return await _recompute(res, state, asked, user_id)
+
+
 async def _judged(res: dict, state: dict | None, question: str, user_id: int | None) -> None:
     """답 판정 (ANSWER_JUDGE=true): 이 답이 질문에 맞는지 Gemma 가 보고, 틀렸다고 보면 한 번 다시
     계산한다. 다시 한 답이 판정을 통과할 때만 바꾸고, 아니면 처음 답을 그대로 낸다 (11/22 판정은
@@ -2223,8 +2268,8 @@ async def _judged(res: dict, state: dict | None, question: str, user_id: int | N
     if first["verdict"] != "retry":
         return
     # 행동 고르기 (N9, 코드 규칙): 판정 이유 · 답의 경로 · 1위 후보의 ✔/✘로 다음 행동을 정한다.
-    # 지금 호출부가 있는 행동은 reroute · retable(둘 다 _recompute) · give_up. replan · requery ·
-    # recell은 이름만 기록하고 fallback으로 떨어진다 (재계획 프롬프트 · 연결 단계가 들어오면 채운다)
+    # 호출부가 있는 행동은 replan(_replan_compute) · reroute · retable(둘 다 _recompute) · give_up.
+    # requery · recell은 이름만 기록하고 fallback으로 떨어진다 (게이트 · 연결 단계가 들어오면)
     action = agent_action.choose(first, res, _found_now.get())
     record["action"] = action.as_trace()
     flow.add("행동 고르기", action.name, action.why)
@@ -2232,7 +2277,7 @@ async def _judged(res: dict, state: dict | None, question: str, user_id: int | N
         record["retry"] = {"how": "give_up", "computed": False}
         return
     try:
-        again, how = await _recompute(res, state, asked, user_id)
+        again, how = await _retry(action, res, first, state, asked, user_id)
     except Exception:
         logger.exception("답 판정 뒤 다시 계산 실패 → 처음 답 그대로")
         record["retry"] = {"error": True}

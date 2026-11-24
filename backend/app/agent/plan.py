@@ -22,6 +22,8 @@ MODEL = "HCX-007"
 MAX_TOKENS = 512
 
 Plan = dict[str, Any]
+# 지표 한 칸의 내용 (계획 → 꾸러미 → 재계획으로 그대로 옮기는 칸)
+IND_KEYS = ("span", "search", "dict", "scope", "role", "override", "no_inherit")
 
 
 @llm_calls.staged("plan")

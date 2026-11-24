@@ -85,7 +85,10 @@ def empty_plan(error: str) -> dict[str, Any]:
 
 
 async def plan(s: State) -> dict[str, Any]:
-    """계획: 질문을 지표로 나누고 공통 조건·지표별 조건·결합 방식을 정한다 (HCX-007 1회)"""
+    """계획: 질문을 지표로 나누고 공통 조건·지표별 조건·결합 방식을 정한다 (HCX-007 1회).
+    계획이 미리 들어와 있으면(재계획, agent/replan.py) LLM 을 부르지 않고 그대로 쓴다"""
+    if s.get("plan"):
+        return {"plan": {**s["plan"], "_given": True}}
     start = time.perf_counter()
     try:
         p = await planner.call(s["question"])
@@ -210,6 +213,12 @@ async def handoff(s: State, config: RunnableConfig) -> dict[str, Any]:
             "fixed": p.get("_fixed") or [],
             "error": p.get("_error"),
             "ms": p.get("_ms"),
+            "given": bool(p.get("_given")),
+            # 지표 목록까지 남긴다: 재계획(agent/replan.py)이 처음 계획으로 쓴다
+            "indicators": [
+                {k: i.get(k) for k in planner.IND_KEYS if i.get(k) is not None}
+                for i in p.get("indicators") or []
+            ],
         },
         "indicators": inds if is_multi else [],
         "whole": whole,
@@ -268,15 +277,20 @@ async def handle(
     selections: dict[str, Any] | None = None,
     trace: dict[str, Any] | None = None,
     user_id: int | None = None,
+    plan: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """dialog.handle과 같은 인자. 새 질문이면 반환값에 multi가 덧붙는다"""
+    """dialog.handle과 같은 인자. 새 질문이면 반환값에 multi가 덧붙는다.
+    plan: 미리 세운 계획(재계획). 있으면 계획 LLM 을 건너뛰고 이 계획으로 지표를 찾는다"""
+    state: dict[str, Any] = {
+        "question": question,
+        "session_id": session_id,
+        "selections": selections,
+        "user_id": user_id,
+    }
+    if plan:
+        state["plan"] = plan
     out = await GRAPH.ainvoke(
-        {
-            "question": question,
-            "session_id": session_id,
-            "selections": selections,
-            "user_id": user_id,
-        },
+        state,
         config={"configurable": {"trace": {} if trace is None else trace}},
     )
     return out["result"]

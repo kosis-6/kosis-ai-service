@@ -99,8 +99,10 @@ async def find_tables(
     session_id: str,
     selections: dict[str, Any] | None,
     user_id: int | None,
+    plan: dict[str, Any] | None = None,
 ) -> dict:
     """통계표 찾기 한 턴. 되묻기 중이면 이어서 처리한다.
+    plan: 재계획(agent/replan.py)이 세운 계획. 있으면 계획 LLM 없이 그 계획으로 지표를 찾는다
 
     /search(dialog.handle)와 같은 처리를 LangGraph 흐름(app/agent)으로 돌린다.
     새 질문이면 계획이 질문을 지표로 나누고, 지표가 여럿이면 지표마다 찾은 표를
@@ -109,7 +111,12 @@ async def find_tables(
     result, response, error = None, None, None
     handle = multi.handle if get_settings().search_plan else graph.handle
     try:
-        result = await handle(question, session_id, selections, trace, user_id=user_id)
+        if plan and handle is multi.handle:
+            result = await handle(
+                question, session_id, selections, trace, user_id=user_id, plan=plan
+            )
+        else:
+            result = await handle(question, session_id, selections, trace, user_id=user_id)
         session_id = trace.get("search_session_id", session_id)
         tables = await search.load_tables()
         response = search_answer.respond(result, tables, session_id, TOP_K, trace)
@@ -326,6 +333,8 @@ def build_handoff(
         "status": status,
         "understanding": understanding,
         "targets": targets,
+        # 계획 전체 (shared · indicators · combine · given). 재계획이 처음 계획으로 쓴다
+        "plan": {k: plan.get(k) for k in ("shared", "indicators", "combine", "given") if k in plan},
         "combine": {
             "op": combine.get("op") or "none",
             "note": combine.get("note"),

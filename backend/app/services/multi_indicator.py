@@ -168,6 +168,10 @@ def _side_by_side(question, parsed, ok, failed, trace, notes=()):
     if len(parts) == 1:
         result = parts[0]
     notes = [*notes, *(_missed_note(t) for t in failed)]
+    if len(parts) > 1:
+        # 비교 한 줄("A가 B보다 N명 많습니다") · 기준 차이 안내를 결과에도 남긴다: 답 판정은 결과만
+        # 보므로 답 글에만 있으면 "비교해야 함"으로 막았다 (11/24 replan 손 확인)
+        result["notes"] = [n for n in notes if n]
     return _response(question, parsed, result, trace, notes, [_span(t) for t, _ in ok])
 
 

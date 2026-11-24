@@ -129,6 +129,9 @@ def describe(result: dict[str, Any] | None, parsed: dict[str, Any] | None = None
         else:
             how = "여러 값"
         lines.insert(0, f"(답을 {how} 계산해 함께 보여 줌: {len(parts)}개)")
+        if notes := [str(n) for n in result.get("notes") or []]:
+            # 지표끼리 비교한 답의 "A가 B보다 N명 많습니다" 같은 줄 (multi_indicator._side_by_side)
+            lines.append("함께 적은 것: " + " / ".join(notes[:3]))
     return "\n".join(lines)
 
 

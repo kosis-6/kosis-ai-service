@@ -202,3 +202,13 @@ def test_describe_says_summed_values_were_added() -> None:
     }
     text = answer_judge.describe(res)
     assert "합계" in text and "전라남도, 전라북도를 더한 값 (2개)" in text
+
+
+def test_describe_shows_compare_line_of_split_answer() -> None:
+    # 두 지표를 나란히 비교한 답: 결과의 notes(비교 한 줄)가 요약에 들어가야
+    # "비교해야 함"으로 막지 않는다
+    a = {"status": "ok", "indicator": "혼인 건수", "year": 2024, "unit": "건"}
+    b = {"status": "ok", "indicator": "이혼 건수", "year": 2024, "unit": "건"}
+    res = {"status": "ok", "split": [a, b], "notes": ["혼인 건수가 이혼 건수보다 100건 많습니다"]}
+    text = answer_judge.describe(res)
+    assert "지표마다" in text and "함께 적은 것: 혼인 건수가 이혼 건수보다 100건 많습니다" in text
