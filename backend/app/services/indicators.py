@@ -1085,6 +1085,14 @@ def resolve_region(name, year=None, sigungu=False):
     for suffix in ("시", "군", "구"):
         if not found and not key.endswith(("시", "군", "구", "도")):
             found = _rows(sql.format(extra=""), [key + suffix, key + suffix])
+    # 섬 이름: "울릉도" → 울릉군, "강화도" → 강화군, "거제도" → 거제시, "진도" · "완도" → 진도군 ·
+    # 완도군. '도'로 끝나 위의 재시도를 건너뛰어 "지역을 찾지 못했습니다"로 끝났다.
+    # 시도 이름("경기도")과 여러 시도를 가리키는 이름("충청도")은 위에서 이미 찾거나 되묻는다
+    if not found and key.endswith("도") and len(key) >= 2:
+        for base in dict.fromkeys((key[:-1], key)):
+            for suffix in ("군", "시"):
+                if not found and len(base) >= 1:
+                    found = _rows(sql.format(extra=""), [base + suffix, base + suffix])
 
     parts = str(name).split()
     if not found and len(parts) >= 2:  # "서울 중구"

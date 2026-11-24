@@ -1440,10 +1440,20 @@ def population_modifier(question):
         words = {m[1], re.sub(r"(의|은|는|이|가|에서|에|별)$", "", m[1]) or m[1]}
         if any(w in PLAIN_POPULATION or re.search(r"\d", w) for w in words):
             continue
-        if any(indicators.find_regions(w) or agegroup.resolve(w) for w in words):
+        if any(indicators.find_regions(w) or agegroup.resolve(w) or _region_name(w) for w in words):
             continue
         return min(words, key=len)
     return None
+
+
+def _region_name(word):
+    """지역 해석이 아는 지역 이름인가 ("울릉도" → 울릉군, "수원" → 수원시). 질문 속 지역 찾기
+    (find_regions)의 이름 목록에는 없어 "울릉도 인구"의 '울릉도'를 다른 통계를 가리키는 말로 보고
+    총인구 대신 통계표 찾기로 보냈다"""
+    try:
+        return indicators.resolve_region(word).get("status") in ("ok", "ambiguous_region")
+    except Exception:  # 지역 목록을 읽지 못하면 지역이 아닌 것으로 (전처럼)
+        return False
 
 
 def asked_indicators(question):

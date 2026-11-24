@@ -674,6 +674,37 @@ def test_population_word_in_modifier_does_not_replace_said_indicator(question: s
     assert p["indicator"] == "1인 가구"
 
 
+@pytest.mark.parametrize(
+    ("name", "display"),
+    [
+        ("울릉도", "경상북도 울릉군"),  # "'울릉도'에 해당하는 지역을 찾지 못했습니다"로 끝났다
+        ("강화도", "인천광역시 강화군"),
+        ("거제도", "경상남도 거제시"),
+        ("경기도", "경기도"),  # 시도 이름은 그대로
+    ],
+)
+def test_island_names_resolve_to_their_county(name: str, display: str) -> None:
+    r = indicators.resolve_region(name)
+    assert r["status"] == "ok" and r["display"] == display
+
+
+def test_unknown_island_name_stays_unknown() -> None:
+    assert indicators.resolve_region("독도")["status"] == "unknown_region"
+
+
+@pytest.mark.parametrize(
+    ("question", "modifier"),
+    [
+        ("2024년 울릉도 인구는 몇 명이야?", None),  # 지역 이름: 총인구로 답한다
+        ("수원 인구 몇 명", None),  # '시'를 뗀 이름도 지역이다
+        ("통학 인구 몇 명", "통학"),  # 다른 통계를 가리키는 말은 그대로
+        ("외국인 인구", "외국인"),
+    ],
+)
+def test_region_word_before_population_is_not_a_modifier(question: str, modifier) -> None:
+    assert qa.population_modifier(question) == modifier
+
+
 def test_population_word_still_replaces_unsaid_indicator() -> None:
     # HCX가 질문에 없는 지표를 고르면 지금처럼 질문의 '인구'(총인구)
     p = qa.correct("서울 인구 몇 명이야?", parsed(indicator="주민 수", regions=["서울"]), TODAY)

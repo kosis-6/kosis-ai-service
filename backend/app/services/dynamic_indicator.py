@@ -165,8 +165,20 @@ class Dim:
     def sex_codes(self) -> dict[str, str]:
         """{"남": 코드, "여": 코드} (둘 다 있을 때만)"""
         out = {}
+        # "장애인 인구_남자"처럼 묶음 이름 뒤에 붙은 성별: 같은 묶음의 합계 칸("장애인 인구_계")이
+        # 있을 때만 성별 칸으로 본다 (전에는 성별 분류로 보지 않아 "장애인"이 남 · 여 두 칸에
+        # 걸린 채 "질문의 말과 맞는 칸이 없음"으로 끝났다)
+        groups = {_norm(_label_name(n)) for n in self.codes.values() if is_subtotal(n)}
         for sex, names in SEX_NAMES.items():
             hits = [c for c, n in self.codes.items() if _norm(n) in names]
+            if not hits and groups:
+                hits = [
+                    c
+                    for c, n in self.codes.items()
+                    if len(part := re.split(r"[_\-]", n.strip())) >= 2
+                    and _norm(part[-1]) in names
+                    and _norm(" ".join(part[:-1])) in groups
+                ]
             if len(hits) == 1:
                 out[sex] = hits[0]
         return out if len(out) == 2 else {}
@@ -695,7 +707,10 @@ def choose(
                 plan.defaults.append(f"{d.name}: {d.codes[male]} · {d.codes[female]} 따로")
             else:
                 plan.pick[d.no] = base
-                if others:
+                if others or sex_set <= set(codes):
+                    # 질문 낱말이 남자 · 여자 칸에 모두 걸렸으면 그 집단 전체를 말한 것이다
+                    # ("장애인" ⊂ 장애인 인구_남자 · _여자 → 장애인 인구_계). 맞은 칸으로 보지 않아
+                    # "질문의 말과 맞는 칸이 없음"으로 끝나 연령 구간 확인까지 가지 못했다
                     plan.matched[d.no] = base
             continue
         if len(codes) > 1 and d.total() and set(codes) == set(_leaf_codes(d)):
@@ -932,11 +947,19 @@ def _class_narrowed(cls: str, plan: Plan, dims: list[Dim], said: dict[int, list[
     word = _norm(cls)
     if len(word) < 2:
         return False
+    # 그 분류가 어느 분류 이름에도 없으면 표가 항목(0번 분류)에 그 분류를 담은 것이다
+    # ('성/연령/종교별 인구'의 항목: 불교 · 기독교(천주교) …). "천주교 믿는 사람"이 나눠 보기
+    # (종교별)로 막혀 표 안내로 끝났다
+    in_item = not any(word in _norm(d.name) for d in dims)
     return any(
         d.no in plan.matched
         and plan.matched[d.no] != d.total()
         and plan.matched[d.no] in (said.get(d.no) or [])
-        and (word in _norm(d.name) or word in _norm(d.codes[plan.matched[d.no]]))
+        and (
+            word in _norm(d.name)
+            or word in _norm(d.codes[plan.matched[d.no]])
+            or (in_item and d.no == 0)
+        )
         for d in dims
     )
 
@@ -1085,11 +1108,14 @@ def _name(
     counted: bool,
     strip_age: bool = False,
     unit: str = "",
+    target: str = "",
 ) -> str:
     """지표 이름: 질문 해석의 지표 표현이 고른 칸 이름을 모두 담고 있으면 그 표현, 아니면 칸 이름
     (HCX가 지표 칸에 "2020년 서울"처럼 지표가 아닌 말을 넣는 경우가 있다)
     strip_age: 연령을 lookup이 연령 칸으로 고르면 이름에서 연령 표현을 뺀다 (두 번 붙지 않게)
-    unit: 값의 단위. 칸 이름 끝의 같은 단위 괄호는 뗀다 ("이혼건수(건)" → "이혼건수")"""
+    unit: 값의 단위. 칸 이름 끝의 같은 단위 괄호는 뗀다 ("이혼건수(건)" → "이혼건수")
+    target: 표의 집계 대상 ('…별 출생' → 출생). 고른 칸이 모두 합계라 칸 이름이 이름이 되지
+    못할 때, 질문의 표현이 이 대상을 담지 않으면 이 대상이 이름이다"""
     named = [d for d in dims if d.no in plan.matched]
     # 칸이 하나뿐인 분류(인구동향 표의 항목 '출생사망혼인이혼')는 고른 것이 아니라 표 전체라,
     # 다른 고른 칸이 있으면 이름에 쓰지 않는다 ("출생사망혼인이혼 이혼건수(건)", 11/20)
@@ -1113,10 +1139,16 @@ def _name(
             continue
         # 질문의 표현도 원자료 합계 표시("이주배경인구_계 수")와 전국 범위 말은 떼고 쓴다
         named = _term_name(str(term))
-        # 고른 칸이 모두 합계(전국 · 계)면 질문의 표현이 이름이다 (사전 지표 이름은 담김 검사)
+        # 고른 칸이 모두 합계(전국 · 계)면 질문의 표현이 이름이다 (사전 지표 이름은 담김 검사).
+        # 단 그 표현이 표의 집계 대상을 담을 때만: HCX가 "엄마가 32살에서 37살일 때" 같은 조건절을
+        # 주면 연령을 뗀 "엄마가 일 때"가 이름이 되어 "엄마가 일 때는 표의 연령 구간이…"로 답했다
+        about = _norm(_label_name(target)) if target else ""
         needed = informative if source == "term" else words
-        if all(_norm(w) in _norm(named) for w in needed):
+        fits_target = bool(informative) or not about or about in _norm(named)
+        if fits_target and all(_norm(w) in _norm(named) for w in needed):
             return _without_age_words(named) if strip_age else named
+    if not informative and target:
+        words = [_label_name(target)]  # 고른 칸이 모두 합계: 표가 세는 대상
     name = " ".join(words)
     return f"{name} 수" if counted and not name.endswith("수") else name
 
@@ -1247,7 +1279,11 @@ def build(
     )
     places = [cell for _, cell in chosen_places]
     name = _place_name(
-        _name(parsed, dims, plan, counted, strip_age, unit), mentions, places, target, counted
+        _name(parsed, dims, plan, counted, strip_age, unit, target),
+        mentions,
+        places,
+        target,
+        counted,
     )
     spec = {
         "name": name,

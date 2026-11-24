@@ -1914,6 +1914,87 @@ def test_forced_place_cells_need_the_question_to_ask_them(
         assert spec is None and why == "질문의 말과 맞는 칸이 없음"
 
 
+DISABLED = [  # '연령 및 성별 장애인 인구': 항목에 묶음 이름 뒤에 성별이 붙는다
+    d.Dim(0, "항목", {"T1": "장애인 인구_계", "T2": "장애인 인구_남자", "T3": "장애인 인구_여자"}),
+    d.Dim(1, "행정구역별", {"00": "전국", "11": "서울특별시"}),
+    d.Dim(2, "연령별", AGES),
+]
+
+
+def test_group_named_sex_cells_are_a_sex_dimension() -> None:
+    # 전에는 성별 칸으로 보지 않아 "장애인"이 남 · 여 두 칸에 걸린 채 "맞는 칸 없음"으로 끝났다
+    assert DISABLED[0].sex_codes() == {"남": "T2", "여": "T3"}
+    # 합계 칸이 없는 묶음은 성별 칸으로 보지 않는다
+    loose = d.Dim(0, "항목", {"A": "통근_남자", "B": "통학_여자"})
+    assert loose.sex_codes() == {}
+
+
+@pytest.mark.parametrize(
+    ("question", "sex", "item"),
+    [
+        ("서울 장애인 중에 18살에서 23살 사이 몇 명이야?", "계", "T1"),  # 집단 전체
+        ("서울 남자 장애인 몇 명이야?", "남", "T1"),  # 성별은 성별 칸이 고른다
+    ],
+)
+def test_group_word_hitting_both_sex_cells_picks_group_total(
+    fake_table, question: str, sex: str, item: str
+) -> None:
+    fake_table["tables"]["DIS"] = (DISABLED, 1, "시도")
+    fake_table["units"]["DIS"] = ("명", True)
+    parsed = {**BASE, "indicator": "", "term": "", "sex": sex}
+    if "18살" in question:
+        parsed["ages"] = [[18, 23]]
+    spec, why = d.build("DIS", question, parsed)
+    assert spec is not None, why  # 연령 구간이 맞지 않으면 계산 단계가 '맞는 구간 없음'으로 답한다
+    assert spec["sources"][0]["item_id"] == item
+    if sex == "남":
+        assert spec["sources"][0]["by_sex"]["남"] == {"item_id": "T2"}
+
+
+@pytest.mark.parametrize(
+    ("term", "target", "name"),
+    [
+        # 조건절을 이름으로 쓰면 연령을 뗀 "엄마가 일 때는 표의 연령 구간이…"가 됐다
+        ("엄마가 32살에서 37살일 때", "출생", "출생 수"),
+        ("1인 가구 수", "1인가구", "1인 가구 수"),  # 표의 대상을 담은 표현은 그대로
+        ("", "출생", "출생 수"),
+    ],
+)
+def test_name_from_table_target_when_only_totals_picked(term: str, target: str, name: str) -> None:
+    item = d.Dim(0, "항목", {"0": "계", "1": "남자", "2": "여자"})
+    plan = d.Plan(pick={0: "0"}, matched={0: "0"})
+    parsed = {"term": term, "indicator": ""}
+    assert d._name(parsed, [item], plan, True, strip_age=True, unit="명", target=target) == name
+
+
+RELIGION = [  # '성/연령/종교별 인구': 종교가 항목 분류에 들어 있다
+    d.Dim(0, "항목", {"0": "내국인", "1": "불교", "2": "기독교(천주교)", "3": "기독교(개신교)"}),
+    d.Dim(1, "행정구역별", {"00": "전국", "11": "서울특별시"}),
+]
+
+
+@pytest.mark.parametrize(
+    ("question", "item"),
+    [
+        ("2005년에 천주교 믿는 사람 몇 명이었어?", "2"),  # 나눠 보기(종교별)로 막혔다
+        ("2005년 종교별 인구 알려줘", None),  # 나눠 보기는 그대로 막는다
+    ],
+)
+def test_class_held_in_item_dimension_counts_as_named_cell(
+    fake_table, monkeypatch, question: str, item: str | None
+) -> None:
+    monkeypatch.setattr(lookup, "_table", lambda _: {"tbl_nm": "성/연령/종교별 인구-시군구"})
+    fake_table["tables"]["REL"] = (RELIGION, 1, "시도")
+    fake_table["units"]["REL"] = ("명", True)
+    slots = {"conditions": {"classes": ["종교"]}}
+    spec, why = d.build("REL", question, {**BASE, "indicator": "", "term": ""}, slots=slots)
+    if item:
+        assert spec is not None, why
+        assert spec["sources"][0]["item_id"] == item
+    else:
+        assert spec is None
+
+
 def test_name_from_underscored_total_cell() -> None:
     # "2023년 서울 이주배경인구 어때?": 질문 해석이 지표 표현을 비워 칸 이름으로 이름을 지었다
     item = d.Dim(0, "항목", {"T10": "이주배경인구_계", "T20": "내국인(귀화)_계"})
