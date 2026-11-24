@@ -43,6 +43,7 @@ from app.services import (
     llm_json,
     load_queue,
     lookup,
+    monthref,
     search_llm,
     slots,
     table_cache,
@@ -1110,6 +1111,9 @@ def correct(question, parsed, today=None):
     kind = parsed.get("type")
 
     _apply_time(question, parsed, fix, today)
+    if (mref := monthref.find(question)) and kind in (None, "value", "other"):
+        # "1월부터 3월까지" · "상반기": 달 묶음은 코드가 읽는다 (lookup.month_sum). 값 질문만
+        fix("months", [mref["m0"], mref["m1"]], f"'{mref['expr']}' = 달 묶음 합")
     _read_question(question, parsed, fix)
 
     genders = [sex for sex, pattern in GENDER_WORDS.items() if pattern.search(question)]
@@ -2650,6 +2654,17 @@ def _compute_lookup(q, sp, kind, regions, year, sex, ages):
         return _sum_regions(lookup.compare(sp, regions, year, sex, ages), q)
     if kind == "value" and q.get("share_of"):
         return _share_of(lookup.value(sp, regions[0], year, sex, ages), sp, year, sex, ages)
+    if kind == "value" and q.get("months") and len(regions) == 1:
+        # 달 묶음 합: 월별 출처가 있는 지표는 월별 값을 더한다. 없으면 연간 값에 그 사실을 적는다
+        m0, m1 = q["months"][:2]
+        if (r := lookup.month_sum(sp, regions[0], year, m0, m1, sex)) is not None:
+            return r
+        r = lookup.value(sp, regions[0], year, sex, ages)
+        if r.get("status") == "ok":
+            r.setdefault("notes", []).append(
+                f"{josa(sp['name'], '은는')} 월별 자료가 없어 {year}년 연간 값으로 답했습니다"
+            )
+        return r
     if kind == "value":
         return lookup.value(sp, regions[0], year, sex, ages)
     if kind == "trend":

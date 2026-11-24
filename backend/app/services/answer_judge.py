@@ -90,8 +90,13 @@ def _shape(p: dict[str, Any], top: int | None) -> list[str]:
     if members := p.get("members"):
         # 여러 지역 · 여러 지표를 더한 값 (qa._sum_regions · _sum_indicators). "지역: A + B"만
         # 보이면 판정이 "더해야 함"이라고 막았다 (11/24): 더했다는 것을 말로 적는다
-        names = ", ".join(str(m.get("region")) for m in members[:4])
-        return [f"형태: 합계 — {names}를 더한 값 ({len(members)}개)"]
+        if p.get("months"):
+            # 달 묶음 합 (lookup.month_sum): 달 이름을 넷만 적으면 판정이 "1~4월만 더함"으로 봤다
+            m0, m1 = p["months"][:2]
+            return [f"형태: 합계 — {m0}~{m1}월 {len(members)}개 달의 값을 모두 더한 값"]
+        names = ", ".join(str(m.get("region")) for m in members[:6])
+        more = f" 외 {len(members) - 6}개" if len(members) > 6 else ""
+        return [f"형태: 합계 — {names}{more}를 더한 값 ({len(members)}개)"]
     if total := next((n for n in notes if n.endswith("합계")), None):
         return [f"형태: 합계 ({total[:40]})"]
     return ["형태: 값 하나"]

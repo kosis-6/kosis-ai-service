@@ -33,8 +33,6 @@ EDITABLE = {
     "기간이 다름": "combine, indicators",
 }
 EDITABLE_DEFAULT = "indicators[].search, combine"
-# 아직 코드가 없는 것: 월 단위 합 (lookup 은 연 단위 자료만 읽는다). 계산하지 않고 다음 행동으로
-NOT_YET_MONTH = "월 단위 합계(sum over month)"
 # 계산하지 않는 종류: 숫자 대신 답변 불가 사유로 (refusal.not_collected_item, 설계서 B-1 예외)
 NOT_COMPUTABLE = "not_computable"
 REFUSAL_CODE = "not_collected_item"
@@ -146,19 +144,20 @@ def runnable(p: dict) -> str | None:
     c = p.get("combine") or {}
     if c.get("op") == NOT_COMPUTABLE:
         return None  # 계산하지 않고 답변 불가 사유로 (ask_session._replan_compute)
-    if c.get("op") == "sum" and c.get("over") == "month":
-        return NOT_YET_MONTH
     if not [i for i in p.get("indicators") or [] if i.get("scope") != "out" and i.get("search")]:
         return "검색할 지표가 없음"
     return None
 
 
-def apply_to_parsed(p: dict, parsed: dict) -> dict:
+def apply_to_parsed(p: dict, parsed: dict, question: str = "") -> dict:
     """새 계획의 combine 을 지표 하나짜리 계산(사전 경로 qa)이 읽는 해석 칸으로 옮긴다.
     지표가 둘 이상이면 multi_indicator 가 combine 을 직접 읽으므로 바꾸지 않는다
     - sum over region · year  → aggregate=sum (qa 가 지역 묶음 · 연도 묶음 합을 이미 한다)
+    - sum over month          → months (달 범위는 코드가 질문에서 읽는다: monthref)
     - rank within=시도 이름    → sido · level=시군구 (lookup.rank(sido=…))
     - rank axis=분류 이름      → rank_axis (ask_session._axis_rank)"""
+    from app.services import monthref
+
     c = p.get("combine") or {}
     live = [i for i in p.get("indicators") or [] if i.get("scope") != "out"]
     out = dict(parsed)
@@ -167,6 +166,8 @@ def apply_to_parsed(p: dict, parsed: dict) -> dict:
     op = c.get("op")
     if op == "sum" and c.get("over") in ("region", "year"):
         out["aggregate"] = "sum"
+    if op == "sum" and c.get("over") == "month" and (m := monthref.find(question)):
+        out["months"], out["type"] = [m["m0"], m["m1"]], "value"
     if op == "rank":
         out["type"] = "rank"
         if c.get("within"):

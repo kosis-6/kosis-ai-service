@@ -59,9 +59,11 @@ def test_resolve_rejects_kind_change_and_same_plan() -> None:
     assert replan.resolve(new, "q", FIRST, "count")[0] is None  # 처음 계획과 같음
 
 
-def test_runnable_blocks_only_month_sums_and_empty_plans() -> None:
+def test_runnable_blocks_only_empty_plans() -> None:
     assert replan.runnable({**FIRST, "combine": {"op": "sum", "over": "indicator"}}) is None
-    assert replan.runnable({**FIRST, "combine": {"op": "sum", "over": "month"}}) is not None
+    assert (
+        replan.runnable({**FIRST, "combine": {"op": "sum", "over": "month"}}) is None
+    )  # 월 합도 코드가
     assert replan.runnable({**FIRST, "combine": {"op": "not_computable"}}) is None  # 사유로 끝낸다
     assert replan.runnable({**FIRST, "combine": {"op": "ratio"}}) is None
     assert replan.runnable({**FIRST, "indicators": []}) is not None
@@ -93,3 +95,14 @@ def test_user_text_opens_search_only_for_target_reason() -> None:
 def test_multi_plan_node_skips_llm_when_plan_is_given() -> None:
     out = asyncio.run(multi.plan({"question": "q", "plan": FIRST}))
     assert out["plan"]["_given"] is True and out["plan"]["indicators"] == FIRST["indicators"]
+
+
+def test_apply_to_parsed_reads_month_range_for_month_sums() -> None:
+    base = {"indicator": "사망자 수", "type": "value"}
+    p = {**FIRST, "combine": {"op": "sum", "over": "month"}}
+    out = replan.apply_to_parsed(p, base, "올해 1월부터 3월까지 돌아가신 분 다 합치면")
+    assert out["months"] == [1, 3]
+    assert "months" not in replan.apply_to_parsed(
+        p, base, "올해 돌아가신 분"
+    )  # 달 표현이 없으면 그대로
+    assert replan.runnable(p) is None  # 월 합은 이제 코드가 계산한다

@@ -236,3 +236,15 @@ def test_describe_orders_categories_by_value_and_says_top_n() -> None:
     text = answer_judge.describe(res, {"top": 2})
     assert "형태: 구분별 순위 (값이 큰 순), 3개 중 상위 2개를 답함 (나, 다)" in text
     assert "값이 큰 순으로 (나, 다, 가)" in answer_judge.describe(res)
+
+
+def test_describe_month_sum_says_all_months_were_added() -> None:
+    # 달 묶음 합: 달 이름을 넷만 적으면 판정이 "1~4월만 더함"으로 봤다 → 범위와 달 수를 적는다
+    res = {
+        "status": "ok",
+        "indicator": "혼인 건수",
+        "year": 2025,
+        "months": [1, 6],
+        "members": [{"region": f"{m}월", "value": 1} for m in range(1, 7)],
+    }
+    assert "형태: 합계 — 1~6월 6개 달의 값을 모두 더한 값" in answer_judge.describe(res)

@@ -1603,3 +1603,13 @@ def test_two_word_time_refs_become_start_and_end(monkeypatch) -> None:
     assert (p["start_year"], p["end_year"]) == (2024, 2025)
     p = qa.correct(q, parsed(type="value", indicator="총인구", year=2024), TODAY)
     assert p["type"] == "trend" and (p["start_year"], p["end_year"]) == (2024, 2025)
+
+
+def test_month_range_in_question_becomes_months(monkeypatch) -> None:
+    monkeypatch.setattr(indicators, "_data_years", lambda: (2008, 2025))
+    p = qa.correct(
+        "작년 4월부터 6월까지 부산 이혼 몇 건", parsed(indicator="이혼 건수", year=2025), TODAY
+    )
+    assert p["months"] == [4, 6]
+    p = qa.correct("작년 부산 이혼 몇 건", parsed(indicator="이혼 건수", year=2025), TODAY)
+    assert "months" not in p

@@ -2231,7 +2231,7 @@ async def _replan_compute(
     sid = table_guide.new_search_session()  # 새 계획은 새 질문처럼 찾는다 (되묻기 상태를 잇지 않음)
     found2 = await table_guide.find_tables(asked, sid, None, user_id, plan=new_plan)
     trace: dict = {}
-    base = replan.apply_to_parsed(new_plan, {**parsed, "dynamic_spec": None})
+    base = replan.apply_to_parsed(new_plan, {**parsed, "dynamic_spec": None}, asked)
     computed = None
     if base.get("rank_axis") and not parsed.get("rank_axis"):
         # 지역이 아닌 분류의 순위(rank axis): 사전 지표의 표에서 (_dynamic_instead와 같은 길)
@@ -2239,9 +2239,11 @@ async def _replan_compute(
     targets = (found2.get("handoff") or {}).get("targets") or []
     live = [i for i in new_plan.get("indicators") or [] if i.get("scope") != "out"]
     if computed is None and len(live) == 1 and len(targets) == 1:
-        # 지표 하나: 사전에 있으면 사전으로(sido · aggregate 같은 해석 칸을 qa 가 읽는다), 없으면
-        # 표로. compute_from_handoff 의 지표 하나 길은 표로만 가서 사전 지표의 시도 안 순위를 놓쳤다
-        computed, sub = await multi_indicator._one(asked, base, found2, targets[0])
+        # 지표 하나: 사전에 있으면 사전으로(sido · aggregate · months 같은 해석 칸을 qa 가 읽는다),
+        # 없으면 표로. compute_from_handoff 의 지표 하나 길은 표로만 가서 사전 지표의 시도 안 순위를
+        # 놓쳤다. 지표 하나짜리 꾸러미(single)에는 계획의 dict · span 이 없어 여기서 붙인다
+        target = {**targets[0], "span": live[0].get("span"), "dict": live[0].get("dict")}
+        computed, sub = await multi_indicator._one(asked, base, found2, target)
         trace["dynamic"] = sub.get("dynamic") or []
         trace["by"] = sub.get("by")
     if computed is None:
@@ -2444,6 +2446,16 @@ async def _dynamic_instead(res: dict, state: dict | None, asked: str, user_id: i
         # 표 안내나 칸 되묻기, 같은 표의 다른 칸 대신 검증된 사전 계산을 쓴다
         # (변형셋 1차: 사전 표를 고르고도 안내로 끝남)
         trace["dynamic_kept"] = {"indicator": parsed.get("indicator"), "tbl_id": same}
+        return False
+    months = (res.get("result") or {}).get("months")
+    if (
+        res.get("status") == "ok"
+        and months
+        and not ((computed or {}).get("result") or {}).get("months")
+    ):
+        # 사전이 달 묶음 합(월별 자료)으로 답했는데 바로 계산은 월을 못 읽어 연간 값을 냈다 (11/24):
+        # 상반기 혼인 6,255건을 연간 12,802건으로 바꿔 버렸다. 달 합은 사전 답을 둔다
+        trace["dynamic_kept"] = {"indicator": parsed.get("indicator"), "months": months}
         return False
     # 바꾼 원래 답 (요청 기록·회귀 평가에서 사전 지표 답과 비교한다)
     trace["replaced"] = {
