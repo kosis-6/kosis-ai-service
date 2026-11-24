@@ -485,6 +485,45 @@ def merge_into(pg: psycopg.Connection, tbl_key: int, rows, scan: Scan, name: str
     return Merged(replaced, replaced_sum, archived)
 
 
+def sync_period_meta(pg: psycopg.Connection, tbl_key: int) -> None:
+    """적재한 값의 기간이 표 정보보다 넓으면 표 정보의 수록 기간과 판 이름을 넓힌다.
+
+    값만 새로 받고 catalog.table_meta·table_families가 옛 기간으로 남으면 통계표 찾기가
+    있는 연도를 없다고 본다 (2026-11-23, DT_1MB2081 2025년). 값이 더 짧은 경우는
+    어느 쪽이 맞는지 따로 확인해야 하므로 좁히지 않는다.
+    월·분기 시점(202610)은 앞 네 자리를 연도로 본다.
+    """
+    pg.execute(
+        """
+        WITH l AS (
+            SELECT t.tbl_id,
+                   CASE WHEN s.first_period > 9999 THEN s.first_period / 100
+                        ELSE s.first_period END AS data_start,
+                   CASE WHEN s.last_period > 9999 THEN s.last_period / 100
+                        ELSE s.last_period END AS data_end
+            FROM raw.stat_load s JOIN catalog.stat_table t USING (tbl_key)
+            WHERE s.tbl_key = %s
+        ), m AS (
+            SELECT m.tbl_id, m.start_year AS old_start, m.end_year AS old_end,
+                   least(m.start_year, l.data_start) AS new_start,
+                   greatest(m.end_year, l.data_end) AS new_end
+            FROM catalog.table_meta m JOIN l USING (tbl_id)
+            WHERE l.data_start < m.start_year OR l.data_end > m.end_year
+        ), fam AS (
+            UPDATE catalog.table_families f
+            SET edition = m.new_start || '~' || m.new_end
+            FROM m
+            WHERE f.tbl_id = m.tbl_id AND f.edition = m.old_start || '~' || m.old_end
+        )
+        UPDATE catalog.table_meta t
+        SET start_year = m.new_start, end_year = m.new_end
+        FROM m
+        WHERE t.tbl_id = m.tbl_id
+        """,
+        [tbl_key],
+    )
+
+
 def load_table(pg: psycopg.Connection, path: Path, merge: bool = False) -> None:
     """표 하나 적재. merge면 기존 표에 덧붙인다 (적재된 표만. 처음 적재하는 표는 그냥 넣는다)"""
     start = time.perf_counter()
@@ -524,6 +563,7 @@ def load_table(pg: psycopg.Connection, path: Path, merge: bool = False) -> None:
                 tbl_key,
             ],
         )
+        sync_period_meta(pg, tbl_key)
         print(
             f"{path.stem}: 덧붙임 {scan.row_count:,}행 (이미 있던 칸 {done.replaced:,}개,"
             f" 이력으로 보낸 예전 값 {done.archived:,}개), {time.perf_counter() - start:.1f}초",
@@ -561,6 +601,7 @@ def load_table(pg: psycopg.Connection, path: Path, merge: bool = False) -> None:
             path.name,
         ],
     )
+    sync_period_meta(pg, tbl_key)
     kind = "전용 파티션" if big else "기본 파티션"
     kept_text = (
         f", 남긴 기존 칸 {kept.carried:,}개, 이력으로 보낸 예전 값 {kept.archived:,}개"

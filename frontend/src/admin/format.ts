@@ -48,6 +48,9 @@ const STATUS: Record<string, Label> = {
   unknown_region: { text: "모르는 지역", tone: "bad" },
   region_not_in_year: { text: "그 해에 없는 지역", tone: "bad" },
   missing_data: { text: "자료 없음", tone: "bad" },
+  no_region_level: { text: "없는 지역 단위", tone: "bad" },
+  no_joint_table: { text: "함께 집계한 통계 없음", tone: "bad" },
+  band_mismatch: { text: "맞는 구간 없음", tone: "bad" },
   data_loading: { text: "자료 준비 중", tone: "bad" },
   parse_error: { text: "해석 실패", tone: "bad" },
 };

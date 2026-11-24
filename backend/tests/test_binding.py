@@ -146,8 +146,8 @@ def test_shadow_never_breaks_the_answer(monkeypatch) -> None:
 def test_build_records_binding_only_when_switched_on(monkeypatch, on: bool) -> None:
     plan = d.Plan(pick={0: "1"})
 
-    def fake_build(tbl_id, question, parsed, forced, slots, seen):
-        seen["plan"] = plan
+    def fake_build(tbl_id, question, parsed, forced, slots):
+        slots["seen"]["plan"] = plan
         return {"cells": "항목 인구"}, None
 
     got = {}

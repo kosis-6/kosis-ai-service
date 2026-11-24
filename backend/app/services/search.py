@@ -257,6 +257,17 @@ def has_value(t: dict[str, Any], key: str) -> bool:
     return key in t["meta_n"] or key in t.get("values_n", ())
 
 
+def _set_family_last_year(tables: list[dict[str, Any]]) -> None:
+    """같은 통계 묶음에서 가장 늦은 끝 연도 (판 고르기에 쓴다)"""
+    fam_last: dict[str, int] = {}
+    for t in tables:
+        k = t.get("family_id") or t["tbl_id"]
+        if t.get("end_year") is not None:
+            fam_last[k] = max(fam_last.get(k, t["end_year"]), t["end_year"])
+    for t in tables:
+        t["family_last_year"] = fam_last.get(t.get("family_id") or t["tbl_id"], t.get("end_year"))
+
+
 def prepare(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """검색에 쓸 정규화 문자열을 붙인다"""
     tables = []
@@ -295,13 +306,7 @@ def prepare(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             + [i["name"] for i in t["items"] or []]
         )
         tables.append(t)
-    fam_last: dict[str, int] = {}
-    for t in tables:
-        k = t.get("family_id") or t["tbl_id"]
-        if t.get("end_year") is not None:
-            fam_last[k] = max(fam_last.get(k, t["end_year"]), t["end_year"])
-    for t in tables:
-        t["family_last_year"] = fam_last.get(t.get("family_id") or t["tbl_id"], t.get("end_year"))
+    _set_family_last_year(tables)
     return tables
 
 
@@ -340,9 +345,55 @@ def age_coverage(
     return None
 
 
+PERIODS_SQL = """
+SELECT s.tbl_id, s.start_year, s.end_year, f.edition
+FROM catalog.table_meta s JOIN catalog.table_families f USING (tbl_id)
+"""
+_periods_stale = False
+
+
+def mark_periods_stale() -> None:
+    """적재로 수록 기간·판 이름이 바뀌었을 수 있다고 표시한다.
+
+    다음 load_tables()가 그 칸만 다시 읽는다 (몇 ms). 표 목록·벡터는 그대로 두어
+    순서가 바뀌지 않고, 다른 질문이 빈 목록을 보지 않는다 (PR #218 리뷰).
+    """
+    global _periods_stale
+    _periods_stale = True
+
+
+async def _check_reloaded() -> None:
+    """적재 프로세스가 표를 새로 넣었는지 확인한다 (DB는 30초에 한 번만 본다).
+    바뀌었으면 lookup.refresh_if_reloaded가 mark_periods_stale을 부른다.
+    확인이 실패해도 검색은 계속한다
+    """
+    from app.services import lookup  # lookup이 search를 부르므로 여기서 불러 순환을 피한다
+
+    try:
+        await asyncio.to_thread(lookup.refresh_if_reloaded)
+    except Exception:
+        logging.getLogger(__name__).warning("표 적재 상태 확인 실패", exc_info=True)
+
+
+async def _refresh_periods(tables: list[dict[str, Any]]) -> None:
+    """표마다 수록 기간·판 이름만 DB에서 다시 읽어 고치고, 묶음 최신 연도를 다시 계산한다"""
+    from app.core.db import engine
+
+    async with engine.connect() as conn:
+        rows = (await conn.execute(text(PERIODS_SQL))).mappings().all()
+    got = {r["tbl_id"]: r for r in rows}
+    for t in tables:
+        if (r := got.get(t["tbl_id"])) is not None:
+            t["start_year"], t["end_year"] = r["start_year"], r["end_year"]
+            t["edition"] = r["edition"]
+    _set_family_last_year(tables)
+
+
 async def load_tables() -> list[dict[str, Any]]:
-    global _tables, _vectors
+    global _tables, _vectors, _periods_stale
+    await _check_reloaded()
     if _tables is None:
+        _periods_stale = False
         from app.core.db import engine
 
         async with engine.connect() as conn:
@@ -352,6 +403,13 @@ async def load_tables() -> list[dict[str, Any]]:
         if _vectors is not None:
             vector_search.load_adapter([t["tbl_id"] for t in tables])
         _tables = tables
+    elif _periods_stale:
+        _periods_stale = False
+        try:
+            await _refresh_periods(_tables)
+        except Exception:
+            _periods_stale = True
+            logging.getLogger(__name__).warning("수록 기간 다시 읽기 실패", exc_info=True)
     return _tables
 
 

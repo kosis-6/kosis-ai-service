@@ -476,9 +476,21 @@ def _base(name, ind, status="ok", **extra):
 
 
 def _display(reg):
+    """답·되묻기에 보이는 지역 이름: "경상남도 창원시", "경기도 부천시 원미구"
+    regions.path는 "경기도 > 원미구"처럼 시가 빠져 있어 쓰지 않는다
+    (path는 표 지역 잇기에 쓰이므로 그대로 둔다)"""
+    name = _base_name(reg["region_name"])
     if reg["kind"] in ("전국", "시도") or not reg.get("sido_name"):
-        return reg["region_name"]
-    return f"{reg['sido_name']} {reg['region_name']}"
+        return name
+    if reg["kind"] == "일반구":
+        # 일반구 코드 앞 4자리 = 시 코드 앞 4자리 (부천시 41190 → 원미구 41192)
+        city = _rows(
+            "select region_name from regions where kind = '시군구' and region_code = ?",
+            [reg["region_code"][:4] + "0"],
+        )
+        if city:
+            return f"{reg['sido_name']} {_base_name(city[0]['region_name'])} {name}"
+    return f"{reg['sido_name']} {name}"
 
 
 def _change_notes(region_code, y0=None, y1=None):
@@ -780,8 +792,58 @@ def _mark_monthly(out, code, sex, year):
     return out
 
 
+# 새로 생긴 지역의 출범 · 설치 연도. 그 전의 자료는 어느 표에도 없다.
+# regions.valid_from은 쓰지 않는다: 통합(창원시) · 이름 바꿈(당진군 → 당진시, 남구 → 미추홀구) ·
+# 출장소 코드처럼 그 전에도 같은 곳의 자료가 있는 경우가 섞여 있다
+FOUNDED = {"세종특별자치시": 2012, "계룡시": 2003, "증평군": 2003}
+
+
+def founded_year(reg) -> int | None:
+    """그 지역이 새로 생긴 해 (FOUNDED에 없으면 None)"""
+    return FOUNDED.get(reg.get("region_name"))
+
+
+def not_yet_founded(reg, year, indicator) -> dict | None:
+    """그 지역이 생기기 전의 해를 물었으면 '그해에 없던 지역' 안내 (조회 지표용, lookup._resolve)"""
+    born = founded_year(reg)
+    if born is None or year is None or year >= born:
+        return None
+    where = _display(reg)
+    return {
+        "status": "region_not_in_year",
+        "indicator": indicator,
+        "region": where,
+        "reason": f"{josa(where, '은는')} {born}년에 생긴 지역이라 {year}년 자료가 없습니다.",
+        "guide": f"{born}년부터의 연도로 다시 질문해 주세요.",
+        "available_from": born,
+        "final": True,
+    }
+
+
+def _not_yet(name, ind, reg, y1):
+    """물은 기간이 모두 그 지역이 생기기 전이면 '그해에 없던 지역' 안내, 아니면 None.
+    수록 기간보다 먼저 본다: "1980년 세종시 인구"는 자료가 2008년부터라서가 아니라 세종시가
+    2012년에 생겨서 없는 것이고, 어느 표로 가도 같다 (final: 다른 통계표를 찾아보지 않는다)"""
+    born = founded_year(reg)
+    if born is None or y1 >= born:
+        return None
+    return _base(
+        name,
+        ind,
+        "region_not_in_year",
+        region=_display(reg),
+        reason=f"{josa(_display(reg), '은는')} {born}년에 생긴 지역이라 {y1}년 자료가 없습니다.",
+        guide=f"{born}년부터의 연도로 다시 질문해 주세요.",
+        available_from=born,
+        final=True,
+        notes=_change_notes(reg["region_code"]),
+    )
+
+
 def _check(name, ind, reg, y0, y1):
     """수록 기간·지역 유효 기간 확인. 문제가 있으면 안내용 dict, 없으면 None"""
+    if (out := _not_yet(name, ind, reg, y1)) is not None:
+        return out
     lo, hi, month_ok = _years_of(ind)
     # 연간 자료 다음 해는 같은 표의 최신 달 값으로 답한다 (_components). 기간은 맞는 것으로 보되
     # 아래 지역 유효 기간 확인은 그대로 한다 (예: 2023년에 생긴 군위군을 2020년부터 물으면 안내)
@@ -807,11 +869,14 @@ def _check(name, ind, reg, y0, y1):
             # 속한 시도의 추계값을 대신 보여 준다 (예: 2040년 해운대구 → 2040년 부산광역시)
             proj = projection(name, reg["sido_code"], y1)
             if proj["status"] == "ok":
+                # sub_future: 연도를 콕 집어 물었으면 '없는 연도', "~될까"처럼 짐작을 물었으면
+                # '예측 질문'이다. 질문의 말투는 여기서 모르므로 qa.compute가 가른다
                 out.update(
                     status="prediction_question",
                     reason=f"{_display(reg)}의 {y1}년 값은 아직 없는 미래 값이고, "
                     "장래인구추계는 시도 단위까지만 있어 답할 수 없습니다.",
                     suggestion=proj,
+                    sub_future=True,
                 )
         return out
     vf, vt = reg.get("valid_from"), reg.get("valid_to")
@@ -907,10 +972,40 @@ def find_regions(text):
     taken, found = [], []
     for name in _region_names():
         for m in re.finditer(re.escape(name), s):
+            if m.start() and s[m.start() - 1].isdigit():
+                continue  # "30대 전체"의 '대전': 앞에 숫자가 붙은 것은 연령대 · 수량이다
             if not any(a < m.end() and m.start() < b for a, b in taken):
                 taken.append((m.start(), m.end()))
                 found.append((m.start(), name))
     return [name for _, name in sorted(found)]
+
+
+def _base_name(name):
+    """비교용 지역 이름: "창원시(통합)" → "창원시", "포항시(계)" → "포항시"
+    (load_area.SUFFIX와 같은 꼬리)"""
+    return re.sub(r"\((?:계|통합)\)$", "", name or "")
+
+
+def _change_groups():
+    """행정구역 개편 기록마다 함께 적힌 코드 묶음"""
+    return [
+        set(r["region_codes"].split(",")) for r in _rows("select region_codes from region_changes")
+    ]
+
+
+def _same_place(a, b):
+    """옛·새 코드가 이어지는 같은 지역인가.
+    이름이 같고(꼬리 무시) 같은 시도이거나 같은 개편 기록에 함께 적힌 코드
+    예) 원미구 41195·41192, 군위군 47720·27720, 광주 동구 29110·12210.
+    인천 동구 28140과 부산 동구 26170은 이름만 같은 다른 지역"""
+    if _base_name(a["region_name"]) != _base_name(b["region_name"]):
+        return False
+    if a["region_code"] == b["region_code"]:
+        return True
+    if a.get("sido_code") and a.get("sido_code") == b.get("sido_code"):
+        return True
+    pair = {a["region_code"], b["region_code"]}
+    return any(pair <= g for g in _change_groups())
 
 
 def resolve_region(name, year=None, sigungu=False):
@@ -935,7 +1030,11 @@ def resolve_region(name, year=None, sigungu=False):
         select distinct r.region_code, r.region_name, r.kind, r.sido_code, r.sido_name,
                         r.valid_from, r.valid_to
         from regions r left join region_aliases a using (region_code)
-        where (replace(a.alias, ' ', '') = ? or r.region_code = ?) {extra}
+        where (? in (replace(a.alias, ' ', ''),
+                     case when r.region_name like '%(통합)' or r.region_name like '%(계)'
+                          then replace(replace(replace(r.region_name, '(통합)', ''), '(계)', ''),
+                                       ' ', '') end)
+               or r.region_code = ?) {extra}
         order by r.region_code
     """
     key = _norm(name)
@@ -960,6 +1059,19 @@ def resolve_region(name, year=None, sigungu=False):
                         sql.format(extra="and r.sido_code = ?"),
                         [rest + suffix, rest + suffix, sido["region_code"]],
                     )
+
+    # "부천 원미구", "수원시 영통구", "경기 부천 원미구": 앞말이 시면 그 시 안의 일반구에서 찾는다.
+    # 일반구 코드는 앞 4자리가 시 코드와 같다
+    # (수원시 41110 → 영통구 41117, 부천시 41190 → 원미구 41192)
+    if not found and len(parts) >= 2:
+        city = resolve_region(" ".join(parts[:-1]), year=year)
+        if city["status"] == "ok" and city["kind"] == "시군구":
+            gu = _norm(parts[-1])
+            in_city = "and r.kind = '일반구' and substr(r.region_code, 1, 4) = ?"
+            prefix = city["region_code"][:4]
+            found = _rows(sql.format(extra=in_city), [gu, gu, prefix])
+            if not found and not gu.endswith("구"):
+                found = _rows(sql.format(extra=in_city), [gu + "구", gu + "구", prefix])
 
     if sigungu and len(found) == 1 and found[0]["kind"] == "시도":
         short = _norm(name)
@@ -988,12 +1100,23 @@ def resolve_region(name, year=None, sigungu=False):
                 found = found + same
 
     if len(found) > 1 and year is not None:
-        found = [
+        alive = [
             r
             for r in found
             if (r["valid_from"] is None or year >= r["valid_from"])
             and (r["valid_to"] is None or year <= r["valid_to"])
-        ] or found
+        ]
+        # 같은 지역의 옛 코드만 빠지면(부천 원미구) 그 해 코드로 고른다.
+        # 다른 지역이 그 해에 없으면(2026년 광주: 광주광역시 2025년까지) 남은 지역(경기 광주시)으로
+        # 말없이 답하지 않고 되묻는다. 없던 지역을 고르면 region_not_in_year 안내로 간다
+        # 그 해에 없는 코드는 이어지는 지금 코드가 후보에 있을 때만 하나씩 뺀다
+        # (2026년 동구: 광주 동구 29110은 전남광주 동구 12210이 있어 빼고, 인천 동구는 남김)
+        found = [r for r in found if r in alive or not any(_same_place(r, a) for a in alive)]
+
+    # 연도를 말하지 않았고 같은 지역의 옛·새 코드만 남았으면 지금 코드
+    # ("창원시" → 창원시(통합) 48120, "원미구" → 2024년에 다시 생긴 41192). 다른 지역끼리면 되묻는다
+    if len(found) > 1 and year is None and all(_same_place(r, found[0]) for r in found):
+        found = [r for r in found if r["valid_to"] is None] or found
 
     if not found:
         return {

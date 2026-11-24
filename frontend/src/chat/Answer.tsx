@@ -95,7 +95,8 @@ export function Answer({ data, busy, onSend, onOthers, onAskAgain }: Props) {
   const options = clarification?.options ?? [];
 
   // 수치 없이 통계표만 안내한 답 (지원하지 않는 지표 등): 표 카드·선택지를 통계표 찾기 화면과 같게 그린다
-  if (data.status === "tables" && tables) {
+  // 답변 불가 사유를 정한 뒤(partial_match · band_mismatch)에도 result.status 는 "tables" 로 남는다
+  if ((data.status === "tables" || data.result?.status === "tables") && tables) {
     const search: SearchResponse = {
       session_id: data.session_id ?? "",
       status: tables.status ?? "ok",

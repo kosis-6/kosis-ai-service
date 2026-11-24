@@ -32,9 +32,11 @@ lookup.py(값·비교·추이·순위·구성비)가 한다. 그래서 숫자는
 """
 
 import asyncio
+import contextlib
 import contextvars
 import logging
 import re
+import time
 import unicodedata
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -50,6 +52,7 @@ from app.services import (
     indicators,
     load_queue,
     lookup,
+    partial_table,
     plan_cache,
     qa,
     search,
@@ -71,6 +74,8 @@ SAFE_TOTAL = re.compile(
 NOTE = "지표 사전에 없는 값을 통계표에서 바로 계산했습니다. 공식 지표 정의와 다를 수 있습니다"
 OTHER_TABLE_NOTE = "지표 사전의 표에 없는 값이라 같은 통계의 다른 통계표에서 바로 꺼냈습니다"
 PROJECTION_NOTE = "장래추계 표의 추계값입니다(실적 아님). 다음 추계 때 바뀔 수 있습니다"
+# 추계 표로 답할 때 첫 문장 바로 뒤에 붙인다 (※ 주의만으로는 확정 수치처럼 읽혔다, 11/23)
+PROJECTION_ANSWER = "장래추계에 따른 예상값으로, 실제 통계가 아닙니다."
 TOTAL_NAMES = {"계", "합계", "전체", "총계", "소계", "총", "전국"}
 # 혼인 · 이혼 표는 성별을 남편 · 아내로 적는다 ("이혼하는 남자 평균 나이" → 남편)
 SEX_NAMES = {"남": {"남자", "남", "남성", "남편"}, "여": {"여자", "여", "여성", "아내"}}
@@ -88,6 +93,7 @@ MOVE_CONTEXT = re.compile(
 )
 TOTAL_SUFFIX = re.compile(r"(계|합계|소계|전체)$")  # 공백·기호를 뺀 이름 끝의 합계 표시
 PCT_ASK = re.compile(r"%|퍼센트|비율|비중|몇\s*프로")
+WITHIN = re.compile(r"\s+(?:중(?:에?서|에)?|가운데)\s+")
 NORM = re.compile(r"[\s·,.()\[\]{}<>\"'‘’“”_/-]")
 
 
@@ -160,7 +166,14 @@ class Plan:
 
 def schema(tbl_id: str) -> tuple[list[Dim], int | None, str]:
     """(분류 목록, 지역 분류 번호, 지역 수준). 적재 안 된 표면 StatsTableMissing
-    칸 이름·지역 칸은 lookup의 표 정보 캐시를 쓴다 (표를 다시 적재하면 함께 비워진다)"""
+    칸 이름·지역 칸은 lookup의 표 정보 캐시를 쓴다 (표를 다시 적재하면 함께 비워진다)
+    이 질문에서 칸만 받은 표면 그 메타의 칸 목록 (partial_table.py)"""
+    if (part := partial_table.active(tbl_id)) is not None:
+        dims = [
+            Dim(n, name, {c: nm for c, (_, nm) in sorted(codes.items())})
+            for n, (name, codes) in sorted(part.dims.items())
+        ]
+        return dims, part.region_dim, partial_table.level(part)
     key = lookup._tbl_key(tbl_id)
     names = {
         r["dim_no"]: r["name"]
@@ -177,19 +190,16 @@ def schema(tbl_id: str) -> tuple[list[Dim], int | None, str]:
         for n in dim_nos
     ]
     region_dim = lookup._region_dim(tbl_id)
-    longest = _rows(
-        "select max(length(region_code)) as n, count(distinct region_code) as k"
-        " from region_code_map where tbl_id = ?",
-        [tbl_id],
-    )[0]
-    if region_dim is None or not longest["n"]:
-        level = "전국"
-    elif longest["n"] >= 5:
-        level = "시군구"
-    elif longest["k"] > 1:
-        level = "시도"
-    else:
-        level = "전국"
+    level = "전국"
+    if region_dim is not None:
+        # 부분 조회와 같이 전국(00)을 제외한 코드의 길이로 지역 수준을 정한다.
+        longest = _rows(
+            "select max(length(region_code)) as n from region_code_map"
+            " where tbl_id = ? and src_dim = ? and region_code <> '00'",
+            [tbl_id, region_dim],
+        )[0]["n"]
+        if longest:
+            level = "시군구" if longest >= 5 else "시도"
     return dims, region_dim, level
 
 
@@ -222,6 +232,8 @@ def _unit(
     조출생률(천명당) · 이혼건수(건) …). 항목만 보면 행이 가장 많은 '천명당'이 붙었다
     ("11,798천명당", 11/20).
     고른 칸으로 좁힌 행이 없으면 항목만으로 본다"""
+    if (part := partial_table.active(tbl_id)) is not None:
+        return partial_table.unit_of(part, item, cells)
     conds, params = [], []
     for n, codes in {0: [item], **(cells or {})}.items():
         cond, keys = lookup._in("v.item_key" if n == 0 else f"v.c{n}", tbl_id, n, codes)
@@ -237,6 +249,22 @@ def _unit(
     if cells and (not r or r[0]["u"] is None):
         return _unit(tbl_id, item)
     return (r[0]["u"], bool(r[0]["whole"])) if r else (None, False)
+
+
+# 칸 이름 끝 괄호에 적힌 수 아닌 단위 ("전세금 평균(만원)", "평균연령(세)", "비율(%)")
+NAME_UNIT = re.compile(r"\(\s*(백만원|천만원|만원|천원|원|%|세|㎡|m²|평)\s*\)\s*$")
+
+
+def _name_unit(plan: Plan, dims: list[Dim], unit: str) -> str:
+    """표가 값의 단위를 세는 단위(가구 · 명)로 적었는데 고른 칸 이름이 금액 · 나이 · 비율을
+    말하면 칸 이름의 단위를 쓴다. 인구총조사 주택 표(DT_1PI2015)는 항목 '전세금 평균(만원)'의
+    단위도 '가구'로 적혀 있어 "전세금 평균 아파트 수는 40,873가구"로 답했다 (11/24, S-38)"""
+    if unit not in COUNT_UNITS:
+        return unit
+    for d in sorted(dims, key=lambda d: d.no):  # 항목(0)부터
+        if (m := NAME_UNIT.search(d.codes.get(plan.pick.get(d.no, ""), ""))) is not None:
+            return m[1]
+    return unit
 
 
 def _unit_cells(plan: Plan, dims: list[Dim], region_dim: int | None) -> dict[int, list[str]]:
@@ -846,20 +874,25 @@ def build(
     parsed: dict,
     forced: dict[int, str] | None = None,
     slots: dict | None = None,
-    seen: dict | None = None,
 ) -> tuple[dict | None, "str | Ask | None"]:
     """(지표 정의, None) 또는 (None, 이유 또는 Ask). 적재 안 된 표면 StatsTableMissing
     forced: 되묻기에서 고른 칸 {분류 번호: 코드}
     slots: 통계표 찾기가 질문에서 뽑은 조건 (found["parsed"]). 칸에 모두 반영됐는지 본다
-    seen: 주면 고른 칸(Plan)을 seen["plan"]에 남긴다 (잇기 기록과 견주기, binding.py)"""
+    slots["seen"]: 주면 고른 칸(Plan)을 그 dict의 "plan"에 남긴다 (잇기 기록과 견주기, binding.py).
+    인자를 늘리지 않고 slots로 받는다 (build를 바꿔 끼우는 테스트와 develop의 호출 모양을 그대로)"""
     dims, region_dim, level = schema(tbl_id)
     if not dims or dims[0].no != 0:
         return None, "항목 정보가 없음"
-    future_after = None
+    projection = {}
     if is_projection(tbl_id):
         future_after = indicators._data_years()[1]  # 실적(주민등록인구) 자료의 마지막 해
         if not _asks_future(parsed, future_after):
             return None, "장래추계 표는 미래 연도를 물을 때만 씀"
+        projection = {
+            "future_after": future_after,
+            "note": f"{NOTE}. {PROJECTION_NOTE}",
+            "answer_note": PROJECTION_ANSWER,
+        }
     ignore_ages = False
     if parsed.get("ages") and parsed.get("age_group") and not _has_age_dim(dims, region_dim):
         # "노년부양비"의 노년처럼 말에서 짐작한 연령(qa.correct의 age_group)은 지표 이름의 일부일 수
@@ -870,16 +903,17 @@ def build(
     except Exception:  # 표 이름은 분류 안 순위에서만 쓴다
         tbl_nm = ""
     if PER_AVERAGE.search(question) and (avg := _per_average(tbl_id, dims, region_dim, level)):
-        return avg, None
+        return {**avg, **projection}, None
     try:
-        couple = couple_counted(tbl_id)
+        # 칸만 받은 표는 값 전체를 볼 수 없어 아니라고 둔다 (캐시에 남지 않게 부르지도 않는다)
+        couple = partial_table.active(tbl_id) is None and couple_counted(tbl_id)
     except Exception:  # 확인하지 못하면 지금처럼 (성별 칸을 고르지 못함)
         logger.exception("부부 단위 표 확인 실패: %s", tbl_id)
         couple = False
     multi = (slots or {}).get("binding_multi")  # 잇기로 다시 계산할 때만 (binding.retry_plan)
     quiet = (slots or {}).get("binding_quiet")
     plan, why = choose(question, parsed, dims, region_dim, forced, tbl_nm, couple, multi, quiet)
-    if seen is not None:
+    if (seen := (slots or {}).get("seen")) is not None:
         seen["plan"] = plan
     _report_cells(slots, plan, dims, parsed, region_dim)
     if plan is None:
@@ -924,7 +958,7 @@ def build(
             age_min=min(b[0] for b in bands if b),
         )
     unit, whole = _unit(tbl_id, plan.pick[0], _unit_cells(plan, dims, region_dim))
-    unit = unit or ""
+    unit = _name_unit(plan, dims, unit or "")
     counted = unit in COUNT_UNITS and whole
     strip_age = bool(
         plan.age_dim
@@ -942,6 +976,7 @@ def build(
         # 사전 지표 이름으로 답하면 사전 표에 없는 연도 등을 다른 표에서 꺼낸 것이다 (옛 연도)
         "note": OTHER_TABLE_NOTE if indicators.canonical_name(name) else NOTE,
         "sources": [src],
+        **projection,
         **({"couple": True} if plan.couple else {}),
     }
     kind = parsed.get("type")
@@ -954,7 +989,7 @@ def build(
     if kind == "composition" or PCT_ASK.search(question):
         made = _composition(spec, src, plan, dims, question) if kind == "composition" else None
         if made is None:
-            made, why = _ratio(spec, src, plan, dims, parsed, tbl_nm)
+            made, why = _ratio(spec, src, plan, dims, parsed, tbl_nm, question=question)
             if made is None:
                 return None, why
         spec = made
@@ -983,9 +1018,6 @@ def build(
         spec["fixed"]["ages"] = parsed.get("ages") or None
     if spec["kind"] == "composition":
         spec["fixed"]["type"] = "composition"
-    if future_after is not None:  # 다음 턴에서 과거 연도로 바꾸면 이 정의를 쓰지 않는다
-        spec["future_after"] = future_after
-        spec["note"] = f"{NOTE}. {PROJECTION_NOTE}"
     if plan.defaults:
         spec["note"] += (
             f". 말하지 않은 구분은 합계·기본값으로 계산했습니다 ({', '.join(plan.defaults)})"
@@ -1103,22 +1135,83 @@ def _per_average(tbl_id: str, dims: list[Dim], region_dim: int | None, level: st
     }
 
 
-def _ratio(spec: dict, src: dict, plan: Plan, dims: list[Dim], parsed: dict, tbl_nm: str = ""):
+def _merged_age_bands(bands):
+    """겹치거나 이어지는 연령 구간을 합쳐 같은 사람을 두 번 세지 않는다."""
+    merged = []
+    for lo, hi in sorted(bands, key=lambda band: band[0]):
+        if not merged or (merged[-1][1] is not None and lo > merged[-1][1] + 1):
+            merged.append((lo, hi))
+        else:
+            start, end = merged[-1]
+            merged[-1] = (start, None if end is None or hi is None else max(end, hi))
+    return merged
+
+
+def _age_intersection(parts, population):
+    bands = []
+    for part_lo, part_hi in parts:
+        for pop_lo, pop_hi in population:
+            start = max(part_lo, pop_lo)
+            ends = [hi for hi in (part_hi, pop_hi) if hi is not None]
+            end = min(ends) if ends else None
+            if end is None or start <= end:
+                bands.append((start, end))
+    return _merged_age_bands(bands)
+
+
+def _ratio(spec, src, plan, dims, parsed, tbl_nm="", *, question=""):
     """'~ 중 ~ 비율': 나눌 부분 하나 ÷ 같은 분류의 합계 × 100 → (정의, None) 또는 (None, 이유)"""
     sex = parsed.get("sex") or "계"
     parts = []  # (분류 열, 분자 코드들, 분모 코드, 이름)
+    scope = WITHIN.split(question, maxsplit=1)
+    population_ages = qa.resolved_ages(scope[0]) if len(scope) == 2 else []
+    ages = (parsed.get("ages") or [])[:1]
+    age_dim = plan.age_dim
+    population_label = ""
+    if population_ages:
+        if age_dim is None:
+            return None, "표에 모집단을 제한할 연령 구분이 없음"
+        population_ages = _merged_age_bands(population_ages)
+        population_label = "·".join(map(indicators.age_label, population_ages))
+        requested_ages = qa.resolved_ages(scope[1])
+        ages = _age_intersection(requested_ages, population_ages)
+        if requested_ages and not ages:
+            return None, "분자의 연령이 모집단의 연령 범위에 포함되지 않음"
+        try:
+            population_codes = [
+                code for band in population_ages for code in lookup._age_codes(src, band)
+            ]
+        except lookup.AgeMismatch:
+            return None, "모집단의 연령 구간을 표의 연령 칸으로 만들 수 없음"
+        if not ages:
+            src = _without_age(src)
+            src["filters"] = {**src.get("filters", {}), age_dim.col: population_codes}
+    population_sex = False
     if plan.sex_dim is not None and sex in ("남", "여"):
         d = plan.sex_dim
-        word = "남자" if sex == "남" else "여자"
-        parts.append((d.col, [d.sex_codes()[sex]], plan.pick[d.no], word))
-    if plan.age_dim is not None and parsed.get("ages"):
-        d = plan.age_dim
-        band = tuple(parsed["ages"][0])
+        population_sex = (
+            len(scope) == 2
+            and bool(qa.GENDER_WORDS[sex].search(scope[0]))
+            and not any(pattern.search(scope[1]) for pattern in qa.GENDER_WORDS.values())
+        )
+        if population_sex:
+            # "여성 1인 가구 중 70세 이상 비율": 분자와 분모 모두 여성 조건으로 계산한다.
+            override = _sex_override(plan, sex)
+            src = {
+                **src,
+                **override,
+                "filters": {**src.get("filters", {}), **override.get("filters", {})},
+            }
+        else:
+            word = "남자" if sex == "남" else "여자"
+            parts.append((d.col, [d.sex_codes()[sex]], plan.pick[d.no], word))
+    if age_dim is not None and ages:
         try:
-            codes = lookup._age_codes({**src, "table": src["table"]}, band)
+            codes = [code for band in ages for code in lookup._age_codes(src, tuple(band))]
         except lookup.AgeMismatch:
             return None, "질문한 연령 구간을 표의 연령 칸으로 만들 수 없음"
-        parts.append((d.col, codes, d.total(), indicators.age_label(band)))
+        den = population_codes if population_ages else age_dim.total()
+        parts.append((age_dim.col, codes, den, "·".join(map(indicators.age_label, ages))))
     for d in dims:
         whole = d.total() or _item_whole(d, tbl_nm)
         if d.no in plan.matched and whole and plan.matched[d.no] != whole:
@@ -1146,17 +1239,35 @@ def _ratio(spec: dict, src: dict, plan: Plan, dims: list[Dim], parsed: dict, tbl
         num_src["den_item_id"] = src["item_id"]
         num_src["den_filters"] = {**filters, col: den}
     whole = next(d.codes for d in dims if d.col == col)
+    name = spec["name"]
+    if population_label:
+        name = f"{population_label} {_without_age_words(name)}"
+    if population_sex and not qa.GENDER_WORDS[sex].search(name):
+        name = f"{'남성' if sex == '남' else '여성'} {name}"
+    whole_label = population_label if age_dim and col == age_dim.col and population_label else None
     out = {
         **spec,
+        "name": _ratio_name(name, part),
         "unit": "%",
         "kind": "ratio",
-        "formula": f"{part} ÷ {whole.get(den, '합계')} × 100",
+        "formula": f"{part} ÷ {whole_label or whole.get(den, '합계')} × 100",
         "sources": [num_src],
     }
-    if plan.age_dim is not None and col == plan.age_dim.col:
-        # 연령 구간을 분자 칸에 넣었다 (qa.compute가 연령을 다시 넘기지 않음)
+    if population_ages or (age_dim is not None and col == age_dim.col):
+        # 연령 구간을 조회 조건에 넣었으므로 qa.compute가 다시 넘기지 않는다.
         out["ages_in_filters"] = True
     return out, None
+
+
+def _ratio_name(name: str, part: str) -> str:
+    """비율 지표 이름: "{대상} 중 {부분} 비율". 값 정의의 이름("1인가구(20세이상 인구) 수")을 그대로
+    쓰면 "… 수는 13.27%"가 됐다 (11/23). 이름이 이미 비율이면 그대로 둔다.
+    대상은 값 정의 이름에서 끝의 '수'와 부분 칸 이름을 뺀 것 ("1인가구 여자 수" → "1인가구")"""
+    if re.search(r"비율|비중|%", name):
+        return name
+    subject = re.sub(r"\s*수$", "", name)
+    subject = " ".join(w for w in subject.split() if _norm(w) != _norm(part)) or subject
+    return f"{subject} 중 {part} 비율"
 
 
 CHECKS = MemoryCache(
@@ -1164,19 +1275,24 @@ CHECKS = MemoryCache(
 )  # 표가 다시 적재돼도 하루면 다시 본다
 
 
-def part_within_whole(src: dict, col: str, num: list[str], den: str) -> str | None:
+def part_within_whole(src: dict, col: str, num: list[str], den: str | list[str]) -> str | None:
     """분자 칸(들)이 분모 칸의 부분인가: 표의 모든 지역·연도에서 분자 합 ≤ 분모.
     맞으면 None, 아니면 이유
 
     같은 표·같은 분류라도 칸이 서로 포함 관계가 아닐 수 있다 (예: 묶음 칸과 세부 칸이 함께 있는
     분류를 더하면 두 번 센다, 분모로 고른 칸이 합계가 아니다). 그러면 비율이 100%를 넘거나
     틀린 값이 된다.
-    나머지 분류는 정의와 같이 고정한다 (연령을 따로 고르면 연령 합계)"""
+    나머지 분류는 정의와 같이 고정한다 (연령을 따로 고르면 연령 합계)
+    칸만 받은 표는 모든 지역·연도를 볼 수 없어 하지 않는다 (적재 뒤 계산, 캐시에 남기지 않음)"""
+    if partial_table.active(src["table"]) is not None:
+        return partial_table.CHECK_REASON
     fixed = {k: v for k, v in (src.get("filters") or {}).items() if k != col}
     if src.get("age_dim") and f"{src['age_dim']}_id" != col:
         fixed[f"{src['age_dim']}_id"] = src["age_total"]
     item = None if col == "item_id" else src["item_id"]
-    key = (src["table"], col, tuple(num), den, tuple(sorted(fixed.items(), key=str)), str(item))
+    fixed_key = tuple((k, tuple(v) if isinstance(v, list) else v) for k, v in sorted(fixed.items()))
+    den_key = (den,) if isinstance(den, str) else tuple(den)
+    key = (src["table"], col, tuple(num), den_key, fixed_key, str(item))
     cached = CHECKS.get(key)
     if cached is not MISSING:
         return cached
@@ -1202,8 +1318,10 @@ def _part_rows(tbl_id, col, num, den, fixed, item) -> list[tuple[float | None, f
     column = "v.item_key" if dim_no == 0 else f"v.c{dim_no}"
     known = lookup._codes(tbl_id, dim_no)
     num_keys = [known[c][0] for c in num if c in known]
-    if not num_keys or den not in known:
+    den_codes = [den] if isinstance(den, str) else den
+    if not num_keys or not den_codes or any(code not in known for code in den_codes):
         return []
+    den_keys = [known[code][0] for code in den_codes]
     conds, params = [], []
     if item is not None:
         cond, keys = lookup._in("v.item_key", tbl_id, 0, [item])
@@ -1222,13 +1340,14 @@ def _part_rows(tbl_id, col, num, den, fixed, item) -> list[tuple[float | None, f
     region = lookup._region_dim(tbl_id)
     group = f"v.period, v.c{region}" if region else "v.period"
     marks = ", ".join("?" for _ in num_keys)
+    den_marks = ", ".join("?" for _ in den_keys)
     rows = _rows(
         f"select sum(v.value) filter (where {column} in ({marks}))::float8 as num,"
-        f" sum(v.value) filter (where {column} = ?)::float8 as den"
+        f" sum(v.value) filter (where {column} in ({den_marks}))::float8 as den"
         f" from stat_value v where v.tbl_key = ? and v.{lookup.YEARLY}"
         + "".join(f" and {c}" for c in conds)
         + f" group by {group}",
-        [*num_keys, known[den][0], lookup._tbl_key(tbl_id), *params],
+        [*num_keys, *den_keys, lookup._tbl_key(tbl_id), *params],
     )
     return [(r["num"], r["den"]) for r in rows]
 
@@ -1281,7 +1400,8 @@ async def answer(question: str, parsed: dict, found: dict, trace: dict) -> dict 
       - 통계표 찾기의 주의(판 메모·기준)는 답의 주의에 붙인다
     어느 표로도 계산하지 못했는데 앞 표에서 칸 하나만 정하지 못했으면(예: 분류에 합계가 없음)
     그 칸을 되묻는다 (status clarify_question).
-    적재 안 된 작은 표는 바로 받아 넣는다 (table_cache.fetch_now).
+    적재 안 된 작은 표는 바로 받아 넣는다 (table_cache.fetch_now). 큰 표는 대기열에 넣고
+    답에 필요한 칸만 받아 이 질문에만 쓴다 (_build_partial).
     시도한 표와 결과는 trace["dynamic"]에 남긴다 (요청 기록)."""
     recs = (found.get("recommendations") or [])[:MAX_TABLES]
     if found.get("together"):
@@ -1296,6 +1416,7 @@ async def answer(question: str, parsed: dict, found: dict, trace: dict) -> dict 
             return None
     steps = trace.setdefault("dynamic", [])
     slots, first_ask = found.get("parsed") or {}, None
+    population_mismatch = None
     for card in recs:
         tbl_id = card.get("tbl_id")
         if not tbl_id:
@@ -1308,15 +1429,25 @@ async def answer(question: str, parsed: dict, found: dict, trace: dict) -> dict 
             )
             continue
         res, ask = await _try(
-            tbl_id, card.get("org_id"), question, parsed, trace, {}, slots, found.get("notice")
+            tbl_id,
+            card.get("org_id"),
+            question,
+            parsed,
+            trace,
+            {},
+            {**slots, "table_name": card.get("tbl_nm")},
+            found.get("notice"),
         )
         if res is not None:
+            if (res.get("result") or {}).get("population_limit"):
+                population_mismatch = population_mismatch or res
+                continue
             await _remember(parsed, tbl_id, {}, res)
             return res
         if ask is not None and first_ask is None:
             first_ask = (card, ask)
     if first_ask is None:
-        return None
+        return population_mismatch
     card, ask = first_ask
     return ask_answer(question, parsed, card["tbl_id"], card.get("tbl_nm") or card["tbl_id"], ask)
 
@@ -1542,9 +1673,21 @@ async def compute_from_handoff(
         return None
     # 이 질문의 칸 고르기 LLM 남은 횟수 (지표가 여럿이어도 함께 쓴다)
     _cell_llm_budget.set([MAX_CELL_LLM])
-    if len(h["targets"]) > 1:
-        return await multi_answer(question, parsed, found, trace)  # 지표가 여럿 (구현 5)
-    res = await _compute_target(question, parsed, found, h["targets"][0], trace)
+    targets = h["targets"]
+    target = targets[0]
+    if len(targets) > 1:
+        if not parsed.get("scoped_age_ratio"):
+            return await multi_answer(question, parsed, found, trace)
+        # 연령을 제한한 비율은 질문 전체를 한 표에 적용한다.
+        target = {
+            "candidates": [
+                candidate
+                for side in targets
+                if not side.get("together")
+                for candidate in side.get("candidates") or []
+            ]
+        }
+    res = await _compute_target(question, parsed, found, target, trace)
     from app.services import multi_indicator
 
     if res and multi_indicator.TOP_REGION_OF.search(question):
@@ -1574,6 +1717,8 @@ def _target_understanding(u: dict, target: dict) -> dict:
             cond[key] = own[key]
     cond["items"], cond["classes"] = [], []
     out = {**u, "conditions": cond}
+    if target.get("unsaid_age") and not own.get("age_text"):
+        out["age"] = None  # 비율의 전체 쪽: 질문의 연령은 부분 쪽 말의 것 (multi_indicator)
     if text := own.get("age_text"):
         bands = qa.extract_ages(str(text))
         if bands:
@@ -1628,6 +1773,7 @@ async def _compute_target(
             # 탐색 쪽 trust_exact(48a7e37)와 같은 기준. 질문은 "해외 유학생", 표는 "유학생 현황"처럼
             # 낱말이 글자로 겹치지 않아도 뜻으로 맞는 표를 막았다
             "check_target": (entry.get("review") or {}).get("match") != "exact",
+            "table_name": entry.get("tbl_nm"),
             "table_words": [entry.get("tbl_nm"), entry.get("target")],
             "topic": u.get("topic"),  # 잇기 기록(binding.py)이 질문과 표를 잇는 말을 볼 때
         }
@@ -1868,17 +2014,18 @@ async def _compute_target(
         2. 칸 고르기 LLM은 순위대로 하나씩. 답은 '계산된 표 중 순위가 가장 앞인 것'이라, 규칙으로
            계산된 첫 표보다 뒤의 표는 LLM으로 계산돼도 쓰이지 않는다
            → 그 앞의 표만, 계산되면 멈춘다"""
-        outs = list(await asyncio.gather(*(attempt(entries[i], exact) for i in idx)))
-        first_ok = next((k for k, (res, _, _) in enumerate(outs) if is_ok(res)), len(outs))
-        for k in range(first_ok):
-            res, ask, sub = outs[k]
-            if not wants_llm(res, ask, sub):
-                continue
-            slots, notice = context(entries[idx[k]])
-            res, ask = await with_cell_llm(entries[idx[k]], q, sub, slots, notice)
-            outs[k] = (res, ask, sub)
-            if is_ok(res):
-                break
+        with partial_table.shared_tables():
+            outs = list(await asyncio.gather(*(attempt(entries[i], exact) for i in idx)))
+            first_ok = next((k for k, (res, _, _) in enumerate(outs) if is_ok(res)), len(outs))
+            for k in range(first_ok):
+                res, ask, sub = outs[k]
+                if not wants_llm(res, ask, sub):
+                    continue
+                slots, notice = context(entries[idx[k]])
+                res, ask = await with_cell_llm(entries[idx[k]], q, sub, slots, notice)
+                outs[k] = (res, ask, sub)
+                if is_ok(res):
+                    break
         return outs
 
     outcomes = await run_round(list(range(len(entries))), picked_exact)
@@ -1898,6 +2045,16 @@ async def _compute_target(
         merge(sub)
     trace["handoff"]["tried"] = len(entries)
     for entry, (res, _, sub) in zip(entries, outcomes, strict=True):
+        hidden = next((s for s in sub["dynamic"] if s.get("flag") == "X"), None)
+        if hidden and not is_ok(res):
+            # 질문의 조건에 맞는 칸을 찾았는데 값이 비밀보호(X)다. 순위가 뒤인 표의 값으로 답하지
+            # 않는다: 뒤의 표는 조건 하나를 버린 더 넓은 값이기 쉽다 (부부 + 친척 가구 → 1세대
+            # 가구 계). 값이 비어 있다고 알린다
+            trace["handoff"]["used"] = {"tbl_id": entry["tbl_id"], "kind": entry["kind"]}
+            trace["handoff"]["suppressed"] = entry["tbl_id"]
+            return await run_in_threadpool(
+                suppressed_answer, q, entry["tbl_id"], hidden.get("cells") or ""
+            )
         if res is not None and res.get("status") == "ok":
             trace["handoff"]["used"] = {"tbl_id": entry["tbl_id"], "kind": entry["kind"]}
             # 칸 고르기 LLM이 고른 칸은 사람의 선택이 아니라 표의 칸 풀이라 캐시에 함께 남긴다
@@ -1915,6 +2072,10 @@ async def _compute_target(
         if ask is not None:  # 맞는 표에서 칸 하나만 못 정함: 그 칸을 묻는다
             name = entry.get("tbl_nm") or entry["tbl_id"]
             return ask_answer(question, q, entry["tbl_id"], name, ask)
+
+    for res, _, _ in outcomes:
+        if res and (res.get("result") or {}).get("population_limit"):
+            return res  # 맞는 모집단이 없으면 다른 기준의 비율 대신 범위를 안내한다.
 
     if multi:
         # 지표가 여럿이면 지표마다 대안 LLM을 부르지 않는다 (HCX · Gemma 호출이 지표 수만큼 는다)
@@ -1952,6 +2113,33 @@ async def _compute_target(
             trace["handoff"]["used"] = {"tbl_id": entry["tbl_id"], "kind": entry["kind"]}
             return res
     return None
+
+
+AGE_LIMIT = re.compile(r"(\d+)\s*세\s*이상")  # 표 이름의 집계 대상 연령 ("1인가구(20세 이상, …)")
+WHOLE_POPULATION = re.compile(
+    r"전\s*연령|모든\s*연령|연령\s*(?:제한|구분)\s*없이"
+    r"|\b전체\b(?!\s*(?:기간|연도|시점|지역|시도|시군구))"
+)
+
+
+def _checks_population(question: str, kind: str | None) -> bool:
+    return kind == "composition" or bool(
+        PCT_ASK.search(question) or WHOLE_POPULATION.search(question)
+    )
+
+
+def age_limit(tbl_nm: str, question: str, kind: str | None = None) -> str | None:
+    """비율·구성비 또는 전체 집계에 필요한 연령을 표가 모두 담지 못하면 그 제한."""
+    if not _checks_population(question, kind):
+        return None
+    m = AGE_LIMIT.search(tbl_nm or "")
+    if m is None:
+        return None
+    # "1인 가구 중 20세 이상 비율"의 20세는 분자의 조건이다. 분모의 범위만 본다.
+    scope = WITHIN.split(question, maxsplit=1)
+    population = scope[0] if len(scope) == 2 else "" if PCT_ASK.search(question) else question
+    bands = qa.resolved_ages(population)
+    return None if bands and all(lo >= int(m[1]) for lo, _ in bands) else m[0]
 
 
 async def answer_choice(question: str, context: dict, code: str, trace: dict) -> dict | None:
@@ -2003,7 +2191,7 @@ async def cached_answer(question: str, parsed: dict, trace: dict) -> dict | None
             # 저장한 표에 그 연도·지역 자료가 없다 (예: 수록 기간 밖). 다른 표가 있을 수 있어
             # 여기서 답하지 않고 통계표 찾기로 넘긴다
             steps = trace["dynamic"] or [{}]
-            steps[-1]["skip"] = f"캐시한 표로 답하지 못함 ({res.get('status')})"
+            steps[-1].setdefault("skip", f"캐시한 표로 답하지 못함 ({res.get('status')})")
             continue
         if res is None and ask is not None:
             res = ask_answer(question, parsed, plan["tbl_id"], plan["tbl_id"], ask, forced)
@@ -2088,6 +2276,8 @@ async def _try(
     else:
         how = "규칙"
     parts = [tbl_id, f"칸={step['cells']} ({how})" if step.get("cells") else ""]
+    if got := step.get("partial"):  # 적재 안 된 큰 표에서 칸만 받아 계산 (채점·요청 기록에서 센다)
+        parts.append(f"칸만 바로 받음 (요청 {got['requests']}번)")
     parts.append(step.get("skip") or "")
     flow.add("표 칸으로 계산", outcome, " · ".join(p for p in parts if p))
     return res, ask
@@ -2101,6 +2291,16 @@ async def _try_once(
     fetch_sem: 적재 안 된 표를 KOSIS에서 동시에 받는 수 제한 (꾸러미로 여러 표를 계산할 때)"""
     step = {"tbl_id": tbl_id, **({"forced": forced} if forced else {})}
     trace["dynamic"].append(step)
+    if _checks_population(question, kind := parsed.get("type")):
+        tbl_nm = (slots or {}).get("table_name")
+        if not tbl_nm:
+            try:
+                tbl_nm = (await run_in_threadpool(lookup._table, tbl_id))["tbl_nm"]
+            except Exception:
+                tbl_nm = ""
+        if limit := age_limit(tbl_nm, question, kind):
+            step["skip"] = f"{limit}만 집계해 질문의 모집단과 다름"
+            return population_limit_answer(parsed, tbl_id, org_id, tbl_nm, limit), None
     extra = {"fetch_sem": fetch_sem} if fetch_sem is not None else {}
     spec, why = await _build(tbl_id, org_id, question, parsed, step, forced, slots, **extra)
     if isinstance(why, BandMiss):
@@ -2122,10 +2322,14 @@ async def _try_once(
             return res, None
         step["skip"] = res.get("answer", "")[:60]
         return None, None
+    flags: list = []
+    lookup.EMPTY_FLAGS.set(flags)  # 값이 빈 칸의 결측 기호 (표 하나의 계산마다 새로)
     res = await qa.answer(_with_spec(parsed, spec), trace, question)
     step["status"] = res["status"]
     if res["status"] == "ok" and not has_values(res.get("result") or {}):
         step["skip"] = "값이 없음 (비공개·결측)"
+        if "X" in flags:  # 칸은 있는데 비밀보호로 공표하지 않은 값 (결측 '-'와 구분)
+            step["flag"] = "X"
         return None, None
     if res["status"] in ("ok", "out_of_range", "band_mismatch"):
         # 기간 밖·구간 불일치도 맞는 표를 찾은 뒤의 안내라 답으로 쓴다 (볼 수 있는 기간·구간을 알림)
@@ -2231,6 +2435,8 @@ def parts_answer(parsed: dict, spec: dict, question: str) -> dict:
         )
         lines = [f"{i}. {x['label']}: {val(x['value'])}" for i, x in enumerate(top, 1)]
         value = top[0]["value"]
+    if spec.get("answer_note"):  # 추계 표: 예상값이라는 것을 첫 문장 바로 뒤에 (qa._summary와 같음)
+        text += " " + spec["answer_note"]
     result = {
         "status": "ok",
         "method": "dynamic",
@@ -2255,6 +2461,33 @@ def parts_answer(parsed: dict, spec: dict, question: str) -> dict:
     }
 
 
+def population_limit_answer(
+    parsed: dict, tbl_id: str, org_id: str | None, tbl_nm: str, limit: str
+) -> dict:
+    reason = (
+        f"'{tbl_nm}' 표는 {limit}만 집계합니다. "
+        "질문의 모집단을 모두 포함하는 자료를 확인할 수 없어 값을 계산할 수 없습니다."
+    )
+    result = {
+        "status": "band_mismatch",
+        "reason": reason,
+        "population_limit": limit,
+        "source": tbl_nm,
+        "basis": f"{limit} 집계",
+        "tbl_id": tbl_id,
+        "url": indicators.KOSIS_URL.format(org_id=org_id, tbl_id=tbl_id) if org_id else None,
+        "method": "dynamic",
+    }
+    return {
+        "status": result["status"],
+        "answer": reason,
+        "result": result,
+        "parsed": parsed,
+        "sources": qa.sources(result),
+        "trace": {},
+    }
+
+
 def band_answer(parsed: dict, tbl_id: str, miss: BandMiss) -> dict:
     """맞는 구간 없음 응답 (qa.answer와 같은 모양): 숫자 없이 표에 있는 구간과 그 표를 안내한다"""
     tbl = lookup._table(tbl_id)
@@ -2274,6 +2507,35 @@ def band_answer(parsed: dict, tbl_id: str, miss: BandMiss) -> dict:
     }
     return {
         "status": "band_mismatch",
+        "answer": f"{qa.summary(result)}\n\n{qa.render(result)}".strip(),
+        "parsed": parsed,
+        "result": result,
+        "sources": qa.sources(result),
+        "trace": {},
+    }
+
+
+def suppressed_answer(parsed: dict, tbl_id: str, cells: str) -> dict:
+    """값이 비어 있음 응답 (band_answer와 같은 모양): 질문의 조건에 맞는 칸은 있는데 그 값이
+    비밀보호 기호(X)라 공표되지 않았다. 숫자 없이 그 사실과 표를 안내한다"""
+    tbl = lookup._table(tbl_id)
+    where = f" ({cells})" if cells else ""
+    result = {
+        "status": "missing_data",
+        "indicator": tbl["tbl_nm"],
+        "reason": f"'{tbl['tbl_nm']}' 표에서 질문한 조건의 칸{where}은 값이 'X'로 표시되어 "
+        "알 수 없습니다. 값이 아주 작아(5 미만 등) 개인이 드러날 수 있을 때 통계 작성 기관이 "
+        "공표하지 않는 칸입니다(비밀보호).",
+        "guide": "대신 더 넓은 구분(합계, 더 넓은 연령 구간, 시도 단위)의 값은 확인할 수 있습니다.",
+        "suppressed": True,
+        "source": f"{tbl['org_nm']}, {tbl['tbl_nm']} ({tbl_id})",
+        "basis": tbl["basis"] or "KOSIS 공표 값",
+        "tbl_id": tbl_id,
+        "url": indicators.kosis_url(tbl_id),
+        "method": "dynamic",
+    }
+    return {
+        "status": "missing_data",
         "answer": f"{qa.summary(result)}\n\n{qa.render(result)}".strip(),
         "parsed": parsed,
         "result": result,
@@ -2342,6 +2604,9 @@ def has_values(result: dict) -> bool:
     return False
 
 
+PARTIAL_OUTCOMES = ("too_big", "busy")  # 표 전체를 바로 받지 못해 칸만 받아 보는 경우
+
+
 async def _build(tbl_id, org_id, question, parsed, step, forced=None, slots=None, fetch_sem=None):
     """fetch_sem: 후보 여러 개를 동시에 계산할 때 KOSIS에서 받는 일을 동시에 몇 개까지 할지"""
     seen: dict = {}  # build가 고른 칸 (잇기와 견준다)
@@ -2369,7 +2634,12 @@ async def _build(tbl_id, org_id, question, parsed, step, forced=None, slots=None
 
 async def _build_once(tbl_id, org_id, question, parsed, step, forced, slots, fetch_sem, seen):
     def run():
-        return build(tbl_id, question, parsed, forced, slots, seen)
+        return build(tbl_id, question, parsed, forced, {**(slots or {}), "seen": seen})
+
+    if partial_table.active(tbl_id) is not None:  # 이 질문에서 이미 칸만 받은 표 (칸 고르기 LLM)
+        return await _build_partial(
+            tbl_id, org_id, question, parsed, step, forced, slots, fetch_sem
+        )
 
     try:
         return await run_in_threadpool(run)
@@ -2378,7 +2648,8 @@ async def _build_once(tbl_id, org_id, question, parsed, step, forced, slots, fet
     except Exception:
         logger.exception("동적 지표 계획 만들기 실패: %s", tbl_id)
         return None, "오류"
-    # 적재 안 된 표: 작은 표는 지금 받아 넣는다. 못 받으면 대기열에 넣고 이번에는 표 안내
+    # 적재 안 된 표: 작은 표는 지금 받아 넣는다. 못 받으면 대기열에 넣고,
+    # 큰 표는 답에 필요한 칸만 받아 계산해 본다 (_build_partial). 그것도 못 하면 이번에는 표 안내
     try:
         org_id = org_id or (await load_queue.table_info(tbl_id))["org_id"]
         if fetch_sem is None:
@@ -2388,7 +2659,12 @@ async def _build_once(tbl_id, org_id, question, parsed, step, forced, slots, fet
                 outcome = await table_cache.fetch_now(tbl_id, org_id, step)
         if outcome != "loaded":
             await load_queue.enqueue(tbl_id, "question")
-            return None, f"적재 안 됨 ({outcome}, 대기열에 넣음)"
+            queued = f"적재 안 됨 ({outcome}, 대기열에 넣음)"
+            if outcome in PARTIAL_OUTCOMES and table_cache.PARTIAL_FETCH:
+                return await _build_partial(
+                    tbl_id, org_id, question, parsed, step, forced, slots, fetch_sem, queued
+                )
+            return None, queued
     except Exception:
         logger.exception("동적 지표 표 받기 실패: %s", tbl_id)
         return None, "표를 받지 못함"
@@ -2397,6 +2673,52 @@ async def _build_once(tbl_id, org_id, question, parsed, step, forced, slots, fet
     except Exception:
         logger.exception("동적 지표 계획 만들기 실패: %s", tbl_id)
         return None, "오류"
+
+
+async def _build_partial(
+    tbl_id, org_id, question, parsed, step, forced=None, slots=None, fetch_sem=None, queued=""
+):
+    """적재 안 된 큰 표: 메타로 칸을 고르고, 고른 칸만 KOSIS에서 받아 정의를 만든다
+    (partial_table.py). 받은 값은 이 질문에서만 쓰고, 표 전체 적재는 대기열이 맡는다 (_build가 넣음)
+
+    1차 build(값 없이 칸만 고름) → 고른 칸만 요청 → 2차 build(받은 값으로 단위 등을 정함).
+    칸을 고르지 못하면 그 이유를 그대로 돌려준다 (되묻기 · 칸 고르기 LLM이 지금처럼 이어 간다).
+    비율처럼 표 전체로 검증해야 하는 계산은 build가 멈춘다 (partial_table.CHECK_REASON)
+    step["partial"]: 이번에 보낸 요청 수, 받아 둔 행 수, 걸린 시간 (ms)"""
+    start = time.perf_counter()
+    queued = queued or "적재 안 됨"
+    try:
+        part = partial_table.active(tbl_id)
+        if part is None:
+            org_id = org_id or (await load_queue.table_info(tbl_id))["org_id"]
+            meta = await table_cache.table_meta(tbl_id, org_id)
+            part = await run_in_threadpool(partial_table.from_meta, tbl_id, org_id, meta)
+            partial_table.register(part)
+        spec, why = await run_in_threadpool(build, tbl_id, question, parsed, forced, slots)
+        if spec is None:
+            return None, why
+        planning = parsed
+        if parsed.get("type") == "trend" and not parsed.get("year") and not spec.get("parts_op"):
+            # qa._compute가 추이의 끝 연도를 정할 때 쓰는 기본 연도와 맞춘다.
+            _, latest = await run_in_threadpool(indicators._data_years)
+            planning = {**parsed, "year": latest}
+        fetch = partial_table.requests_for(part, spec, planning)
+        if fetch is None:
+            return None, f"{queued} · 칸이 많아 칸만 받지 못함"
+        async with fetch_sem or contextlib.nullcontext():
+            sent = await table_cache.fetch_cells(part, fetch)
+        spec, why = await run_in_threadpool(build, tbl_id, question, parsed, forced, slots)
+    except partial_table.Unsupported as e:
+        return None, f"{queued} · 칸만 받지 못함 ({e})"
+    except Exception as e:  # noqa: BLE001 - 칸만 받기가 실패해도 지금처럼 표 안내로 끝낸다
+        from app.services.kosis_client import mask_key
+
+        step["partial_error"] = mask_key(f"{type(e).__name__}: {e}")[:300]
+        logger.warning("%s: 칸만 받기 실패: %s", tbl_id, step["partial_error"])
+        return None, f"{queued} · 칸만 받기 실패"
+    ms = round((time.perf_counter() - start) * 1000)
+    step["partial"] = {"requests": sent, "rows": len(part.rows), "ms": ms}
+    return spec, why
 
 
 def _with_spec(parsed: dict, spec: dict) -> dict:

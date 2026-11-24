@@ -38,6 +38,9 @@ def early(question: str):
         "오늘 대전 미세먼지 심해?",
         "올해 물가 상승률 알려 줘",
         "작년 GDP 얼마야",
+        # 집 · 땅의 가격 (11/24: 인구총조사 주택 표의 '전세금 평균'으로 답했다)
+        "서울 아파트 평균 가격은?",
+        "강남 아파트 시세 알려줘",
     ],
 )
 def test_refuses_topics_outside_population_without_llm(question: str) -> None:
@@ -77,3 +80,18 @@ def test_new_question_skips_understanding(monkeypatch) -> None:
     res, sources, notice = asyncio.run(ask_session._new("서울 집값 요즘 얼마야", None))
     assert res["status"] == "out_of_scope" and res["request_type"] == ask_session.NEW
     assert sources == {} and notice is None
+
+
+def test_modifier_of_off_domain_word_is_not_population_signal(monkeypatch) -> None:
+    # "청년 실업률"의 청년은 실업률을 꾸밀 뿐: 인구 신호로 보지 않고 거절한다 (11/23).
+    # 전에는 지역을 되물은 뒤에야 "통계표를 찾지 못했습니다"로 끝났다
+    from app.services import indicators
+
+    monkeypatch.setattr(indicators, "find_regions", lambda text: ["부산"] if "부산" in text else [])
+    res = early("부산 청년 실업률 알려줘")
+    assert res is not None and res["status"] == "out_of_scope"
+    # 무엇이 범위 밖인지와 대신 볼 수 있는 인구 통계를 알린다
+    assert "'실업률'은" in res["answer"] and "'청년 인구'는 볼 수 있습니다" in res["answer"]
+    assert "예) 부산 청년 인구는?" in res["answer"]
+    # 인구 집단 말이 없으면 볼 수 있는 분야만
+    assert "인구 · 가구 · 출생" in early("작년 GDP 얼마야")["answer"]

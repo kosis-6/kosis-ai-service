@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 from app import main
 from app.core import stats_db
 from app.services import ask_session as s
-from app.services import dynamic_indicator, indicators, qa, table_guide
+from app.services import dynamic_indicator, indicators, lookup, qa, table_guide
 
 BASE = {
     "type": "trend",
@@ -34,7 +34,7 @@ def names(monkeypatch: pytest.MonkeyPatch) -> None:
     def no_db():
         pytest.fail("대화 단위 테스트에서 실제 통계 DB를 호출했습니다")
 
-    def resolve_region(name):
+    def resolve_region(name, year=None, sigungu=False):
         if name == "수원":
             return {"status": "ok", "display": "경기도 수원시"}
         if name == "고성":
@@ -48,10 +48,14 @@ def names(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(stats_db, "_engine", no_db)
     monkeypatch.setattr(indicators, "resolve_region", resolve_region)
+    monkeypatch.setattr(lookup, "_table", lambda table: {})
     known = {"출생아 수", "사망자 수", "합계출산율", "고령인구 비율"}
     monkeypatch.setattr(indicators, "canonical_name", lambda n: n if n in known else None)
+    aliases = {**dict.fromkeys(known), "65세 이상 비율": "고령인구 비율"}
     monkeypatch.setattr(
-        indicators, "find_in_text", lambda t: next((n for n in known if n in t), None)
+        indicators,
+        "find_in_text",
+        lambda t: next((real or n for n, real in aliases.items() if n in t), None),
     )
     monkeypatch.setattr(indicators, "specs", lambda: dict.fromkeys(known, {}))
     monkeypatch.setattr(
@@ -1609,3 +1613,260 @@ def test_turn_records_flow_with_final_answer(talk: Talk) -> None:
     last = res["trace"]["flow"][-1]
     assert last["stage"] == "최종 답" and last["result"] == res["status"]
     assert last["detail"].startswith("new · ")
+
+
+# ---- 실제 테스트 오류 (11/23): 비율 후속 질문 · 지역만 바꾸기 · 사람 수 · 범위 밖 ---------
+
+ONE_PERSON = {**BASE, "type": "value", "indicator": "1인 가구", "term": "1인 가구",
+              "regions": ["서울"], "year": 2020, "start_year": None, "end_year": None}  # fmt: skip
+RATIO_SPEC = {"name": "1인 가구 중 70세 이상 비율", "unit": "%", "kind": "ratio", "dynamic": True}
+
+
+def test_household_age_ratio_keeps_context_after_only_guiding_to_source(talk, monkeypatch):
+    table = {"tbl_nm": "성 및 연령별 1인가구 - 시군구", "start_year": 2015, "end_year": 2025}
+    monkeypatch.setattr(lookup, "_table", lambda tbl_id: table)
+    calls = []
+
+    async def try_table(tbl_id, org_id, question, parsed, trace, forced, slots):
+        calls.append((tbl_id, question))
+        if parsed["regions"] == ["서울"]:
+            return None, None  # 첫 조회는 표가 준비되지 않았다.
+        result = talk._result({**parsed, "dynamic_spec": RATIO_SPEC}, question)
+        result["result"].update(unit="%", tbl_id=tbl_id)
+        return result, None
+
+    monkeypatch.setattr(dynamic_indicator, "_try", try_table)
+    first = "2020년 서울 1인 가구 중 70세 이상 비율은?"
+    client = TestClient(main.app)
+    guide = client.post("/ask", json={"question": first}).json()
+    assert guide["status"] == "tables"
+    assert guide["tables"]["recommendations"][0]["tbl_id"] == "DT_1PL1502"
+    response = client.post(
+        "/ask", json={"question": "부산은?", "session_id": guide["session_id"]}
+    ).json()
+    assert response["status"] == "ok" and response["request_type"] == s.CHANGE
+    assert response["parsed"]["ages"] == [[70, None]]
+    assert response["parsed"]["regions"] == ["부산"] and response["parsed"]["year"] == 2020
+    assert response["result"]["unit"] == "%"
+    assert calls == [
+        ("DT_1PL1502", "2020년 서울 1인 가구 중 70세 이상 비율"),
+        ("DT_1PL1502", "2020년 부산 1인 가구 중 70세 이상 비율"),
+    ]
+    assert talk.asked == talk.extracted == talk.searched == []
+
+
+@pytest.mark.parametrize(
+    ("question", "part"),
+    [
+        ("그중 여성 비율은?", "여성 비율은?"),
+        ("그중 여성 인구 비율은?", "여성 비율은?"),
+        ("그중 여성 인구는 몇 퍼센트야?", "여성 몇 퍼센트야?"),
+        ("그중 일흔 살 이상 여성 인구 비율은?", "70세 이상 여성 비율은?"),
+    ],
+)
+def test_ratio_follow_up_is_asked_with_last_conditions(
+    talk: Talk, question: str, part: str
+) -> None:
+    # "그중 여성 비율은?": 성별 변경으로만 읽어 여성 1인 가구 수로 답했다
+    talk.parsed = dict(ONE_PERSON)
+    talk.say("2020년 서울 1인 가구 수는?")
+    res = talk.say(question, request_type="change", changes={"sex": "여"})
+    assert talk.extracted == []  # 변경 추출을 부르지 않는다
+    assert talk.asked[-1] == f"2020년 서울 1인 가구 중 {part}"
+    assert res["request_type"] == "change" and res["question"] == talk.asked[-1]
+
+
+def test_ratio_follow_up_keeps_population_sex_and_survey(talk: Talk) -> None:
+    talk.parsed = {**ONE_PERSON, "sex": "여", "asked": {"survey": "인구총조사"}}
+    talk.say("2020년 서울 인구총조사 기준 여성 1인 가구 수는?")
+    talk.say("그중 70세 이상 비율은?")
+    assert talk.extracted == []
+    assert talk.asked[-1] == "2020년 서울 인구총조사 기준 여성 1인 가구 중 70세 이상 비율은?"
+
+
+@pytest.mark.parametrize("age", [65, 85])
+def test_ratio_follow_up_keeps_the_previous_age_population(talk: Talk, age: int) -> None:
+    talk.parsed = {**ONE_PERSON, "sex": "여", "ages": [[70, None]]}
+    talk.say("2020년 서울 70세 이상 여성 1인 가구 수는?")
+    talk.parsed = {**ONE_PERSON, "ages": [[age, None]], "cross": {"dynamic": "both"}}
+    result = talk.say(f"그중 {age}세 이상 비율은?")
+    assert talk.extracted == []
+    assert talk.asked[-1] == f"2020년 서울 여성 70세 이상 1인 가구 중 {age}세 이상 비율은?"
+    assert result["parsed"]["scoped_age_ratio"] and result["parsed"]["cross"] is None
+    assert result["parsed"]["unsupported"]
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "65세 이상 비율은?",
+        "그중 고령인구 비율은?",
+        "그중 여성 취업 인구 비율은?",
+        "여성 인구 비율은?",
+    ],
+)
+def test_ratio_follow_up_respects_a_named_indicator(question: str) -> None:
+    state = {"conditions": {**ONE_PERSON, "ages": [[70, None]]}}
+    assert s.ratio_followup(question, state) is None
+
+
+def test_ratio_follow_up_after_ratio_is_left_to_change_extraction(talk: Talk) -> None:
+    talk.parsed = {**ONE_PERSON, "indicator": RATIO_SPEC["name"], "dynamic_spec": RATIO_SPEC}
+    talk.say("2020년 서울 1인 가구 중 70세 이상 비율은?")
+    talk.say("그중 여성 비율은?", request_type="change", changes={"sex": "여"})
+    assert talk.extracted == ["그중 여성 비율은?"]
+
+
+def test_region_only_follow_up_keeps_table_definition(talk: Talk) -> None:
+    # "부산은?": HCX가 새 질문으로 읽으면 "부산은?" 글자로 표를 찾아 다른 표를 안내했다
+    talk.parsed = {**ONE_PERSON, "indicator": RATIO_SPEC["name"], "dynamic_spec": RATIO_SPEC}
+    talk.say("2020년 서울 1인 가구 중 70세 이상 비율은?")
+    res = talk.say("부산은?")  # 변경 추출은 new를 돌려주게 두었다
+    assert talk.extracted == [] and res["request_type"] == "change"
+    assert talk.answered[-1]["regions"] == ["부산"]
+    assert talk.answered[-1]["dynamic_spec"] == RATIO_SPEC  # 같은 표 정의로 다시 계산
+    talk.say("서울도?")
+    assert talk.answered[-1]["regions"] == ["부산", "서울"]
+
+
+def test_region_only_rule_needs_nothing_but_regions() -> None:
+    c = {"type": "value", "regions": ["서울"]}
+    assert s.region_only_changes("부산은?", c) == {"regions": {"op": "set", "value": ["부산"]}}
+    assert s.region_only_changes("서울도?", c) == {"regions": {"op": "add", "value": ["서울"]}}
+    assert s.region_only_changes("부산 출생아 수는?", c) is None  # 지표를 말함
+    assert s.region_only_changes("부산은 몇 명이야?", c) is None
+    assert s.region_only_changes("부산은?", {"type": "rank", "regions": []}) is None  # 순위
+
+
+def test_people_question_does_not_inherit_other_indicator(talk: Talk) -> None:
+    # "노원구가 강남구보다 사람이 많아 적어?": 지역 변경으로 읽어 앞 지표(1인 가구)로 답했다
+    talk.parsed = {**ONE_PERSON, "year": 2040}
+    talk.say("2040년 서울 1인 가구는?")
+    talk.parsed = {**ONE_PERSON, "type": "compare", "indicator": "총인구", "term": None,
+                   "regions": ["노원구", "강남구"], "year": 2025}  # fmt: skip
+    change = {"regions": {"op": "set", "value": ["노원구", "강남구"]}}
+    res = talk.say("노원구가 강남구보다 사람이 많아 적어?", request_type="change", changes=change)
+    assert talk.asked[-1] == "노원구가 강남구보다 사람이 많아 적어?"  # 새 질문으로 해석
+    assert res["parsed"]["indicator"] == "총인구"
+    assert next(a for a in res["applied"] if a["name"] == "지표")["source"] == "user"
+
+
+def test_inherited_table_indicator_keeps_definition_and_search_text() -> None:
+    prev = {**ONE_PERSON, "indicator": RATIO_SPEC["name"], "term": "1인 가구 중 70세 이상 비율",
+            "dynamic_spec": RATIO_SPEC}  # fmt: skip
+    parsed = {**ONE_PERSON, "indicator": "총인구", "term": None, "regions": ["부산"], "year": None}
+    sources = {"indicator": "user", "regions": "user", "period": "default", "sex": "default"}
+    p, src = s.inherit(parsed, sources, prev, USER, "부산은 어때?")
+    assert src["indicator"] == "inherited" and p["dynamic_spec"] == RATIO_SPEC
+    assert s.inherited_question(p) == "2020년 부산 1인 가구 중 70세 이상 비율"
+
+
+def test_table_search_uses_inherited_conditions(talk: Talk) -> None:
+    res = {
+        "status": "unknown_indicator",
+        "question": "부산은 어때?",
+        "request_type": "new",
+        "search_question": "2020년 부산 1인 가구",
+        "parsed": dict(ONE_PERSON),
+        "trace": {},
+    }
+    asyncio.run(s._attach_tables(res, None, "부산은 어때?", None))
+    assert talk.searched[0][0] == "2020년 부산 1인 가구" and res["question"] == "부산은 어때?"
+
+
+def test_off_domain_question_is_refused_before_asking_region(talk: Talk, monkeypatch) -> None:
+    # "우리 동네 청년 실업률": 지역을 되물은 뒤에야 통계표를 못 찾았다고 답했다
+    from app.services import search
+
+    async def no_tables():
+        return []
+
+    monkeypatch.setattr(search, "load_tables", no_tables)
+    res = talk.say("우리 동네 청년 실업률 알려줘")
+    assert res["status"] == "out_of_scope" and not res.get("clarification")
+    assert "'청년 인구'는 볼 수 있습니다" in res["answer"] and talk.asked == []
+
+
+def test_sex_ratio_is_not_reported_as_unsplit_sex() -> None:
+    # "1인 가구 중 여성 비율"은 여성이 분자에 들어 있다: '성별로 나뉜 자료 없음'으로 알리지 않는다
+    spec = {"kind": "ratio", "fixed": {"sex": "여", "ages": None}}
+    parsed = {"sex": "여", "dynamic_spec": spec}
+    result = {"status": "ok", "value": 53.19, "sex": "계"}
+    assert not s.sex_not_split(parsed, result)
+    assert s.sex_not_split({"sex": "여"}, result)  # 값 정의는 지금처럼 알린다
+
+
+def test_changed_conditions_search_with_rebuilt_question(talk: Talk) -> None:
+    # 두 값을 나눈 답 뒤 "부산은?": 조건으로 바로 계산하지 못하면 통계표를 "부산은?" 글자로 찾았다
+    talk.parsed = {**ONE_PERSON, "term": "1인 가구 중 70세 이상 비율"}
+    talk.say("2020년 서울 1인 가구 중 70세 이상 비율은?")
+    # 저장된 조건으로는 다시 계산하지 못하는 답 (Talk은 이 지표를 unknown_indicator로 답한다)
+    talk.store[talk.sid][0]["conditions"]["indicator"] = "반려동물 수"
+    talk.searched.clear()
+    talk.say("부산은?")
+    assert talk.answered[-1]["regions"] == ["부산"]
+    assert talk.searched[0][0] == "2020년 부산 1인 가구 중 70세 이상 비율"
+
+
+def test_follow_up_retries_search_when_saved_definition_cannot_read_region(talk, monkeypatch):
+    stale = {"name": "1인 가구", "sources": [{"table": "T", "national_only": True}]}
+    talk.parsed = {**ONE_PERSON, "regions": ["전국"], "dynamic_spec": stale}
+    talk.say("2020년 전국 1인 가구 수는?")
+
+    async def missing_data(parsed, trace=None):
+        return {**await talk._answer(parsed, trace), "status": "missing_data"}
+
+    async def compute(question, parsed, found, trace):
+        fresh = {**stale, "sources": [{"table": "T", "level": "시도"}]}
+        return talk._result({**parsed, "dynamic_spec": fresh})
+
+    monkeypatch.setattr(qa, "answer", missing_data)
+    monkeypatch.setattr(dynamic_indicator, "compute_from_handoff", compute)
+    talk.searched.clear()
+    res = talk.say("부산은?")
+    assert talk.searched[0][0] == "2020년 부산 1인 가구"
+    assert res["status"] == "ok" and res["request_type"] == s.CHANGE
+    assert res["parsed"]["dynamic_spec"]["sources"][0]["level"] == "시도"
+
+
+@pytest.mark.parametrize("term", ["1인 가구", "남성 노인 1인 가구"])
+def test_changed_sex_search_keeps_age_and_uses_new_sex(talk: Talk, term: str) -> None:
+    talk.parsed = {
+        **ONE_PERSON,
+        "regions": ["부산"],
+        "term": term,
+        "ages": [[65, None]],
+        "sex": "남",
+    }
+    talk.say("2020년 부산 남성 노인 1인 가구 수는?")
+    talk.store[talk.sid][0]["conditions"]["indicator"] = "반려동물 수"
+    talk.searched.clear()
+    talk.say("여자는?", request_type="change", changes={"sex": "여"})
+    age = "노인" if "노인" in term else "65세 이상"
+    assert talk.searched[0][0] == f"2020년 부산 여성 {age} 1인 가구"
+
+
+@pytest.mark.parametrize(
+    ("term", "conditions", "expected"),
+    [
+        ("남성 인구", {"sex": "여"}, "여성 인구"),  # 반대 성별은 바꾼다
+        ("여성 인구 비율", {"sex": "남"}, "여성 인구 비율"),  # 성별 비율 지표는 그대로
+        ("고령인구 비율", {"sex": "여"}, "여성 고령인구 비율"),
+        ("남구 인구", {"sex": "여"}, "여성 남구 인구"),  # 지역 이름 속 '남'은 성별이 아니다
+        ("인구", {"sex": "남", "ages": [[65, None]]}, "남성 65세 이상 인구"),
+        ("노인 인구", {"ages": [[65, None]]}, "노인 인구"),  # 연령 집단 이름이 이미 있다
+        ("인구", {"sex": "계"}, "인구"),
+    ],
+)
+def test_with_demographics(term, conditions, expected):
+    assert s._with_demographics(term, conditions) == expected
+
+
+@pytest.mark.parametrize("term", ["남성 1인 가구", "남성1인가구"])
+def test_switching_to_all_sexes_removes_stale_filter_from_search(term):
+    prev = {**ONE_PERSON, "term": term, "sex": "남"}
+    changed, _ = s.apply_changes(prev, {"sex": "계"})
+    assert "남성" not in s.inherited_question(changed)
+    changed, _ = s.apply_changes(prev, {"sex": "여"})
+    assert "남성" not in s.inherited_question(changed)
+    assert "여성" in s.inherited_question(changed)

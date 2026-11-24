@@ -57,6 +57,21 @@ def _ok(res: dict | None) -> bool:
     )
 
 
+def says_age(text: str) -> bool:
+    """말에 연령 조건이 있는가 ("70세 이상 1인 가구", "노인 1인 가구"). "전체 1인 가구"는 없다"""
+    from app.services import agegroup
+
+    return bool(qa.extract_ages(text) or agegroup.resolve(text))
+
+
+def without_unsaid_age(parsed: dict, phrase: str) -> dict:
+    """두 값을 나눌 때 한쪽 말이 연령을 말하지 않았으면 그쪽 해석에서 질문의 연령 조건을 뺀다
+    (질문의 연령은 다른 쪽 말의 것이다: "1인 가구 중 70세 이상" → 분모 "전체 1인 가구"는 전 연령)"""
+    if says_age(phrase) or not (parsed.get("ages") or parsed.get("age_group")):
+        return parsed
+    return {**parsed, "ages": None, "age_group": None}
+
+
 def target_parsed(parsed: dict, target: dict, kind: str | None = None) -> dict:
     """지표 하나를 계산할 해석: 질문 전체 해석에서 지표 이름만 그 지표로 바꾼다"""
     span = target.get("span") or target.get("question") or ""
@@ -70,6 +85,8 @@ def target_parsed(parsed: dict, target: dict, kind: str | None = None) -> dict:
         "dynamic_spec": None,
         "grounded": None,
     }
+    if target.get("unsaid_age"):
+        q.update(ages=None, age_group=None)
     k = kind or parsed.get("type")
     if k == "compare" and len(parsed.get("regions") or []) <= 1:
         k = "value"  # 지역 하나의 '비교'는 지표끼리 비교: 지표마다 값
@@ -334,10 +351,10 @@ async def _intersect(question, parsed, found, targets, trace) -> dict | None:
         )
         recs = found.get("recommendations") or []
         out = {
-            "status": "missing_data",
+            "status": "no_joint_table",
             "answer": text,
             "parsed": {**parsed, "indicators": names},
-            "result": {"status": "missing_data", "reason": text},
+            "result": {"status": "no_joint_table", "reason": text},
             "sources": [],
             "trace": trace,
         }
@@ -382,6 +399,10 @@ async def answer(question: str, parsed: dict, found: dict, trace: dict) -> dict 
         return await _filter_then_lookup(question, parsed, found, targets, trace)
     if op == "intersect" and len(targets) >= 2:
         return await _intersect(question, parsed, found, targets, trace)
+    if op == "ratio":
+        # "A 중 B 비율": 연령을 말하지 않은 쪽("전체 1인 가구")에는 질문의 연령을 붙이지 않는다.
+        # 분모에도 70세 이상을 붙여 182,686 ÷ 182,686 = 100%로 답했다 (11/23)
+        targets = [{**t, "unsaid_age": not says_age(_span(t))} for t in targets]
     outcomes = await _all(question, parsed, found, targets)
     _record(trace, targets, outcomes)
     ok = [(t, r) for t, (r, _) in zip(targets, outcomes, strict=True) if _ok(r)]
