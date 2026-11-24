@@ -46,6 +46,7 @@ from starlette.concurrency import run_in_threadpool
 from app.core.stats_db import StatsTableMissing
 from app.core.stats_db import rows as _rows
 from app.services import (
+    agegroup,
     alternative,
     cell_pick,
     flow,
@@ -91,8 +92,42 @@ SCHOOL_GOING = re.compile(r"(?:^|(?<=\s))학교\s*(?:에\s*)?(?:가는|가고|�
 MOVE_CONTEXT = re.compile(
     r"출근|출퇴근|통근|지하철|전철|버스|자가용|승용차|자전거|타고|걸어서|교통"
 )
+# 지역 이름 바로 뒤에 붙어 그 지역이 사는 곳이 아니라 다른 장소(출생지 · 전 거주지 · 이동 ·
+# 통근통학지)임을 나타내는 말 ("대구 출신", "부산에서 태어난", "서울로 통근", "경기로 이사",
+# "서울에 살던"). 지역마다 본다 (_other_places): "서울에 사는 대구 출신"의 서울은 사는 곳이다.
+# 통근 · 통학의 '~에서'는 출발지 = 사는 곳이다 ("경기도에서 서울로 통근": 경기도에 살고 서울로)
+BIRTH_WORD = r"출생(?:한|해|하여)?(?![가-힣]|\s*아(?:\s|$))"
+BIRTHPLACE_AFTER = re.compile(
+    rf"\s*(?:출신|{BIRTH_WORD}|태생|에서\s*(?:\S+\s+)?(?:태어|{BIRTH_WORD}))"
+)
+BIRTHPLACE_BEFORE = re.compile(r"고향(?:은|이)?\s*$")
+BIRTHPLACE_AXIS = re.compile(r"출생지|태어난\s*곳")
+PLACE_AFTER = re.compile(
+    r"\s*(?:에서\s*(?:\S+\s+)?(?:온|왔|오는|이사|이주|이동|전출|옮|떠난)"
+    r"|(?:으로|로)\s*(?:\S+\s+)?(?:간|가는|갔|이사|이주|이동|전입|옮|통근|통학|출퇴근|출근|등교|다니)"
+    r"|에\s*(?:살던|살았던|거주하던|있던))"
+)
+# 지역 이름 바로 앞에서 그 지역이 다른 장소임을 나타내는 말 ("고향이 대구", "5년 전 서울")
+PLACE_BEFORE = re.compile(r"(?:년\s*전(?:에)?|전\s*거주지(?:가|는)?)\s*$")
+# 지역 이름 목록에 있지만 칸 이름에서는 지역이 아닌 말 ("전체 출생아수(명)")
+NOT_PLACE_WORDS = {"전체"}
+# 지역 이름을 뺀 나머지가 이것뿐이면 지역 칸 ("부산직할시", "부산-구부", "서울특별시(계)")
+PLACE_REST = re.compile(
+    r"[()\[\]\-·_,./]|직할시|특별시|광역시|특별자치시|특별자치도|시부|군부|구부|동부|읍부|면부|미상"
+    r"|합계|소계|계|이외|외|지역|도|시|군|구"
+)
 TOTAL_SUFFIX = re.compile(r"(계|합계|소계|전체)$")  # 공백·기호를 뺀 이름 끝의 합계 표시
 PCT_ASK = re.compile(r"%|퍼센트|비율|비중|몇\s*프로")
+# 가구 수를 묻는 말 ("다문화가구 수는?", "다문화가구 몇 개인가요?", "몇 가구").
+HOUSEHOLD_ASK = re.compile(
+    r"가구\s*(?:[은는이가을를]\s*)?(?:수|몇|얼마|[?.!]|$)"
+    r"|가구\s*[은는이가을를](?=\s)|몇\s*가구"
+)
+PERSON_ASK = re.compile(r"가구원|몇\s*명|사람|인구(?!\s*총조사)|평균|구성비|%|퍼센트|비율|비중")
+HOUSEHOLD_CELL = re.compile(r"가구(?:\s*수)?$")
+POPULATION_TARGET = re.compile(r"인구(?:\s*수)?$")
+PERSON_UNIT_TAIL = re.compile(r"\s*\(\s*(?:천\s*)?명\s*\)$")
+HOUSEHOLD_UNITS = {"명": "가구", "천명": "천가구"}
 WITHIN = re.compile(r"\s+(?:중(?:에?서|에)?|가운데)\s+")
 NORM = re.compile(r"[\s·,.()\[\]{}<>\"'‘’“”_/-]")
 
@@ -136,8 +171,20 @@ class Dim:
     def sex_codes(self) -> dict[str, str]:
         """{"남": 코드, "여": 코드} (둘 다 있을 때만)"""
         out = {}
+        # "장애인 인구_남자"처럼 묶음 이름 뒤에 붙은 성별: 같은 묶음의 합계 칸("장애인 인구_계")이
+        # 있을 때만 성별 칸으로 본다 (전에는 성별 분류로 보지 않아 "장애인"이 남 · 여 두 칸에
+        # 걸린 채 "질문의 말과 맞는 칸이 없음"으로 끝났다)
+        groups = {_norm(_label_name(n)) for n in self.codes.values() if is_subtotal(n)}
         for sex, names in SEX_NAMES.items():
             hits = [c for c, n in self.codes.items() if _norm(n) in names]
+            if not hits and groups:
+                hits = [
+                    c
+                    for c, n in self.codes.items()
+                    if len(part := re.split(r"[_\-]", n.strip())) >= 2
+                    and _norm(part[-1]) in names
+                    and _norm(" ".join(part[:-1])) in groups
+                ]
             if len(hits) == 1:
                 out[sex] = hits[0]
         return out if len(out) == 2 else {}
@@ -284,14 +331,127 @@ def _unit_cells(plan: Plan, dims: list[Dim], region_dim: int | None) -> dict[int
 # ---- 칸 고르기 -------------------------------------------------------------------
 
 
+# 수로 나눈 칸 이름 ('4자녀', '3명이상', '1인')과 그 칸이 셀 수 있는 표의 대상
+COUNT_CLASS = re.compile(r"^\d+\s*(?:자녀|명|인|세대)")
+COUNTED_UNITS = ("가구", "인구", "세대")
+
+
 def table_words(question: str) -> str:
     """칸 이름과 글자를 맞추기 전에 질문의 일상어를 표가 쓰는 말로 바꾼 글자 (공백 · 기호 뺌)"""
     if MOVE_CONTEXT.search(question):  # 띄어쓰기를 지우기 전에 봐야 "고등학교"를 피한다
         question = SCHOOL_GOING.sub("통학", question)
-    q = _norm(question)
+    q = _norm(agegroup.count_digits(question))
     for word, same in SAME_WORDS.items():  # "출퇴근" → "통근"
         q = q.replace(word, same)
     return q
+
+
+def _is_place_cell(name: str) -> bool:
+    """지역 이름만으로 된 칸 ("서울", "부산광역시", "부산직할시", "부산-구부", "전국").
+    "전체 출생아수(명)"의 '전체'처럼 지역 이름 목록에 걸리는 다른 말이 든 칸은 아니다"""
+    n = _norm(name)
+    if n == "전국":
+        return True
+    try:
+        found = [f for f in indicators.find_regions(name) if f not in NOT_PLACE_WORDS]
+    except Exception:  # 지역 이름 목록을 읽지 못하면 지역 칸으로 보지 않는다 (전처럼 칸을 쓴다)
+        logger.warning("지역 이름 확인 실패 → 지역 칸 검사 건너뜀: %s", name)
+        return False
+    for f in sorted(found, key=len, reverse=True):
+        n = n.replace(f, "")
+    return bool(found) and not PLACE_REST.sub("", n)
+
+
+@dataclass(frozen=True)
+class PlaceMention:
+    name: str
+    role: str | None
+    phrase: str
+
+
+def _place_mentions(question: str) -> list[PlaceMention]:
+    """지역 이름이 나온 위치마다 사는 곳과 출생지 · 전 거주지 · 이동지를 구분한다"""
+    try:
+        mentions = indicators.region_mentions(question)
+    except Exception:  # 지역 이름 목록을 읽지 못하면 다른 장소도 없는 것으로 본다
+        return []
+    out = []
+    for i, (start, end, name) in enumerate(mentions):
+        before = question[:start]
+        next_start = mentions[i + 1][0] if i + 1 < len(mentions) else len(question)
+        after = BIRTHPLACE_AFTER.match(question, end, next_start)
+        prefix = BIRTHPLACE_BEFORE.search(before)
+        role = "birthplace" if after or prefix else None
+        if role is None:
+            after = PLACE_AFTER.match(question, end)
+            prefix = PLACE_BEFORE.search(before)
+            role = "other" if after or prefix else None
+        if role:
+            end = after.end() if after else end
+            while end < len(question) and not question[end].isspace():
+                end += 1  # "태어" → "태어난"
+        out.append(PlaceMention(name, role, question[prefix.start() if prefix else start : end]))
+    return out
+
+
+def _other_places(question: str) -> list[str]:
+    return [mention.name for mention in _place_mentions(question) if mention.role]
+
+
+def _named_place(cell: str, places: list[str]) -> bool:
+    """지역 칸(cell)이 질문이 다른 장소로 말한 지역인가 ("부산직할시" ↔ "부산")"""
+    if not places:
+        return False
+    cell_names = [_norm(f) for f in indicators.find_regions(cell) if f not in NOT_PLACE_WORDS]
+    return any(c.startswith(p) or p.startswith(c) for c in cell_names for p in map(_norm, places))
+
+
+def _drop_region_words(
+    question: str, hits: dict[int, list[str]], dims: list[Dim], region_dim: int | None
+) -> dict[int, list[str]]:
+    """질문의 지역 이름이 지역 분류가 아닌 칸(출생지 '서울' 등)에 걸린 것을 뺀다. 그 지역을
+    다른 장소로 말했을 때("대구 출신")만 그 칸을 쓴다.
+    '현 거주지별 … 출생지별 1인가구' 표에서 "서울 1인 가구 수"가 출생지도 서울인 434,920가구로
+    나왔고 (실제 1,390,701가구), "서울에 사는 대구 출신"은 사는 곳 서울을 출생지로 골랐다.
+    지역 분류가 없는 표는 지역 이름 칸이 곧 지역이라 그대로 둔다"""
+    if region_dim is None:
+        return hits
+    by_no = {d.no: d for d in dims}
+    places = _other_places(question)
+
+    def allowed(d: Dim | None, code: str) -> bool:
+        return (
+            d is None
+            or d.no == region_dim
+            or not _is_place_cell(d.codes[code])
+            or _named_place(d.codes[code], places)
+        )
+
+    out = {}
+    for no, codes in hits.items():
+        d = by_no.get(no)
+        kept = [c for c in codes if allowed(d, c)]
+        if not kept and d is not None:
+            # 빼고 나니 빈 분류는 낱말 일부로 다시 맞춘다 ("경기도에서 서울로 통근": 통근지의
+            # '경기도'를 빼면 '서울로' → '서울특별시'. 이름이 그대로 나온 칸이 있으면 하지 않던 일)
+            kept = [c for c in _word_hits(question, d) if allowed(d, c)]
+        if kept:
+            out[no] = kept
+    return out
+
+
+def _place_cell_unasked(question: str, d: Dim, code: str, region_dim: int | None) -> bool:
+    """저장된 칸 · 칸 고르기 LLM이 고른 칸(forced)이 질문이 묻지 않은 다른 장소 칸인가
+    (출생지 '서울'). _drop_region_words와 같은 기준을 규칙 밖에서 고른 칸에도 쓴다.
+    캐시에 출생지 '서울' 칸이 있으면 "서울 1인 가구 수"가 434,920가구로 나왔다.
+    합계 칸('전국' = 출생지 전체)은 질문의 범위를 좁히지 않아 그대로 쓴다"""
+    return (
+        region_dim is not None
+        and d.no != region_dim
+        and code != d.total()
+        and _is_place_cell(d.codes[code])
+        and not _named_place(d.codes[code], _other_places(question))
+    )
 
 
 def _text_hits(question: str, dims: list[Dim], skip: set[int]) -> dict[int, list[str]]:
@@ -348,7 +508,9 @@ def _word_hits(question: str, d: Dim) -> list[str]:
         w = _norm(JOSA_TAIL.sub("", token))
         if len(w) >= 2 and w not in GENERIC_WORDS and not w.isdigit():
             words.append(w)
-    whole = {d.total()} | {c for c, n in d.codes.items() if TOTAL_SUFFIX.search(_norm(n))}
+    whole = {d.total()} | {
+        c for c, n in d.codes.items() if is_subtotal(n) or _norm(n).endswith("전체")
+    }  # "중국계"(출신)는 합계가 아니라 고를 수 있는 칸이다
     cells = [(c, _norm(n)) for c, n in d.codes.items() if c not in whole]
     out: list[str] = []
     for w in words:
@@ -385,7 +547,51 @@ RANK_PARTS = re.compile(
     re.I,
 )
 REGION_RANK = re.compile(r"시도|시군구|지역|곳|어디|구별|도시|광역시")
-SUBTOTAL = re.compile(r"(계|합계|소계)$")
+# 칸 이름 끝의 합계 · 소계 표시. '계'는 구분자 뒤("통학-계", "이주배경인구_계", "연령별: 계")나
+# 소계 이름 꼴("아시아주계", "외국인계", "기타계") 뒤에서만 본다. "중국계", "일본계"(출신),
+# "승계"는 낱말의 일부다
+TOTAL_TAIL = re.compile(r"(?:[\s\-·_:]+계|(?<=[주인타])계|[\s\-·_:]*(?:합계|소계|총계))$")
+# 질문의 지표 표현 속 원자료 합계 표시 ("이주배경인구_계 수"의 "_계")
+TERM_TOTAL = re.compile(r"[_\-:]\s*(?:계|합계|소계)(?=\s|$)")
+
+
+def _table_target(title: str) -> str:
+    """분류와 지역 수준을 뺀 표의 집계 대상. '세대구성별 인구(일반가구)-시군구' → '인구'."""
+    title = re.sub(r"\([^()]*\)", "", title)
+    title = re.sub(r"(?:\s*[-–—_／/]\s*(?:시군구|시도|읍면동|전국)(?:별)?)+\s*$", "", title)
+    return title.rsplit("별", 1)[-1].strip()
+
+
+def counts_households(target: str, plan: "Plan", item: "Dim") -> bool:
+    """집계 대상과 선택한 항목 모두 가구인지 확인한다."""
+    if not HOUSEHOLD_CELL.search(target):
+        return False
+    codes = plan.multi[1] if plan.multi and plan.multi[0] == item.no else [plan.pick[item.no]]
+    return all(
+        HOUSEHOLD_CELL.search(_label_name(PERSON_UNIT_TAIL.sub("", item.codes[c].strip())))
+        for c in codes
+    )
+
+
+def is_subtotal(label: str) -> bool:
+    """합계 · 소계 칸 이름인가 ("통학-계", "아시아주계"). "중국계"는 아니다"""
+    return bool(TOTAL_TAIL.search(label.strip()))
+
+
+def _label_name(label: str) -> str:
+    """칸 이름을 지표 이름에 쓰는 모양으로: 끝의 합계 표시를 떼고 단계를 나눈 밑줄은 띄운다
+    ("이주배경인구_계" → "이주배경인구", "다문화가구_가구원_계" → "다문화가구 가구원").
+    전에는 '계'만 떼어 "이주배경인구_ 수"로 답했다"""
+    name = TOTAL_TAIL.sub("", label.strip()) or label
+    return " ".join(name.replace("_", " ").split()) or label
+
+
+def _term_name(term: str) -> str:
+    """질문에서 읽은 지표 표현을 이름으로: 원자료의 합계 표시와 전국 범위 말을 뗀다
+    ("이주배경인구_계 수" → "이주배경인구 수", "전국 1인 가구 수" → "1인 가구 수").
+    조회에 쓰는 칸은 그대로다"""
+    name = TERM_TOTAL.sub("", indicators.without_national(term))
+    return " ".join(name.replace("_", " ").split()) or term
 
 
 def _multi_op(question: str) -> str | None:
@@ -397,8 +603,8 @@ def _multi_op(question: str) -> str | None:
 
 
 def _leaf_codes(d: Dim) -> list[str]:
-    """합계·소계("-계")를 뺀 세부 칸들"""
-    return [c for c, n in d.codes.items() if c != d.total() and not SUBTOTAL.search(_norm(n))]
+    """합계·소계("-계", "아시아주계")를 뺀 세부 칸들. "중국계"는 세부 칸이다"""
+    return [c for c, n in d.codes.items() if c != d.total() and not is_subtotal(n)]
 
 
 def _rank_dim(question: str, dims: list[Dim], region_dim: int | None, tbl_nm: str) -> Dim | None:
@@ -470,7 +676,8 @@ def choose(
     if plan.age_dim is None and parsed.get("ages"):
         return None, "표에 연령 구분이 없음"
     skip = {region_dim} | ({plan.age_dim.no} if plan.age_dim else set())
-    hits = _text_hits(question, dims, skip)
+    hits = _drop_region_words(question, _text_hits(question, dims, skip), dims, region_dim)
+    household_table = HOUSEHOLD_CELL.search(_table_target(tbl_nm))
     asks: list[Ask] = []
     ranked = _rank_dim(question, dims, region_dim, tbl_nm)
     if ranked is not None and len(leaves := _leaf_codes(ranked)) >= 2:
@@ -483,7 +690,11 @@ def choose(
     for d in dims:
         if d.no in skip or (plan.multi and d.no == plan.multi[0]):
             continue
-        if d.no in forced and forced[d.no] in d.codes:
+        if (
+            d.no in forced
+            and forced[d.no] in d.codes
+            and not _place_cell_unasked(question, d, forced[d.no], region_dim)
+        ):
             plan.pick[d.no] = forced[d.no]
             how = (quiet or {}).get(d.no)
             if how is None:
@@ -552,7 +763,10 @@ def choose(
                 plan.defaults.append(f"{d.name}: {d.codes[male]} · {d.codes[female]} 따로")
             else:
                 plan.pick[d.no] = base
-                if others:
+                if others or sex_set <= set(codes):
+                    # 질문 낱말이 남자 · 여자 칸에 모두 걸렸으면 그 집단 전체를 말한 것이다
+                    # ("장애인" ⊂ 장애인 인구_남자 · _여자 → 장애인 인구_계). 맞은 칸으로 보지 않아
+                    # "질문의 말과 맞는 칸이 없음"으로 끝나 연령 구간 확인까지 가지 못했다
                     plan.matched[d.no] = base
             continue
         if len(codes) > 1 and d.total() and set(codes) == set(_leaf_codes(d)):
@@ -568,10 +782,11 @@ def choose(
             asks.append(Ask(d.no, d.name, [(c, d.codes[c]) for c in codes]))
         elif codes:
             plan.pick[d.no] = plan.matched[d.no] = codes[0]
-        elif d.total():
-            plan.pick[d.no] = d.total()
+        elif total := d.total() or (_item_whole(d, tbl_nm) if household_table else None):
+            # '세대구성 및 거처의 종류별 가구(일반가구)'의 일반가구는 거처 구분 전체다.
+            plan.pick[d.no] = total
             if not SAFE_TOTAL.search(_norm(d.name)):  # 합계의 뜻이 분명하지 않은 분류: 알린다
-                plan.defaults.append(f"{d.name}: {d.codes[d.total()]}")
+                plan.defaults.append(f"{d.name}: {d.codes[total]}")
         elif len(d.codes) == 1:
             plan.pick[d.no] = next(iter(d.codes))
         elif (default := d.default()) is not None:
@@ -725,6 +940,7 @@ def uncovered(
     dims: list[Dim],
     parsed: dict,
     region_dim: int | None = None,
+    question: str = "",
 ) -> "str | BandMiss | None":
     """통계표 찾기가 질문에서 뽑은 조건 중 고른 칸에 반영되지 않은 것 (있으면 계산하지 않는다)
 
@@ -758,7 +974,9 @@ def uncovered(
         # 표 이름에 없는 조건('미혼 1인 가구'의 미혼 → 1인가구 표)은 지금처럼 칸에서 찾는다
         if len(word := _norm(item)) >= 2 and any(word in t for t in titles):
             continue
-        if not _item_left(item, names, read, plan, parsed):
+        if region_dim is not None and _lives_in_asked_region(item, parsed):
+            continue  # 사는 곳("서울에 사는")은 지역 분류가 반영한다 (칸 이름에는 없다)
+        if not _item_left(item, names, read, plan, parsed, question):
             continue
         if miss := _band_miss([item], dims, region_dim):
             return miss
@@ -773,18 +991,124 @@ def uncovered(
             return f"질문의 대상 '{slots['target']}'이 표나 고른 칸에 없음"
     # 성별, 그리고 질문에 연령 구간이 있을 때의 '연령'은 나눠 보기가 아니라 조건이다
     skip = {"성별"} | ({"연령", "나이"} if parsed.get("ages") else set())
-    classes = [c for c in cond.get("classes") or [] if _norm(c) not in skip]
+    said = _text_hits(question, dims, {region_dim}) if question else {}
+    classes = [
+        c
+        for c in cond.get("classes") or []
+        if _norm(c) not in skip and not _class_narrowed(c, plan, dims, said)
+    ]
     if classes and parsed.get("type") not in ("composition", "rank", "trend"):
         return f"나눠 보기({', '.join(classes)}별)는 값 하나로 답할 수 없음"
     return None
 
 
-def _item_left(item: str, names: list[str], read: list[str], plan: Plan, parsed: dict) -> bool:
+def _class_narrowed(cls: str, plan: Plan, dims: list[Dim], said: dict[int, list[str]]) -> bool:
+    """나눠 보기로 읽힌 분류(cls)에서 질문이 한 칸을 글자로 직접 말했는가 (said: _text_hits).
+    "2세대가구 수"의 '세대'는 세대구성별로 나눠 보라는 말이 아니라 그 안의 2세대가구다.
+    칸 고르기 LLM · 캐시가 고른 칸은 근거가 되지 않는다: "아파트 가구 수를 세대구성별로"에서
+    LLM이 고른 비친족가구 칸(22,804가구)이 세대구성별 답으로 통과했다"""
+    word = _norm(cls)
+    if len(word) < 2:
+        return False
+    # 그 분류가 어느 분류 이름에도 없으면 표가 항목(0번 분류)에 그 분류를 담은 것이다
+    # ('성/연령/종교별 인구'의 항목: 불교 · 기독교(천주교) …). "천주교 믿는 사람"이 나눠 보기
+    # (종교별)로 막혀 표 안내로 끝났다
+    in_item = not any(word in _norm(d.name) for d in dims)
+    return any(
+        d.no in plan.matched
+        and plan.matched[d.no] != d.total()
+        and plan.matched[d.no] in (said.get(d.no) or [])
+        and (
+            word in _norm(d.name)
+            or word in _norm(d.codes[plan.matched[d.no]])
+            or (in_item and d.no == 0)
+        )
+        for d in dims
+    )
+
+
+def _chosen_places(plan: Plan, dims: list[Dim], region_dim: int | None) -> list[tuple[Dim, str]]:
+    matched = {no: [code] for no, code in plan.matched.items()}
+    if plan.multi:
+        no, codes, op = plan.multi
+        matched[no] = codes if op != "rank" else []
+    return [
+        (d, d.codes[code])
+        for d in dims
+        if d.no != region_dim
+        for code in matched.get(d.no, [])
+        if code != d.total() and _is_place_cell(d.codes[code])
+    ]
+
+
+def _elsewhere(parsed: dict, cells: list[str], mentions: list[PlaceMention]) -> list[str]:
+    """질문의 지역 중 다른 장소 칸(통근지 · 출생지 등)으로 쓴 지역. 사는 곳 조건(지역 분류)에서
+    뺀다 (_with_spec). "경기도에서 서울로 통근"을 HCX가 지역 [경기도, 서울]로 읽어 두 지역을
+    비교했다 (서울 거주 통근 인구가 함께 나왔다)"""
+    residences = [m.name for m in mentions if m.role is None]
+    regions = parsed.get("regions") or []
+    used = [
+        r
+        for r in regions
+        if not _named_place(r, residences) and any(_named_place(c, [r]) for c in cells)
+    ]
+    return used if used and len(used) < len(regions) else []  # 사는 곳이 하나는 남아야 한다
+
+
+def _place_name(
+    name: str,
+    mentions: list[PlaceMention],
+    places: list[str],
+    target: str,
+    counted: bool,
+) -> str:
+    """칸 이름으로 지은 이름이 다른 장소 칸('대구')뿐이면 질문의 장소 표현과 표의 집계 대상으로
+    다시 짓는다 ("대구 수" → "대구 출신 1인가구 수"). 출생지가 '항목' 분류에 든 표에서
+    "서울특별시의 대구 수는 46,248가구"로 답했다"""
+    if not places or not target or not _norm(name).startswith(_norm(_label_name(places[0]))):
+        return name
+    phrase = _label_name(places[0])
+    for mention in mentions:
+        if mention.role and _named_place(places[0], [mention.name]):
+            phrase = mention.phrase
+            break
+    whole = f"{phrase} {_label_name(target)}"
+    return f"{whole} 수" if counted and not whole.endswith("수") else whole
+
+
+def _birthplace_axes(dims: list[Dim], region_dim: int | None, title: str) -> set[int]:
+    # 일부 표는 출생지 분류를 별도로 두지 않고 항목에 지역 이름을 나열한다.
+    axes = {d.no for d in dims if d.no != region_dim and BIRTHPLACE_AXIS.search(d.name)}
+    if not axes and region_dim != 0 and BIRTHPLACE_AXIS.search(title):
+        return {0}
+    return axes
+
+
+# 지역 뒤에 붙어 그 지역이 사는 곳임을 나타내는 말 ("서울에 사는", "서울 거주")
+LIVES_IN = re.compile(r"\s*(?:에\s*)?(?:사는|살고\s*있는|거주하는|거주자|거주)\s*$")
+
+
+def _lives_in_asked_region(item: str, parsed: dict) -> bool:
+    """조건 낱말이 질문의 지역(사는 곳) 그 자체인가 ("서울", "서울에 사는").
+    통계표 찾기가 '서울'을 조건 낱말로도 뽑으면, 지역은 칸 이름에 없어 "질문의 조건 '서울'을
+    반영할 수 없음"으로 끝났다 (전에는 '서울'이 출생지 칸에 잘못 걸려 통과했다)"""
+    place = LIVES_IN.sub("", item)
+    regions = parsed.get("regions") or []
+    return bool(place) and _is_place_cell(place) and _named_place(place, regions)
+
+
+def _item_left(
+    item: str, names: list[str], read: list[str], plan: Plan, parsed: dict, question: str = ""
+) -> bool:
     """조건 낱말 하나가 고른 칸(이름 · 바꿔 읽은 말 · 연령 · 성별)으로 설명되지 않으면 True"""
     word = _norm(item)
     if not word:
         return False
     if any(word in n or n in word for n in names if len(n) >= 2):
+        return False
+    # 수를 말로 쓴 조건 ("넷", "아이 넷" → '4자녀'): 그 수의 칸을 골랐으면 반영됐다
+    counts = [w for w in agegroup.count_words(item, question) if re.search(r"\d", w)]
+    if counts and all(any(w in n for n in names) for w in counts):
         return False
     if any(word in r or r in word for r in read):
         return False
@@ -817,7 +1141,12 @@ def _report_cells(
         names += [_norm(md.codes[c]) for c in plan.multi[1]]
     read = [_norm(a) for a, _ in (slots or {}).get("read_as") or [] if len(_norm(a)) >= 2]
     report.update(
-        cells=cells, leftover=[i for i in items if _item_left(i, names, read, plan, parsed)]
+        cells=cells,
+        leftover=[
+            i
+            for i in items
+            if _item_left(i, names, read, plan, parsed, (slots or {}).get("question") or "")
+        ],
     )
 
 
@@ -853,11 +1182,14 @@ def _name(
     counted: bool,
     strip_age: bool = False,
     unit: str = "",
+    target: str = "",
 ) -> str:
     """지표 이름: 질문 해석의 지표 표현이 고른 칸 이름을 모두 담고 있으면 그 표현, 아니면 칸 이름
     (HCX가 지표 칸에 "2020년 서울"처럼 지표가 아닌 말을 넣는 경우가 있다)
     strip_age: 연령을 lookup이 연령 칸으로 고르면 이름에서 연령 표현을 뺀다 (두 번 붙지 않게)
-    unit: 값의 단위. 칸 이름 끝의 같은 단위 괄호는 뗀다 ("이혼건수(건)" → "이혼건수")"""
+    unit: 값의 단위. 칸 이름 끝의 같은 단위 괄호는 뗀다 ("이혼건수(건)" → "이혼건수")
+    target: 표의 집계 대상 ('…별 출생' → 출생). 고른 칸이 모두 합계라 칸 이름이 이름이 되지
+    못할 때, 질문의 표현이 이 대상을 담지 않으면 이 대상이 이름이다"""
     named = [d for d in dims if d.no in plan.matched]
     # 칸이 하나뿐인 분류(인구동향 표의 항목 '출생사망혼인이혼')는 고른 것이 아니라 표 전체라,
     # 다른 고른 칸이 있으면 이름에 쓰지 않는다 ("출생사망혼인이혼 이혼건수(건)", 11/20)
@@ -868,20 +1200,35 @@ def _name(
         tail = re.compile(rf"\s*\(\s*{re.escape(unit)}\s*\)\s*$")
         words = [tail.sub("", w) or w for w in words]
     # "통학-계"처럼 이름 끝의 합계 표시는 떼고 쓴다 ("통학 인구"와 맞추고, 답에도 "통학")
-    words = [re.sub(r"[\s\-·]*(계|합계|소계)$", "", w) or w for w in words]
-    words = [
-        w for w in words if w not in TOTAL_NAMES
-    ] or words  # 합계 칸("계")은 이름에 쓰지 않는다
-    for term in (parsed.get("term"), parsed.get("indicator")):
+    words = [_label_name(w) for w in words]
+    informative = [w for w in words if w not in TOTAL_NAMES]
+    words = informative or words  # 합계 칸("계")은 이름에 쓰지 않는다
+    for source in ("term", "indicator"):
+        term = parsed.get(source)
         # 사전 지표 이름도 고른 칸 이름을 모두 담으면 쓴다 (옛 연도: 이혼 ⊂ 이혼 건수).
         # 근거 없이 고른 사전 지표(총인구 ⊅ 1인가구)는 아래 담김 검사에서 걸러진다
         if not term or re.search(r"\d{4}", str(term)):
             continue
-        if indicators.find_regions(str(term)):  # "전국 평균 가구원 수"처럼 지역까지 담은 표현
+        if indicators.find_regions(str(term)):  # "서울 평균 가구원 수"처럼 지역까지 담은 표현
             continue
-        if all(_norm(w) in _norm(term) for w in words):
-            return _without_age_words(str(term)) if strip_age else str(term)
+        # 질문의 표현도 원자료 합계 표시("이주배경인구_계 수")와 전국 범위 말은 떼고 쓴다
+        named = _term_name(str(term))
+        # 고른 칸이 모두 합계(전국 · 계)면 질문의 표현이 이름이다 (사전 지표 이름은 담김 검사).
+        # 단 그 표현이 표의 집계 대상을 담을 때만: HCX가 "엄마가 32살에서 37살일 때" 같은 조건절을
+        # 주면 연령을 뗀 "엄마가 일 때"가 이름이 되어 "엄마가 일 때는 표의 연령 구간이…"로 답했다
+        about = _norm(_label_name(target)) if target else ""
+        needed = informative if source == "term" else words
+        fits_target = bool(informative) or not about or about in _norm(named)
+        if fits_target and all(_norm(w) in _norm(named) for w in needed):
+            return _without_age_words(named) if strip_age else named
+    if not informative and target:
+        words = [_label_name(target)]  # 고른 칸이 모두 합계: 표가 세는 대상
     name = " ".join(words)
+    # 수로 나눈 칸('4자녀', '3명이상')은 무엇을 센 칸인지 표의 대상을 붙인다
+    # ("4자녀 수" → "4자녀 가구 수")
+    head = (_label_name(target).split() or [""])[-1] if target else ""
+    if head in COUNTED_UNITS and COUNT_CLASS.match(name) and head not in name:
+        name = f"{name} {head}"
     return f"{name} 수" if counted and not name.endswith("수") else name
 
 
@@ -926,9 +1273,22 @@ def build(
         parsed, ignore_ages = {**parsed, "ages": None}, True
     try:
         tbl_nm = lookup._table(tbl_id)["tbl_nm"]
-    except Exception:  # 표 이름은 분류 안 순위에서만 쓴다
+    except Exception:
         tbl_nm = ""
-    if PER_AVERAGE.search(question) and (avg := _per_average(tbl_id, dims, region_dim, level)):
+    target = _table_target(tbl_nm)
+    household_asked = HOUSEHOLD_ASK.search(question) and not PERSON_ASK.search(question)
+    if household_asked and POPULATION_TARGET.search(target):
+        return None, "가구 수를 물었는데 이 통계표의 집계 대상은 사람 수"
+    mentions = _place_mentions(question)
+    birthplaces = [m.name for m in mentions if m.role == "birthplace"]
+    birthplace_axes = _birthplace_axes(dims, region_dim, tbl_nm) if birthplaces else set()
+    if birthplaces and not birthplace_axes:
+        return None, "질문의 출생지 조건을 적용할 분류가 이 통계표에 없음"
+    if (
+        not birthplaces
+        and PER_AVERAGE.search(question)
+        and (avg := _per_average(tbl_id, dims, region_dim, level))
+    ):
         return {**avg, **projection}, None
     try:
         # 칸만 받은 표는 값 전체를 볼 수 없어 아니라고 둔다 (캐시에 남지 않게 부르지도 않는다)
@@ -949,6 +1309,12 @@ def build(
         if not isinstance(why, Ask) and (miss := _band_miss([*items, question], dims, region_dim)):
             return None, miss
         return None, why
+    chosen_places = _chosen_places(plan, dims, region_dim)
+    birthplace_cells = [cell for d, cell in chosen_places if d.no in birthplace_axes]
+    if any(
+        not any(_named_place(cell, [place]) for cell in birthplace_cells) for place in birthplaces
+    ):
+        return None, "질문의 출생지 조건이 선택한 칸에 반영되지 않음"
     if ignore_ages:
         # 연령 말이 고른 칸 이름 안에 있을 때만 지표 이름의 일부로 본다 (노년 ⊂ 노년부양비).
         # 아니면 질문의 연령 조건을 버리게 된다 ("노인 1인 가구" → 전 연령 1인 가구) → 계산하지 않음
@@ -959,7 +1325,7 @@ def build(
         names += [_norm(tbl_nm)] + [_norm(w) for w in (slots or {}).get("table_words") or [] if w]
         if not expr or not any(expr in n for n in names):
             return None, "질문의 연령 조건을 표의 칸에 반영할 수 없음"
-    if why := uncovered(slots, plan, dims, parsed, region_dim):
+    if why := uncovered(slots, plan, dims, parsed, region_dim, question):
         return None, why
     # 통계표 찾기가 조건으로 뽑지 않았어도, 질문의 숫자 조건(3.2kg 등)이 이 표의 구간 분류에
     # 해당하는데 그 분류를 질문의 말로 고르지 못했으면(합계로 둠) 조건을 버리게 된다
@@ -986,16 +1352,30 @@ def build(
     unit, whole = _unit(tbl_id, plan.pick[0], _unit_cells(plan, dims, region_dim))
     unit = _name_unit(plan, dims, unit or "")
     counted = unit in COUNT_UNITS and whole
+    display_unit = unit
+    if counted and (household_unit := HOUSEHOLD_UNITS.get(unit)):
+        if counts_households(target, plan, dims[0]):
+            display_unit = household_unit
+        elif household_asked:
+            # 행안부 '다문화가구 현황'의 합계는 가구원(사람) 수다. 가구를 센 다른 표를 찾아본다.
+            return None, "가구 수를 물었는데 고른 칸은 사람 수(단위 명)를 센 칸"
     strip_age = bool(
         plan.age_dim
         and parsed.get("ages")
         and parsed.get("type") != "composition"
         and not PCT_ASK.search(question)
     )
-    name = _name(parsed, dims, plan, counted, strip_age, unit)
+    places = [cell for _, cell in chosen_places]
+    name = _place_name(
+        _name(parsed, dims, plan, counted, strip_age, unit, target),
+        mentions,
+        places,
+        target,
+        counted,
+    )
     spec = {
         "name": name,
-        "unit": unit,
+        "unit": display_unit,
         "kind": "count" if counted else "value",
         "method": "lookup",
         "dynamic": True,
@@ -1004,6 +1384,7 @@ def build(
         "sources": [src],
         **projection,
         **({"couple": True} if plan.couple else {}),
+        **({"elsewhere": elsewhere} if (elsewhere := _elsewhere(parsed, places, mentions)) else {}),
     }
     kind = parsed.get("type")
     if plan.split_sex and (plan.multi or kind == "composition" or PCT_ASK.search(question)):
@@ -1014,6 +1395,15 @@ def build(
         return _parts_spec(spec, src, plan, dims, tbl_nm)
     if kind == "composition" or PCT_ASK.search(question):
         made = _composition(spec, src, plan, dims, question) if kind == "composition" else None
+        if made is None and kind == "composition":
+            # "아파트 가구 수를 세대구성별로": 그 분류로 구성비를 낼 수 없으면(표에 분류가 없거나
+            # 합계 칸이 없음) 질문에 나온 다른 칸의 비율("가구 중 아파트 비율 43.02%")로 바꿔
+            # 답하지 않는다. 통계표 찾기가 지표별로 다시 쓴 문장은 '~별'을 바꾸기도 해서
+            # ("시도별 아파트 가구 수"), 한 칸의 비율은 질문이 %·비율·비중을 물을 때만 낸다
+            if axis := _asked_axis(question):
+                return None, f"{axis}별 구성비를 이 표로 낼 수 없음"
+            if not PCT_ASK.search(question):
+                return None, "구성비를 낼 분류를 표에서 찾지 못함"
         if made is None:
             made, why = _ratio(spec, src, plan, dims, parsed, tbl_nm, question=question)
             if made is None:
@@ -1071,7 +1461,7 @@ def _parts_spec(spec: dict, src: dict, plan: Plan, dims: list[Dim], tbl_nm: str)
         src["by_sex"] = {s: _sex_override(plan, s) for s in ("계", "남", "여")}
     # 지표 이름: 연산하는 분류 말고 질문에서 고른 칸, 없으면 표 이름의 주제 ("통근 통학 인구")
     words = [
-        x.codes[plan.matched[x.no]]
+        _label_name(x.codes[plan.matched[x.no]])
         for x in dims
         if x.no in plan.matched and x.no != dim_no and plan.matched[x.no] != x.total()
     ]
@@ -1098,8 +1488,10 @@ def _item_whole(d: Dim, tbl_nm: str) -> str | None:
     # 첫 칸만 본다 (KOSIS는 전체를 맨 앞에 둔다). "상주(야간) · 주간 인구" 표의 "주간 인구"처럼
     # 표 이름에 든 세부 칸을 전체로 보지 않게
     code, name = next(iter(d.codes.items()), (None, ""))
-    if len(_norm(name)) >= 4 and _norm(name) in _norm(tbl_nm):
-        return code
+    # 합계 표시를 뗀 이름도 본다: '…별 가구(일반가구)' 표의 첫 칸 "일반가구-계"
+    for n in {_norm(name), _norm(_label_name(name))}:
+        if len(n) >= 4 and n in _norm(tbl_nm):
+            return code
     # 이름 끝에 합계 표시가 붙은 첫 칸 ("이혼건수-계"): 다른 칸 이름에는 합계 표시가 없을 때만
     marked = [c for c, n in d.codes.items() if TOTAL_SUFFIX.search(_norm(n)) and "-" in n]
     return code if marked == [code] else None
@@ -1273,7 +1665,7 @@ def _ratio(spec, src, plan, dims, parsed, tbl_nm="", *, question=""):
     whole_label = population_label if age_dim and col == age_dim.col and population_label else None
     out = {
         **spec,
-        "name": _ratio_name(name, part),
+        "name": _ratio_name(name, _label_name(part)),
         "unit": "%",
         "kind": "ratio",
         "formula": f"{part} ÷ {whole_label or whole.get(den, '합계')} × 100",
@@ -1381,6 +1773,20 @@ def _part_rows(tbl_id, col, num, den, fixed, item) -> list[tuple[float | None, f
 def _without_age(src: dict) -> dict:
     """연령을 lookup의 age_dim 대신 직접 거를 때 (연령이 비율의 분자이거나 구성비로 나눌 분류)"""
     return {k: v for k, v in src.items() if k not in ("age_dim", "age_total", "age_min")}
+
+
+# 질문이 '~별'로 나눠 보라고 댄 분류 ("세대구성별로"의 세대구성)
+AXIS_WORD = re.compile(r"([가-힣]{2,})별(?=로|\s|$|[?.!,]|의|은|는|구성|비중|비율)")
+# 다른 경로가 맡는 '~별' (성별 · 연령 구성, 지역 · 기간 나눠 보기)
+OTHER_AXES = {"남녀", "연령", "연령대", "나이", "시도", "시군구", "지역", "읍면동", "연도", "년도"}
+
+
+def _asked_axis(question: str) -> str | None:
+    """질문이 '~별'로 나눠 보라고 이름을 댄 분류 ("세대구성별로" → 세대구성). 없으면 None"""
+    for m in AXIS_WORD.finditer(question):
+        if m.group(1) not in OTHER_AXES:
+            return m.group(1)
+    return None
 
 
 def _composition(spec: dict, src: dict, plan: Plan, dims: list[Dim], question: str) -> dict | None:
@@ -1511,7 +1917,7 @@ HANDOFF_STATUSES = ("ok", "partial_match")
 WHOLE_COUNTRY = {"전국", "우리나라", "한국", "대한민국", "국내"}
 
 
-def to_parsed(understanding: dict, parsed: dict) -> tuple[dict, dict]:
+def to_parsed(understanding: dict, parsed: dict, *, question: str = "") -> tuple[dict, dict]:
     """탐색 해석 → 계산용 질문 해석 (qa.understand와 같은 모양). 탐색 해석에 없는 칸은 수치 해석.
     → (새 해석, 둘이 달랐던 칸 {칸: [수치 해석, 탐색 해석]}).
     지역 이름을 DB로 풀므로 스레드에서 부른다"""
@@ -1547,7 +1953,8 @@ def to_parsed(understanding: dict, parsed: dict) -> tuple[dict, dict]:
                 put("start_year", year)  # '최근 5년', '2020년 이후'
         else:
             put("year", year_end or year)
-    if cond.get("sex") in ("남", "여"):
+    # "여성이 있는 가구"의 성별 조건은 질문 보정(qa.correct)이 이미 분리했다.
+    if cond.get("sex") in ("남", "여") and not qa.HOUSEHOLD_MEMBER_GENDER.search(question):
         put("sex", cond["sex"])
     age = understanding.get("age")
     if age and age.get("lo") is not None:
@@ -1768,7 +2175,7 @@ async def _compute_target(
     if multi:
         u = _target_understanding(u, target)
     try:
-        q, diff = await run_in_threadpool(to_parsed, u, parsed)
+        q, diff = await run_in_threadpool(to_parsed, u, parsed, question=question)
     except Exception:
         logger.exception("탐색 해석 바꿔 담기 실패 → 수치 해석으로 계산")
         q, diff = dict(parsed), {}
@@ -2201,7 +2608,7 @@ async def cached_answer(question: str, parsed: dict, trace: dict) -> dict | None
     trace["plan_cache"] = "miss" if found else "skip"
     if not plans:
         flow.add("계산 방법 캐시", "없음" if found else "건너뜀", (found or ["", ""])[1])
-    trace.setdefault("dynamic", [])
+    steps = trace.setdefault("dynamic", [])
     for plan in plans:
         saved = {int(k): v for k, v in (plan.get("forced") or {}).items()}
         forced = saved
@@ -2213,14 +2620,20 @@ async def cached_answer(question: str, parsed: dict, trace: dict) -> dict | None
                 continue
             forced = reusable_forced(question, saved, plan.get("words") or [], dims, region_dim)
         res, ask = await _try(plan["tbl_id"], None, question, parsed, trace, forced)
+        step = steps[-1]
         if dropped := {k: v for k, v in saved.items() if k not in forced}:
             # 저장한 칸 중 새 질문에 맞지 않아 쓰지 않은 칸 (요청 기록)
-            trace["dynamic"][-1]["cache_dropped"] = dropped
-        if res is not None and res.get("status") != "ok":
+            step["cache_dropped"] = dropped
+        if step.get("flag") == "X":
+            # 일치하는 칸이 비밀보호로 가려졌으면 뒤의 표에서 더 넓은 집계를 가져오지 않는다.
+            res = await run_in_threadpool(
+                suppressed_answer, parsed, plan["tbl_id"], step.get("cells") or ""
+            )
+            res["trace"] = trace
+        elif res is not None and res.get("status") != "ok":
             # 저장한 표에 그 연도·지역 자료가 없다 (예: 수록 기간 밖). 다른 표가 있을 수 있어
             # 여기서 답하지 않고 통계표 찾기로 넘긴다
-            steps = trace["dynamic"] or [{}]
-            steps[-1].setdefault("skip", f"캐시한 표로 답하지 못함 ({res.get('status')})")
+            step.setdefault("skip", f"캐시한 표로 답하지 못함 ({res.get('status')})")
             continue
         if res is None and ask is not None:
             res = ask_answer(question, parsed, plan["tbl_id"], plan["tbl_id"], ask, forced)
@@ -2251,13 +2664,16 @@ def reusable_forced(
       - 그 밖 (근거를 새 질문에서 찾을 수 없음)               → 쓰지 않는다
     쓰지 않은 분류는 규칙이 새 질문으로 다시 고른다 (못 고르면 되묻기나 통계표 찾기)"""
     by_no = {d.no: d for d in dims}
-    hits = _text_hits(question, dims, {region_dim})
+    # 질문의 지역 이름이 다른 장소 칸(출생지 '서울')에 걸린 것은 그 칸을 말한 것으로 보지 않는다
+    hits = _drop_region_words(question, _text_hits(question, dims, {region_dim}), dims, region_dim)
     q = _norm(question)
     out = {}
     for no, code in forced.items():
         d = by_no.get(no)
         if d is None or code not in d.codes:
             continue  # 표가 다시 적재돼 칸이 없어졌다
+        if _place_cell_unasked(question, d, code, region_dim):
+            continue
         said = hits.get(no) or []
         if said and code not in said:
             continue
@@ -2352,8 +2768,11 @@ async def _try_once(
         step["skip"] = res.get("answer", "")[:60]
         return None, None
     flags: list = []
-    lookup.EMPTY_FLAGS.set(flags)  # 값이 빈 칸의 결측 기호 (표 하나의 계산마다 새로)
-    res = await qa.answer(_with_spec(parsed, spec), trace, question)
+    flag_scope = lookup.EMPTY_FLAGS.set(flags)
+    try:
+        res = await qa.answer(_with_spec(parsed, spec), trace, question)
+    finally:
+        lookup.EMPTY_FLAGS.reset(flag_scope)
     step["status"] = res["status"]
     if res["status"] == "ok" and not has_values(res.get("result") or {}):
         step["skip"] = "값이 없음 (비공개·결측)"
@@ -2753,6 +3172,11 @@ async def _build_partial(
 def _with_spec(parsed: dict, spec: dict) -> dict:
     """질문 해석 결과에 지표 정의를 넣는다. 연도를 말하지 않았으면 그 표의 마지막 해"""
     q = {**parsed, "indicator": spec["name"], "unsupported": False, "dynamic_spec": spec}
+    if elsewhere := spec.get("elsewhere"):
+        # 다른 장소 칸으로 쓴 지역(통근지 서울)은 사는 곳 조건이 아니다
+        q["regions"] = [r for r in q.get("regions") or [] if r not in elsewhere]
+        if q.get("type") == "compare" and len(q["regions"]) == 1:
+            q["type"] = "value"
     if spec["kind"] == "ratio" and q.get("type") == "composition":
         q["type"] = "value"  # "~ 중 ~ 비율"은 구성비가 아니라 비율 값 하나
     if q.get("type") in (None, "other"):

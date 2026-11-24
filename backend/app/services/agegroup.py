@@ -142,6 +142,74 @@ NOT_BEFORE = {"초고령": ("사회",), "성인": ("병",)}
 NUMERIC_AGE = re.compile(r"\d+\s*세(?!대)|\d+\s*대(?!\s*(광역시|도시))|\d+\s*살")
 
 
+NATIVE_COUNT = {
+    "하나": 1, "한": 1, "둘": 2, "두": 2, "셋": 3, "세": 3, "넷": 4, "네": 4, "다섯": 5,
+    "여섯": 6, "일곱": 7, "여덟": 8, "아홉": 9, "열": 10,
+}  # fmt: skip
+# 혼자 쓴 고유어 수 ("자녀 넷", "아이 셋이"). '셋째'(출산순위) 같은 서수와 "하나도 없는"
+# 같은 관용 표현('도')은 아니다
+COUNT_ALONE = re.compile(
+    r"(?<![가-힣])(하나|둘|셋|넷|다섯|여섯|일곱|여덟|아홉)"
+    r"(?=\s|$|[?.!,~]|(?:이|을|를|은|는|인)(?![가-힣]))"
+)
+# 단위 앞의 수 ("자녀 네 명", "두 자녀"). '30세'의 '세'는 앞에 숫자가 있어 아니다
+COUNT_BEFORE_UNIT = re.compile(
+    r"(?<![가-힣0-9])(한|두|세|네|다섯|여섯|일곱|여덟|아홉|열)\s*(?=명|가구|자녀|아이)"
+)
+# 자녀 수를 표의 칸 꼴로 ("자녀 4", "아이 4명", "4명의 자녀", "두 아이" → "4자녀").
+# '애'는 낱말 하나일 때만 ("장애 2급"의 '애'가 아니다)
+CHILD_WORD = r"(?:자녀|아이|(?<![가-힣])애|자식)"
+# 수 뒤의 나이 단위 ("아이 다섯 살"은 다섯 살 아이다)
+AGE_UNIT = r"\s*(?:살|세|개월|대)"
+CHILD_COUNT = re.compile(
+    rf"{CHILD_WORD}\s*(?:가|를|이)?\s*(\d+)(?![0-9]|{AGE_UNIT})(?:\s*명)?"
+    rf"|(?<![0-9])(\d+)\s*(?:명\s*의?\s*)?{CHILD_WORD}"
+)
+# 아이 수를 말하는 말 ("아이 넷", "아이가 셋", "아이 2명", "두 아이")은 연령 집단(0~14세)이 아니라
+# 자녀 수다. 연령으로 읽으면 연령 분류가 있는 인구 표가 자녀수별 가구 표를 이겼다
+COUNT_SENSITIVE = {"아이", "아이들", "애들"}
+COUNT_AFTER = re.compile(
+    r"^\s*(?:가|를|이|들이|들을)?\s*"
+    rf"(?:(?:하나|둘|셋|넷|다섯|여섯|일곱|여덟|아홉)(?![가-힣]*째|{AGE_UNIT})"
+    r"|(?:한|두|세|네|다섯|여섯|일곱|여덟|아홉|열|\d+)\s*명)"
+)
+COUNT_BEFORE = re.compile(
+    r"(?:(?<![가-힣0-9])(?:한|두|세|네|다섯|여섯|일곱|여덟|아홉|열)|\d+\s*명\s*의?)\s*$"
+)
+
+
+def count_digits(text: str) -> str:
+    """고유어 수를 숫자로, 자녀 수를 표의 칸 꼴로 ("미성년 자녀 넷" → "미성년 4자녀").
+    표 칸은 '4자녀', '3명이상'처럼 숫자로 적어 "자녀 넷"이 어느 칸에도 맞지 않았다"""
+    text = COUNT_ALONE.sub(lambda m: str(NATIVE_COUNT[m[1]]), text)
+    text = COUNT_BEFORE_UNIT.sub(lambda m: str(NATIVE_COUNT[m[1]]), text)
+    return CHILD_COUNT.sub(lambda m: f"{m[1] or m[2]}자녀", text)
+
+
+# 수 뒤에 붙어 무엇을 센 것인지 말하는 단위 ('4자녀', '3명', '1인', '2세대')
+COUNT_UNIT = re.compile(r"(?<![0-9])(\d+)\s*(?:자녀|명|인|세대)")
+
+
+def count_words(item: str, question: str = "") -> list[str]:
+    """수를 말로 쓴 조건 낱말을 표 칸 꼴의 낱말로 ("미성년 자녀 넷" → ['미성년', '4자녀']).
+    수를 말로 쓰지 않았으면 []. 조건이 수뿐이면("넷", HCX가 '아이'를 떼고 뽑는다) 질문에서
+    그 수가 붙은 말을 찾는다 ("아이 넷" → '4자녀'). 못 찾으면 []
+    (수 하나로는 '4'가 든 아무 칸에나 맞는다)"""
+    counted = count_digits(item)
+    if counted == item:
+        return []
+    words = [w for w in (re.sub(r"[^0-9A-Za-z가-힣]", "", w) for w in counted.split()) if w]
+    out = []
+    for w in words:
+        if w.isdigit():
+            unit = next((m for m in COUNT_UNIT.finditer(count_digits(question)) if m[1] == w), None)
+            if unit is None:
+                return []
+            w = re.sub(r"\s", "", unit[0])
+        out.append(w)
+    return out
+
+
 @dataclass
 class AgeRef:
     expr: str
@@ -157,7 +225,7 @@ class AgeRef:
 
 def _find(question: str, word: str) -> int:
     """질문에서 집단 이름의 위치. 시설 이름("어린이집"·"청소년관"), 시설과 함께 나온 말,
-    출생·사망 질문 안의 아기·아이, "초고령사회" 같은 말이면 -1"""
+    출생·사망 질문 안의 아기·아이, 아이 수("아이 넷"), "초고령사회" 같은 말이면 -1"""
     pos = question.find(word)
     if pos < 0:
         return -1
@@ -169,6 +237,9 @@ def _find(question: str, word: str) -> int:
     if word in FACILITY_SENSITIVE and FACILITY.search(question):
         return -1
     if word in BIRTH_SENSITIVE and (BIRTH.search(question) or INFANT_DEATH.search(question)):
+        return -1
+    counted = COUNT_AFTER.match(after) or COUNT_BEFORE.search(question[:pos])
+    if word in COUNT_SENSITIVE and counted:
         return -1
     return pos
 
