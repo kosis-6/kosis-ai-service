@@ -48,7 +48,7 @@ def fake_table(monkeypatch: pytest.MonkeyPatch) -> dict:
     monkeypatch.setattr(d, "schema", lambda tbl_id: tables[tbl_id])
     monkeypatch.setattr(d, "_unit", lambda tbl_id, item, cells=None: units[tbl_id])
     monkeypatch.setattr(lookup, "_dim_labels", lambda tbl_id, dim: tuple(sorted(AGES.items())))
-    monkeypatch.setattr(indicators, "find_regions", lambda text: [])
+    monkeypatch.setattr(indicators, "_region_names", lambda: [])
     projection: set[str] = set()
     monkeypatch.setattr(d, "is_projection", lambda tbl_id: tbl_id in projection)
     monkeypatch.setattr(indicators, "_data_years", lambda: (2008, 2025))
@@ -1058,6 +1058,20 @@ def test_handoff_computes_with_search_reading(computed, monkeypatch) -> None:
     assert q2["regions"] == ["서울", "부산"] and q2["sex"] == "계"
 
 
+@pytest.mark.parametrize(
+    ("question", "sex"),
+    [
+        ("서울 경력단절여성이 있는 가구 수", "계"),
+        ("서울 남성 가구주의 경력단절여성이 있는 가구 수", "남"),
+    ],
+)
+def test_search_handoff_keeps_corrected_sex_for_household_member_terms(question, sex) -> None:
+    parsed, diff = d.to_parsed(
+        {"conditions": {"sex": "여"}}, {**BASE, "sex": sex}, question=question
+    )
+    assert parsed["sex"] == sex and "sex" not in diff
+
+
 def test_school_going_is_commute_only_with_movement() -> None:
     # 이동을 말하면 "학교 가는 · 다니는"은 통학 (통근 + 통학을 함께 묻는 질문)
     assert {"통근", "통학"} <= {
@@ -1438,6 +1452,565 @@ def test_word_inside_cell_name() -> None:
 def test_more_is_a_comparison() -> None:
     assert d._multi_op("지하철이랑 시내버스 중에 뭘 더 많이 탔어") == "compare"
     assert d._multi_op("남자애가 더 많이 태어났어 여자애가 더 많이 태어났어?") == "compare"
+
+
+@pytest.mark.parametrize(
+    ("label", "name"),
+    [
+        ("이주배경인구_계", "이주배경인구"),  # 전에는 '계'만 떼어 "이주배경인구_ 수"
+        ("다문화가구_가구원_계", "다문화가구 가구원"),
+        ("아내의 연령별: 계", "아내의 연령별"),
+        ("통학-계", "통학"),
+        ("주택이외의 거처_계", "주택이외의 거처"),
+        ("남자 계", "남자"),
+        ("아시아주계", "아시아주"),  # 소계 이름 꼴 (대륙 · 내외국인 · 기타)
+        ("외국인계", "외국인"),
+        ("기타계", "기타"),
+        ("중국계", "중국계"),  # 출신을 뜻하는 '계'는 낱말의 일부다 (전에는 "중국")
+        ("일본계", "일본계"),
+        ("중국_한국계", "중국 한국계"),
+        ("연금 지급·증액 및 1세대 연금 자녀 승계", "연금 지급·증액 및 1세대 연금 자녀 승계"),
+        ("합계", "합계"),  # 합계 칸 자체는 그대로 (이름에서는 TOTAL_NAMES가 뺀다)
+    ],
+)
+def test_label_name_drops_total_tail_and_underscores(label: str, name: str) -> None:
+    assert d._label_name(label) == name
+
+
+def test_descent_cells_are_not_subtotals() -> None:
+    # 순위 · 합의 세부 칸에서 "중국계"를 소계로 빼지 않는다. 소계(아시아주계, -계)는 뺀다
+    codes = {"0": "계", "1": "아시아주계", "2": "중국", "3": "중국계", "4": "통학-계"}
+    nat = d.Dim(2, "국적별", codes)
+    assert d._leaf_codes(nat) == ["2", "3"]
+    assert d.is_subtotal("아시아주계") and d.is_subtotal("일반가구-계")
+    assert not d.is_subtotal("중국계") and not d.is_subtotal("자녀 승계")
+
+
+@pytest.mark.parametrize(
+    ("term", "name"),
+    [
+        ("이주배경인구_계 수", "이주배경인구 수"),
+        ("이주배경인구_계", "이주배경인구"),
+        ("다문화가구_가구원_계 수", "다문화가구 가구원 수"),
+        ("이주배경인구 수", "이주배경인구 수"),
+        ("중국_한국계 인구", "중국 한국계 인구"),  # 출신의 '계'는 그대로
+    ],
+)
+def test_question_term_drops_raw_total_marks(term: str, name: str) -> None:
+    # 질문에서 읽은 지표 표현을 이름으로 쓸 때도 원자료 합계 표시를 뗀다. 조회 칸은 그대로다
+    item = d.Dim(0, "항목", {"T10": "이주배경인구_계", "T20": "다문화가구_가구원_계"})
+    code = "T20" if "가구원" in term else "T10"
+    if "중국" in term:
+        item = d.Dim(0, "항목", {"T30": "중국_한국계", "T40": "일본계"})
+        code = "T30"
+    plan = d.Plan(pick={0: code}, matched={0: code})
+    assert d._name({"term": term}, [item], plan, True, unit="명") == name
+    assert plan.pick == {0: code}
+
+
+MEMBERS = [  # 행안부 '읍면동별 다문화가구 현황': 가구원(사람)을 센 표
+    d.Dim(0, "항목", {"T001": "다문화가구 현황"}),
+    d.Dim(1, "행정구역(읍면동)별", {"00": "전국", "11": "서울특별시"}),
+    d.Dim(2, "다문화가구별", {"A01": "합계", "A02": "한국인배우자", "A04": "자녀"}),
+]
+HOUSEHOLDS = [  # 통계청 '다문화가구 및 가구원': 가구를 센 칸
+    d.Dim(0, "항목", {"T1": "다문화가구_계", "T2": "다문화가구원_계"}),
+    d.Dim(1, "행정구역별(시군구)", {"00": "전국", "11": "서울특별시"}),
+]
+
+
+@pytest.mark.parametrize(
+    ("tbl_id", "unit", "question", "expected_unit"),
+    [
+        ("MEMBERS", "명", "2020년 서울 다문화가구 수는?", None),
+        ("MEMBERS", "명", "2020년 서울 다문화가구 몇 개인가요?", None),
+        ("MEMBERS", "명", "2020년 서울 다문화가구 몇 가구인가요?", None),
+        ("MEMBERS", "명", "2020년 서울 다문화가구 얼마야?", None),
+        ("MEMBERS", "명", "2020년 서울 다문화가구 자녀 수는?", "명"),
+        ("MEMBERS", "명", "2020년 서울 다문화가구는 몇 명이야?", "명"),
+        ("HOUSEHOLDS", "가구", "2020년 서울 다문화가구 수는?", "가구"),
+        # 원자료 단위가 '명'이어도 항목이 가구를 세면 가구로 표시한다 (DT_1PQ2012 등)
+        ("HOUSEHOLDS", "명", "2020년 서울 다문화가구 수는?", "가구"),
+        ("HOUSEHOLDS", "천명", "2020년 서울 다문화가구 몇 개인가요?", "천가구"),
+        ("HOUSEHOLDS", "명", "2020년 서울 다문화가구원 수는?", "명"),
+    ],
+)
+def test_household_question_skips_person_count_cells(
+    fake_table: dict, monkeypatch, tbl_id: str, unit: str, question: str, expected_unit: str | None
+) -> None:
+    members = tbl_id == "MEMBERS"
+    title = "읍면동별 다문화가구 현황" if members else "시도별 다문화가구(일반가구)-시도"
+    monkeypatch.setattr(lookup, "_table", lambda _: {"tbl_nm": title})
+    fake_table["tables"][tbl_id] = (MEMBERS if members else HOUSEHOLDS, 1, "시도")
+    fake_table["units"][tbl_id] = (unit, True)
+    parsed = {**BASE, "indicator": "", "term": ""}
+    spec, why = d.build(tbl_id, question, parsed)
+    if expected_unit:
+        assert spec is not None, why
+        assert spec["unit"] == expected_unit
+    else:
+        assert spec is None and "사람 수" in str(why)
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "성별/연령별/혼인상태별/세대구성별 인구(일반가구)-시군구",
+        "성, 연령 및 세대구성별 인구 - 시군구",
+        "성/혼인상태/연령/세대구성별 인구-시도",
+        "연령별/세대구성별 경력단절여성인구(20세이상, 일반가구)-시군구",
+    ],
+)
+def test_population_table_household_category_never_changes_people_to_households(
+    fake_table, monkeypatch, title
+) -> None:
+    tbl_id = "POPULATION"
+    dims = [d.Dim(0, "항목", {"T1": "비친족가구", "T2": "2세대가구"}), ONE_PERSON[1]]
+    fake_table["tables"][tbl_id] = (dims, 1, "시도")
+    fake_table["units"][tbl_id] = ("명", True)
+    monkeypatch.setattr(lookup, "_table", lambda _: {"tbl_nm": title})
+    parsed = {**BASE, "indicator": "", "term": ""}
+
+    spec, why = d.build(tbl_id, "2020년 인구총조사 기준 서울 비친족가구 수는?", parsed)
+    assert spec is None and "집계 대상은 사람 수" in why
+
+    spec, why = d.build(tbl_id, "2020년 서울 비친족가구 인구 수는?", parsed)
+    assert spec is not None, why
+    assert spec["unit"] == "명" and spec["sources"][0]["item_id"] == "T1"
+
+
+def test_household_table_uses_general_households_when_dwelling_is_unspecified(
+    fake_table, monkeypatch
+) -> None:
+    tbl_id = "DT_1JC1520"
+    items = d.Dim(0, "항목", {"T10": "일반가구", "T20": "주택_계", "T22": "주택_아파트"})
+    composition = d.Dim(2, "세대구성별", {"00": "계", "60": "비친족 가구"})
+    fake_table["tables"][tbl_id] = ([items, ONE_PERSON[1], composition], 1, "시도")
+    fake_table["units"][tbl_id] = ("가구", True)
+    monkeypatch.setattr(
+        lookup, "_table", lambda _: {"tbl_nm": "세대구성 및 거처의 종류별 가구(일반가구) - 시군구"}
+    )
+    parsed = {**BASE, "indicator": "", "term": ""}
+
+    for question, code in [
+        ("2020년 서울 비친족가구 수는?", "T10"),
+        ("2020년 서울 아파트 비친족가구 수는?", "T22"),
+    ]:
+        spec, why = d.build(tbl_id, question, parsed)
+        assert spec is not None, why
+        assert spec["unit"] == "가구"
+        assert spec["sources"][0]["item_id"] == code
+        assert spec["sources"][0]["filters"] == {"c2_id": "60"}
+
+
+@pytest.mark.parametrize(
+    ("term", "name"),
+    [
+        ("전국 1인 가구 수", "1인 가구 수"),  # "2020년 전국의 전국 1인 가구 수"로 답했다
+        ("우리나라 1인 가구 수", "1인 가구 수"),
+        ("전국의 1인 가구 수", "1인 가구 수"),
+        ("국내이동자 수", "국내이동자 수"),  # 지표 이름의 '국내'는 그대로
+        ("전국민 1인 가구 수", "전국민 1인 가구 수"),  # 낱말 속 '전국'은 그대로
+    ],
+)
+def test_name_drops_nationwide_words_from_term(term: str, name: str) -> None:
+    item = d.Dim(0, "항목", {"T00": "1인가구", "T10": "국내이동자"})
+    code = "T10" if "이동" in term else "T00"
+    plan = d.Plan(pick={0: code}, matched={0: code})
+    assert d._name({"term": term}, [item], plan, True, unit="가구") == name
+
+
+def test_name_uses_term_when_only_total_cells_were_matched() -> None:
+    # 고른 칸이 합계(전국)뿐이면 질문의 표현이 이름이다 ("전국 수"가 되지 않게)
+    item = d.Dim(0, "출생지별", {"00": "전국", "11": "서울"})
+    plan = d.Plan(pick={0: "00"}, matched={0: "00"})
+    assert d._name({"term": "전국 1인 가구 수"}, [item], plan, True, unit="가구") == "1인 가구 수"
+
+
+BIRTHPLACE = [  # '현 거주지별 … 출생지별 1인가구': 항목이 출생지, 지역 분류는 현 거주지
+    d.Dim(0, "항목", {"00": "전국", "11": "서울", "21": "부산"}),
+    d.Dim(1, "행정구역별", {"00": "전국", "11": "서울특별시", "21": "부산광역시"}),
+]
+BIRTHPLACE_TITLE = "현 거주지별/성별/연령별/출생지별 1인가구(일반가구)-시도"
+
+
+@pytest.mark.parametrize(
+    ("question", "ok"),
+    [
+        ("2020년 서울 1인 가구 수는?", False),  # 출생지 '서울'로 434,920가구가 나왔다
+        ("2020년 전국 1인 가구 수는?", False),
+        ("2020년 부산 출생 1인 가구 수는?", True),  # 출생지를 말하면 그 칸을 쓴다
+        # 사는 곳(서울)은 출생지 칸을 고르지 않는다 (화면에서 "서울 수는 434,920가구"로 답했다)
+        ("2020년 서울에 사는 부산 출신 1인 가구는 몇 가구야?", True),
+        ("고향이 부산인 서울 1인 가구 수", True),
+    ],
+)
+def test_region_words_do_not_pick_birthplace_cells(
+    fake_table, monkeypatch, question: str, ok: bool
+) -> None:
+    names = ("서울특별시", "부산광역시", "서울", "부산")
+    monkeypatch.setattr(indicators, "_region_names", lambda: names)
+    monkeypatch.setattr(lookup, "_table", lambda _: {"tbl_nm": BIRTHPLACE_TITLE})
+    fake_table["tables"]["BIRTH"] = (BIRTHPLACE, 1, "시도")
+    fake_table["units"]["BIRTH"] = ("가구", True)
+    spec, why = d.build("BIRTH", question, {**BASE, "indicator": "1인 가구", "term": "1인 가구"})
+    if ok:
+        assert spec is not None, why
+        assert spec["sources"][0]["item_id"] == "21"
+    else:
+        assert spec is None and why == "질문의 말과 맞는 칸이 없음"
+
+
+@pytest.mark.parametrize(
+    ("name", "place"),
+    [
+        ("부산", True),
+        ("부산직할시", True),
+        ("부산-구부", True),
+        ("전국", True),
+        ("전체 출생아수(명)", False),  # 지역 이름 목록의 '전체'에 걸리지만 지역 칸이 아니다
+        ("남편-전체혼인건수", False),
+        ("1인가구", False),
+    ],
+)
+def test_place_cell_is_made_of_region_words_only(monkeypatch, name: str, place: bool) -> None:
+    known = ["부산", "전체"]
+    monkeypatch.setattr(
+        indicators, "find_regions", lambda t: [n for n in known if n in t.replace(" ", "")]
+    )
+    assert d._is_place_cell(name) is place
+
+
+@pytest.mark.parametrize(
+    ("question", "name"),
+    [
+        ("2020년 서울에 사는 부산 출신 1인 가구는 몇 가구야?", "부산 출신 1인가구 수"),
+        ("2020년 서울에 사는 부산에서 태어난 1인 가구 수", "부산에서 태어난 1인가구 수"),
+    ],
+)
+def test_place_cell_name_uses_question_phrase_and_table_target(
+    fake_table, monkeypatch, question: str, name: str
+) -> None:
+    # 출생지가 '항목' 분류에 든 표: 칸 이름으로만 지으면 "서울특별시의 대구 수는 46,248가구"
+    names = ("서울특별시", "부산광역시", "서울", "부산")
+    monkeypatch.setattr(indicators, "_region_names", lambda: names)
+    monkeypatch.setattr(lookup, "_table", lambda _: {"tbl_nm": BIRTHPLACE_TITLE})
+    fake_table["tables"]["BIRTH"] = (BIRTHPLACE, 1, "시도")
+    fake_table["units"]["BIRTH"] = ("가구", True)
+    spec, why = d.build("BIRTH", question, {**BASE, "indicator": "", "term": ""})
+    assert spec is not None, why
+    assert spec["name"] == name and spec["sources"][0]["item_id"] == "21"
+
+
+def test_birthplace_and_residence_can_share_the_same_name(fake_table, monkeypatch) -> None:
+    names = ("서울특별시", "부산광역시", "서울", "부산")
+    monkeypatch.setattr(indicators, "_region_names", lambda: names)
+    fake_table["tables"]["BIRTH"] = (BIRTHPLACE, 1, "시도")
+    fake_table["units"]["BIRTH"] = ("가구", True)
+    monkeypatch.setattr(
+        lookup,
+        "_table",
+        lambda tbl_id: {
+            "tbl_nm": BIRTHPLACE_TITLE if tbl_id == "BIRTH" else "성 및 연령별 1인가구"
+        },
+    )
+    question = "2020년 서울과 부산에 사는 서울 출신 1인 가구 수를 비교해줘"
+    parsed = {**BASE, "type": "compare", "regions": ["서울특별시", "부산"]}
+    spec, why = d.build("BIRTH", question, parsed)
+    assert spec is not None, why
+    assert spec["name"] == "서울 출신 1인가구 수"
+    assert spec["sources"][0]["item_id"] == "11"
+    resolved = d._with_spec(parsed, spec)
+    assert resolved["type"] == "compare" and resolved["regions"] == parsed["regions"]
+    assert d.build("DT_1PL1502", question, parsed, {0: "T00"}, {"cells_by_llm": True}) == (
+        None,
+        "질문의 출생지 조건을 적용할 분류가 이 통계표에 없음",
+    )
+    assert d.build("BIRTH", question, parsed, {0: "00"}) == (
+        None,
+        "질문의 출생지 조건이 선택한 칸에 반영되지 않음",
+    )
+
+
+def test_birthplace_condition_is_covered_by_compared_cells(fake_table, monkeypatch) -> None:
+    monkeypatch.setattr(indicators, "_region_names", lambda: ("서울", "부산", "대구"))
+    monkeypatch.setattr(lookup, "_table", lambda _: {"tbl_nm": BIRTHPLACE_TITLE})
+    item = d.Dim(0, "항목", {**BIRTHPLACE[0].codes, "22": "대구"})
+    fake_table["tables"]["BIRTH"] = ([item, BIRTHPLACE[1]], 1, "시도")
+    fake_table["units"]["BIRTH"] = ("가구", True)
+    question = "2020년 서울에 사는 서울 출신과 부산 출신 1인 가구 수 비교"
+    parsed = {**BASE, "type": "compare", "regions": ["서울", "부산"]}
+    spec, why = d.build("BIRTH", question, parsed)
+    assert spec is not None, why
+    assert spec["parts_op"]["codes"] == ["11", "21"]
+    assert d._with_spec(parsed, spec)["regions"] == ["서울"]
+
+
+@pytest.mark.parametrize(
+    ("question", "places"),
+    [
+        ("2020년 서울에 사는 대구 출신 1인 가구 수", ["대구"]),  # 서울은 사는 곳
+        ("경기도에서 서울로 통근하는 사람", ["서울"]),  # 통근의 '~에서'는 사는 곳
+        ("서울에서 부산으로 이사한 사람", ["서울", "부산"]),
+        ("5년 전 서울에 살던 인구", ["서울"]),
+        ("고향이 대구인 서울 사람", ["대구"]),
+        ("서울에서 1인 가구 수", []),  # 장소를 나타내는 '~에서'
+        ("서울 이동 인구", []),
+        ("서울에서 부산 출생 1인 가구", ["부산"]),
+        ("서울 출생아 수와 부산 출생률", []),
+        ("서울 특별시에서 태어난 부산 거주 인구", ["서울특별시"]),
+    ],
+)
+def test_other_places_are_read_per_region_mention(monkeypatch, question, places) -> None:
+    known = ["서울특별시", "서울", "부산", "대구", "경기도"]
+    monkeypatch.setattr(indicators, "_region_names", lambda: known)
+    assert d._other_places(question) == places
+
+
+def test_destination_region_is_not_a_residence_condition(fake_table, monkeypatch) -> None:
+    # "경기도에서 서울로 통근하는 사람": HCX가 지역 [경기도, 서울]로 읽어 두 지역을 비교했고
+    # 통근지 칸도 경기도를 골랐다 (경기도 5,966,491 vs 서울 523,388)
+    known = ["서울특별시", "경기도", "서울"]
+    monkeypatch.setattr(indicators, "_region_names", lambda: known)
+    dims = [
+        d.Dim(0, "항목", {"T1": "통근통학인구"}),
+        d.Dim(1, "현 거주지별", {"00": "전국", "11": "서울특별시", "41": "경기도"}),
+        d.Dim(2, "통근통학지별", {"00": "계", "11": "서울특별시", "41": "경기도"}),
+    ]
+    fake_table["tables"]["COMMUTE"] = (dims, 1, "시도")
+    fake_table["units"]["COMMUTE"] = ("명", True)
+    monkeypatch.setattr(
+        lookup, "_table", lambda _: {"tbl_nm": "현 거주지별/통근통학지별 통근통학 인구"}
+    )
+    parsed = {**BASE, "type": "compare", "regions": ["경기도", "서울"], "indicator": "", "term": ""}
+    question = "2020년 경기도에서 서울로 통근하는 사람은 몇 명이야?"
+    spec, why = d.build("COMMUTE", question, parsed)
+    assert spec is not None, why
+    assert spec["sources"][0]["filters"] == {"c2_id": "11"}  # 통근지는 서울
+    q = d._with_spec(parsed, spec)
+    assert q["regions"] == ["경기도"] and q["type"] == "value"  # 사는 곳은 경기도 하나
+
+
+@pytest.mark.parametrize("item", ["서울", "서울에 사는", "서울 거주"])
+def test_residence_condition_is_covered_by_region_dim(monkeypatch, item: str) -> None:
+    # "서울에 사는 부산 출신 1인 가구": 통계표 찾기가 '서울'을 조건 낱말로도 뽑으면 칸 이름에
+    # 없어 "조건 '서울'을 반영할 수 없음"으로 끝났다. 사는 곳은 지역 분류가 반영한다
+    names = ("서울특별시", "부산광역시", "서울", "부산")
+    monkeypatch.setattr(indicators, "find_regions", lambda t: [n for n in names if n in t])
+    plan = d.Plan(pick={0: "21"}, matched={0: "21"})
+    slots = {"conditions": {"items": [item, "부산"]}}
+    parsed = {**BASE, "regions": ["서울"]}
+    assert d.uncovered(slots, plan, BIRTHPLACE, parsed, region_dim=1) is None
+    # 질문의 지역이 아닌 다른 지역 낱말은 지금처럼 칸에 반영돼야 한다
+    other = {**BASE, "regions": ["부산"]}
+    assert d.uncovered({"conditions": {"items": ["서울"]}}, plan, BIRTHPLACE, other, 1)
+
+
+def test_region_words_pick_cells_when_table_has_no_region_dim(fake_table, monkeypatch) -> None:
+    # 지역 분류가 없는 표는 지역 이름 칸이 곧 지역이다
+    monkeypatch.setattr(indicators, "find_regions", lambda t: ["서울"] if "서울" in t else [])
+    fake_table["tables"]["NOREGION"] = ([BIRTHPLACE[0]], None, "전국")
+    fake_table["units"]["NOREGION"] = ("가구", True)
+    spec, why = d.build("NOREGION", "2020년 서울 1인 가구 수는?", {**BASE, "regions": []})
+    assert spec is not None, why
+    assert spec["sources"][0]["item_id"] == "11"
+
+
+GENERATIONS = [  # '세대구성별/거처의종류별/점유형태별 가구(일반가구)': 두 분류 모두 합계 칸이 없다
+    d.Dim(0, "항목", {"T10": "일반가구-계", "T20": "활동제약자 없는 가구-계"}),
+    d.Dim(1, "행정구역별", {"00": "전국", "11": "서울특별시"}),
+    d.Dim(2, "세대구성별", {"000": "일반가구", "100": "1세대가구-계", "200": "2세대가구-계"}),
+]
+
+
+@pytest.mark.parametrize(
+    ("question", "classes", "ok"),
+    [
+        # 조건 추출이 "2세대가구"의 '세대'를 나눠 보기로 읽어 표 안내로 끝났다
+        ("2020년 서울 2세대가구 수는?", ["세대"], True),
+        ("2020년 서울 2세대가구 수는?", [], True),
+        ("2020년 서울 세대구성별 가구 수는?", ["세대구성"], False),  # 나눠 보기는 그대로 막는다
+    ],
+)
+def test_named_cell_is_not_a_split_view(fake_table, monkeypatch, question, classes, ok) -> None:
+    title = "세대구성/가구원 수/활동제약자수별 가구(일반가구)-시도"
+    monkeypatch.setattr(lookup, "_table", lambda _: {"tbl_nm": title})
+    fake_table["tables"]["GEN"] = (GENERATIONS, 1, "시도")
+    fake_table["units"]["GEN"] = ("가구", True)
+    slots = {"conditions": {"classes": classes}}
+    spec, why = d.build("GEN", question, {**BASE, "indicator": "", "term": ""}, slots=slots)
+    if ok:
+        assert spec is not None, why
+        # 항목은 합계 표시를 뗀 이름이 표 이름에 든 첫 칸(일반가구-계)이 전체다
+        assert spec["sources"][0]["item_id"] == "T10"
+        assert spec["sources"][0]["filters"] == {"c2_id": "200"}
+    else:
+        assert spec is None
+
+
+def test_llm_or_cached_cell_does_not_make_a_split_view_one_value(fake_table, monkeypatch) -> None:
+    # "아파트 가구 수를 세대구성별로": 칸 고르기 LLM · 캐시가 고른 칸(질문에 없는 2세대가구)은
+    # 나눠 보기가 아니라는 근거가 되지 않는다 (비친족 22,804가구가 통과했다)
+    title = "세대구성/가구원 수/활동제약자수별 가구(일반가구)-시도"
+    monkeypatch.setattr(lookup, "_table", lambda _: {"tbl_nm": title})
+    fake_table["tables"]["GEN"] = (GENERATIONS, 1, "시도")
+    fake_table["units"]["GEN"] = ("가구", True)
+    slots = {"conditions": {"classes": ["세대구성"]}}
+    parsed = {**BASE, "indicator": "", "term": ""}
+    question = "2020년 서울 가구 수를 세대구성별로 알려줘"
+    spec, why = d.build("GEN", question, parsed, forced={2: "200"}, slots=slots)
+    assert spec is None and "나눠 보기" in str(why)
+
+
+DWELLING = [  # '거처의 종류별 가구(일반가구)': 세대구성 분류가 없는 표
+    d.Dim(0, "항목", {"T1": "일반가구"}),
+    d.Dim(1, "행정구역별", {"00": "전국", "11": "서울특별시"}),
+    d.Dim(2, "거처의 종류별", {"0": "계", "1": "아파트", "2": "단독주택"}),
+]
+
+
+@pytest.mark.parametrize(
+    ("question", "kind", "ok"),
+    [
+        # 세대구성별로 구성비를 낼 수 없는 표에서 아파트 칸의 비율("가구 중 아파트 비율 43.02%")로
+        # 답했다
+        ("2020년 서울 아파트 가구 수를 세대구성별로 알려줘", "composition", False),
+        ("2020년 서울 일반가구의 거처의 종류별 구성비", "composition", True),  # 표에 있는 분류
+        ("2020년 서울 가구 중 아파트 비율은?", "value", True),  # '~별'이 없는 비율 질문
+    ],
+)
+def test_composition_by_named_class_is_not_replaced_by_another_ratio(
+    fake_table, monkeypatch, question: str, kind: str, ok: bool
+) -> None:
+    title = "거처의 종류별 가구(일반가구)"
+    monkeypatch.setattr(lookup, "_table", lambda _: {"tbl_nm": title})
+    fake_table["tables"]["DWELL"] = (DWELLING, 1, "시도")
+    fake_table["units"]["DWELL"] = ("가구", True)
+    parsed = {**BASE, "type": kind, "indicator": "", "term": ""}
+    spec, why = d.build("DWELL", question, parsed)
+    if ok:
+        assert spec is not None, why
+    else:
+        assert spec is None and "세대구성별 구성비" in str(why)
+
+
+@pytest.mark.parametrize(
+    ("question", "forced", "item"),
+    [
+        ("2020년 서울 1인 가구 수는?", {0: "11"}, None),  # 캐시의 출생지 '서울' 칸은 쓰지 않는다
+        ("2020년 서울 1인 가구 수는?", {0: "00"}, "00"),  # 합계(출생지 전체)는 그대로
+        ("2020년 서울 출생 1인 가구 수는?", {0: "11"}, "11"),  # 출생지를 말하면 그 칸
+    ],
+)
+def test_forced_place_cells_need_the_question_to_ask_them(
+    fake_table, monkeypatch, question: str, forced: dict, item: str | None
+) -> None:
+    names = ("서울특별시", "부산광역시", "서울", "부산")
+    monkeypatch.setattr(indicators, "_region_names", lambda: names)
+    monkeypatch.setattr(lookup, "_table", lambda _: {"tbl_nm": BIRTHPLACE_TITLE})
+    fake_table["tables"]["BIRTH"] = (BIRTHPLACE, 1, "시도")
+    fake_table["units"]["BIRTH"] = ("가구", True)
+    parsed = {**BASE, "indicator": "1인 가구", "term": "1인 가구"}
+    # 캐시에서 다시 쓸 칸
+    reused = d.reusable_forced(question, forced, [], BIRTHPLACE, 1)
+    assert reused == ({0: item} if item else {})
+    # 칸 고르기 LLM이 고른 칸으로 바로 계산할 때도 같다
+    spec, why = d.build("BIRTH", question, parsed, forced=forced)
+    if item:
+        assert spec is not None, why
+        assert spec["sources"][0]["item_id"] == item
+    else:
+        assert spec is None and why == "질문의 말과 맞는 칸이 없음"
+
+
+DISABLED = [  # '연령 및 성별 장애인 인구': 항목에 묶음 이름 뒤에 성별이 붙는다
+    d.Dim(0, "항목", {"T1": "장애인 인구_계", "T2": "장애인 인구_남자", "T3": "장애인 인구_여자"}),
+    d.Dim(1, "행정구역별", {"00": "전국", "11": "서울특별시"}),
+    d.Dim(2, "연령별", AGES),
+]
+
+
+def test_group_named_sex_cells_are_a_sex_dimension() -> None:
+    # 전에는 성별 칸으로 보지 않아 "장애인"이 남 · 여 두 칸에 걸린 채 "맞는 칸 없음"으로 끝났다
+    assert DISABLED[0].sex_codes() == {"남": "T2", "여": "T3"}
+    # 합계 칸이 없는 묶음은 성별 칸으로 보지 않는다
+    loose = d.Dim(0, "항목", {"A": "통근_남자", "B": "통학_여자"})
+    assert loose.sex_codes() == {}
+
+
+@pytest.mark.parametrize(
+    ("question", "sex", "item"),
+    [
+        ("서울 장애인 중에 18살에서 23살 사이 몇 명이야?", "계", "T1"),  # 집단 전체
+        ("서울 남자 장애인 몇 명이야?", "남", "T1"),  # 성별은 성별 칸이 고른다
+    ],
+)
+def test_group_word_hitting_both_sex_cells_picks_group_total(
+    fake_table, question: str, sex: str, item: str
+) -> None:
+    fake_table["tables"]["DIS"] = (DISABLED, 1, "시도")
+    fake_table["units"]["DIS"] = ("명", True)
+    parsed = {**BASE, "indicator": "", "term": "", "sex": sex}
+    if "18살" in question:
+        parsed["ages"] = [[18, 23]]
+    spec, why = d.build("DIS", question, parsed)
+    assert spec is not None, why  # 연령 구간이 맞지 않으면 계산 단계가 '맞는 구간 없음'으로 답한다
+    assert spec["sources"][0]["item_id"] == item
+    if sex == "남":
+        assert spec["sources"][0]["by_sex"]["남"] == {"item_id": "T2"}
+
+
+@pytest.mark.parametrize(
+    ("term", "target", "name"),
+    [
+        # 조건절을 이름으로 쓰면 연령을 뗀 "엄마가 일 때는 표의 연령 구간이…"가 됐다
+        ("엄마가 32살에서 37살일 때", "출생", "출생 수"),
+        ("1인 가구 수", "1인가구", "1인 가구 수"),  # 표의 대상을 담은 표현은 그대로
+        ("", "출생", "출생 수"),
+    ],
+)
+def test_name_from_table_target_when_only_totals_picked(term: str, target: str, name: str) -> None:
+    item = d.Dim(0, "항목", {"0": "계", "1": "남자", "2": "여자"})
+    plan = d.Plan(pick={0: "0"}, matched={0: "0"})
+    parsed = {"term": term, "indicator": ""}
+    assert d._name(parsed, [item], plan, True, strip_age=True, unit="명", target=target) == name
+
+
+RELIGION = [  # '성/연령/종교별 인구': 종교가 항목 분류에 들어 있다
+    d.Dim(0, "항목", {"0": "내국인", "1": "불교", "2": "기독교(천주교)", "3": "기독교(개신교)"}),
+    d.Dim(1, "행정구역별", {"00": "전국", "11": "서울특별시"}),
+]
+
+
+@pytest.mark.parametrize(
+    ("question", "item"),
+    [
+        ("2005년에 천주교 믿는 사람 몇 명이었어?", "2"),  # 나눠 보기(종교별)로 막혔다
+        ("2005년 종교별 인구 알려줘", None),  # 나눠 보기는 그대로 막는다
+    ],
+)
+def test_class_held_in_item_dimension_counts_as_named_cell(
+    fake_table, monkeypatch, question: str, item: str | None
+) -> None:
+    monkeypatch.setattr(lookup, "_table", lambda _: {"tbl_nm": "성/연령/종교별 인구-시군구"})
+    fake_table["tables"]["REL"] = (RELIGION, 1, "시도")
+    fake_table["units"]["REL"] = ("명", True)
+    slots = {"conditions": {"classes": ["종교"]}}
+    spec, why = d.build("REL", question, {**BASE, "indicator": "", "term": ""}, slots=slots)
+    if item:
+        assert spec is not None, why
+        assert spec["sources"][0]["item_id"] == item
+    else:
+        assert spec is None
+
+
+def test_name_from_underscored_total_cell() -> None:
+    # "2023년 서울 이주배경인구 어때?": 질문 해석이 지표 표현을 비워 칸 이름으로 이름을 지었다
+    item = d.Dim(0, "항목", {"T10": "이주배경인구_계", "T20": "내국인(귀화)_계"})
+    plan = d.Plan(pick={0: "T10"}, matched={0: "T10"})
+    assert d._name({}, [item], plan, True, unit="명") == "이주배경인구 수"
+    unmatched = d.Plan(pick={0: "T10"}, matched={})  # 고른 칸 이름으로 짓는 경우도 같다
+    assert d._name({}, [item], unmatched, True, unit="명") == "이주배경인구 수"
 
 
 def test_name_drops_single_cell_item_and_unit_tail() -> None:
@@ -1879,6 +2452,59 @@ def test_cached_plan_on_age_limited_table_checks_question_scope(
     else:
         assert res is None and built == [] and used == []
         assert "65세 이상만 집계" in trace["dynamic"][0]["skip"]
+
+
+@pytest.mark.parametrize("flag", ["X", "-"])
+def test_cached_answer_keeps_suppression_for_matching_table(monkeypatch, flag: str) -> None:
+    primary, fallback = "DT_1PL1502", "DT_FALLBACK"
+
+    async def find(key):
+        return [{"id": 1, "tbl_id": primary}, {"id": 2, "tbl_id": fallback}]
+
+    used = []
+    built = []
+
+    async def mark_used(plan_id):
+        used.append(plan_id)
+
+    async def build_(tbl_id, *args):
+        built.append(tbl_id)
+        return {
+            "name": "1인 가구 수",
+            "kind": "count",
+            "cells": "1인가구",
+            "sources": [{"table": tbl_id}],
+        }, None
+
+    async def answer_(parsed, *_args):
+        tbl_id = parsed["dynamic_spec"]["sources"][0]["table"]
+        if tbl_id == primary:
+            lookup.EMPTY_FLAGS.get().append(flag)
+            return {"status": "ok", "result": {"value": None}}
+        return {"status": "ok", "result": {"value": 100}}
+
+    monkeypatch.setattr(d.plan_cache, "key_of", lambda parsed: ("k", "1인 가구 수"))
+    monkeypatch.setattr(d.plan_cache, "find", find)
+    monkeypatch.setattr(d.plan_cache, "used", mark_used)
+    monkeypatch.setattr(
+        lookup,
+        "_table",
+        lambda tbl_id: {"tbl_nm": "성 및 연령별 1인가구", "org_nm": "KOSIS", "basis": ""},
+    )
+    monkeypatch.setattr(indicators, "kosis_url", lambda tbl_id: f"https://kosis.kr/{tbl_id}")
+    monkeypatch.setattr(d, "_build", build_)
+    monkeypatch.setattr(qa, "answer", answer_)
+
+    trace: dict = {}
+    res = asyncio.run(d.cached_answer("2020년 서울 1인 가구 수", BASE, trace))
+    if flag == "X":
+        assert res["status"] == "missing_data" and res["result"]["suppressed"]
+        assert res["result"]["tbl_id"] == primary and "value" not in res["result"]
+        assert built == [primary] and used == []
+        assert res["trace"]["plan_cache"] == {"hit": 1, "tbl_id": primary}
+    else:
+        assert res["status"] == "ok" and res["result"]["value"] == 100
+        assert built == [primary, fallback] and used == [2]
 
 
 def test_cell_name_unit_wins_over_count_unit() -> None:

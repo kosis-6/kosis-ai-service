@@ -16,6 +16,13 @@ from app.services import indicators, qa, question_clarify, refusal
         ("사망신고는 어떻게 하나요", "not_statistics"),
         ("주민등록등본 발급 방법 알려줘", "not_statistics"),
         ("신혼부부가 살기 좋은 도시 추천해 줘", "not_statistics"),
+        ("서울 살기 어때?", "not_statistics"),
+        ("이사 가려는데 세종 어때?", "not_statistics"),
+        ("이사하려는데 대전 어때?", "not_statistics"),
+        ("은퇴하고 이주할 곳으로 제주 어때?", "not_statistics"),
+        ("결혼하기 좋은 도시 어때?", "not_statistics"),
+        ("서울이랑 부산 중 어디가 살기 좋아?", "not_statistics"),
+        ("어디가 더 나을까?", "not_statistics"),
         ("이 챗봇은 뭘 할 수 있나요?", "chat"),
         ("사용법 좀 알려줘", "chat"),
     ],
@@ -32,6 +39,11 @@ def test_early_catches_non_statistics(question: str, status: str) -> None:
         "작년 혼인신고 건수 몇 건이야?",  # 수치를 묻는다
         "출생신고 통계 어디서 봐?",
         "2024년 부산 출생아 수",
+        "2024년 부산 합계출산율 어때?",
+        "부산은 어때?",  # 앞 질문의 지역을 바꾸는 말일 수 있다
+        "요즘 출산율 어때?",
+        "2023년 서울 이주배경인구 어때?",  # 지표 이름 속 '이주'는 의견 말이 아니다
+        "외국인 이주민 어때?",
         "대전 인구 추이 알려줘",
         "전입 인구가 많은 시도 순위",
     ],
@@ -230,10 +242,29 @@ def _multi(status: str, outside: list[str]) -> dict:
 
 
 @pytest.mark.parametrize("status", ["tables", "ok"])
-def test_one_indicator_outside_the_domain_refuses_the_whole_question(status: str) -> None:
+def test_one_indicator_outside_the_domain_refuses_the_whole_question(status, monkeypatch) -> None:
+    monkeypatch.setattr(indicators, "find_regions", lambda t: [])  # 지역 이름 목록(DB) 대신
     out = _finalize(_multi(status, ["전세 가격 상승률"]))
     assert out["status"] == "out_of_scope"
     assert "'전세 가격 상승률'" in out["answer"] and "평균 초혼 연령 · 조출생률" in out["answer"]
+
+
+def test_outside_text_uses_particle_for_the_word() -> None:
+    # "'미세먼지'은 인구 분야 통계가 아니라"로 조사를 '은'으로 고정했다
+    assert refusal._outside_text(["미세먼지"], ["사망자 수"]).startswith("'미세먼지'는 ")
+    assert refusal._outside_text(["집값"], []).startswith("'집값'은 ")
+    assert refusal._outside_text(["집값", "물가"], []).startswith("'집값' · '물가' 등은 ")
+
+
+def test_region_name_listed_as_outside_indicator_is_not_refused(monkeypatch) -> None:
+    # "부산은?": 계획이 지역 이름을 범위 밖 지표로 적으면
+    # "'부산'은 인구 분야 통계가 아니라"로 답했다
+    monkeypatch.setattr(indicators, "find_regions", lambda t: ["부산"] if "부산" in t else [])
+    assert _finalize(_multi("tables", ["부산"]))["status"] == "tables"
+    assert _finalize(_multi("tables", ["부산광역시"]))["status"] == "tables"
+    out = _finalize(_multi("tables", ["부산", "부산 집값"]))  # 지역이 붙은 다른 지표는 그대로
+    assert out["status"] == "out_of_scope"
+    assert "'부산 집값'" in out["answer"] and "'부산'" not in out["answer"]
 
 
 def test_all_indicators_inside_the_domain_are_left_alone() -> None:

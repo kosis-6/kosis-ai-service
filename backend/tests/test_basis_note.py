@@ -100,7 +100,7 @@ def test_how_many_babies_explains_tfr(monkeypatch: pytest.MonkeyPatch) -> None:
         "asked": {"birth_pair": True},
     }
     r = qa._compute(q)
-    assert r["split"][0]["notes"][0].startswith("합계출산율은 여자 한 명이 가임기간(15~49세) 동안 낳을")
+    assert r["split"][0]["notes"][0].startswith(qa.TFR_MEANING)
 
 
 def test_per_woman_question_explains_tfr(monkeypatch: pytest.MonkeyPatch) -> None:

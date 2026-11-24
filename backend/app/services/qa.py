@@ -228,13 +228,18 @@ def _indicator_list():
 # ---- 질문 해석 보정: LLM 해석을 질문 원문과 대조해 바로잡는다 ------------------------------
 
 GENDER_WORDS = {"여": re.compile(r"여성|여자"), "남": re.compile(r"남성|남자")}
+# "경력단절여성이 있는 가구"의 여성은 가구 유형을 설명한다.
+HOUSEHOLD_MEMBER_GENDER = re.compile(r"(?:여성|여자|남성|남자)\s*(?:이|가)\s*(?:있|없)는\s*가구")
+# '성별'이라는 말. "세대구성별", "다문화가구 구성별", "특성별" 안의 '성별'은 아니다
+# ("아파트 가구 수를 세대구성별로"가 서울 총인구의 성별 구성으로 답했다)
+SEX_WORD = r"(?<![구특])성별"
 # 남녀를 함께 묻는 표현 (구성비 질문이면 성별 구성)
-SEX_SPLIT = re.compile(r"남녀|성별|(남성|남자).*(여성|여자)|(여성|여자).*(남성|남자)")
+SEX_SPLIT = re.compile(rf"남녀|{SEX_WORD}|(남성|남자).*(여성|여자)|(여성|여자).*(남성|남자)")
 # 남녀를 나누지 않고 합계를 물음 ("남녀 합계 인구", "성별 구분 없이")
 SEX_TOTAL = re.compile(
-    r"(?:남녀|성별|(?:남성|남자).*(?:여성|여자)|(?:여성|여자).*(?:남성|남자))"
+    rf"(?:남녀|{SEX_WORD}|(?:남성|남자).*(?:여성|여자)|(?:여성|여자).*(?:남성|남자))"
     r"\s*(?:인구\s*)?(?:합계|전체|합산|합쳐|합치|합한|모두|통틀어)"
-    r"|성별\s*(?:구분\s*없이|상관\s*없이)"
+    rf"|{SEX_WORD}\s*(?:구분\s*없이|상관\s*없이)"
 )
 # 낱말 자체에 성별이 든 말: 성별 말(GENDER_WORDS)이 없어도 HCX가 읽은 성별을 지우지 않는다
 # ("남편 평균 초혼연령" → 남, "미혼모" → 여)
@@ -549,8 +554,12 @@ def _says_year(question):
 
 SINCE = re.compile(r"((?:19|20)\d{2})\s*년\s*(이후|이래|부터)(?!.*까지)")
 UNTIL = re.compile(r"((?:19|20)\d{2})\s*년\s*까지")
-# "한국 인구", "한국 사람"도 전국 ("한국 국적"은 아니다: 귀화자)
-NATIONWIDE = re.compile(r"전국|우리나라|대한민국|한국\s*(전체|의|은|는|인구|사람)|국내\s*(전체)?")
+# "국내 출생아", "한국 인구"도 전국이다. 국내이동과 다문화 자녀의 국내출생은 지표·분류 이름이다.
+NATIONWIDE = re.compile(
+    r"전국|우리\s*나라|대한민국|한국\s*(?:전체|의|은|는|인구|사람)"
+    r"|국내(?!\s*(?:이동|인구\s*이동|출생(?!\s*아)"
+    r"|에서\s*(?:태어난|출생한)\s*(?:다문화\s*가구\s*)?자녀))"
+)
 WHY_WORDS = re.compile(r"왜|이유|원인|때문|탓|효과|영향")
 CAUSAL = re.compile(r"효과가?\s*(있|없|컸)|효과적|원인|왜\s|영향을?\s*(줬|주|미쳤|끼쳤)")
 # 지표 사전이 나누지 않는 조건 (체중·기간 등). 버리고 전체 값으로 답하면 틀린 답이 된다
@@ -1046,7 +1055,7 @@ def correct(question, parsed, today=None):
         kind = "causal"
     elif kind == "other" and STATS_WORDS.search(question):
         kind = "compare" if len(parsed.get("regions") or []) > 1 else "value"
-        if COMPOSITION_WORDS.search(question) and re.search(r"남녀|성별|연령", question):
+        if COMPOSITION_WORDS.search(question) and re.search(rf"남녀|{SEX_WORD}|연령", question):
             kind = "composition"  # 예: "전국 인구 중 남녀 비중"
         fix("type", kind, "통계를 묻는 질문")
         if indicators.spec(parsed.get("indicator")) is None:
@@ -1055,6 +1064,8 @@ def correct(question, parsed, today=None):
     ages = extract_ages(question)
     if ages:
         parsed["ages"] = ages
+        if note := decade_part_note(question):
+            parsed["age_note"] = note  # "20대 후반" → 27~29세: 사람마다 달라 답에 기준을 밝힌다
     # "노인"·"청년" 같은 이름은 정의 구간으로 (답변에 기준 고지).
     # 단, 출생 지표의 "아기 · 아이"는 태어난 아이를 가리키는 말이지 0세 연령 조건이 아니다
     # ("다문화 가정 아기 최근 5년" → 연령 조건을 붙여 '연령으로 나눈 자료 없음'으로 끝났다)
@@ -1115,10 +1126,15 @@ def correct(question, parsed, today=None):
         current = indicators.canonical_name(parsed.get("indicator") or "")
         if name and current != name:
             # "인구"만 찾았고 HCX가 다른 지표를 골랐으면 그대로 둔다 (예: "인구에서 고령층 비중")
-            # 단, 연령 구간 인구 수를 물었으면 총인구 (예: "65세 이상 인구는?")
+            # 단, 연령 구간 인구 수를 물었으면 총인구 (예: "65세 이상 인구는?").
+            # HCX가 사전에 없는 지표를 골랐어도 그 표현이 질문에 그대로 있으면 그대로 둔다
+            # ("인구가 많고 집값이 비싼 서울의 1인 가구 수": 꾸밈말의 '인구'로 총인구가 됐다)
+            said = name == "총인구" and current is None and _says_other_indicator(question, parsed)
             if _both_sides(current, name, question):
                 names = names | {current}  # 질문이 차이의 두 쪽을 다 말했다: HCX의 차이 지표가 근거
-            elif name != "총인구" or current is None or (ages and not PCT_ASK.search(question)):
+            elif not said and (
+                name != "총인구" or current is None or (ages and not PCT_ASK.search(question))
+            ):
                 fix("indicator", name, "질문의 지표 표현")
                 parsed.pop("unsupported", None)
         if sibling := _ratio_sibling(question, parsed, fix):
@@ -1179,22 +1195,23 @@ def correct(question, parsed, today=None):
     _apply_time(question, parsed, fix, today)
     _read_question(question, parsed, fix)
 
-    genders = [sex for sex, pattern in GENDER_WORDS.items() if pattern.search(question)]
-    if len(genders) == 1 and parsed.get("sex") in (None, "", "계"):
+    gender_question = HOUSEHOLD_MEMBER_GENDER.sub("가구", question)
+    genders = [sex for sex, pattern in GENDER_WORDS.items() if pattern.search(gender_question)]
+    if len(genders) == 1 and (parsed.get("sex") in (None, "", "계") or gender_question != question):
         fix("sex", genders[0], "질문의 성별 표현")
-    both = len(genders) == 2 or (not genders and SEX_SPLIT.search(question))
+    both = len(genders) == 2 or (not genders and SEX_SPLIT.search(gender_question))
     if parsed.get("sex") in ("남", "여"):
         if both:
             fix("sex", "계", "남녀를 함께 물음")  # "남자랑 여자 중 누가", "남녀 인구 비교"
-        elif not genders and not SEX_IMPLIED.search(question):
+        elif not genders and not SEX_IMPLIED.search(gender_question):
             # 성별을 말하지 않았는데 HCX가 짐작해 넣은 성별 ("서울 인구 몇 명이야?" → 남)
             fix("sex", "계", "성별을 말하지 않음")
-    if both and kind != "composition" and not SEX_TOTAL.search(question):
+    if both and kind != "composition" and not SEX_TOTAL.search(gender_question):
         # 남녀를 나눠 물음 → 계산 단계(compute)가 남·여를 따로 계산한다 (구성비는 by=sex가 맡는다)
         parsed["split_sex"] = True
         if kind == "compare" and len(parsed.get("regions") or []) == 1:
             fix("type", "value", "한 지역의 남녀 비교")  # 지역 비교가 아니라 남·여 값
-    if kind == "composition" and parsed.get("by") != "sex" and SEX_SPLIT.search(question):
+    if kind == "composition" and parsed.get("by") != "sex" and SEX_SPLIT.search(gender_question):
         fix("by", "sex", "질문의 남녀 구성 표현")
 
     _full_region_names(question, parsed, fix)
@@ -1274,6 +1291,15 @@ def correct(question, parsed, today=None):
             fix("type", "value", "여러 지역의 합계를 물음")
 
     names = asked_indicators(question)
+    if (
+        len(names) <= 1
+        and parsed.get("type") in ("value", "trend", "compare")
+        and (other := unlisted_measure(question))
+    ):
+        # "출생아 수랑 1인 가구 수": 사전에 없는 지표가 함께 물렸다. 사전 지표 하나로 답하면
+        # 다른 지표를 조용히 뺀다 → 통계표 찾기가 지표마다 나눠 계산하게 근거 없음으로 둔다
+        parsed["also_asked"] = other
+        parsed["grounded"] = False
     if len(names) > 1 and parsed.get("type") in ("value", "trend", "compare"):
         parsed["indicators"] = names  # 지표마다 따로 계산한다 (compute)
     elif (
@@ -1311,9 +1337,29 @@ def correct(question, parsed, today=None):
         # 하므로 그 지표의 표에서 분류 순위를 계산한다 (ask_session._dynamic_instead)
         parsed["rank_axis"] = OTHER_AXIS.search(question)[1]
         parsed["grounded"] = False
+    _one_region_years(parsed, fix)
     if fixes:
         parsed["corrections"] = fixes
     return parsed
+
+
+def _one_region_years(parsed, fix):
+    """ "2010년과 2025년 서울 인구 비교": 한 지역의 두 연도 비교는 그 기간의 추이다.
+    계산 단계도 같은 규칙으로 추이를 계산하지만(_compute_population · _compute_lookup), 조건에
+    '비교'가 남으면 화면의 조건 칩이 끝 해 하나('2025년')로만 보였다 (11/24).
+    남녀 비교 · 여러 지표 · 지역 묶음은 그대로 둔다"""
+    y0, y1 = parsed.get("start_year"), parsed.get("end_year")
+    if (
+        parsed.get("type") == "compare"
+        and len(parsed.get("regions") or []) == 1
+        and y0
+        and y1
+        and y0 != y1
+        and not parsed.get("split_sex")
+        and not parsed.get("indicators")
+        and not parsed.get("group")
+    ):
+        fix("type", "trend", "한 지역의 두 연도 비교는 그 기간의 추이")
 
 
 def _change_rank(question, parsed, fix):
@@ -1392,7 +1438,7 @@ def _mean_of_regions(q):
     return out
 
 
-PEOPLE_INDICATOR = re.compile(r"인구|사람|주민|남녀|성별|연령|나이")
+PEOPLE_INDICATOR = re.compile(rf"인구|사람|주민|남녀|{SEX_WORD}|연령|나이")
 CROSS_DYNAMIC = "cross_dynamic"  # 두 값 중 한쪽이 사전에 없음 (ask_session이 마저 계산)
 
 
@@ -1522,8 +1568,9 @@ def population_modifier(question):
 
 
 def _short_region(word):
-    """'강남'(강남구)·'수원'(수원시)처럼 끝의 시·군·구를 뗀 지역 이름인가.
-    find_regions는 짧은 이름을 찾지 않으므로(일반 낱말과 겹쳐서) 여기서 따로 본다.
+    """'강남'(강남구)·'수원'(수원시)처럼 끝의 시·군·구를 뗀 지역 이름이나
+    섬 이름('울릉도' → 울릉군)인가. find_regions는 짧은 이름을 찾지 않으므로
+    (일반 낱말과 겹쳐서) 여기서 따로 본다.
     한 글자 말("중"→중구)과 흔한 낱말과 겹치는 이름("고령")은 지역으로 보지 않는다"""
     if len(word) < 2 or word in COMMON_WORD_REGIONS:
         return False
@@ -1531,6 +1578,38 @@ def _short_region(word):
         return indicators.resolve_region(word)["status"] in ("ok", "ambiguous_region")
     except StatsTableMissing:  # 지역 목록이 없는 DB(CI 등): 짧은 이름 확인을 건너뛴다
         return False
+
+
+# 지표 둘을 잇는 말 ("출생아 수랑 1인 가구 수", "출생아 수, 1인 가구 수")
+# 숫자 사이의 쉼표("1,000명당")는 잇는 말이 아니다
+MEASURE_JOIN = re.compile(
+    r"(?<=[가-힣0-9])(?:이랑|랑|하고|와|과)\s+|\s*(?:(?<!\d),|,(?!\d))\s*|\s+(?:및|그리고)\s+"
+)
+# 수 · 비율을 묻는 지표 표현의 끝
+MEASURE_TAIL = re.compile(r"(?:수|율|비율|비중|인구|가구|건수|세대)$")
+# 지표 표현 뒤의 묻는 말 ("~ 알려줘", "~ 몇 명이야")
+ASK_TAIL = re.compile(r"\s+(?:알려|보여|얼마|몇|각각|비교|궁금|어때|좀|같이|함께).*$")
+
+
+def unlisted_measure(question):
+    """지표 사전에 있는 지표와 함께 물은, 사전에 없는 지표 표현. 없으면 None
+    ("2020년 서울 출생아 수랑 1인 가구 수 알려줘" → "1인 가구 수"). 지역 · 연도만 잇는 말
+    ("서울과 부산의 출생아 수")이나 사전 지표끼리 잇는 말은 아니다 (asked_indicators가 맡는다)"""
+    parts = [p for p in MEASURE_JOIN.split(question.strip()) if p and p.strip()]
+    if len(parts) < 2:
+        return None
+    listed = [bool(indicators.find_in_text(p)) for p in parts]
+    if not any(listed):
+        return None
+    for part, has in zip(parts, listed, strict=True):
+        if has:
+            continue
+        phrase = re.sub(r"(?:은|는|이|가|을|를|도)$", "", ASK_TAIL.sub("", part).strip(" ?.!"))
+        words = [w for w in phrase.split() if not YEAR.search(w) and not indicators.find_regions(w)]
+        phrase = " ".join(words)
+        if len(indicators._norm(phrase)) >= 2 and MEASURE_TAIL.search(indicators._norm(phrase)):
+            return phrase
+    return None
 
 
 def asked_indicators(question):
@@ -1778,6 +1857,29 @@ def _age_population(question, parsed, fix):
     parsed.pop("unsupported", None)
 
 
+def _says_other_indicator(question, parsed):
+    """HCX가 고른 사전 밖 지표 표현이 질문에 그대로 있고, 인구 · 연령 집단 · 지역 · 연도 표현이
+    아닌가 ("인구가 많은 서울의 1인 가구 수"의 '1인 가구'). 그러면 질문 속 '인구'는 그 지표를
+    꾸미는 말이다. 연령 집단("애들" = 0~14세 인구)을 물었으면 아니다"""
+    if parsed.get("ages") or parsed.get("age_group"):
+        return False
+    q = indicators._norm(question)
+    for phrase in (parsed.get("term"), parsed.get("indicator")):
+        if not phrase or not isinstance(phrase, str):
+            continue
+        p = indicators._norm(phrase)
+        if len(p) < 2 or p not in q or re.search(r"\d{4}", p):
+            continue
+        if extract_ages(phrase) or agegroup.resolve(phrase):
+            continue  # 연령 집단을 말한 표현
+        if any(n == "총인구" for *_, n in indicators.find_in_text(phrase)):
+            continue  # "서울 인구"처럼 인구를 말한 표현
+        if indicators.find_regions(phrase):
+            continue  # "2020년 서울"처럼 지표가 아닌 말
+        return True
+    return False
+
+
 def _guard_indicator(question, parsed, names, fix):
     """지원 지표로 바꿔서 답하지 않게 한다 (0회차: 다른 지표로 답한 8문항)
     - 계산 지표(고령인구 비율 등)는 질문에 그 지표 표현이 있어야 한다
@@ -1803,6 +1905,11 @@ def _guard_indicator(question, parsed, names, fix):
     if (k in ("ratio", "index") and asks_count) or ungrounded:
         if _asks_age_population(question, parsed):
             fix("indicator", "총인구", "연령 구간 인구 수를 물음")
+        elif parsed.get("type") == "composition" and "총인구" in names:
+            # "서울 남녀 인구 구성"을 HCX가 성비로 읽었다: 질문이 묻는 것은 인구의 구성이다.
+            # 지원하지 않는 지표로 두면 엉뚱한 표('5세 이상만 집계')로 넘어갔다
+            fix("indicator", "총인구", "인구 구성을 물음")
+            parsed.pop("unsupported", None)
         elif _both_sexes(question) and not OTHER_PEOPLE.search(question):
             # "경기도는 남자가 많아 여자가 많아?": 남녀 인구를 견준다. HCX는 성비를 골랐고 근거가
             # 없어 지원하지 않는 지표 '남자'로 끝나, 표에서 연간 값으로 답했다 (V2-061 11/24)
@@ -2111,6 +2218,20 @@ def age_basis_note(group):
     """연령 집단 이름의 기준 한 줄 ("'청년'은 19~34세로 계산했습니다 (청년기본법 19~34세 · …)")"""
     basis = group["basis"].replace(" (", " · ").replace(")", "")
     return f"{josa(repr_q(group['expr']), '은는')} {ro(group['range'])} 계산했습니다 ({basis})"
+
+
+def decade_part_note(question):
+    """'20대 후반'처럼 초반 · 중반 · 후반으로 말한 연령의 기준 한 줄. 없으면 None.
+    "20대 후반"을 25~29세로 보는 사람도 있어, 숫자로만 풀면 어느 구간인지 알 수 없다 (11/24 S-20)"""
+    said = []
+    for m in AGE_DECADE_PART.finditer(agegroup.native_to_digits(question)):
+        if int(m[1]) % 10 == 0:
+            lo, hi = DECADE_PART[m[2]]
+            band = f"{int(m[1]) + lo}~{int(m[1]) + hi}세"
+            said.append(f"{josa(repr_q(m[0]), '은는')} {ro(band)} 계산했습니다")
+    if not said:
+        return None
+    return f"{', '.join(said)} (초반 0~3세 · 중반 4~6세 · 후반 7~9세)"
 
 
 # 계산 지표 중 남녀로 나눠 볼 수 없는 것 (성비는 그 자체가 남녀 비교, 세대·면적은 성별이 없다)
@@ -2544,6 +2665,11 @@ def _compute(q):
         for r in _leaves(result):
             if note not in r.get("notes", []):
                 r["notes"] = [note] + r.get("notes", [])
+    if result.get("status") == "ok" and (note := q.get("age_note")):
+        # "20대 후반"처럼 초반 · 중반 · 후반으로 말한 연령 (decade_part_note)
+        for r in _leaves(result):
+            if note not in r.get("notes", []):
+                r["notes"] = [note] + r.get("notes", [])
     if (group := q.get("group")) and result.get("status") == "ok" and "values" in result:
         # 묶음 비교·순위는 정의가 갈릴 수 있어 (예: 5대 광역시에 울산 포함 여부) 포함 지역을 밝힌다
         names = ", ".join(v["region"] for v in result["values"])
@@ -2682,6 +2808,11 @@ def _compute_population(q, ind, kind, regions, year, sex, ages, hi):
         # 지역을 말하지 않은 인구 질문("애들 몇 명이야?", "중년 몇 명이야?")은 전국.
         # '우리 동네' · '여기'처럼 지역을 가리키기만 한 질문은 앞(ask_session)에서 되묻는다 (11/24)
         regions = ["전국"]
+    if kind == "compare" and len(regions) == 1:
+        # "2010년과 2025년 서울 인구 비교"처럼 한 지역의 두 연도 비교 (조회 지표의 _compute_lookup과
+        # 같은 규칙). 지역 비교로 계산하면 "값이 있는 지역이 둘 이상이 아니어서"로 끝났다 (11/24)
+        y0, y1 = q.get("start_year"), q.get("end_year")
+        kind = "trend" if y0 and y1 and y0 != y1 else "value"
     if (q.get("asked") or {}).get("latest") and kind in ("value", "compare", "rank"):
         # 연간 자료 다음 해의 최신 달이 있으면 그 해 (순위는 지역 없이 전국으로 확인)
         year = indicators.latest_year([] if kind == "rank" else regions, sex)
