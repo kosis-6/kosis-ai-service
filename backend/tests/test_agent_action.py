@@ -81,3 +81,22 @@ def test_trace_shape_and_helpers() -> None:
     assert (
         aa.top_is_sure({"checks": {}, "review": {"match": "exact"}}) is False
     )  # 확인한 조건이 없으면 확실하지 않다
+
+
+def test_done_actions_are_not_repeated_and_code_failure_leads_to_replan() -> None:
+    # 코드 행동(reroute)을 썼는데도 틀렸다: 이유가 무엇이든 LLM 행동이 남았으면 계획 다시
+    a = aa.choose(_verdict("대상이 다름"), DICT_RES, None, tried=1, done=frozenset({aa.REROUTE}))
+    assert a.name == aa.REPLAN and a.fallback == aa.RETABLE
+    # replan 까지 썼으면(LLM 상한) 남은 코드 행동으로, 다 썼으면 give_up
+    b = aa.choose(
+        _verdict("형태가 다름"), DICT_RES, None, tried=1, llm_tried=1,
+        done=frozenset({aa.REPLAN, aa.REROUTE}),
+    )  # fmt: skip
+    assert b.name == aa.RETABLE
+    c = aa.choose(
+        _verdict("형태가 다름"), SEARCH_RES, _found({}, None), tried=1, llm_tried=1,
+        done=frozenset({aa.REPLAN, aa.RETABLE, aa.REROUTE}),
+    )  # fmt: skip
+    assert c.name == aa.GIVE_UP
+    # 상한(2회)은 done 보다 먼저
+    assert aa.choose(_verdict("형태가 다름"), DICT_RES, None, tried=2).name == aa.GIVE_UP

@@ -32,6 +32,8 @@ ACTIONS = (REPLAN, REQUERY, RETABLE, RECELL, REROUTE, GIVE_UP)
 PLAN_REASONS = ("형태가 다름", "조건이 빠짐", "계산이 빠짐")
 MAX_RETRIES = 2  # 질문당 다시 계산 상한 (B 측정: 한 번에 15 ~ 17초)
 MAX_LLM_RETRIES = 1  # 그중 replan · requery(Gemma 호출)는 합쳐 1회
+MAX_SECONDS = 60  # 판정 시작부터 (설계서 4-5). 넘으면 지금까지 얻은 것으로 끝낸다
+LLM_ACTIONS = ("replan", "requery")
 
 
 @dataclass
@@ -79,10 +81,12 @@ def choose(
     found: dict | None,
     tried: int = 0,
     llm_tried: int = 0,
+    done: frozenset[str] = frozenset(),
 ) -> Action:
     """판정 결과 · 답 · 꾸러미 → 다음 행동.
 
-    tried: 지금까지 다시 계산한 횟수, llm_tried: 그중 LLM 행동 횟수
+    tried: 지금까지 다시 계산한 횟수, llm_tried: 그중 LLM 행동 횟수, done: 이미 쓴 행동
+    (같은 행동은 두 번 하지 않는다. 설계서 4-5 "같은 표 · 같은 계획 · 같은 검색어 안 함")
     """
     if tried >= MAX_RETRIES:
         return Action(GIVE_UP, f"다시 계산 상한({MAX_RETRIES}회)")
@@ -91,6 +95,35 @@ def choose(
     via_search = bool(parsed.get("dynamic_spec"))
     cand = picked_candidate(found)
     llm_ok = llm_tried < MAX_LLM_RETRIES
+    if done and llm_ok and REPLAN not in done:
+        # 코드 행동(reroute · retable)이 실패했거나 그 답도 틀렸다: 이유가 무엇이든 계획을 다시
+        # 세운다. 대상이 다른 경우 replan 은 search 도 고친다 (4-3). not_computable 이 나오는 길
+        why = f"앞 행동({' · '.join(sorted(done))}) 뒤에도 틀림 → 계획 다시"
+        return Action(REPLAN, why, fallback=_next(done | {REPLAN}, llm_ok, via_search))
+    action = _choose(reason, res, found, cand, via_search, llm_ok)
+    if action.name in done:
+        nxt = _next(done, llm_ok, via_search)
+        after = _next(done | {nxt}, llm_ok, via_search) if nxt != GIVE_UP else None
+        return Action(nxt, f"{action.name}은 이미 함 → 다음 행동", fallback=after)
+    if action.fallback in done:
+        action.fallback = _next(done | {action.name}, llm_ok, via_search)
+        if action.fallback == GIVE_UP:
+            action.fallback = None
+    return action
+
+
+def _next(done: frozenset[str] | set[str], llm_ok: bool, via_search: bool) -> str:
+    """쓰지 않은 행동 중 다음 것: replan(LLM 남았을 때) → retable(표) · reroute(사전) → give_up"""
+    order = ([REPLAN] if llm_ok else []) + (
+        [RETABLE, REROUTE] if via_search else [REROUTE, RETABLE]
+    )
+    return next((a for a in order if a not in done), GIVE_UP)
+
+
+def _choose(
+    reason: str, res: dict[str, Any], found: dict | None, cand, via_search: bool, llm_ok: bool
+) -> Action:
+    """판정 이유 × 경로 × 1위 후보 상태 → 행동 (설계서 4-2 표)"""
 
     if reason in PLAN_REASONS:
         if llm_ok:

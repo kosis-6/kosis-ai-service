@@ -47,6 +47,7 @@ import copy
 import json
 import logging
 import re
+import time
 from contextvars import ContextVar
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
@@ -2187,14 +2188,14 @@ async def _recompute(
         how = "다음 후보 표"
         used = {s.get("tbl_id") for s in res.get("sources") or [] if s.get("tbl_id")}
         if found is None:
-            found = await table_guide.find_tables(asked, sid, None, user_id)
+            found = _keep(await table_guide.find_tables(asked, sid, None, user_id))
         found = without_tables(found, used)
         if found is None:
             return None, how
     elif indicators.spec(parsed.get("indicator") or ""):
         how = "통계표 찾기로"
         if found is None:
-            found = await table_guide.find_tables(asked, sid, None, user_id)
+            found = _keep(await table_guide.find_tables(asked, sid, None, user_id))
     else:
         return None, "다시 계산할 방법 없음"
     base = {**parsed, "dynamic_spec": None}
@@ -2274,15 +2275,23 @@ def _refusal_answer(res: dict, code: str, why: str) -> dict:
 
 
 async def _retry(
-    action, res: dict, verdict: dict, state: dict | None, asked: str, user_id: int | None
+    action,
+    res: dict,
+    verdict: dict,
+    state: dict | None,
+    asked: str,
+    user_id: int | None,
+    done: set[str] | None = None,
 ) -> tuple[dict | None, str]:
     """행동대로 한 번 다시 계산. replan 이 새 계획을 못 내면 대체 행동(표 · 경로)으로 떨어진다.
-    requery · recell 은 호출부가 아직 없어 바로 대체 행동으로 간다"""
+    requery · recell 은 호출부가 아직 없어 바로 대체 행동으로 간다. done: 쓴 행동 (대체도 적는다)"""
     if action.name == agent_action.REPLAN:
         again, how = await _replan_compute(res, verdict, asked, user_id)
         if again is not None or action.fallback is None:
             return again, how
         flow.add("다시 계산", "대체", f"{how}: 새 계획 없음 → {action.fallback}")
+    if done is not None and action.fallback:
+        done.add(action.fallback)  # 대체 행동으로 떨어졌다: 그 행동도 쓴 것으로
     return await _recompute(res, state, asked, user_id)
 
 
@@ -2305,48 +2314,86 @@ async def _judged(res: dict, state: dict | None, question: str, user_id: int | N
     # 행동 고르기 (N9, 코드 규칙): 판정 이유 · 답의 경로 · 1위 후보의 ✔/✘로 다음 행동을 정한다.
     # 호출부가 있는 행동은 replan(_replan_compute) · reroute · retable(둘 다 _recompute) · give_up.
     # requery · recell은 이름만 기록하고 fallback으로 떨어진다 (게이트 · 연결 단계가 들어오면)
-    action = agent_action.choose(first, res, _found_now.get())
-    record["action"] = action.as_trace()
-    flow.add("행동 고르기", action.name, action.why)
-    if action.name == agent_action.GIVE_UP:
-        record["retry"] = {"how": "give_up", "computed": False}
+    # 행동 고리 (N9 → 다시 계산 → 판정, 설계서 4-1 · 4-5): 첫 행동이 실패하거나 다시 한 답도
+    # 판정에 걸리면 다음 행동으로 이어 간다. 상한은 agent_action(다시 2회 · LLM 1회)과 60초.
+    # 호출부가 있는 행동은 replan(_replan_compute) · reroute · retable(둘 다 _recompute) · give_up.
+    # requery · recell은 이름만 기록하고 fallback으로 떨어진다 (게이트 · 연결 단계가 들어오면)
+    verdict = first
+    tried = llm_tried = 0
+    done: set[str] = set()
+    attempts: list[dict] = []
+    record["attempts"] = attempts
+    started = time.monotonic()
+    while True:
+        action = agent_action.choose(
+            verdict, res, _found_now.get(), tried, llm_tried, frozenset(done)
+        )
+        attempt: dict = {"action": action.as_trace()}
+        attempts.append(attempt)
+        if len(attempts) == 1:
+            record["action"] = action.as_trace()  # 첫 시도는 전처럼 action · retry · second 칸에도
+        flow.add("행동 고르기", action.name, action.why)
+        if action.name == agent_action.GIVE_UP:
+            attempt["how"], attempt["computed"] = "give_up", False
+            record.setdefault("retry", {"how": "give_up", "computed": False})
+            return
+        if time.monotonic() - started > agent_action.MAX_SECONDS:
+            flow.add("다시 계산", "중단", f"{agent_action.MAX_SECONDS}초 넘음 → 처음 답 그대로")
+            attempt["how"], attempt["computed"] = "timeout", False
+            return
+        done.add(action.name)
+        tried += 1
+        if action.name in agent_action.LLM_ACTIONS:
+            llm_tried += 1
+        try:
+            again, how = await _retry(action, res, verdict, state, asked, user_id, done)
+        except Exception:
+            logger.exception("답 판정 뒤 다시 계산 실패 → 처음 답 그대로")
+            attempt["error"] = True
+            record.setdefault("retry", {"error": True})
+            return
+        attempt.update(how=how, computed=again is not None)
+        if again is not None:  # 버려도 무엇이었는지 · 판정이 무엇을 봤는지 남긴다
+            attempt["answer"] = lead(again.get("answer") or "")[:200]
+            attempt["summary"] = answer_judge.describe(again.get("result"), again.get("parsed"))
+        if len(attempts) == 1:
+            record["retry"] = {k: v for k, v in attempt.items() if k != "action"}
+        if again is None:
+            flow.add("다시 계산", "실패", f"{how}: 계산하지 못함 → 다음 행동")
+            continue
+        if again.get("status") in refusal.TEMPLATES:
+            # 다시 계산이 답변 불가 사유로 끝남: 판정 없이 그 사유로 바꾼다 (설계서 4절 B-1 예외)
+            flow.add(
+                "답변 불가 사유", again["status"], f"{how}: {refusal.NAMES.get(again['status'])}"
+            )
+            second = None
+        else:
+            second = await answer_judge.verdict(asked, again.get("parsed"), again.get("result"))
+            attempt["second"] = second
+            if len(attempts) == 1:
+                record["second"] = second
+            if not second or second["verdict"] != "ok":
+                why = f"{second['reason']} · {second['missing']}" if second else "판정하지 못함"
+                flow.add(
+                    "다시 계산", "버림", f"{how}: 다시 한 답도 판정에 걸림 ({why}) → 다음 행동"
+                )
+                if second:
+                    verdict = second  # 새 판정 이유로 다음 행동을 고른다
+                continue
+        record["replaced"] = {
+            "indicator": (res.get("parsed") or {}).get("indicator"),
+            "answer": lead(res.get("answer") or ""),
+            "attempt": len(attempts),
+        }
+        flow.add("다시 계산", "ok", f"{how}: {lead(again.get('answer') or '')}")
+        kind = res.get("request_type")
+        res.clear()
+        res.update(again)
+        res["trace"]["answer_judge"] = record
+        res["chart"] = charts.build(res.get("result"))
+        await _attach_cards(res, asked)
+        res["request_type"], res["question"] = kind, asked
         return
-    try:
-        again, how = await _retry(action, res, first, state, asked, user_id)
-    except Exception:
-        logger.exception("답 판정 뒤 다시 계산 실패 → 처음 답 그대로")
-        record["retry"] = {"error": True}
-        return
-    record["retry"] = {"how": how, "computed": again is not None}
-    if again is not None:  # 버려도 무엇이었는지 · 판정이 무엇을 봤는지 남긴다
-        record["retry"]["answer"] = lead(again.get("answer") or "")[:200]
-        record["retry"]["summary"] = answer_judge.describe(again.get("result"), again.get("parsed"))
-    if again is None:
-        flow.add("다시 계산", "실패", f"{how}: 계산하지 못해 처음 답 그대로")
-        return
-    if again.get("status") in refusal.TEMPLATES:
-        # 다시 계산이 답변 불가 사유로 끝남: 판정 없이 그 사유로 바꾼다 (설계서 4절 B-1 예외)
-        flow.add("답변 불가 사유", again["status"], f"{how}: {refusal.NAMES.get(again['status'])}")
-        second = None
-    else:
-        second = await answer_judge.verdict(asked, again.get("parsed"), again.get("result"))
-    record["second"] = second
-    if again.get("status") not in refusal.TEMPLATES and (not second or second["verdict"] != "ok"):
-        why = f"{second['reason']} · {second['missing']}" if second else "판정하지 못함"
-        flow.add("다시 계산", "버림", f"{how}: 다시 한 답도 판정에 걸려 처음 답 그대로 ({why})")
-        return
-    record["replaced"] = {
-        "indicator": (res.get("parsed") or {}).get("indicator"),
-        "answer": lead(res.get("answer") or ""),
-    }
-    flow.add("다시 계산", "ok", f"{how}: {lead(again.get('answer') or '')}")
-    kind = res.get("request_type")
-    res.clear()
-    res.update(again)
-    res["trace"]["answer_judge"] = record
-    res["chart"] = charts.build(res.get("result"))
-    await _attach_cards(res, asked)
-    res["request_type"], res["question"] = kind, asked
 
 
 def ungrounded(res: dict) -> bool:
