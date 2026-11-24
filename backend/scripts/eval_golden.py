@@ -1,30 +1,3 @@
-"""골든셋 자동 평가: eval/golden.csv의 질문을 서비스(qa.ask)에 넣고 5개 영역을 채점한다
-
-  1. 질의 이해     HCX 해석 결과(parsed)를 정답 칸(type, indicator, regions, year ...)과 비교
-  2. 데이터 정확성 계산 결과(result)에서 target 값을 꺼내 expected와 비교
-  3. 답변 신뢰성   답할 수 있는 질문은 출처와 KOSIS 통계표 링크가 붙었는지,
-                   답변 불가 질문은 안내 문장이 있는지
-  4. 답변 불가 판단 status를 expected_status와 비교 (거절 여부 + 사유 코드)
-  5. 자연어 품질   자동 채점하지 않는다. 결과 CSV의 quality 칸(0~2점)을 사람이 채운다
-
-골든셋 칸 (빈 칸은 채점하지 않음)
-  id, category, question
-  expected_status  ok 또는 답변 불가 사유 (missing_region, unknown_indicator, out_of_range ...)
-  type, indicator, regions(;로 구분), year, start_year, end_year, sex, by   질의 이해 정답
-  target           비교할 값: value | diff | rate | gap | highest | lowest | ranking | share:<항목>
-  expected         정답 값. 숫자는 적은 자릿수만큼 비교 (20.4 → ±0.05), 지역은 ;로 구분
-  expected_source  정답을 어디서 확인했는지 (KOSIS 화면 경로 등)
-
-결과: data/eval/golden_YYYYMMDD_HHMMSS.csv (질문별, 엑셀용) / .md (영역별 요약)
-      .md 머리에 회차, 변경 내용, 채점에 쓴 DB(생성·수집 시각)를 남겨 회차끼리 비교한다
-실행: python -m scripts.eval_golden                  (전체, 질문마다 HCX 1회)
-      python -m scripts.eval_golden --only g01 g02   (일부 질문만)
-      python -m scripts.eval_golden --round 2 --note "남녀 비중 보정 추가"
-      python -m scripts.eval_golden --interval 10      (호출 제한에 자주 걸릴 때)
-      python -m scripts.eval_golden --session          (대화 처리 전체 ask_session.handle로:
-                                    사전에 없는 지표의 바로 계산·근거 없는 사전 지표 경로까지)
-"""
-
 import argparse
 import asyncio
 import csv
@@ -41,13 +14,10 @@ from app.services.hcx_client import RATE_LIMIT_CODE
 
 GOLDEN = Path("eval/golden.csv")
 OUT_DIR = Path("data/eval")
-CALL_INTERVAL = 3  # 호출 제한(42901) 대응 (초). 그래도 걸리면 HcxClient가 다시 시도
-RATE_LIMIT_WAITS = (60, 120, 180)  # HcxClient 재시도까지 실패하면 질문 단위로 쉬고 다시 (초)
+CALL_INTERVAL = 3
+RATE_LIMIT_WAITS = (60, 120, 180)
 PARSE_FIELDS = ["type", "indicator", "regions", "year", "start_year", "end_year", "sex", "by"]
 AREAS = ["질의 이해", "데이터 정확성", "답변 신뢰성", "답변 불가 판단", "표 선택"]
-# 시트 골든셋(eval/golden_sheet.csv)의 기대 행동 ↔ 서비스 결과
-#   답변: 답함 (수록 기간 밖이지만 추계값으로 대신 답한 경우 포함)
-#   명확화: 어느 지역인지 되물음 / 범위안내: 지원 범위 밖이라 안내 / 대안안내: 다른 연도·지역을 제안
 ACTIONS = {
     "ok": "답변",
     "ambiguous_region": "명확화",
@@ -58,10 +28,10 @@ ACTIONS = {
     "region_not_in_year": "대안안내",
     "missing_data": "대안안내",
     "unknown_region": "다시질문",
-    "out_of_scope": "범위안내",  # 통계표 찾기도 인구 분야 표를 못 찾음 (#147)
-    "causal_question": "범위안내",  # 원인·예측은 답하지 않고 볼 수 있는 통계를 안내
-    "prediction_question": "대안안내",  # 미래 값 대신 장래추계·추이를 안내
-    "band_mismatch": "대안안내",  # 맞는 구간 대신 볼 수 있는 구간을 안내
+    "out_of_scope": "범위안내",
+    "causal_question": "범위안내",
+    "prediction_question": "대안안내",
+    "band_mismatch": "대안안내",
     "not_statistics": "범위안내",
 }
 TABLE_ID = re.compile(r"[A-Z]{2,3}_[0-9A-Z_]+")
@@ -72,11 +42,7 @@ def load_golden(path: Path = GOLDEN) -> list[dict[str, str]]:
         return [{k: (v or "").strip() for k, v in row.items()} for row in csv.DictReader(f)]
 
 
-# ---- 채점 ---------------------------------------------------------------------------
-
-
 def _norm_region(text: str) -> str:
-    # "부산광역시", "부산" → "부산" / "서울특별시 중구", "서울 중구" → "서울중구"
     parts = re.split(r"\s|>", text)
     return "".join(re.sub(r"(특별자치시|특별자치도|특별시|광역시|도)$", "", p) for p in parts)
 
@@ -86,7 +52,6 @@ def _regions(text: str) -> list[str]:
 
 
 def grade_parse(case: dict[str, str], parsed: dict[str, Any]) -> tuple[bool | None, list[str]]:
-    """정답 칸이 있는 항목만 비교. (통과 여부, 틀린 항목). 비교할 칸이 없으면 None"""
     wrong = []
     for field in PARSE_FIELDS:
         want = case.get(field, "")
@@ -95,7 +60,7 @@ def grade_parse(case: dict[str, str], parsed: dict[str, Any]) -> tuple[bool | No
         got = parsed.get(field)
         if field == "regions":
             ok = _regions(want) == [_norm_region(r) for r in got or []]
-        elif field == "sex":  # 비어 있으면 서비스가 "계"로 계산
+        elif field == "sex":
             ok = (got or "계") == want
         elif field == "indicator":
             ok = qa.indicators.canonical_name(got or "") == want or got == want
@@ -108,7 +73,6 @@ def grade_parse(case: dict[str, str], parsed: dict[str, Any]) -> tuple[bool | No
 
 
 def pick(result: dict[str, Any], target: str) -> Any:
-    """계산 결과에서 비교할 값을 꺼낸다"""
     change = result.get("change") or {}
     if target == "value":
         return result.get("value")
@@ -126,7 +90,6 @@ def pick(result: dict[str, Any], target: str) -> Any:
 
 
 def grade_value(case: dict[str, str], result: dict[str, Any]) -> tuple[bool | None, Any]:
-    """(일치 여부, 서비스 값). 정답이 없거나 답변 불가가 정답이면 None"""
     target, want = case.get("target", ""), case.get("expected", "")
     if not target or not want:
         return None, None
@@ -135,11 +98,9 @@ def grade_value(case: dict[str, str], result: dict[str, Any]) -> tuple[bool | No
         return False, None
     if target in ("highest", "lowest", "ranking"):
         want_list = _regions(want)
-        # 순위는 정답 개수만큼 앞에서 비교 ("가장 낮은 시도는?"에 전체 순위를 함께 보여줘도 맞음)
         got_list = got[: len(want_list)] if isinstance(got, list) else [got]
         return [_norm_region(x) for x in got_list] == want_list, got_list
     expected = Decimal(want.replace(",", ""))
-    # 정답을 적은 자릿수의 반올림 오차까지 허용 (20.4 → ±0.05, 9299548 → ±0.5)
     tolerance = Decimal(1).scaleb(expected.as_tuple().exponent) / 2
     return abs(Decimal(str(got)) - expected) <= tolerance, got
 
@@ -151,22 +112,18 @@ def grade_reliability(status: str | None, res: dict[str, Any]) -> bool:
 
 
 def action_of(res: dict[str, Any]) -> str | None:
-    """서비스 결과 → 시트의 행동 이름"""
     status = res.get("status")
     suggestion = (res.get("result") or {}).get("suggestion") or {}
     if status == "out_of_range" and suggestion.get("status") == "ok":
-        return "답변"  # 수록 기간 밖이지만 추계값으로 대신 답함
+        return "답변"
     if status == "unknown_region" and (res.get("result") or {}).get("alternative"):
-        return "대안안내"  # 생활권 이름 → 속한 시군구 제안
+        return "대안안내"
     return ACTIONS.get(status)
 
 
 def grade_refusal(
     case: dict[str, str], status: str | None, res: dict[str, Any] | None = None
 ) -> tuple[bool, bool]:
-    """(거절 여부가 맞음, 사유 코드까지 맞음)
-    시트 골든셋(allowed_action 칸)은 사유 코드 대신
-    기대 행동(답변/명확화/범위안내/대안안내)과 비교"""
     want = case.get("expected_status") or "ok"
     if case.get("allowed_action"):
         action = action_of(res or {"status": status})
@@ -177,7 +134,6 @@ def grade_refusal(
 
 
 def grade_tables(case: dict[str, str], res: dict[str, Any]) -> bool | None:
-    """답한 경우 실제로 쓴 통계표가 허용 표 안에 있는지. 허용 표 칸이 없으면 채점하지 않음"""
     allowed = set(TABLE_ID.findall(case.get("allowed_tables", "")))
     if not allowed or action_of(res) != "답변":
         return None
@@ -211,31 +167,23 @@ def grade(case: dict[str, str], res: dict[str, Any]) -> dict[str, Any]:
         "표 선택": grade_tables(case, res),
         "tables": ",".join(s.get("tbl_id") or "" for s in res.get("sources") or []),
         "answer": res.get("answer", ""),
-        "quality": "",  # 자연어 품질 0~2점, 사람이 채움
+        "quality": "",
         "error": res.get("error", ""),
-        # 원인 분석용: HCX 원문과 코드 보정까지 반영한 해석
         "hcx_raw": trace.get("hcx_raw", ""),
         "parsed": json.dumps(res.get("parsed") or {}, ensure_ascii=False),
-        # 동적 지표 회귀 분석용 (--session): 바로 계산했는가, 질문에 지표 이름이 있었는가,
-        # 근거 없는 사전 지표 답을 바로 계산으로 바꿨으면 원래 지표
         "method": (res.get("result") or {}).get("method") or "",
         "grounded": (res.get("parsed") or {}).get("grounded", ""),
         "replaced": json.dumps(trace.get("replaced") or "", ensure_ascii=False),
     }
 
 
-# ---- 실행 ---------------------------------------------------------------------------
-
-
 async def _ask(question: str, session: bool = False) -> dict[str, Any]:
-    """호출 제한이 HcxClient의 짧은 재시도로 안 풀리면 몇 분 쉬고 같은 질문을 다시 보낸다
-    session: /ask와 같은 대화 처리 전체로 (새 대화, 손님)"""
     for wait in (*RATE_LIMIT_WAITS, None):
         try:
             if session:
                 return await ask_session.handle(None, question, None, None)
             return await qa.ask(question)
-        except Exception as e:  # 한 질문이 실패해도 나머지는 계속
+        except Exception as e:
             if wait is None or RATE_LIMIT_CODE not in str(e):
                 return {"status": "error", "answer": "", "error": f"{type(e).__name__}: {e}"}
             print(f"  호출 제한, {wait}초 쉬고 다시 시도")
@@ -266,7 +214,6 @@ def _mark(v: bool | None) -> str:
 
 
 def _problems(r: dict[str, Any]) -> list[str]:
-    """틀린 영역과 내용. 거절은 맞았는데 사유 코드만 다른 경우도 오류 분석용으로 남긴다"""
     out = []
     if r["error"]:
         out.append(f"오류: {r['error']}")
@@ -312,9 +259,7 @@ def summarize(rows: list[dict[str, Any]]) -> str:
 
 
 def db_info() -> str:
-    """채점에 쓴 DB. 정확도가 바뀐 이유가 코드인지 데이터인지 구분하려고 남긴다"""
     log = db_rows("select max(source_built_at) as built from load_log")[0]
-    # zip 원본으로 만든 DB는 수집 시각이 없어 catalog에 collected_at 칸 자체가 없다
     has_column = db_rows(
         "select 1 from information_schema.columns"
         " where table_name = 'catalog' and column_name = 'collected_at'"
@@ -346,7 +291,6 @@ def main() -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     prefix = f"golden_r{args.round}" if args.round else "golden"
     stem = OUT_DIR / f"{prefix}_{datetime.now():%Y%m%d_%H%M%S}"
-    # utf-8-sig: 엑셀에서 열어도 한글이 깨지지 않음
     with stem.with_suffix(".csv").open("w", newline="", encoding="utf-8-sig") as f:
         writer = csv.DictWriter(f, fieldnames=rows[0].keys())
         writer.writeheader()

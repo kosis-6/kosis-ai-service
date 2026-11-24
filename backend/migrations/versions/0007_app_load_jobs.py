@@ -1,11 +1,3 @@
-"""app.load_jobs: 통계표 적재 대기열
-
-적재 안 된 표를 질문·지표 사전·갱신에서 넣고, 적재 프로세스가 꺼내 처리한다.
-
-Revision ID: 0007
-Revises: 0006
-"""
-
 from collections.abc import Sequence
 
 import sqlalchemy as sa

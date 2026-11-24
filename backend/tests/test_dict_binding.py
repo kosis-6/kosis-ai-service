@@ -1,5 +1,3 @@
-"""B 1단계: 지표 사전 답의 잇기 기록 (dict_binding.py, scripts/dict_binding_compare.py)"""
-
 import asyncio
 
 import pytest
@@ -18,7 +16,7 @@ Dim = d.Dim
         ("작년 1월이랑 7월 중에 돌아가신 분 언제가 더 많았어?", True, False),
         ("작년에 서울에서 경기도로 이사 간 사람 몇 명이야?", False, True),
         ("강남구 사람 몇 명 살아?", False, False),
-        ("서울에서 인구 제일 많은 구", False, False),  # '서울에서'만 있고 옮김이 아니다
+        ("서울에서 인구 제일 많은 구", False, False),
     ],
 )
 def test_question_patterns(question: str, sub_year: bool, from_to: bool) -> None:
@@ -46,7 +44,6 @@ RESULT = {
 
 
 def test_unbound_condition_hands_off(monkeypatch) -> None:
-    # '세쌍둥이 이상'은 출생아 수 표에 이을 칸이 없다 (V2-008) → 넘김
     items = Dim(0, "항목", {"T10": "출생건수", "T20": "사망건수"})
     monkeypatch.setattr(
         dict_binding.indicators,
@@ -77,7 +74,7 @@ def test_plain_question_keeps_the_answer(monkeypatch) -> None:
     u = {
         "topic": "출생아 수",
         "conditions": {"items": [], "classes": ["성별"]},
-    }  # 성별은 사전이 맞춘다
+    }
     rec = _run(
         monkeypatch, "작년에 태어난 아기 몇 명이야?", {"indicator": "출생아 수"}, RESULT, [items], u
     )

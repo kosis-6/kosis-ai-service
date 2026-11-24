@@ -1,9 +1,3 @@
-"""Alembic 실행 환경. app/models의 정의와 DB를 비교한다.
-
-아직 모델로 옮기지 않은 테이블(public의 검색·대화 테이블, load_stats.py가 만드는 표)과
-하위 파티션은 비교에서 뺀다. 모델에 없다고 지우는 마이그레이션이 만들어지면 안 된다.
-"""
-
 from logging.config import fileConfig
 
 from alembic import context
@@ -25,7 +19,6 @@ def include_name(name, type_, parent_names):
 
 
 def include_object(obj, name, type_, reflected, compare_to):
-    # DB에만 있는 테이블은 모델로 관리하지 않는 테이블이다
     if type_ == "table" and reflected and compare_to is None:
         return False
     return True

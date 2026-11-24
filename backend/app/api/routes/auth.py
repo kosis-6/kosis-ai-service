@@ -1,16 +1,3 @@
-"""회원가입(이메일 인증)·로그인·내 정보·비밀번호 변경
-
-회원가입 순서: POST /auth/email-code → 메일로 받은 6자리를 POST /auth/email-code/verify
-→ 30분 안에 POST /auth/register. 아이디는 이메일이다.
-
-토큰: 로그인하면 Access Token(15분)은 응답 본문으로, Refresh Token(14일)은 HttpOnly 쿠키로 준다.
-계속 쓰더라도 로그인한 지 30일(session_max_days)이 지나면 다시 로그인해야 한다.
-Access Token이 만료되면(401) POST /auth/refresh로 둘 다 새로 받는다. 서버는 로그인마다
-app.user_sessions에 Refresh Token 해시와 지금 쓸 수 있는 Access Token 번호를 두어,
-새 토큰을 받거나 로그아웃하면 예전 Access Token을 바로 막는다 (services/auth_sessions.py).
-비밀번호를 바꾸거나 관리자가 계정을 정지하면 그 사용자의 로그인이 모두 끊긴다.
-"""
-
 import logging
 from typing import Annotated
 
@@ -46,7 +33,6 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["로그인·회원가입"])
 
-# 인증번호 메일: 같은 IP에서 1시간에 10통까지 (남의 메일함에 메일을 쏟아붓는 것을 막는다)
 code_sends = login_limit.LoginLimiter(max_failures=10, window=60 * 60)
 
 CODE_ERRORS = {
@@ -65,8 +51,6 @@ def _too_many(detail: str, wait: int) -> HTTPException:
 
 
 def _refresh_failed(request: Request) -> JSONResponse:
-    """401과 함께 쓸 수 없는 Refresh Token 쿠키를 지운다
-    (HTTPException으로 내면 지우라는 쿠키가 응답에 실리지 않는다)"""
     r = JSONResponse(
         status_code=status.HTTP_401_UNAUTHORIZED, content={"detail": "다시 로그인해 주세요."}
     )
@@ -75,25 +59,21 @@ def _refresh_failed(request: Request) -> JSONResponse:
 
 
 def _secure(request: Request) -> bool:
-    """쿠키에 Secure를 붙일지. COOKIE_SECURE를 비워 두면 https 요청일 때만"""
     forced = get_settings().cookie_secure
     return forced if forced is not None else request.url.scheme == "https"
 
 
 def _issue(request: Request, response: Response, user: User, row, jti: str) -> Token:
-    """Access Token은 본문으로, Refresh Token은 HttpOnly 쿠키로 준다"""
     s = get_settings()
     left = (row.expires_at - auth_sessions.now()).total_seconds()
     response.set_cookie(
         auth_sessions.COOKIE,
         auth_sessions.refresh_token(row),
-        # 보통 14일, 로그인 최대 기간이 가까우면 그때까지.
-        # "로그인 상태 유지"를 고르지 않았으면 기간을 주지 않는다 (브라우저를 닫으면 없어지는 쿠키)
         max_age=max(0, int(left)) if row.persistent else None,
         path=auth_sessions.COOKIE_PATH,
-        httponly=True,  # 화면 JavaScript가 읽을 수 없다 (XSS로 훔쳐 가지 못하게)
-        secure=_secure(request),  # https면 http 요청에는 실리지 않는다 (평문으로 새지 않게)
-        samesite="strict",  # 다른 사이트에서 보낸 요청에는 실리지 않는다
+        httponly=True,
+        secure=_secure(request),
+        samesite="strict",
     )
     return Token(
         access_token=create_access_token(user.id, row.id, jti, user.token_version),
@@ -109,7 +89,6 @@ async def _new_login(
 
 
 def _forget_cookie(response: Response, request: Request) -> None:
-    # 만들 때와 같은 속성으로 지운다 (Secure 쿠키는 Secure로 지워야 하는 브라우저가 있다)
     response.delete_cookie(
         auth_sessions.COOKIE,
         path=auth_sessions.COOKIE_PATH,
@@ -123,8 +102,6 @@ def _forget_cookie(response: Response, request: Request) -> None:
 async def send_email_code(
     body: EmailCodeRequest, request: Request, session: Session
 ) -> EmailCodeSent:
-    """가입할 이메일로 6자리 인증번호를 보낸다. 10분 동안 쓸 수 있고, 60초 뒤에 다시 받을 수 있다.
-    다시 받으면 전에 받은 번호는 쓸 수 없다"""
     if await users.get_by_email(session, body.email) is not None:
         raise HTTPException(status_code=409, detail="이미 가입한 이메일입니다.")
     at = email_verify.now()
@@ -139,7 +116,7 @@ async def send_email_code(
 
     row, code = email_verify.issue(row, body.email, at)
     await email_verify.save(session, row)
-    code_sends.fail(ip)  # 보낸 횟수로 센다
+    code_sends.fail(ip)
     subject, text, html = email_verify.code_mail(
         code, get_settings().mail_from_name or "LIKE SNAKE"
     )
@@ -148,11 +125,9 @@ async def send_email_code(
     except mailer.MailNotConfigured:
         await email_verify.delete(session, body.email)
         raise
-    except Exception as e:  # SMTP 연결·인증 실패
-        # 원인(계정·앱 비밀번호 오류, 연결 실패 등)은 서버 로그로만 남긴다.
-        # SMTP 오류 문구에는 비밀번호가 들어 있지 않다
+    except Exception as e:
         logger.warning("인증 메일을 보내지 못함: %s: %s", type(e).__name__, e)
-        await email_verify.delete(session, body.email)  # 바로 다시 요청할 수 있게
+        await email_verify.delete(session, body.email)
         raise HTTPException(
             status_code=502, detail="인증 메일을 보내지 못했습니다. 잠시 뒤에 다시 시도해 주세요."
         ) from e
@@ -163,12 +138,10 @@ async def send_email_code(
 
 @router.post("/email-code/verify", summary="② 인증번호 확인")
 async def verify_email_code(body: EmailCodeVerify, session: Session) -> EmailVerified:
-    """받은 인증번호를 확인한다. 맞으면 30분 안에 가입해야 한다. 5번 틀리면 다시 받아야 한다"""
     row = await email_verify.get(session, body.email)
     at = email_verify.now()
     result = email_verify.check(row, body.code, at)
     if result in ("ok", "wrong"):
-        # 맞든 틀리든 확인 한 번을 DB에서 먼저 센다. 동시에 여러 번 보내도 5번까지만 확인한다
         used = await email_verify.use_attempt(session, body.email)
         if used is None:
             raise HTTPException(status_code=400, detail=CODE_ERRORS["too_many"])
@@ -189,9 +162,6 @@ async def verify_email_code(body: EmailCodeVerify, session: Session) -> EmailVer
 
 @router.post("/register", summary="③ 회원가입", status_code=status.HTTP_201_CREATED)
 async def register(body: UserCreate, session: Session) -> UserRead:
-    """이메일 인증을 마친 뒤 30분 안에 가입한다.
-    비밀번호: 6~20자, 영문(대소문자 상관없음)·숫자·특수기호를 모두 포함
-    닉네임: 앞뒤 공백을 뺀 2~20자 (같은 닉네임도 된다)"""
     row = await email_verify.get(session, body.email)
     if not email_verify.can_register(row, email_verify.now()):
         raise HTTPException(status_code=400, detail="이메일 인증을 먼저 해 주세요.")
@@ -209,14 +179,10 @@ async def login(
     request: Request,
     response: Response,
     session: Session,
-    # bool로 받으면 FastAPI가 폼에 없는 값을 기본값이 아니라 False로 읽는다 → 글자로 받아 직접 본다
     keep: Annotated[
         str, Form(description="로그인 상태 유지. false면 브라우저를 닫을 때 끝난다")
     ] = "true",
 ) -> Token:
-    """OAuth2 표준 폼(username, password). username 칸에 이메일을 넣는다.
-    같은 IP에서 같은 이메일로 15분 안에 5번 틀리면 잠시 막는다(429).
-    keep=false면 Refresh Token 쿠키에 기간을 주지 않아 브라우저를 닫으면 로그인이 끝난다"""
     key = login_limit.key(request.client.host if request.client else None, form.username)
     wait = login_limit.limiter.retry_after(key)
     if wait:
@@ -250,26 +216,19 @@ async def refresh(
     session: Session,
     refresh_token: Annotated[str | None, Cookie(include_in_schema=False)] = None,
 ) -> Token | JSONResponse:
-    """Access Token이 만료됐을 때(401) 부른다. 로그인 때 받은 Refresh Token 쿠키를 브라우저가
-    자동으로 보낸다. Access Token·Refresh Token을 둘 다 새로 주고, 예전 Access Token은 바로 끊긴다.
-    401이면 다시 로그인해야 한다 (쿠키 없음·만료·로그아웃함·이미 쓴 Refresh Token)
-    탭 여러 개가 동시에 불러도 끊기지 않는다: 먼저 온 요청만 토큰을 바꾸고, 바로 뒤(30초 안)에
-    예전 쿠키로 온 요청은 쿠키를 바꾸지 않고 지금 Access Token만 받는다"""
     parsed = auth_sessions.parse_refresh(refresh_token)
     if parsed is None:
         return _refresh_failed(request)
     at = auth_sessions.now()
-    # 잠근다: 동시에 온 요청은 앞 요청이 토큰을 바꿔 커밋한 뒤에 바뀐 줄을 읽는다
     row = await auth_sessions.get(session, parsed.session_id, lock=True)
     result = auth_sessions.check_refresh(row, parsed, at)
-    if result == "reused":  # 이미 쓴 진짜 Refresh Token: 훔쳐 간 것으로 보고 이 로그인을 끊는다
+    if result == "reused":
         row.revoked_at = at
         await auth_sessions.save(session, row)
     user = await users.get(session, row.user_id) if result in ("ok", "grace") else None
     if user is None or not user.is_active:
         return _refresh_failed(request)
     if result == "grace":
-        # 앞 요청이 이미 새 쿠키를 보냈다. 쿠키는 그대로 두고 그 로그인의 지금 Access Token을 준다
         return Token(
             access_token=create_access_token(user.id, row.id, row.access_jti, user.token_version),
             expires_in=get_settings().access_token_minutes * 60,
@@ -287,9 +246,6 @@ async def logout(
     token: Annotated[str | None, Depends(optional_scheme)] = None,
     refresh_token: Annotated[str | None, Cookie(include_in_schema=False)] = None,
 ) -> None:
-    """이 기기의 로그인을 끊는다. 이 로그인의 Access Token·Refresh Token을 바로 못 쓴다.
-    Access Token(Authorization)이나 Refresh Token 쿠키 중 하나만 있어도 된다.
-    이미 끊겼거나 토큰이 없어도 204 (화면은 그냥 로그아웃 처리하면 된다)"""
     at = auth_sessions.now()
     claims = decode_access_token(token) if token else None
     parsed = auth_sessions.parse_refresh(refresh_token)
@@ -297,8 +253,6 @@ async def logout(
     if claims:
         row = await auth_sessions.get(session, claims.session_id)
         ok = auth_sessions.access_ok(row, claims, at)
-    # Access Token이 지난 번호여도(다른 탭이 새로 받음) 쿠키가 맞으면 끊는다.
-    # 쿠키만 지우고 끝내면 서버의 로그인은 14일 동안 살아 있다
     if not ok and parsed:
         row = await auth_sessions.get(session, parsed.session_id)
         ok = auth_sessions.check_refresh(row, parsed, at) in ("ok", "grace")
@@ -309,8 +263,6 @@ async def logout(
 
 
 def _me(user: User, request: Request) -> UserRead:
-    """내 정보. 관리자를 허용하지 않은 곳에서는 is_admin을 false로 알려 화면이 관리자 메뉴를 숨긴다
-    (관리자 API는 require_admin이 따로 막는다)"""
     out = UserRead.model_validate(user)
     if out.is_admin and not admin_ip_allowed(request):
         out.is_admin = False
@@ -326,7 +278,6 @@ async def me(user: CurrentUser, request: Request) -> UserRead:
 async def update_me(
     body: ProfileUpdate, user: CurrentUser, session: Session, request: Request
 ) -> UserRead:
-    """내 닉네임을 바꾼다"""
     user = await users.set_nickname(session, user, body.nickname)
     return _me(user, request)
 
@@ -340,13 +291,10 @@ async def change_password(
     session: Session,
     token: Annotated[str, Depends(oauth2_scheme)],
 ) -> Token:
-    """지금 비밀번호를 확인하고 새 비밀번호로 바꾼다.
-    이 기기를 포함한 모든 로그인이 끊기고, 이 요청에는 새 로그인 토큰을 돌려준다"""
     if not verify_password(body.current_password, user.password_hash):
         raise HTTPException(status_code=400, detail="지금 비밀번호가 맞지 않습니다.")
     if body.new_password == body.current_password:
         raise HTTPException(status_code=400, detail="새 비밀번호가 지금 비밀번호와 같습니다.")
-    # 새 로그인은 지금 로그인의 "로그인 상태 유지" 선택을 그대로 따른다
     claims = decode_access_token(token)
     current = await auth_sessions.get(session, claims.session_id) if claims else None
     user = await users.change_password(session, user, body.new_password)

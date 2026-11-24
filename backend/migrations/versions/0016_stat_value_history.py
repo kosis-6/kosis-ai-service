@@ -1,16 +1,3 @@
-"""raw.stat_value_history: 표를 다시 적재할 때 값이 바뀐 칸의 예전 값
-
-KOSIS 갱신으로 표를 다시 받으면 새 값으로 답하되, 예전 값은 지우지 않고 여기에 남긴다
-(pipeline/load_raw.py). 새로 받은 자료에 아예 없는 칸(KOSIS가 뺀 예전 시점 등)은 이 테이블이 아니라
-raw.stat_value에 그대로 남아 질문에 계속 답한다.
-
-  archived_at  예전 값이 새 값으로 바뀐 시각 (그 적재 시각)
-  나머지 칸     raw.stat_value와 같다 (바뀌기 전 값)
-
-Revision ID: 0016
-Revises: 0015
-"""
-
 from collections.abc import Sequence
 
 import sqlalchemy as sa

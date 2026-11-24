@@ -1,18 +1,3 @@
-"""B 1단계: 지표 사전 답의 잇기 기록(trace.dict_binding)을 정답 여부와 묶어 본다
-
-평가를 BINDING_DICT_SHADOW=true로 돌리면 지표 사전(사전 계산)이 답한 문항마다 "그대로 답했을 것 /
-넘겼을 것"과 그 이유가 남는다 (app/services/dict_binding.py). 이 스크립트는 문항을 넷으로 나눈다:
-
-  넘김 · 지금 오답     B가 고칠 수 있는 문항 (통계표 찾기로 넘기면 맞힐 가능성)
-  넘김 · 지금 정답     잘못 넘김 → 잇기 규칙을 고친다 (켜기 전에 0에 가깝게)
-  그대로 · 지금 오답   놓침 (잇기가 못 잡는 조건이거나, 넘겨도 못 고치는 오답)
-  그대로 · 지금 정답   문제없음
-
-실행 (backend 에서):
-  BINDING_DICT_SHADOW=true python -m scripts.eval_devset --golden eval/devset_v1.3.csv …
-  python -m scripts.dict_binding_compare data/eval/devset_….raw.jsonl data/eval/devset_….csv
-"""
-
 import argparse
 import csv
 import json
@@ -22,7 +7,6 @@ ORDER = ["넘김 · 지금 오답", "넘김 · 지금 정답", "그대로 · 지
 
 
 def records(raw: Path) -> dict[str, tuple[str, dict]]:
-    """문항 → (질문, dict_binding 기록). 되묻기 뒤 답(final)이 있으면 그쪽"""
     out = {}
     for line in raw.open(encoding="utf-8"):
         r = json.loads(line)

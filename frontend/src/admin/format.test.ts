@@ -17,7 +17,7 @@ import {
 describe("시각·숫자", () => {
   it("한국 시간으로 보여 준다", () => {
     expect(when("2026-11-15T08:37:04+00:00")).toBe("11.15 17:37");
-    expect(when("2026-11-15T15:30:00Z")).toBe("11.16 00:30"); // 날짜가 넘어간다
+    expect(when("2026-11-15T15:30:00Z")).toBe("11.16 00:30");
     expect(day("2026-11-05")).toBe("11.05");
   });
   it("걸린 시간은 초로, 기록이 없으면 비운다", () => {
@@ -35,7 +35,6 @@ describe("이름 붙이기", () => {
     expect(statusLabel("out_of_scope").tone).toBe("bad");
     expect(statusLabel("brand_new")).toEqual({ text: "brand_new", tone: "plain" });
     expect(statusLabel(null).text).toBe("기록 없음");
-    // 통계표 찾기의 ok 는 표를 찾았다는 뜻이다
     expect(statusLabel("ok", true).text).toBe("찾음");
     expect(statusLabel("ambiguous", true).text).toBe("되묻기");
     expect(requestLabel("change")).toBe("조건 변경");
@@ -45,7 +44,7 @@ describe("이름 붙이기", () => {
     expect(person({ user_id: 3, user_email: "a@b.co", user_nickname: "통계왕" })).toBe("통계왕");
     expect(person({ user_id: 3, user_email: "a@b.co" })).toBe("a@b.co");
     expect(person({ user_id: null })).toBe("비로그인 사용자");
-    expect(person({ user_id: 9 })).toBe("사용자 9"); // 계정은 있는데 정보가 안 붙은 경우
+    expect(person({ user_id: 9 })).toBe("사용자 9");
   });
 });
 
@@ -89,7 +88,7 @@ describe("처리 흐름", () => {
   const step = (stage: string, result: string) => ({ stage, result, detail: "" });
   it("결과를 말로, 실패는 붉게", () => {
     expect(flowLabel("ok")).toEqual({ text: "성공", tone: "good" });
-    expect(flowLabel("tables").text).toBe(statusLabel("tables").text); // /ask status 는 같은 이름
+    expect(flowLabel("tables").text).toBe(statusLabel("tables").text);
     expect(flowLabel("못 함").tone).toBe("bad");
     expect(flowLabel("HCX").tone).toBe("plain");
     expect(flowLabel("not_count")).toEqual({ text: "건수가 아닌 값", tone: "bad" });

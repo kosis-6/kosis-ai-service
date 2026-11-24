@@ -56,7 +56,6 @@ def cache_path(model: str, preset: str) -> Path:
 
 
 def load_cache(model: str, preset: str, ids: list[str]) -> np.ndarray | None:
-    """캐시에 ids가 모두 있으면 ids 순서로 다시 맞춘 행렬, 아니면 None"""
     path = cache_path(model, preset)
     id_path = path.with_suffix(".ids")
     if not (path.exists() and id_path.exists()):
@@ -100,7 +99,6 @@ def embed(model: str, docs: list[str]) -> np.ndarray:
 def vectors_for(
     tables: list[dict[str, Any]], model: str, preset: str
 ) -> tuple[list[str], np.ndarray, str]:
-    """(문서, 벡터, 출처). 캐시가 있으면 쓰고 없으면 계산해 캐시에 남긴다"""
     ids = [t["tbl_id"] for t in tables]
     docs = [build(t, preset) for t in tables]
     cached = load_cache(model, preset, ids)
@@ -113,7 +111,6 @@ def vectors_for(
 
 
 def vector_literal(v: np.ndarray) -> str:
-    """pgvector 입력 형식 '[0.1,0.2,…]'"""
     return "[" + ",".join(f"{x:.7g}" for x in v) + "]"
 
 
@@ -124,7 +121,7 @@ def load(
     import psycopg
 
     cols = ["tbl_id", "model", "preset", "document", "embedding"]
-    with psycopg.connect(url) as conn:  # 블록이 끝나면 커밋, 오류면 전부 되돌림
+    with psycopg.connect(url) as conn:
         conn.execute(DDL)
         copy_sql = f"COPY catalog.table_embeddings ({', '.join(cols)}) FROM STDIN"
         with conn.cursor().copy(copy_sql) as copy:

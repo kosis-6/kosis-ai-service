@@ -1,9 +1,3 @@
-"""로그인 유저의 대화 기록 보관
-(conversations.py, /conversations API, ask_session의 이어 가기·메모리 사본)
-
-DB 없이: 서비스 함수를 바꿔 끼우고, 대화 상태는 서버 메모리 사본(STATE_CACHE)으로 본다.
-"""
-
 import asyncio
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -19,10 +13,7 @@ from app.services import conversations as c
 
 AT = datetime(2026, 11, 17, 3, 0, tzinfo=UTC)
 STATE = {"conditions": {"indicator": "출생아 수", "regions": ["서울"]}, "user_id": 3}
-# conftest가 테스트마다 ask_session.load를 메모리 가짜로 바꾼다. 진짜 load는 불러올 때 잡아 둔다
 REAL_LOAD = s.load
-
-# ---- 이어 가는 기간 · 서버 메모리 사본 --------------------------------------------------
 
 
 @pytest.fixture(autouse=True)
@@ -36,8 +27,8 @@ def clean_cache():
     ("user_id", "after", "expired"),
     [
         (None, timedelta(minutes=59), False),
-        (None, timedelta(hours=2), True),  # 손님: 1시간
-        (3, timedelta(days=5), False),  # 로그인 유저: 보관 기간(30일) 내내 이어 간다
+        (None, timedelta(hours=2), True),
+        (3, timedelta(days=5), False),
         (3, timedelta(days=31), True),
     ],
 )
@@ -48,11 +39,10 @@ def test_logged_in_conversation_keeps_longer(user_id, after, expired) -> None:
 
 
 def test_state_is_read_from_memory_copy() -> None:
-    # 메모리에 있으면 DB를 읽지 않는다 (이 테스트에는 DB가 없다)
     s.STATE_CACHE.set("A_1", (STATE, AT))
     state, _ = asyncio.run(REAL_LOAD("A_1", AT))
     assert state == STATE
-    state["conditions"]["regions"].append("부산")  # 받은 쪽이 고쳐도 사본은 그대로
+    state["conditions"]["regions"].append("부산")
     assert s.STATE_CACHE.get("A_1")[0]["conditions"]["regions"] == ["서울"]
 
 
@@ -70,10 +60,7 @@ def test_save_touches_conversation_only_for_logged_in(monkeypatch: pytest.Monkey
     monkeypatch.setattr(c, "touch", touch)
     asyncio.run(s._save("A_1", {"turn_no": 1}, {}, None, "서울 출생아 수", None))
     asyncio.run(s._save("A_2", {"turn_no": 1}, {}, None, "부산 출생아 수", 3))
-    assert touched == [("A_2", 3, "부산 출생아 수")]  # 손님 대화는 남기지 않는다
-
-
-# ---- 다시 보여 줄 답 · 제목 ------------------------------------------------------------
+    assert touched == [("A_2", 3, "부산 출생아 수")]
 
 
 def test_replay_keeps_screen_fields_without_internal_context() -> None:
@@ -81,7 +68,7 @@ def test_replay_keeps_screen_fields_without_internal_context() -> None:
         "status": "clarify_question",
         "answer": "어느 것을 볼까요?",
         "clarification": {"kind": "table_cell", "options": ["가"], "context": {"tbl_id": "T"}},
-        "parsed": {"indicator": "x"},  # 해석 결과·trace는 다시 보여 주지 않는다
+        "parsed": {"indicator": "x"},
         "trace": {"hcx": 1},
         "notice": None,
     }
@@ -98,8 +85,6 @@ def test_title_is_first_question_shortened() -> None:
     long = c.title_of("가" * 100)
     assert len(long) == c.TITLE_MAX and long.endswith("…")
 
-
-# ---- API ------------------------------------------------------------------------------
 
 ROW = {"session_id": "A_1", "title": "서울 출생아 수", "created_at": AT, "updated_at": AT}
 

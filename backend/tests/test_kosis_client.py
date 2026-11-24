@@ -1,5 +1,3 @@
-"""KOSIS 오류 메시지에 API 키가 남지 않는다 (요청 주소에 apiKey가 들어 있음)"""
-
 import asyncio
 
 import httpx

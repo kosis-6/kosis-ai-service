@@ -1,16 +1,3 @@
-"""갱신 뒤 mart.population(1세별 주민등록인구)을 raw.stat_value에서 다시 만든다
-
-mart.population은 전처리(preprocess.build_population)가 CSV에서 만든다. 매일 밤 갱신은
-raw.stat_value에만 새 시점을 덧붙이므로(load_raw.merge_into) 그대로 두면 계산 지표
-(총인구·고령인구 비율 등)가 새 연간 값을 보지 못한다. 그래서 DT_1B04006을 적재한 뒤
-같은 규칙으로 raw.stat_value에서 다시 만든다 (연 단위 시점만. 월별 값은 population_latest가 쓴다).
-
-규칙은 preprocess.build_population과 같다 (2026-11-14에 두 결과가 156만 행 모두 같음을 확인).
-새로 만든 행이 지금보다 적거나 연도가 줄면 바꾸지 않는다 (기존 값을 지우지 않는다).
-
-load_worker의 적재 후 단계(AFTER_LOAD)로 실행된다. 다른 표면 아무것도 하지 않는다.
-"""
-
 import logging
 
 import psycopg
@@ -40,7 +27,6 @@ SPAN = "SELECT count(*), min(year), max(year) FROM {}"
 
 
 def rebuild(pg: psycopg.Connection, tbl_id: str) -> bool:
-    """tbl_id가 주민등록인구 표면 mart.population을 다시 만든다. 바꿨으면 True"""
     if tbl_id != TABLE:
         return False
     with pg.transaction():

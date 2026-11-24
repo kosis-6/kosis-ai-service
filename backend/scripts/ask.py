@@ -1,5 +1,3 @@
-"""질의응답 명령줄 실행 (API POST /ask 와 같은 처리, 중간 결과 확인용)"""
-
 import argparse
 import asyncio
 import json

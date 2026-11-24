@@ -108,7 +108,7 @@ describe("지역마다 작은 그래프", () => {
     const [seoul, sejong] = panels(chart);
     expect(seoul.points.map((p) => p.value)).toEqual([100, 90, 95.5]);
     expect(seoul.change).toBe(-4.5);
-    expect(sejong.change).toBe(10); // 값이 있는 처음 해(2019)부터
+    expect(sejong.change).toBe(10);
     expect(changeText(seoul.change)).toBe("-4.5%");
     expect(changeText(sejong.change)).toBe("+10%");
     expect(changeText(null)).toBe("");

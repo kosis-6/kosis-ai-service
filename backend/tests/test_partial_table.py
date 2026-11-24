@@ -1,8 +1,3 @@
-"""적재 안 된 큰 표에서 칸만 받아 답하기
-(app/services/partial_table.py, dynamic_indicator._build_partial)
-DB·KOSIS 없이 만든 표의 메타와 응답을 바꿔 끼운다
-"""
-
 import asyncio
 
 import pytest
@@ -17,7 +12,7 @@ YEARS = range(2015, 2021)
 REGIONS = {"00": "전국", "11": "서울특별시", "21": "부산광역시"}
 SEXES = {"0": "계", "1": "남자", "2": "여자"}
 EDUS = {"00": "계", "01": "초등학교", "02": "중학교", "03": "고등학교"}
-FLAGGED = (2016, "21", "2", "01")  # 비공개(X)인 칸
+FLAGGED = (2016, "21", "2", "01")
 
 
 def _values(names: dict[str, str], parent: str | None = None) -> list[dict]:
@@ -46,7 +41,6 @@ def leaf(year: int, region: str, sex: str, edu: str) -> int:
 
 
 def value(year: int, region: str, sex: str, edu: str) -> int:
-    """합계 칸은 아래 칸의 합 (KOSIS 표처럼)"""
     regions = [r for r in REGIONS if r != "00"] if region == "00" else [region]
     sexes = [s for s in SEXES if s != "0"] if sex == "0" else [sex]
     edus = [e for e in EDUS if e != "00"] if edu == "00" else [edu]
@@ -69,8 +63,6 @@ def pick(param: str, names: dict[str, str]) -> list[str]:
 
 @pytest.fixture(autouse=True)
 def binding_off(monkeypatch: pytest.MonkeyPatch) -> None:
-    """이 파일은 규칙 · 칸 고르기 LLM 경로를 가짜 표로 본다.
-    잇기로 다시 계산(BINDING_USE, 기본 켬)은 tests/test_binding.py가 본다"""
     from app.core.config import get_settings
 
     monkeypatch.setattr(get_settings(), "binding_use", False)
@@ -78,7 +70,6 @@ def binding_off(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def fresh_registry():
-    """등록이 다른 테스트로 새지 않게 테스트마다 비운다"""
     token = partial_table._ACTIVE.set(None)
     yield
     partial_table._ACTIVE.reset(token)
@@ -86,7 +77,6 @@ def fresh_registry():
 
 @pytest.fixture
 def kosis(monkeypatch: pytest.MonkeyPatch) -> dict:
-    """KOSIS 응답(고른 칸만)·기준 지역·대기열을 바꿔 끼운다. state["calls"]에 보낸 요청"""
     state = {"calls": [], "queued": [], "metas": 0, "fail": None, "outcome": "too_big"}
 
     async def call(client, path, params, pause=1.0):
@@ -118,15 +108,14 @@ def kosis(monkeypatch: pytest.MonkeyPatch) -> dict:
     monkeypatch.setattr(collect_kosis, "call", call)
     monkeypatch.setattr(table_cache, "table_meta", table_meta)
     monkeypatch.setattr(table_cache, "fetch_now", fetch_now)
-    monkeypatch.setattr(table_cache, "_limiter", None)  # asyncio.run마다 새 이벤트 루프
+    monkeypatch.setattr(table_cache, "_limiter", None)
     monkeypatch.setattr(load_queue, "enqueue", enqueue)
     regions = (
         ("00", "전국", "전국", "전국", None, None),
         ("11", "서울특별시", "시도", "서울특별시", None, None),
-        ("21", "부산광역시", "시도", "부산광역시", 2018, None),  # 2018년부터 유효
+        ("21", "부산광역시", "시도", "부산광역시", 2018, None),
     )
     monkeypatch.setattr(partial_table, "_regions", lambda: regions)
-    # 표 이름·출처·지역 이름 (적재 여부와 상관없는 DB 조회)
     monkeypatch.setattr(lookup, "_table", lambda t: {"tbl_nm": make_meta()["tbl_nm"],
                                                      "org_nm": "시험청", "basis": ""})  # fmt: skip
     monkeypatch.setattr(lookup, "_projection", lambda t: False)
@@ -142,7 +131,7 @@ def kosis(monkeypatch: pytest.MonkeyPatch) -> dict:
 
     monkeypatch.setattr(indicators, "resolve_region", resolve_region)
 
-    def not_loaded(tbl_id):  # 적재 안 된 표 (raw.stat_load에 없음)
+    def not_loaded(tbl_id):
         raise StatsTableMissing(f"{tbl_id} 적재 안 됨", tbl_id)
 
     monkeypatch.setattr(lookup, "_tbl_key", not_loaded)
@@ -156,15 +145,11 @@ def table(**over) -> partial_table.Table:
 
 
 def fill(t: partial_table.Table) -> None:
-    """표 전체(연 단위 모든 칸)를 받은 것처럼 채운다 + 월 행 하나"""
     params = {"prdSe": "Y", "itmId": "T10", "objL1": "ALL", "objL2": "ALL", "objL3": "ALL"}
     rows = [record(y, r, s, e) for y in YEARS for r in REGIONS for s in SEXES for e in EDUS]
     rows.append(record(2018, "11", "0", "03", prd_se="M", period="201801"))
     partial_table.add_records(t, params, rows)
     partial_table.done(t, partial_table.Fetch([params], {"T10"}, True))
-
-
-# ---- 메타 → 칸 목록 · 지역 매핑 -------------------------------------------------------------
 
 
 @pytest.mark.usefixtures("kosis")
@@ -190,7 +175,6 @@ def test_table_without_yearly_data_is_unsupported() -> None:
 
 @pytest.mark.usefixtures("kosis")
 def test_caches_are_not_filled_with_partial_table() -> None:
-    """적재 뒤에는 DB 값을 읽어야 하므로 lru 캐시에 칸만 받은 표가 들어가면 안 된다"""
     for cached in lookup.TABLE_CACHES:
         cached.cache_clear()
     t = table()
@@ -199,8 +183,6 @@ def test_caches_are_not_filled_with_partial_table() -> None:
     lookup._item_years(TBL, ("T10",))
     assert all(c.cache_info().currsize == 0 for c in lookup.TABLE_CACHES)
 
-
-# ---- 받을 칸 -------------------------------------------------------------------------------
 
 VALUE_SPEC = {"sources": [{"table": TBL, "level": "시도", "item_id": "T10",
                            "filters": {"c2_id": "0", "c3_id": "03"}}]}  # fmt: skip
@@ -211,14 +193,12 @@ def test_requests_only_the_chosen_cells() -> None:
     t = table()
     fetch = partial_table.requests_for(t, VALUE_SPEC, {"year": 2018})
     assert fetch.full and fetch.items == {"T10"}
-    # 지역은 전부, 고른 분류는 그 칸만, 연 단위 기간 전체를 요청 한 번에
     assert fetch.requests == [
         {"prdSe": "Y", "startPrdDe": "2015", "endPrdDe": "2020",
          "itmId": "T10", "objL1": "ALL", "objL2": "0", "objL3": "03"}
     ]  # fmt: skip
     parts = {**VALUE_SPEC, "parts_op": {"col": "c3_id", "codes": ["02", "03"]}}
     assert partial_table.requests_for(t, parts, {}).requests[0]["objL3"] == "02+03"
-    # 분류의 칸을 모두 고르면 ALL로 보낸다 (성별 계·남·여)
     src = {**VALUE_SPEC["sources"][0], "filters": {"c3_id": "03"}}
     sexes = (("계", "0"), ("남", "1"), ("여", "2"))
     src["by_sex"] = {s: {"filters": {"c2_id": c}} for s, c in sexes}
@@ -229,13 +209,12 @@ def test_requests_only_the_chosen_cells() -> None:
 def test_too_many_cells_asks_only_the_year_then_gives_up(monkeypatch) -> None:
     t = table()
     monkeypatch.setattr(partial_table, "MAX_REQUESTS", 1)
-    monkeypatch.setattr(collect_all, "MAX_CELLS", 10)  # 지역 3칸 × 6년 = 18칸 → 기간 전체는 2번
+    monkeypatch.setattr(collect_all, "MAX_CELLS", 10)
     fetch = partial_table.requests_for(t, VALUE_SPEC, {"year": 2018})
     assert not fetch.full
     assert [(r["startPrdDe"], r["endPrdDe"]) for r in fetch.requests] == [("2018", "2018")]
-    # 연도를 말하지 않으면 마지막 해
     assert partial_table.requests_for(t, VALUE_SPEC, {}).requests[0]["startPrdDe"] == "2020"
-    monkeypatch.setattr(collect_all, "MAX_CELLS", 2)  # 물은 해 하나도 지역 3칸이라 2번
+    monkeypatch.setattr(collect_all, "MAX_CELLS", 2)
     assert partial_table.requests_for(t, VALUE_SPEC, {"year": 2018}) is None
 
 
@@ -247,27 +226,21 @@ def test_requests_already_sent_are_not_sent_again() -> None:
     assert partial_table.requests_for(t, VALUE_SPEC, {}).requests == []
 
 
-# ---- DB 조회와 같은 계산 -------------------------------------------------------------------
-
-
 @pytest.mark.usefixtures("kosis")
 def test_sum_follows_lookup_rules() -> None:
     t = table()
     fill(t)
     src = {"table": TBL, "level": "시도", "item_id": "T10"}
     got = lookup._sum(src, ["11", "21"], 2016, 2018, "item_id", {"c2_id": "0", "c3_id": "03"}, None)
-    # 부산은 2018년부터 유효한 지역 (지역 매핑의 유효 연도), 월 행은 보지 않는다
     assert got == {(y, "11"): value(y, "11", "0", "03") for y in (2016, 2017, 2018)} | {
         (2018, "21"): value(2018, "21", "0", "03")
     }
     assert lookup._sum(src, ["00"], 2018, 2018, "item_id", {"c2_id": "0", "c3_id": "00"}, None) == {
         (2018, "00"): value(2018, "00", "0", "00")
     }
-    # 비공개 칸만 있으면 None (SQL의 count(value) = 0)
     flagged = {"c2_id": "2", "c3_id": "01"}
     t.region_rows = [{**m, "valid_from": None} for m in t.region_rows]
     assert lookup._sum(src, ["21"], 2016, 2016, "item_id", flagged, None) == {(2016, "21"): None}
-    # 분류별로 나눠 합하기 (구성비)
     by_edu = lookup._sum(src, ["11"], 2018, 2018, "item_id", {"c2_id": "0"}, None, group_dim="c3")
     assert by_edu == {(2018, "11", e): value(2018, "11", "0", e) for e in EDUS}
 
@@ -275,7 +248,7 @@ def test_sum_follows_lookup_rules() -> None:
 @pytest.mark.usefixtures("kosis")
 def test_unit_and_years_from_received_rows() -> None:
     t = table()
-    assert lookup._item_years(TBL, ("T10",)) == (2015, 2020)  # 받기 전: 메타의 수록 기간
+    assert lookup._item_years(TBL, ("T10",)) == (2015, 2020)
     assert d._unit(TBL, "T10") == (None, False)
     fill(t)
     assert d._unit(TBL, "T10", {3: ["03"]}) == ("명", True)
@@ -293,10 +266,8 @@ def test_whole_table_check_is_not_done_on_partial_table(monkeypatch) -> None:
     d.CHECKS.clear()
     src = {"table": TBL, "item_id": "T10", "filters": {"c2_id": "0"}}
     assert d.part_within_whole(src, "c3_id", ["03"], "00") == partial_table.CHECK_REASON
-    assert d.CHECKS.stats()["size"] == 0  # 적재 뒤에는 검증하도록 남기지 않는다
+    assert d.CHECKS.stats()["size"] == 0
 
-
-# ---- 질문 처리 (dynamic_indicator._try) ----------------------------------------------------
 
 COMPARE = "2018년 서울 중학교랑 고등학교 중 어느 쪽 인구가 더 많아?"
 PARSED = {"type": "compare", "regions": ["서울특별시"], "year": 2018, "sex": "계",
@@ -323,10 +294,8 @@ def test_big_table_answers_from_chosen_cells(kosis) -> None:
         "중학교": value(2018, "11", "0", "02"),
         "고등학교": value(2018, "11", "0", "03"),
     }
-    assert res["result"]["tbl_id"] == TBL  # 출처는 그 표
-    # 표 전체 적재는 대기열이 맡는다
+    assert res["result"]["tbl_id"] == TBL
     assert kosis["queued"] == [(TBL, "question")]
-    # 고른 칸만 요청 한 번
     assert len(kosis["calls"]) == 1 and kosis["calls"][0]["objL3"] == "02+03"
     step = trace["dynamic"][-1]
     assert step["fetch"] == "too_big" and step["partial"]["requests"] == 1
@@ -365,7 +334,7 @@ def test_projection_parts_comparison_says_it_is_an_estimate(kosis, monkeypatch) 
     "period", [{"asked": {"recent": 3}}, {"start_year": 2018, "asked": {"since": True}}]
 )
 def test_partial_trend_fetches_the_whole_asked_period(kosis, monkeypatch, period) -> None:
-    monkeypatch.setattr(collect_all, "MAX_CELLS", 30)  # 지역 3 × 성별 3 × 기간 3
+    monkeypatch.setattr(collect_all, "MAX_CELLS", 30)
     monkeypatch.setattr(partial_table, "MAX_REQUESTS", 1)
     monkeypatch.setattr(lookup, "refresh_if_reloaded", lambda: None)
     monkeypatch.setattr(indicators, "_data_years", lambda: (2015, 2020))
@@ -438,7 +407,7 @@ def test_fetch_failure_hides_api_key(kosis) -> None:
 
 
 def test_failed_whole_fetch_does_not_try_cells(kosis) -> None:
-    kosis["outcome"] = "failed"  # KOSIS 오류면 칸만 받기도 하지 않고 지금처럼 대기열
+    kosis["outcome"] = "failed"
     [(res, _)], trace, _ = run_try(COMPARE, PARSED)
     assert res is None and trace["dynamic"][-1]["skip"] == "적재 안 됨 (failed, 대기열에 넣음)"
     assert kosis["metas"] == 0 and kosis["calls"] == []

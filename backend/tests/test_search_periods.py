@@ -1,5 +1,3 @@
-"""적재 뒤 통계표 찾기가 표 목록·벡터는 그대로 두고 수록 기간·판 이름만 다시 읽는다."""
-
 import asyncio
 
 from app.services import lookup
@@ -43,13 +41,13 @@ def test_reload_refreshes_periods_in_place(monkeypatch):
     monkeypatch.setattr(se, "_refresh_periods", fake_refresh)
 
     assert asyncio.run(se.load_tables()) is tables
-    assert calls == []  # 표시가 없으면 다시 읽지 않는다
+    assert calls == []
 
-    lookup.clear_table_caches()  # 질문 중 표를 바로 적재한 뒤
+    lookup.clear_table_caches()
     assert asyncio.run(se.load_tables()) is tables
-    assert se._vectors is vectors  # 목록·벡터는 그대로
+    assert se._vectors is vectors
     assert (tables[0]["end_year"], tables[0]["edition"]) == (2025, "2023~2025")
     assert tables[0]["family_last_year"] == 2025
 
     asyncio.run(se.load_tables())
-    assert len(calls) == 1  # 한 번 표시에 한 번만 읽는다
+    assert len(calls) == 1

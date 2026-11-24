@@ -1,4 +1,3 @@
-// 관리자 화면에서 기록을 읽기 쉽게 바꾸는 함수들 (화면 없이 테스트한다)
 
 const KST = new Intl.DateTimeFormat("ko-KR", {
   timeZone: "Asia/Seoul",
@@ -9,13 +8,11 @@ const KST = new Intl.DateTimeFormat("ko-KR", {
   hourCycle: "h23",
 });
 
-/** ISO 시각 → 한국 시간 "11.15 17:37" */
 export function when(iso: string): string {
   const parts = Object.fromEntries(KST.formatToParts(new Date(iso)).map((p) => [p.type, p.value]));
   return `${parts.month}.${parts.day} ${parts.hour}:${parts.minute}`;
 }
 
-/** "2026-11-15" → "11.15" */
 export function day(date: string): string {
   const [, month, d] = date.split("-");
   return `${month}.${d}`;
@@ -23,7 +20,6 @@ export function day(date: string): string {
 
 export const count = (n: number): string => n.toLocaleString("ko-KR");
 
-/** 걸린 시간(ms) → "4.2초". 기록에 없으면 빈 글자 */
 export function seconds(ms: number | null | undefined): string {
   return ms == null ? "" : `${(ms / 1000).toFixed(1)}초`;
 }
@@ -31,7 +27,6 @@ export function seconds(ms: number | null | undefined): string {
 export type Tone = "good" | "bad" | "plain";
 type Label = { text: string; tone: Tone };
 
-// /ask 와 통계표 찾기의 status. 모르는 값은 코드 그대로 보여 준다
 const STATUS: Record<string, Label> = {
   ok: { text: "답함", tone: "good" },
   tables: { text: "통계표 안내", tone: "plain" },
@@ -55,7 +50,6 @@ const STATUS: Record<string, Label> = {
   parse_error: { text: "해석 실패", tone: "bad" },
 };
 
-/** search: 통계표 찾기의 status 면 true ("ok" 가 수치로 답한 것이 아니라 표를 찾은 것이다) */
 export function statusLabel(status: string | null | undefined, search = false): Label {
   if (!status) return { text: "기록 없음", tone: "plain" };
   if (search && status === "ok") return { text: "찾음", tone: "good" };
@@ -74,7 +68,6 @@ const REQUEST: Record<string, string> = {
   unclear: "되물음",
 };
 
-// 처리 흐름 한 단계의 결과 (app/services/flow.py). 계산 단계는 /ask status 를 그대로 쓴다
 const FLOW_RESULT: Record<string, Label> = {
   ok: { text: "성공", tone: "good" },
   HCX: { text: "HCX", tone: "plain" },
@@ -98,7 +91,6 @@ export function flowLabel(result: string): Label {
 
 type Step = { stage: string; result: string; detail?: string };
 
-/** 최종 답이 성공이 아니면 마지막으로 막힌 단계 (펼치기 전에 보여 준다). 성공했으면 null */
 export function stuckStep<T extends Step>(flow: T[] | null | undefined): T | null {
   const steps = flow ?? [];
   const final = steps.findLast((s) => s.stage === "최종 답");
@@ -112,14 +104,12 @@ export function requestLabel(type: string | null | undefined): string {
 
 type Person = { user_id?: number | null; user_email?: string | null; user_nickname?: string | null };
 
-/** 누가 남긴 기록인지. 로그인하지 않았으면 "비로그인 사용자", 지워진 계정이면 번호만 */
 export function person(p: Person): string {
   if (p.user_nickname) return p.user_nickname;
   if (p.user_email) return p.user_email;
   return p.user_id == null ? "비로그인 사용자" : `사용자 ${p.user_id}`;
 }
 
-// 조건 이름 (backend/app/services/ask_session.py 의 conditions). 여기 없는 칸은 화면에 내지 않는다
 const CONDITION: [string, string][] = [
   ["indicator", "지표"],
   ["indicators", "지표"],
@@ -158,7 +148,6 @@ const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "obj
 
 export type Change = { name: string; from: string; to: string };
 
-/** 이 턴에서 바뀐 조건만. 앞 조건이 없으면(첫 질문) 빈 목록 */
 export function changes(before: Conditions, after: Conditions): Change[] {
   if (!isRecord(before) || !isRecord(after)) return [];
   const out: Change[] = [];
@@ -169,7 +158,6 @@ export function changes(before: Conditions, after: Conditions): Change[] {
   return out;
 }
 
-/** 조건을 한 줄로: "총인구 · 부산 · 2021~2025 · 추이". 첫 질문에 무엇으로 읽었는지 보여 준다 */
 export function conditionLine(after: Conditions): string {
   if (!isRecord(after)) return "";
   const parts: string[] = [];
@@ -184,7 +172,6 @@ export function conditionLine(after: Conditions): string {
   return parts.join(" · ");
 }
 
-/** 통계표 찾기의 조건(slots.conditions)에서 값이 있는 칸만 */
 export function filled(conditions: unknown): [string, string][] {
   if (!isRecord(conditions)) return [];
   return Object.entries(conditions)

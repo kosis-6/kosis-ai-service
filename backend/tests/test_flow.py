@@ -1,5 +1,3 @@
-"""처리 흐름 기록 (app/services/flow.py): 질문이 거친 단계와 순서, 답을 정한 단계"""
-
 import asyncio
 
 import pytest
@@ -41,7 +39,7 @@ def test_requests_do_not_mix_and_concurrent_parts_share_one_list() -> None:
 
     async def request(name):
         steps = flow.start()
-        await asyncio.gather(part(f"{name}-A"), part(f"{name}-B"))  # 후보 표를 동시에 계산
+        await asyncio.gather(part(f"{name}-A"), part(f"{name}-B"))
         return steps
 
     async def both():
@@ -120,6 +118,5 @@ def test_devset_csv_explains_wrong_answer_with_deciding_step() -> None:
     assert cols["오답 설명"] == f"숫자 다름 ← 답을 정한 단계: {deciding}"
     g.correct = "O"
     assert eval_devset.flow_columns(g, res, None)["오답 설명"] == ""
-    # 되묻기 뒤 답이 있으면 두 턴의 흐름을 이어 쓴다
     both = eval_devset.flow_columns(g, {"trace": {}}, res)["처리 흐름"]
     assert both.startswith("[첫 질문]\n(흐름 기록 없음)\n[되묻기 답]\n1. 질문 이해")

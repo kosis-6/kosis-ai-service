@@ -1,5 +1,3 @@
-"""LLM 호출 기록 (app/services/llm_calls.py): 단계 · LLM · 토큰 · 다시 시도가 요청마다 남는가"""
-
 import asyncio
 
 import httpx
@@ -177,7 +175,7 @@ def test_requests_do_not_mix_and_parallel_calls_share_one_list(monkeypatch) -> N
         calls = llm_calls.start()
         with llm_calls.stage("understand"):
             await HcxClient().chat("HCX-007", MESSAGES)
-        await asyncio.gather(pick(), pick())  # 후보 표를 동시에 볼 때
+        await asyncio.gather(pick(), pick())
         return calls
 
     async def both():
@@ -224,7 +222,7 @@ def test_eval_columns_join_both_turns_and_stay_blank_for_old_runs() -> None:
     cols = eval_devset.llm_columns(_turn("understand"), _turn("follow_up", "cell_pick"))
     assert cols["LLM 호출"] == 3 and cols["HCX 호출"] == 3 and cols["입력 토큰"] == 30
     assert set(cols) == set(eval_devset.LLM_COLUMNS)
-    old = eval_devset.llm_columns({"trace": {"flow": []}}, None)  # 기록을 넣기 전 원응답
+    old = eval_devset.llm_columns({"trace": {"flow": []}}, None)
     assert all(v == "" for v in old.values())
 
 
@@ -232,7 +230,7 @@ def test_eval_summary_has_a_row_per_stage() -> None:
     recs = [
         {"문항": "D-001", **eval_devset.llm_columns(_turn("understand", "cell_pick"), None)},
         {"문항": "D-002", **eval_devset.llm_columns(_turn("understand"), None)},
-        {"문항": "D-003", **eval_devset.llm_columns({"trace": {}}, None)},  # 기록 없음: 빼고 센다
+        {"문항": "D-003", **eval_devset.llm_columns({"trace": {}}, None)},
     ]
     text = "\n".join(eval_devset.llm_summary(recs))
     assert "호출: 3회 (문항당 평균 1.5회, HCX 3 · Gemma 0)" in text

@@ -8,8 +8,15 @@ from scripts.collect_kosis import KosisError
 
 
 def _row(obj_id: str, obj_nm: str, itm_id: str, itm_nm: str, **extra: str) -> dict[str, str]:
-    return {"ORG_ID": "101", "TBL_ID": "DT_X", "OBJ_ID": obj_id, "OBJ_NM": obj_nm,
-            "ITM_ID": itm_id, "ITM_NM": itm_nm, **extra}
+    return {
+        "ORG_ID": "101",
+        "TBL_ID": "DT_X",
+        "OBJ_ID": obj_id,
+        "OBJ_NM": obj_nm,
+        "ITM_ID": itm_id,
+        "ITM_NM": itm_nm,
+        **extra,
+    }
 
 
 ROWS = [
@@ -31,7 +38,6 @@ def test_split_unit() -> None:
     assert ecm.split_unit("총인구_성비", None) == ("총인구_성비", None)
     assert ecm.split_unit("중위연령", "세") == ("중위연령", "세")
     assert ecm.split_unit("인구밀도(명/㎢)", None) == ("인구밀도", "명/㎢")
-    # 이름의 일부인 괄호는 단위로 보지 않는다
     assert ecm.split_unit("중국(한국계)", None) == ("중국(한국계)", None)
 
 
@@ -42,7 +48,7 @@ def test_summarize() -> None:
     region, age = result["classifications"]
     assert region["levels"] == 3
     assert region["level_names"] == ["시도", "시군구", "읍면동"]
-    assert region["sample_values"] == ["서울특별시"]  # 전국·동부 같은 합계 값은 제외
+    assert region["sample_values"] == ["서울특별시"]
     assert region["value_count"] == 5
     assert age["name"] == "연령별" and age["level_names"] is None
     assert result["meta_summary"] == (
@@ -52,7 +58,6 @@ def test_summarize() -> None:
 
 
 def test_region_level_names_use_value_names() -> None:
-    # 시도 아래가 동부·읍부·면부뿐이면 시군구가 아니다
     rows = [
         _row("A", "행정구역별", "00", "전국", OBJ_ID_SN="1"),
         _row("A", "행정구역별", "21", "부산광역시", OBJ_ID_SN="1"),
@@ -60,9 +65,10 @@ def test_region_level_names_use_value_names() -> None:
         _row("A", "행정구역별", "21004", "읍부", OBJ_ID_SN="1", UP_ITM_ID="21"),
     ]
     assert ecm.summarize_axis("A", rows)["level_names"] == ["시도"]
-    # 지역 분류가 아니면 '구'로 끝나는 값이 있어도 단계 이름을 붙이지 않는다
-    rows = [_row("B", "가구원수별", "1", "1인가구", OBJ_ID_SN="2"),
-            _row("B", "가구원수별", "2", "2인가구", OBJ_ID_SN="2")]
+    rows = [
+        _row("B", "가구원수별", "1", "1인가구", OBJ_ID_SN="2"),
+        _row("B", "가구원수별", "2", "2인가구", OBJ_ID_SN="2"),
+    ]
     assert ecm.summarize_axis("B", rows)["level_names"] is None
 
 
@@ -86,8 +92,10 @@ def test_clean_comments_drops_blank_and_separator_lines() -> None:
     ]
     result = ecm.clean_comments(rows)
     assert result["comments"] == [
-        {"target": "통계표", "lines": ["주1) 18세이상 내국인 대상",
-                                      "ㅇ 용어 정비 : 노후기간 → 건축 경과연수"]},
+        {
+            "target": "통계표",
+            "lines": ["주1) 18세이상 내국인 대상", "ㅇ 용어 정비 : 노후기간 → 건축 경과연수"],
+        },
         {"target": "총인구", "lines": ["외국인 포함"]},
     ]
     assert result["comment_text"] == (
@@ -97,7 +105,6 @@ def test_clean_comments_drops_blank_and_separator_lines() -> None:
 
 
 def test_values_keep_child_values() -> None:
-    # 장애유형처럼 '합계' 아래에 값이 달린 분류: sample_values는 상위 값만, values는 전체를 남긴다
     rows = [_row("B", "장애유형별", "0", "합계", OBJ_ID_SN="2")] + [
         _row("B", "장애유형별", str(i), name, OBJ_ID_SN="2", UP_ITM_ID="0")
         for i, name in enumerate(["지체", "시각", "청각"], start=1)
@@ -108,7 +115,6 @@ def test_values_keep_child_values() -> None:
 
 
 def test_offline_without_cache_keeps_output(tmp_path, monkeypatch) -> None:
-    # 캐시가 없는 PC에서 --offline을 돌려도 기존 결과 파일을 빈 분류로 덮어쓰지 않는다
     catalog = tmp_path / "catalog.jsonl"
     catalog.write_text(
         '{"org_id": "101", "tbl_id": "DT_A"}\n{"org_id": "101", "tbl_id": "DT_B"}\n',

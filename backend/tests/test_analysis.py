@@ -11,7 +11,6 @@ def test_change_and_growth_rate() -> None:
 
 
 def test_growth_rate_negative_base() -> None:
-    # 기준값이 음수(예: 인구 순유출)여도 늘어난 방향이면 양수
     assert analysis.growth_rate(-100, -50) == pytest.approx(50.0)
 
 
@@ -36,7 +35,6 @@ def test_composition() -> None:
 
 
 def test_composition_with_total() -> None:
-    # '계' 값이 따로 있으면 항목 합계가 아니라 그 값을 기준으로 계산
     result = analysis.composition({"0-14세": 10, "15-64세": 70}, total=100)
     assert result == pytest.approx({"0-14세": 10.0, "15-64세": 70.0})
 
@@ -59,7 +57,6 @@ def test_times() -> None:
 
 
 def test_rank_rows_ties_share_rank() -> None:
-    # 지역 순위: 같은 값은 같은 순위, 다음 순위는 건너뛴다 (1, 2, 2 / 1, 1, 3)
     rows = [
         {"region": "가", "value": 0.72},
         {"region": "나", "value": 0.8},

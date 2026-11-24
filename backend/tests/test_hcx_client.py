@@ -83,7 +83,7 @@ def test_chat_rate_limit_gives_up() -> None:
     with pytest.raises(HcxError) as exc:
         asyncio.run(make_client(handler).chat("HCX-007", [{"role": "user", "content": "x"}]))
     assert exc.value.is_rate_limit
-    assert len(calls) == 3  # 처음 1번 + 다시 시도 2번
+    assert len(calls) == 3
 
 
 def test_chat_no_retry_on_other_errors() -> None:
@@ -99,7 +99,6 @@ def test_chat_no_retry_on_other_errors() -> None:
 
 
 def test_chat_network_error_retries_once_then_hcx_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    # 연결 실패는 500 오류(그냥 예외)가 아니라 HcxError로, 한 번만 다시 시도
     monkeypatch.setattr("app.services.hcx_client.TRANSIENT_WAITS", (0,))
     calls = []
 
@@ -114,7 +113,6 @@ def test_chat_network_error_retries_once_then_hcx_error(monkeypatch: pytest.Monk
 
 
 def test_chat_server_error_retry_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
-    # 게이트웨이 오류(JSON이 아닌 502)도 HcxError로 보고, 다시 시도해 성공하면 답한다
     monkeypatch.setattr("app.services.hcx_client.TRANSIENT_WAITS", (0,))
     responses = [
         httpx.Response(502, text="<html>Bad Gateway</html>"),
@@ -129,7 +127,6 @@ def test_chat_server_error_retry_succeeds(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 def test_chat_limits_concurrent_requests(monkeypatch: pytest.MonkeyPatch) -> None:
-    """동시에 보내는 요청은 hcx_max_concurrency개까지 (후보 동시 계산이 한도를 넘지 않게)"""
     from app.core.config import get_settings
 
     monkeypatch.setattr(get_settings(), "hcx_max_concurrency", 2)

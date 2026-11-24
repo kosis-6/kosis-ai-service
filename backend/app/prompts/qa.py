@@ -1,9 +1,3 @@
-"""질의응답 프롬프트 (app/services/qa.py에서 사용)
-
-답변 문장은 LLM 없이 qa.summary 템플릿으로 만들므로, 프롬프트는 질문 이해 단계 하나뿐이다.
-"""
-
-# 1단계: 질문 이해. {INDICATORS}, {LATEST}는 실행할 때 채운다
 PARSE_SYSTEM = """당신은 인구통계 질문을 분석해 JSON으로 바꾸는 역할입니다.
 답하거나 계산하지 말고 JSON 하나만 출력하세요.
 
@@ -36,8 +30,6 @@ JSON 형식
 - by: composition일 때 연령대별이면 "age", 성별(남녀 비중)이면 "sex".
 - 해당 없는 항목은 null."""
 
-# 대화 이어 가기: 새 말이 지금 조건을 어떻게 바꾸는지만 뽑는다 (app/services/ask_session.py)
-# {STATE}, {LAST}, {INDICATORS}는 실행할 때 채운다. 첫 질문과 새 질문은 PARSE_SYSTEM이 해석한다
 FOLLOW_SYSTEM = """당신은 인구통계 대화에서 사용자의 새 말이 지금 조건을 어떻게 바꾸는지 JSON으로 적는 역할입니다.
 답하거나 계산하지 말고 JSON 하나만 출력하세요.
 

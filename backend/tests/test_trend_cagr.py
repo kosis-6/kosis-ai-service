@@ -1,5 +1,3 @@
-"""추이의 연평균 증감률 (qa._add_trend_facts → change["cagr"], qa._body의 전체 변화 줄. 11/18)"""
-
 from app.services import qa
 
 
@@ -20,7 +18,7 @@ def trend(values, diff_unit="명", rate=True, start=2020):
 
 
 def test_cagr_is_compound_yearly_rate() -> None:
-    r = trend([1000, 1100, 1210, 1331])  # 해마다 10%씩
+    r = trend([1000, 1100, 1210, 1331])
     qa._add_trend_facts(r)
     assert r["change"]["cagr"] == 10.0
     assert qa._body(r)[-1] == "- 2020년 → 2023년 전체 변화: +331명, +33.1%, 연평균 +10.0%"
@@ -33,7 +31,7 @@ def test_cagr_when_decreasing() -> None:
 
 
 def test_no_cagr_for_ratio_points_or_without_rate() -> None:
-    ratio = trend([2.0, 3.0], diff_unit="%p")  # 비율 지표는 %p와 헷갈려 뺀다
+    ratio = trend([2.0, 3.0], diff_unit="%p")
     qa._add_trend_facts(ratio)
     assert "cagr" not in ratio["change"]
     norate = trend([5, 7], rate=False)
@@ -42,6 +40,6 @@ def test_no_cagr_for_ratio_points_or_without_rate() -> None:
 
 
 def test_no_cagr_when_a_value_is_not_positive() -> None:
-    r = trend([-50, 30, 80])  # 순이동처럼 음수에서 시작
+    r = trend([-50, 30, 80])
     qa._add_trend_facts(r)
     assert "cagr" not in r["change"]

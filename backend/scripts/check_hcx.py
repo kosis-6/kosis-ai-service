@@ -3,7 +3,6 @@ import asyncio
 
 from app.services.hcx_client import HcxClient
 
-# 프로젝트에서 쓰는 모델 (검색 질의 분석·최종 검토, 질문 답변 모두 HCX-007)
 DEFAULT_MODELS = ["HCX-007"]
 REASONING_MODELS = {"HCX-007"}
 
@@ -16,8 +15,6 @@ async def check(models: list[str], prompt: str) -> bool:
 
     ok = True
     for model in models:
-        # 추론 모델(HCX-007)은 maxTokens 대신 maxCompletionTokens를 받고,
-        # 추론에도 토큰을 쓰므로 한도를 넉넉히 줘야 답변이 잘리지 않음
         if model in REASONING_MODELS:
             options = {"maxCompletionTokens": 1024}
         else:

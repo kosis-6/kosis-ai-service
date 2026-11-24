@@ -1,9 +1,3 @@
-"""검색 결과 → API 응답 (실전 2 F-07 안내 응답 생성, 기능 정의서 5장 형식)
-
-표명·조사명·기관·기간·링크는 DB 값만 쓴다. LLM이 만든 표 이름이나 ID는 내보내지 않는다.
-답변 문장은 status별 템플릿으로 만든다 (실전 1 qa.summary와 같은 방식).
-"""
-
 import re
 from typing import Any
 
@@ -32,14 +26,12 @@ STATUS_MESSAGES = {
 REJECTED = ("out_of_scope", "not_statistics", "parse_error")
 NUMBERS = "①②③④⑤"
 AXIS_LABELS = {"target": "대상", "sex": "성별", "edition": "연도"}
-# 되묻기 선택지의 차이 줄: 지역 분류는 '지역 단위'로 따로 보여 주므로 분류 이름에서 뺀다
 REGION_CLASS = re.compile(r"행정구역|시도|시군구|읍면동|지역|전출지|전입지|거주지")
 MAX_DIFF_CLASSES = 3
-MAX_DIFF_TEXT = 60  # 주석에서 가져온 줄(기준일 · 대상 범위)은 이 길이까지만
+MAX_DIFF_TEXT = 60
 
 
 def check_label(key: str, slots: dict[str, Any]) -> str:
-    """'class:연령' → '연령', 'year' → '2010년'"""
     c = slots["conditions"]
     if key == "year":
         return f"{c['year']}~{c['year_end']}년" if c["year_end"] else f"{c['year']}년"
@@ -53,7 +45,6 @@ def check_label(key: str, slots: dict[str, Any]) -> str:
 
 
 def member_label(t: dict[str, Any]) -> str:
-    """'혼인 귀화자(여)', '전체(계)'. 멤버가 하나뿐인 패밀리는 표명"""
     if t["target"] is None:
         return t["table_name"]
     return f"{t['target']}({t['sex']})" if t["sex"] else t["target"]
@@ -108,22 +99,19 @@ def recommendation(
     }
 
 
-# 성별 합계 칸이 없는 표의 안내. 부부 단위 건수 표(혼인 · 이혼)에는 맞지 않는다: 남편 · 아내 값을
-# 더하면 두 번 센다 (dynamic_indicator가 남편 쪽 칸으로 답할 때 이 문장을 뺀다)
 NO_TOTAL_NOTE = (
     "이 표에는 남녀 합계가 없습니다. 인원·건수는 남녀 값을 더해 보고, 비율은 성별로만 제공됩니다."
 )
 
 
 def notes(t: dict[str, Any], family: list[dict[str, Any]]) -> list[str]:
-    """주석 밖의 고지: 이름이 바뀐 판, 남녀 합계 없음 (주석 고지는 notices.py)"""
     out = []
     by_id = {r["tbl_id"]: r for r in family}
     member = [r for r in family if (r["target"], r["sex"]) == (t["target"], t["sex"])]
     if t.get("renamed_from") in by_id:
         old = by_id[t["renamed_from"]]
         out.append(f"{old['edition']}년 자료는 이름이 다른 ‘{old['table_name']}’ 표에 있습니다.")
-    for r in member:  # 옛 판을 고른 경우: 이후 자료는 이름이 바뀐 표에 있다
+    for r in member:
         if r.get("renamed_from") == t["tbl_id"]:
             out.append(f"{r['edition']}년 자료는 이름이 바뀐 ‘{r['table_name']}’ 표에 있습니다.")
     if t["has_total"] is False:
@@ -132,7 +120,6 @@ def notes(t: dict[str, Any], family: list[dict[str, Any]]) -> list[str]:
 
 
 def other_versions(family: dict[str, Any]) -> str:
-    """'계/남 · 기타, 전체 · 2015년판': 같은 대상의 다른 성별 · 다른 대상 · 다른 판"""
     current = family["current"]
     sexes = [m["sex"] for m in family["members"] if m["target"] == current["target"] and m["sex"]]
     targets = list(
@@ -144,7 +131,6 @@ def other_versions(family: dict[str, Any]) -> str:
 
 
 def notice(result: dict[str, Any]) -> str | None:
-    """판 메모 + 불충족 조건 ('2024년 조건 불충족'). 판 메모가 연도를 설명하면 연도는 빼고"""
     notes = list(result.get("notes") or [])
     for key in result.get("failed") or []:
         if key == "year" and notes:
@@ -154,7 +140,6 @@ def notice(result: dict[str, Any]) -> str | None:
 
 
 def together_cards(result: dict[str, Any], by_id: dict[str, dict[str, Any]]) -> list[dict]:
-    """함께 볼 표 (llm_pick.with_together). 한 통계가 여러 표로 나뉜 경우에만 있다"""
     cards = []
     for tbl_id in result.get("together") or []:
         if t := by_id.get(tbl_id):
@@ -177,8 +162,6 @@ def _short(line: str) -> str:
 
 
 def option_facts(t: dict[str, Any]) -> dict[str, str]:
-    """되묻기 선택지 표 하나의 특징. 모두 카탈로그 값이다 (작성 기관, 지역 단위, 분류 이름,
-    주석의 기준일, 주석의 대상 범위). 없는 것은 빈 문자열"""
     classes = [
         c["name"] for c in t.get("classifications") or [] if not REGION_CLASS.search(c["name"])
     ]
@@ -195,10 +178,6 @@ def option_facts(t: dict[str, Any]) -> dict[str, str]:
 
 
 def option_diffs(options: list[dict[str, Any]], by_id: dict[str, dict[str, Any]]) -> dict[str, str]:
-    """되묻기 선택지마다 다른 선택지와 무엇이 다른지 한 줄 {tbl_id: '행정안전부 · 시도 · …'}.
-
-    표 이름만 보고는 고를 수 없어서 붙인다. 선택지끼리 값이 같은 특징(예: 모두 같은 기관)은
-    차이가 아니므로 빼고, 서로 다른 특징만 남긴다. 다른 것이 없으면 줄을 붙이지 않는다"""
     facts = {o["tbl_id"]: option_facts(by_id[o["tbl_id"]]) for o in options if o["tbl_id"] in by_id}
     if len(facts) < 2:
         return {}
@@ -290,7 +269,6 @@ def respond(
         recs.append(
             recommendation(1, chosen, family, result["table"]["checks"], result["score"], slots)
         )
-        # 2순위부터는 다른 패밀리의 대표 표
         for i, o in enumerate(result.get("other_families", [])[: max(top_k - 1, 0)], start=2):
             t = by_id[o["tbl_id"]]
             fam = [r for r in tables if r["family_id"] == t["family_id"]]
@@ -315,7 +293,7 @@ def respond(
                     "survey_nm": o["survey_name"],
                     "period": o["edition"],
                     "url": o["url"],
-                    "diff": diffs.get(o["tbl_id"]),  # 다른 선택지와 다른 점 (없으면 None)
+                    "diff": diffs.get(o["tbl_id"]),
                 }
                 for o in result["options"]
             ],
@@ -331,7 +309,6 @@ def respond(
         "recommendations": recs,
         "together": together,
         "notice": result["notice"],
-        # 거절했으면 어디서 거절했는지 (범위 밖 단어 / LLM 검토 / 점수 문턱). 평가 기록용
         "reason": result.get("reason") if status in REJECTED else None,
     }
     if debug:

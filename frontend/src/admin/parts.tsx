@@ -1,4 +1,3 @@
-// 관리자 화면의 두 보기(대화·통계표 찾기)가 함께 쓰는 조각: 불러오기, 거르는 줄, 상태 표시
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Navigate } from "react-router-dom";
 import { ApiError, type Who } from "./api";
@@ -10,7 +9,6 @@ function asApiError(e: unknown): ApiError {
   return e instanceof ApiError ? e : new ApiError(0, "화면에서 기록을 읽지 못했어요.");
 }
 
-/** key 가 바뀔 때마다 다시 불러온다. 늦게 온 앞 요청의 답은 버린다 */
 export function useLoad<T>(load: () => Promise<T>, key: string): Loaded<T> & { reload: () => void } {
   const [state, setState] = useState<Loaded<T>>({ data: null, error: null, loading: true });
   const [tick, setTick] = useState(0);
@@ -32,7 +30,6 @@ export function useLoad<T>(load: () => Promise<T>, key: string): Loaded<T> & { r
 
 type Page<T> = { rows: T[]; total: number };
 
-/** 목록을 50개씩 이어 붙인다. key(거르는 조건)가 바뀌면 처음부터 */
 export function usePaged<T>(load: (offset: number) => Promise<Page<T>>, key: string) {
   const first = useLoad(() => load(0), key);
   const [extra, setExtra] = useState<T[]>([]);
@@ -63,7 +60,6 @@ export function usePaged<T>(load: (offset: number) => Promise<Page<T>>, key: str
   return { rows, total, loading: first.loading, error: first.error, reload: first.reload, more, busy, moreError };
 }
 
-/** 입력이 멈춘 뒤의 값 (글자마다 서버를 부르지 않게) */
 export function useSettled(value: string, ms = 300): string {
   const [settled, setSettled] = useState(value);
   useEffect(() => {
@@ -84,7 +80,6 @@ export function Status({ value, search = false }: { value: string | null | undef
 
 type Option<T> = { value: T; label: string };
 
-/** 여럿 중 하나 고르기 (기간, 사용자 종류) */
 export function Choice<T extends string | number>(props: {
   label: string;
   value: T;
@@ -119,9 +114,7 @@ export const WHO: Option<Who>[] = [
   { value: "guest", label: "비로그인 사용자" },
 ];
 
-/** 불러오지 못했을 때: 무엇이 문제이고 어떻게 하면 되는지. 권한이 없으면 화면을 떠난다 */
 export function Problem({ error, onRetry }: { error: ApiError; onRetry?: () => void }) {
-  // 로그인이 풀렸거나 관리자 권한이 빠진 경우: 관리자 화면을 보여 주지 않고 통계 찾기로 보낸다
   if (error.status === 401 || error.status === 403) return <Navigate to="/" replace />;
   return (
     <div className="state" role="alert">
@@ -145,7 +138,6 @@ export function Empty({ title, children }: { title: string; children: ReactNode 
   );
 }
 
-/** 목록을 불러오는 동안 줄 자리를 잡아 둔다 */
 export function SkeletonRows({ n = 8 }: { n?: number }) {
   return (
     <ul className="rows" aria-hidden="true">

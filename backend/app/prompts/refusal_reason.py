@@ -1,10 +1,3 @@
-"""거절 사유 분류 프롬프트 (app/services/refusal.py)
-
-통계표 찾기의 검토가 "맞는 표가 없다"고 한 질문에만 부른다. 검토는 이유를 한 줄로 적지만 최종
-사유는 모두 '범위 밖 주제'로 나갔다. 검토 프롬프트는 건드리지 않고(고른 표가 흔들린다),
-그 이유를 읽어 최종 사유만 고르는 작은 호출을 따로 둔다.
-"""
-
 CODES = ("out_of_scope", "not_statistics", "no_region_level", "no_joint_table", "partial_match")
 
 SYSTEM = """너는 인구 통계 챗봇이 질문에 답하지 못한 사유를 고르는 분류기다.

@@ -1,35 +1,3 @@
-"""패밀리 켬/끔 비교: 개발셋 질문마다 슬롯·임베딩을 한 번 뽑아 두 방식의 find()에 똑같이 넣는다
-
-  켬  지금 검색 그대로 (같은 패밀리 접기 → 멤버·판 선택 → 되묻기)
-  끔  표마다 자기 혼자인 패밀리로 바꾼 표 목록을 넣는다 → 접기·멤버 선택·되묻기가 일어나지 않고
-      재순위 1등 표가 그대로 답이 된다
-
-슬롯(HCX)·임베딩이 같으므로 차이는 패밀리 단계에서만 생긴다. R@k 차이는 점수가 같을 때 켬이 최신 판을 앞에 두는 데서만 생긴다.
-흐름은 score.py(골든셋 README)와 같은 규칙:
-  - ambiguous → 사용자가 1번 선택지를 골랐다고 보고 그 패밀리로 멤버·판 선택
-  - clarify   → 골든셋 answers 로 한 번 답한 뒤 최종 표 (answers 가 없으면 기본 멤버)
-
-지표 (범위 안 문항)
-  흐름 성공   final 이 gold_tables 안에 있음
-  엄격 정답   final_table 이 있는 문항만, final == final_table (허용 정답이 넓어 생기는 이득을 뺌)
-  겹침        끔일 때 상위 5개 표 안에 같은 패밀리(켬 기준) 표가 겹친 문항 수
-
-결과: eval/results/family_ablation_YYYYMMDD.md · .csv(켬/끔 결과가 다른 문항)
-      eval/results/pred_family_on.jsonl · pred_family_off.jsonl (score.py 에 그대로 넣을 수 있음)
-실행
-  python -m scripts.family_ablation                         # HCX 슬롯 + 임베딩
-  python -m scripts.family_ablation --sleep 2               # 호출 제한(42901)에 걸릴 때
-  python -m scripts.family_ablation --rule-slots            # HCX 없이 규칙 슬롯 (빠른 점검용)
-  python -m scripts.family_ablation --llm-pick              # LLM 검토(HCX-007)까지 켬/끔 각각
-슬롯은 eval/results/family_ablation_slots.jsonl 에 저장해 다시 돌릴 때 HCX 를 부르지 않는다
-(--fresh 로 무시).
-LLM 검토 답은 eval/results/family_ablation_review.jsonl 에 저장한다 (--fresh-review 로 무시).
-  - 켬·끔 후보가 같으면 LLM 에 한 번만 묻고 같은 답을 쓴다 → 호출이 줄고, LLM 이 같은 입력에
-    다르게 답해서 생기는 우연한 켬/끔 차이가 없어진다
-  - 저장 키에 모델·시스템 프롬프트·_ask 코드·질문·후보 내용이 들어가므로 프롬프트나 표 정보가
-    바뀌면 옛 답은 저절로 안 쓰인다. 실패한 호출은 저장하지 않는다
-"""
-
 import argparse
 import asyncio
 import copy
@@ -61,7 +29,6 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
 
 
 def family_off(tables: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """표마다 자기 혼자인 패밀리 (순서는 그대로 → 임베딩 점수 배열과 맞음)"""
     return [
         {**t, "family_id": t["tbl_id"], "family_name": t["table_name"],
          "target": None, "sex": None, "edition_order": 1}
@@ -75,25 +42,23 @@ async def get_slots(q: str, rule: bool, sleep: float) -> tuple[dict[str, Any], s
     for attempt in range(3):
         try:
             return await slot_parser.extract(q, {}), "hcx"
-        except Exception as e:  # 호출 제한 등
+        except Exception as e:
             print(f"    슬롯 추출 실패 ({type(e).__name__}: {e}) → {5 * (attempt + 1)}초 뒤 다시")
             await asyncio.sleep(5 * (attempt + 1) + sleep)
     return slot_parser.correct(q, slot_parser.empty_slots(q)), "rule(HCX 실패)"
 
 
-EMBED_FAILED: list[str] = []  # 다시 시도해도 임베딩을 못 받은 질문 (키워드로만 검색됨)
+EMBED_FAILED: list[str] = []
 
 
 async def dense_retry(text: str) -> list[float] | None:
-    """search.dense_scores 는 서비스용이라 다시 시도 없이 3초 안에 못 받으면 None.
-    배치에서는 호출 제한(42901)·지연이 가끔 생기므로 기다렸다가 다시 시도한다"""
     for attempt in range(4):
         dense = await search.dense_scores(text)
-        if dense is not None or search._vectors is None:  # 표 벡터가 없으면 다시 해도 소용없음
+        if dense is not None or search._vectors is None:
             return dense
         if attempt == 3:
             break
-        wait = 5 if attempt == 0 else 25  # 호출 제한은 길게는 1분 창이라 25초씩
+        wait = 5 if attempt == 0 else 25
         print(f"    임베딩 실패 → {wait}초 뒤 다시 ({attempt + 1}/3)")
         await asyncio.sleep(wait)
     EMBED_FAILED.append(text)
@@ -102,7 +67,6 @@ async def dense_retry(text: str) -> list[float] | None:
 
 
 async def get_dense(q: str, slots: dict[str, Any]) -> list[float] | None:
-    """search.search()와 같게: 질문 임베딩 + 재작성 검색어 임베딩 평균"""
     dense = await dense_retry(q)
     rewrite = (slots.get("search_query") or "").strip()
     if dense is not None and rewrite and rewrite != q.strip():
@@ -113,7 +77,6 @@ async def get_dense(q: str, slots: dict[str, Any]) -> list[float] | None:
 
 
 def answered(slots: dict[str, Any], answers: dict[str, Any]) -> dict[str, Any]:
-    """골든셋 answers({"target": ...} / {"region": [...]})를 되묻기 답으로 넣는다"""
     s = copy.deepcopy(slots)
     if "target" in answers:
         s["target"] = answers["target"]
@@ -127,17 +90,15 @@ def answered(slots: dict[str, Any], answers: dict[str, Any]) -> dict[str, Any]:
     return s
 
 
-REVIEW_FAILED: list[str] = []  # 다시 시도해도 LLM 검토를 못 받은 문항 (검색 결과 그대로)
+REVIEW_FAILED: list[str] = []
 REVIEW_STATS = {"저장된 답": 0, "새로 물음": 0}
 
 
 def install_review_cache(fresh: bool) -> None:
-    """llm_pick._ask 를 저장해 둔 답을 먼저 찾는 함수로 바꾼다 (서비스 코드는 그대로)"""
     from app.prompts.llm_pick import SYSTEM
     from app.services import llm_pick
 
     ask = llm_pick._ask
-    # llm_pick.py 가 조금이라도 바뀌면 옛 답을 쓰지 않는다 (안전한 쪽)
     version = hashlib.sha1(
         (llm_pick.MODEL + SYSTEM + inspect.getsource(llm_pick)).encode()
     ).hexdigest()[:12]
@@ -150,7 +111,7 @@ def install_review_cache(fresh: bool) -> None:
         if key in saved:
             REVIEW_STATS["저장된 답"] += 1
             return saved[key]
-        parsed = await ask(question, cands)  # 실패하면 예외 → 저장하지 않음
+        parsed = await ask(question, cands)
         REVIEW_STATS["새로 물음"] += 1
         saved[key] = parsed
         with open(REVIEW_CACHE, "a", encoding="utf-8") as f:
@@ -164,8 +125,6 @@ def install_review_cache(fresh: bool) -> None:
 async def review_retry(
     g: dict[str, Any], r: dict[str, Any], tables: list[dict[str, Any]]
 ) -> dict[str, Any]:
-    """llm_pick.review 는 실패하면 결과를 그대로 돌려주고 trace 에 error 를 남긴다.
-    HcxClient 재시도(1·3·6초)로는 1분 단위 호출 제한이 안 풀리므로 여기서 길게 기다렸다가 다시"""
     from app.services import llm_pick
 
     for attempt in range(4):
@@ -249,7 +208,8 @@ def report(
         f"- 개발셋: {GOLDEN.relative_to(ROOT)} ({len(golden)}문항)",
         f"- 슬롯: {', '.join(f'{k} {v}' for k, v in slot_src.items())}"
         f" · LLM 검토: {'켬' if use_llm else '끔'}",
-        "- 슬롯·임베딩은 두 방식이 같다 → 차이는 패밀리 단계(접기·멤버·판 선택, 동점일 때 최신 판 우선)에서만 생긴다",
+        "- 슬롯·임베딩은 두 방식이 같다 → 차이는 패밀리 단계"
+        "(접기·멤버·판 선택, 동점일 때 최신 판 우선)에서만 생긴다",
         "",
     ]
 
@@ -257,18 +217,30 @@ def report(
         a, b = metrics(gs, off), metrics(gs, on)
         if not a["n"] and not a["oos_n"]:
             return
-        lines.extend([f"## {title}", "", "| 지표 | 패밀리 끔 | 패밀리 켬 | 차이 |", "| --- | --- | --- | --- |"])
+        lines.extend(
+            [
+                f"## {title}",
+                "",
+                "| 지표 | 패밀리 끔 | 패밀리 켬 | 차이 |",
+                "| --- | --- | --- | --- |",
+            ]
+        )
         rows = [
-            ("표 R@1", "r1", "n"), ("표 R@5", "r5", "n"), ("**흐름 성공**", "flow", "n"),
-            ("엄격 정답 (final_table)", "strict", "strict_n"), ("되묻기 문항 성공", "clar", "clar_n"),
-        ]  # fmt: skip
+            ("표 R@1", "r1", "n"),
+            ("표 R@5", "r5", "n"),
+            ("**흐름 성공**", "flow", "n"),
+            ("엄격 정답 (final_table)", "strict", "strict_n"),
+            ("되묻기 문항 성공", "clar", "clar_n"),
+        ]
         for label, k, nk in rows:
             if a[nk]:
                 d = (b[k] - a[k]) / a[nk]
                 lines.append(f"| {label} | {pct(a[k], a[nk])} | {pct(b[k], b[nk])} | {d:+.0%}p |")
         lines.append(f"| 되물은 문항 수 | {a['asked']} | {b['asked']} | |")
         if a["oos_n"]:
-            lines.append(f"| 범위 밖 재현율 | {pct(a['oos'], a['oos_n'])} | {pct(b['oos'], b['oos_n'])} | |")
+            lines.append(
+                f"| 범위 밖 재현율 | {pct(a['oos'], a['oos_n'])} | {pct(b['oos'], b['oos_n'])} | |"
+            )
         lines.append(f"| 범위 안→밖 오판 | {a['false_oos']} | {b['false_oos']} | |")
         lines.append("")
 
@@ -278,27 +250,37 @@ def report(
         for g in golden:
             if g.get("gold_tables"):
                 groups[str(g.get(key) or "없음")].append(g)
-        lines.extend([f"## {label}별 흐름 성공", "", f"| {label} | 문항 | 끔 | 켬 | 차이 |", "| --- | --- | --- | --- | --- |"])
+        lines.extend(
+            [
+                f"## {label}별 흐름 성공",
+                "",
+                f"| {label} | 문항 | 끔 | 켬 | 차이 |",
+                "| --- | --- | --- | --- | --- |",
+            ]
+        )
         for k in sorted(groups):
             a, b = metrics(groups[k], off), metrics(groups[k], on)
             lines.append(
-                f"| {k} | {a['n']} | {pct(a['flow'], a['n'])} | {pct(b['flow'], b['n'])} | {b['flow'] - a['flow']:+d} |"
+                f"| {k} | {a['n']} | {pct(a['flow'], a['n'])} | {pct(b['flow'], b['n'])}"
+                f" | {b['flow'] - a['flow']:+d} |"
             )
         lines.append("")
 
-    # 끔일 때 상위 5개 안의 같은 계열 겹침 (켬은 접기 때문에 겹치지 않는다)
     dup = [
         5 - len({fam_of.get(t, t) for t in off[g["id"]]["ranked"][:5]})
         for g in golden if g.get("gold_tables") and len(off[g["id"]]["ranked"]) >= 5
     ]  # fmt: skip
-    lines.extend([
-        "## 후보 다양성",
-        "",
-        f"- 패밀리 끔: 상위 5개 표 안에 같은 패밀리 표가 겹친 문항 {sum(d > 0 for d in dup)}/{len(dup)}"
-        f" (평균 {sum(dup) / max(len(dup), 1):.2f}자리가 같은 계열 중복)",
-        "- 패밀리 켬: 같은 패밀리를 한 자리로 접으므로 상위 5자리가 모두 서로 다른 계열",
-        "",
-    ])  # fmt: skip
+    lines.extend(
+        [
+            "## 후보 다양성",
+            "",
+            "- 패밀리 끔: 상위 5개 표 안에 같은 패밀리 표가 겹친 문항"
+            f" {sum(d > 0 for d in dup)}/{len(dup)}"
+            f" (평균 {sum(dup) / max(len(dup), 1):.2f}자리가 같은 계열 중복)",
+            "- 패밀리 켬: 같은 패밀리를 한 자리로 접으므로 상위 5자리가 모두 서로 다른 계열",
+            "",
+        ]
+    )
 
     changed = []
     for g in golden:
@@ -307,15 +289,22 @@ def report(
         a, b = off[g["id"]], on[g["id"]]
         a_ok, b_ok = a["final"] in g["gold_tables"], b["final"] in g["gold_tables"]
         if a_ok != b_ok:
-            changed.append({
-                "결과": "켬이 맞힘" if b_ok else "켬이 틀림(손해)",
-                "id": g["id"], "셋": g.get("set"), "유형": g.get("type"), "패밀리 크기": g.get("fam_size"),
-                "질문": g["q"],
-                "정답": " | ".join(f"{t} {name_of.get(t, '')}" for t in g["gold_tables"]),
-                "끔 최종": f"{a['final']} {name_of.get(a['final'], '')}",
-                "켬 최종": f"{b['final']} {name_of.get(b['final'], '')}",
-                "켬 패밀리": b["family"], "켬 첫 상태": b["first_status"], "켬 되물음": b["asked"],
-            })  # fmt: skip
+            changed.append(
+                {
+                    "결과": "켬이 맞힘" if b_ok else "켬이 틀림(손해)",
+                    "id": g["id"],
+                    "셋": g.get("set"),
+                    "유형": g.get("type"),
+                    "패밀리 크기": g.get("fam_size"),
+                    "질문": g["q"],
+                    "정답": " | ".join(f"{t} {name_of.get(t, '')}" for t in g["gold_tables"]),
+                    "끔 최종": f"{a['final']} {name_of.get(a['final'], '')}",
+                    "켬 최종": f"{b['final']} {name_of.get(b['final'], '')}",
+                    "켬 패밀리": b["family"],
+                    "켬 첫 상태": b["first_status"],
+                    "켬 되물음": b["asked"],
+                }
+            )
     gain = sum(c["결과"] == "켬이 맞힘" for c in changed)
     lines.extend([
         "## 켬/끔 결과가 다른 문항",
@@ -327,7 +316,10 @@ def report(
         "| --- | --- | --- | --- | --- | --- |",
     ])  # fmt: skip
     for c in sorted(changed, key=lambda c: (c["결과"] != "켬이 틀림(손해)", c["id"])):
-        lines.append(f"| {c['결과']} | {c['id']} | {c['유형']} | {c['질문']} | {c['끔 최종']} | {c['켬 최종']} |")
+        lines.append(
+            f"| {c['결과']} | {c['id']} | {c['유형']} | {c['질문']}"
+            f" | {c['끔 최종']} | {c['켬 최종']} |"
+        )
     return "\n".join(lines) + "\n", changed
 
 
@@ -359,8 +351,14 @@ async def main_async(args: argparse.Namespace) -> None:
         dense = await get_dense(g["q"], slots)
         off[g["id"]] = await flow(g, tables_off, slots, dense, args.llm_pick)
         on[g["id"]] = await flow(g, tables_on, slots, dense, args.llm_pick)
-        mark = lambda p: "O" if p["final"] in g["gold_tables"] else ("-" if not g["gold_tables"] else "X")  # noqa: E731
-        print(f"[{i:3}/{len(golden)}] {g['id']:<6} 끔 {mark(off[g['id']])} 켬 {mark(on[g['id']])}  {g['q'][:40]}")
+
+        def mark(p, g=g):
+            return "O" if p["final"] in g["gold_tables"] else ("-" if not g["gold_tables"] else "X")
+
+        print(
+            f"[{i:3}/{len(golden)}] {g['id']:<6} 끔 {mark(off[g['id']])} 켬 {mark(on[g['id']])}"
+            f"  {g['q'][:40]}"
+        )
 
     for name, pred in (("off", off), ("on", on)):
         with open(RESULTS / f"pred_family_{name}.jsonl", "w", encoding="utf-8") as f:
