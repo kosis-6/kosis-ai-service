@@ -396,10 +396,22 @@ def find_in_text(text):
     예) "고령인구비율" 안의 "인구"(총인구), "인구순유입"(순이동) 안의 "인구"는 세지 않는다.
     """
     s = _norm(text)
+    # 공백을 뺀 위치 → 원문 위치. 두 글자 이하 이름이 원문의 띄어쓰기를 넘어 걸리면 두 낱말에
+    # 걸친 가짜 일치다 ("여성 비중"의 '성 비' → 성비로 읽어 "여성 성비 94.66"으로 답했다).
+    # 긴 이름은 띄어 쓴 복합어("합계 출산율")도 같은 말이라 그대로 맞춘다
+    where = [i for i, ch in enumerate(str(text)) if not ch.isspace()]
+
+    def one_word(start, end):
+        return end - start > 2 or where[end - 1] - where[start] == end - start - 1
+
     spans = []
     for name, names in _alias_map().items():
         for n in {_norm(x) for x in [name, *names]}:
-            spans += [(m.start(), m.end(), name) for m in re.finditer(re.escape(n), s)]
+            spans += [
+                (m.start(), m.end(), name)
+                for m in re.finditer(re.escape(n), s)
+                if one_word(m.start(), m.end())
+            ]
     # 제외 표현 안에 든 별칭은 세지 않는다 (예: "등록외국인수" 안의 "외국인수")
     blocked = [
         (m.start(), m.end(), name)

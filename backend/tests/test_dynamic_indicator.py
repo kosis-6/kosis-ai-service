@@ -1630,13 +1630,16 @@ BIRTHPLACE = [  # '현 거주지별 … 출생지별 1인가구': 항목이 출�
         ("2020년 서울 1인 가구 수는?", False),  # 출생지 '서울'로 434,920가구가 나왔다
         ("2020년 전국 1인 가구 수는?", False),
         ("2020년 부산 출생 1인 가구 수는?", True),  # 출생지를 말하면 그 칸을 쓴다
+        # 사는 곳(서울)은 출생지 칸을 고르지 않는다 (화면에서 "서울 수는 434,920가구"로 답했다)
+        ("2020년 서울에 사는 부산 출신 1인 가구는 몇 가구야?", True),
+        ("고향이 부산인 서울 1인 가구 수", True),
     ],
 )
 def test_region_words_do_not_pick_birthplace_cells(
     fake_table, monkeypatch, question: str, ok: bool
 ) -> None:
     names = ("서울특별시", "부산광역시", "서울", "부산")
-    monkeypatch.setattr(indicators, "find_regions", lambda t: [n for n in names if n in t][:1])
+    monkeypatch.setattr(indicators, "find_regions", lambda t: [n for n in names if n in t])
     fake_table["tables"]["BIRTH"] = (BIRTHPLACE, 1, "시도")
     fake_table["units"]["BIRTH"] = ("가구", True)
     spec, why = d.build("BIRTH", question, {**BASE, "indicator": "1인 가구", "term": "1인 가구"})
@@ -1665,6 +1668,85 @@ def test_place_cell_is_made_of_region_words_only(monkeypatch, name: str, place: 
         indicators, "find_regions", lambda t: [n for n in known if n in t.replace(" ", "")]
     )
     assert d._is_place_cell(name) is place
+
+
+@pytest.mark.parametrize(
+    ("question", "name"),
+    [
+        ("2020년 서울에 사는 부산 출신 1인 가구는 몇 가구야?", "부산 출신 1인가구 수"),
+        ("2020년 서울에 사는 부산에서 태어난 1인 가구 수", "부산에서 태어난 1인가구 수"),
+    ],
+)
+def test_place_cell_name_uses_question_phrase_and_table_target(
+    fake_table, monkeypatch, question: str, name: str
+) -> None:
+    # 출생지가 '항목' 분류에 든 표: 칸 이름으로만 지으면 "서울특별시의 대구 수는 46,248가구"
+    names = ("서울특별시", "부산광역시", "서울", "부산")
+    monkeypatch.setattr(indicators, "find_regions", lambda t: [n for n in names if n in t])
+    title = "현 거주지별/성별/연령별/출생지별 1인가구(일반가구)-시도"
+    monkeypatch.setattr(lookup, "_table", lambda _: {"tbl_nm": title})
+    fake_table["tables"]["BIRTH"] = (BIRTHPLACE, 1, "시도")
+    fake_table["units"]["BIRTH"] = ("가구", True)
+    spec, why = d.build("BIRTH", question, {**BASE, "indicator": "", "term": ""})
+    assert spec is not None, why
+    assert spec["name"] == name and spec["sources"][0]["item_id"] == "21"
+
+
+@pytest.mark.parametrize(
+    ("question", "places"),
+    [
+        ("2020년 서울에 사는 대구 출신 1인 가구 수", ["대구"]),  # 서울은 사는 곳
+        ("경기도에서 서울로 통근하는 사람", ["서울"]),  # 통근의 '~에서'는 사는 곳
+        ("서울에서 부산으로 이사한 사람", ["서울", "부산"]),
+        ("5년 전 서울에 살던 인구", ["서울"]),
+        ("고향이 대구인 서울 사람", ["대구"]),
+        ("서울에서 1인 가구 수", []),  # 장소를 나타내는 '~에서'
+        ("서울 이동 인구", []),
+    ],
+)
+def test_other_places_are_read_per_region_mention(monkeypatch, question, places) -> None:
+    known = ["서울", "부산", "대구", "경기도"]
+    monkeypatch.setattr(indicators, "find_regions", lambda t: [n for n in known if n in t])
+    assert d._other_places(question) == places
+
+
+def test_destination_region_is_not_a_residence_condition(fake_table, monkeypatch) -> None:
+    # "경기도에서 서울로 통근하는 사람": HCX가 지역 [경기도, 서울]로 읽어 두 지역을 비교했고
+    # 통근지 칸도 경기도를 골랐다 (경기도 5,966,491 vs 서울 523,388)
+    known = ["서울특별시", "경기도", "서울"]
+    monkeypatch.setattr(indicators, "find_regions", lambda t: [n for n in known if n in t])
+    dims = [
+        d.Dim(0, "항목", {"T1": "통근통학인구"}),
+        d.Dim(1, "현 거주지별", {"00": "전국", "11": "서울특별시", "41": "경기도"}),
+        d.Dim(2, "통근통학지별", {"00": "계", "11": "서울특별시", "41": "경기도"}),
+    ]
+    fake_table["tables"]["COMMUTE"] = (dims, 1, "시도")
+    fake_table["units"]["COMMUTE"] = ("명", True)
+    monkeypatch.setattr(
+        lookup, "_table", lambda _: {"tbl_nm": "현 거주지별/통근통학지별 통근통학 인구"}
+    )
+    parsed = {**BASE, "type": "compare", "regions": ["경기도", "서울"], "indicator": "", "term": ""}
+    question = "2020년 경기도에서 서울로 통근하는 사람은 몇 명이야?"
+    spec, why = d.build("COMMUTE", question, parsed)
+    assert spec is not None, why
+    assert spec["sources"][0]["filters"] == {"c2_id": "11"}  # 통근지는 서울
+    q = d._with_spec(parsed, spec)
+    assert q["regions"] == ["경기도"] and q["type"] == "value"  # 사는 곳은 경기도 하나
+
+
+@pytest.mark.parametrize("item", ["서울", "서울에 사는", "서울 거주"])
+def test_residence_condition_is_covered_by_region_dim(monkeypatch, item: str) -> None:
+    # "서울에 사는 부산 출신 1인 가구": 통계표 찾기가 '서울'을 조건 낱말로도 뽑으면 칸 이름에
+    # 없어 "조건 '서울'을 반영할 수 없음"으로 끝났다. 사는 곳은 지역 분류가 반영한다
+    names = ("서울특별시", "부산광역시", "서울", "부산")
+    monkeypatch.setattr(indicators, "find_regions", lambda t: [n for n in names if n in t])
+    plan = d.Plan(pick={0: "21"}, matched={0: "21"})
+    slots = {"conditions": {"items": [item, "부산"]}}
+    parsed = {**BASE, "regions": ["서울"]}
+    assert d.uncovered(slots, plan, BIRTHPLACE, parsed, region_dim=1) is None
+    # 질문의 지역이 아닌 다른 지역 낱말은 지금처럼 칸에 반영돼야 한다
+    other = {**BASE, "regions": ["부산"]}
+    assert d.uncovered({"conditions": {"items": ["서울"]}}, plan, BIRTHPLACE, other, 1)
 
 
 def test_region_words_pick_cells_when_table_has_no_region_dim(fake_table, monkeypatch) -> None:
@@ -1767,7 +1849,7 @@ def test_forced_place_cells_need_the_question_to_ask_them(
     fake_table, monkeypatch, question: str, forced: dict, item: str | None
 ) -> None:
     names = ("서울특별시", "부산광역시", "서울", "부산")
-    monkeypatch.setattr(indicators, "find_regions", lambda t: [n for n in names if n in t][:1])
+    monkeypatch.setattr(indicators, "find_regions", lambda t: [n for n in names if n in t])
     fake_table["tables"]["BIRTH"] = (BIRTHPLACE, 1, "시도")
     fake_table["units"]["BIRTH"] = ("가구", True)
     parsed = {**BASE, "indicator": "1인 가구", "term": "1인 가구"}

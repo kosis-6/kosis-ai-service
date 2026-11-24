@@ -91,12 +91,18 @@ SCHOOL_GOING = re.compile(r"(?:^|(?<=\s))학교\s*(?:에\s*)?(?:가는|가고|�
 MOVE_CONTEXT = re.compile(
     r"출근|출퇴근|통근|지하철|전철|버스|자가용|승용차|자전거|타고|걸어서|교통"
 )
-# 질문이 사는 곳 말고 다른 장소(출생지 · 전 거주지 · 이동 · 통근통학지)를 말하는 표현.
-# 이런 말이 없으면 질문의 지역 이름은 지역 분류만 고른다 (_drop_region_words)
-OTHER_PLACE = re.compile(
-    r"출생|태어|출신|고향|전\s*거주|년\s*전|이동|이사|전입|전출|옮겨|옮긴|들어온|나간|유입|유출"
-    r"|통근|통학|출근|출퇴근|등교|다니는|에서\s*온|(?:으로|로)\s*(?:간|가는|온|오는)|갔|왔|떠난"
+# 지역 이름 바로 뒤에 붙어 그 지역이 사는 곳이 아니라 다른 장소(출생지 · 전 거주지 · 이동 ·
+# 통근통학지)임을 나타내는 말 ("대구 출신", "부산에서 태어난", "서울로 통근", "경기로 이사",
+# "서울에 살던"). 지역마다 본다 (_other_places): "서울에 사는 대구 출신"의 서울은 사는 곳이다.
+# 통근 · 통학의 '~에서'는 출발지 = 사는 곳이다 ("경기도에서 서울로 통근": 경기도에 살고 서울로)
+PLACE_AFTER = re.compile(
+    r"\s*(?:출신|출생|태생"
+    r"|에서\s*(?:\S+\s+)?(?:태어|출생|온|왔|오는|이사|이주|이동|전출|옮|떠난)"
+    r"|(?:으로|로)\s*(?:\S+\s+)?(?:간|가는|갔|이사|이주|이동|전입|옮|통근|통학|출퇴근|출근|등교|다니)"
+    r"|에\s*(?:살던|살았던|거주하던|있던))"
 )
+# 지역 이름 바로 앞에서 그 지역이 다른 장소임을 나타내는 말 ("고향이 대구", "5년 전 서울")
+PLACE_BEFORE = re.compile(r"(?:고향(?:은|이)?|년\s*전(?:에)?|전\s*거주지(?:가|는|는\s*)?)\s*$")
 # 지역 이름 목록에 있지만 칸 이름에서는 지역이 아닌 말 ("전체 출생아수(명)")
 NOT_PLACE_WORDS = {"전체"}
 # 지역 이름을 뺀 나머지가 이것뿐이면 지역 칸 ("부산직할시", "부산-구부", "서울특별시(계)")
@@ -312,20 +318,60 @@ def _is_place_cell(name: str) -> bool:
     return bool(found) and not PLACE_REST.sub("", n)
 
 
+def _other_places(question: str) -> list[str]:
+    """질문에서 사는 곳이 아닌 다른 장소(출생지 · 전 거주지 · 이동 · 통근통학지)로 말한 지역 이름.
+    "2020년 서울에 사는 대구 출신 1인 가구" → ["대구"] (서울은 사는 곳)"""
+    try:
+        names = indicators.find_regions(question)
+    except Exception:  # 지역 이름 목록을 읽지 못하면 다른 장소도 없는 것으로 본다
+        return []
+    out = []
+    for name in names:
+        for m in re.finditer(re.escape(name), question):
+            before = question[max(0, m.start() - 12) : m.start()]
+            if PLACE_AFTER.match(question, m.end()) or PLACE_BEFORE.search(before):
+                out.append(name)
+                break
+    return out
+
+
+def _named_place(cell: str, places: list[str]) -> bool:
+    """지역 칸(cell)이 질문이 다른 장소로 말한 지역인가 ("부산직할시" ↔ "부산")"""
+    if not places:
+        return False
+    cell_names = [_norm(f) for f in indicators.find_regions(cell) if f not in NOT_PLACE_WORDS]
+    return any(c.startswith(p) or p.startswith(c) for c in cell_names for p in map(_norm, places))
+
+
 def _drop_region_words(
     question: str, hits: dict[int, list[str]], dims: list[Dim], region_dim: int | None
 ) -> dict[int, list[str]]:
-    """질문의 지역 이름이 지역 분류가 아닌 칸(출생지 '서울' 등)에 걸린 것을 뺀다.
+    """질문의 지역 이름이 지역 분류가 아닌 칸(출생지 '서울' 등)에 걸린 것을 뺀다. 그 지역을
+    다른 장소로 말했을 때("대구 출신")만 그 칸을 쓴다.
     '현 거주지별 … 출생지별 1인가구' 표에서 "서울 1인 가구 수"가 출생지도 서울인 434,920가구로
-    나왔다 (실제 1,390,701가구). 질문이 출생지 · 이동 · 통근처럼 다른 장소를 말하면 그대로 둔다.
+    나왔고 (실제 1,390,701가구), "서울에 사는 대구 출신"은 사는 곳 서울을 출생지로 골랐다.
     지역 분류가 없는 표는 지역 이름 칸이 곧 지역이라 그대로 둔다"""
-    if region_dim is None or OTHER_PLACE.search(question):
+    if region_dim is None:
         return hits
     by_no = {d.no: d for d in dims}
+    places = _other_places(question)
+
+    def allowed(d: Dim | None, code: str) -> bool:
+        return (
+            d is None
+            or d.no == region_dim
+            or not _is_place_cell(d.codes[code])
+            or _named_place(d.codes[code], places)
+        )
+
     out = {}
     for no, codes in hits.items():
         d = by_no.get(no)
-        kept = [c for c in codes if d is None or not _is_place_cell(d.codes[c])]
+        kept = [c for c in codes if allowed(d, c)]
+        if not kept and d is not None:
+            # 빼고 나니 빈 분류는 낱말 일부로 다시 맞춘다 ("경기도에서 서울로 통근": 통근지의
+            # '경기도'를 빼면 '서울로' → '서울특별시'. 이름이 그대로 나온 칸이 있으면 하지 않던 일)
+            kept = [c for c in _word_hits(question, d) if allowed(d, c)]
         if kept:
             out[no] = kept
     return out
@@ -340,8 +386,8 @@ def _place_cell_unasked(question: str, d: Dim, code: str, region_dim: int | None
         region_dim is not None
         and d.no != region_dim
         and code != d.total()
-        and not OTHER_PLACE.search(question)
         and _is_place_cell(d.codes[code])
+        and not _named_place(d.codes[code], _other_places(question))
     )
 
 
@@ -826,6 +872,8 @@ def uncovered(
         # 표 이름에 없는 조건('미혼 1인 가구'의 미혼 → 1인가구 표)은 지금처럼 칸에서 찾는다
         if len(word := _norm(item)) >= 2 and any(word in t for t in titles):
             continue
+        if region_dim is not None and _lives_in_asked_region(item, parsed):
+            continue  # 사는 곳("서울에 사는")은 지역 분류가 반영한다 (칸 이름에는 없다)
         if not _item_left(item, names, read, plan, parsed):
             continue
         if miss := _band_miss([item], dims, region_dim):
@@ -867,6 +915,71 @@ def _class_narrowed(cls: str, plan: Plan, dims: list[Dim], said: dict[int, list[
         and (word in _norm(d.name) or word in _norm(d.codes[plan.matched[d.no]]))
         for d in dims
     )
+
+
+def _elsewhere(parsed: dict, plan: Plan, dims: list[Dim], region_dim: int | None) -> list[str]:
+    """질문의 지역 중 다른 장소 칸(통근지 · 출생지 등)으로 쓴 지역. 사는 곳 조건(지역 분류)에서
+    뺀다 (_with_spec). "경기도에서 서울로 통근"을 HCX가 지역 [경기도, 서울]로 읽어 두 지역을
+    비교했다 (서울 거주 통근 인구가 함께 나왔다)"""
+    cells = [
+        d.codes[plan.matched[d.no]]
+        for d in dims
+        if d.no in plan.matched
+        and d.no != region_dim
+        and plan.matched[d.no] != d.total()
+        and _is_place_cell(d.codes[plan.matched[d.no]])
+    ]
+    regions = parsed.get("regions") or []
+    used = [r for r in regions if any(_named_place(c, [r]) for c in cells)]
+    return used if used and len(used) < len(regions) else []  # 사는 곳이 하나는 남아야 한다
+
+
+def _place_name(
+    name: str,
+    question: str,
+    plan: Plan,
+    dims: list[Dim],
+    region_dim: int | None,
+    target: str,
+    counted: bool,
+) -> str:
+    """칸 이름으로 지은 이름이 다른 장소 칸('대구')뿐이면 질문의 장소 표현과 표의 집계 대상으로
+    다시 짓는다 ("대구 수" → "대구 출신 1인가구 수"). 출생지가 '항목' 분류에 든 표에서
+    "서울특별시의 대구 수는 46,248가구"로 답했다"""
+    places = [
+        d.codes[plan.matched[d.no]]
+        for d in dims
+        if d.no in plan.matched
+        and d.no != region_dim
+        and plan.matched[d.no] != d.total()
+        and _is_place_cell(d.codes[plan.matched[d.no]])
+    ]
+    if not places or not target or not _norm(name).startswith(_norm(_label_name(places[0]))):
+        return name
+    phrase = _label_name(places[0])
+    for found in _other_places(question):
+        if _named_place(places[0], [found]) and (m := re.search(re.escape(found), question)):
+            after = PLACE_AFTER.match(question, m.end())
+            end = after.end() if after else m.end()
+            while end < len(question) and not question[end].isspace():
+                end += 1  # "태어"까지 맞았으면 "태어난"까지
+            phrase = question[m.start() : end].strip()
+            break
+    whole = f"{phrase} {_label_name(target)}"
+    return f"{whole} 수" if counted and not whole.endswith("수") else whole
+
+
+# 지역 뒤에 붙어 그 지역이 사는 곳임을 나타내는 말 ("서울에 사는", "서울 거주")
+LIVES_IN = re.compile(r"\s*(?:에\s*)?(?:사는|살고\s*있는|거주하는|거주자|거주)\s*$")
+
+
+def _lives_in_asked_region(item: str, parsed: dict) -> bool:
+    """조건 낱말이 질문의 지역(사는 곳) 그 자체인가 ("서울", "서울에 사는").
+    통계표 찾기가 '서울'을 조건 낱말로도 뽑으면, 지역은 칸 이름에 없어 "질문의 조건 '서울'을
+    반영할 수 없음"으로 끝났다 (전에는 '서울'이 출생지 칸에 잘못 걸려 통과했다)"""
+    place = LIVES_IN.sub("", item)
+    regions = parsed.get("regions") or []
+    return bool(place) and _is_place_cell(place) and _named_place(place, regions)
 
 
 def _item_left(item: str, names: list[str], read: list[str], plan: Plan, parsed: dict) -> bool:
@@ -1088,7 +1201,10 @@ def build(
         and parsed.get("type") != "composition"
         and not PCT_ASK.search(question)
     )
-    name = _name(parsed, dims, plan, counted, strip_age, unit)
+    name = _place_name(
+        _name(parsed, dims, plan, counted, strip_age, unit), question, plan, dims, region_dim,
+        target, counted,
+    )  # fmt: skip
     spec = {
         "name": name,
         "unit": display_unit,
@@ -1100,6 +1216,11 @@ def build(
         "sources": [src],
         **projection,
         **({"couple": True} if plan.couple else {}),
+        **(
+            {"elsewhere": elsewhere}
+            if (elsewhere := _elsewhere(parsed, plan, dims, region_dim))
+            else {}
+        ),
     }
     kind = parsed.get("type")
     if plan.split_sex and (plan.multi or kind == "composition" or PCT_ASK.search(question)):
@@ -2726,6 +2847,11 @@ async def _build_partial(
 def _with_spec(parsed: dict, spec: dict) -> dict:
     """질문 해석 결과에 지표 정의를 넣는다. 연도를 말하지 않았으면 그 표의 마지막 해"""
     q = {**parsed, "indicator": spec["name"], "unsupported": False, "dynamic_spec": spec}
+    if elsewhere := spec.get("elsewhere"):
+        # 다른 장소 칸으로 쓴 지역(통근지 서울)은 사는 곳 조건이 아니다
+        q["regions"] = [r for r in q.get("regions") or [] if r not in elsewhere]
+        if q.get("type") == "compare" and len(q["regions"]) == 1:
+            q["type"] = "value"
     if spec["kind"] == "ratio" and q.get("type") == "composition":
         q["type"] = "value"  # "~ 중 ~ 비율"은 구성비가 아니라 비율 값 하나
     if q.get("type") in (None, "other"):

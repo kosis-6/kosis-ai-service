@@ -661,6 +661,36 @@ def test_age_group_count_without_population_word() -> None:
     assert p["indicator"] == "총인구" and p["ages"] == [[65, None]]
 
 
+@pytest.mark.parametrize(
+    "question",
+    [
+        "인구가 많고 집값이 비싼 서울의 2020년 1인 가구 수",  # 꾸밈말의 '인구'로 총인구가 됐다
+        "사람이 많이 사는 서울의 1인 가구 수는?",
+        "인구 밀집 지역인 서울의 1인 가구 수",
+    ],
+)
+def test_population_word_in_modifier_does_not_replace_said_indicator(question: str) -> None:
+    p = qa.correct(question, parsed(indicator="1인 가구", term="1인 가구 수", regions=["서울"]))
+    assert p["indicator"] == "1인 가구"
+
+
+def test_population_word_still_replaces_unsaid_indicator() -> None:
+    # HCX가 질문에 없는 지표를 고르면 지금처럼 질문의 '인구'(총인구)
+    p = qa.correct("서울 인구 몇 명이야?", parsed(indicator="주민 수", regions=["서울"]), TODAY)
+    assert p["indicator"] == "총인구"
+
+
+@pytest.mark.parametrize("hcx", ["성비", "고령인구 비율"])
+def test_population_composition_read_as_other_indicator(hcx: str) -> None:
+    # "서울 남녀 인구 구성"을 HCX가 성비로 읽으면 지원하지 않는 지표가 되어 엉뚱한 표로 넘어갔다
+    p = qa.correct(
+        "2020년 서울 남녀 인구 구성",
+        parsed(type="composition", indicator=hcx, regions=["서울"], year=2020),
+        TODAY,
+    )
+    assert p["indicator"] == "총인구" and not p.get("unsupported") and p["by"] == "sex"
+
+
 def test_unknown_label_that_is_age_population() -> None:
     # HCX가 사전에 없는 "연령 구간 인구" 이름을 주거나 지표를 비워도 총인구
     p = qa.correct(

@@ -258,8 +258,10 @@ def outside_indicators(res: dict[str, Any]) -> tuple[list[str], list[str]]:
 
 def _outside_text(outside: list[str], rest: list[str]) -> str:
     names = " · ".join(f"'{o}'" for o in outside)
+    # 받침에 맞춘 조사 ("'미세먼지'는", "'집값'은"). '은'으로 고정해 "'미세먼지'은"이 됐다
+    subject = josa(names, "은는") if len(outside) == 1 else f"{names} 등은"
     text = (
-        f"{names}{'은' if len(outside) == 1 else ' 등은'} 인구 분야 통계가 아니라 제공하지 "
+        f"{subject} 인구 분야 통계가 아니라 제공하지 "
         "않습니다. KOSIS의 해당 분야 통계에서 찾을 수 있습니다. 이 조건을 빼면 질문이 달라져 "
         "숫자를 내지 않았습니다."
     )

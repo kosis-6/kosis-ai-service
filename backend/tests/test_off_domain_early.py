@@ -98,6 +98,17 @@ def test_coordinated_words_finds_the_asked_phrase() -> None:
     assert table_guide.coordinated_words("출생아 수랑 집값이 궁금해", ["집값"]) == {"집값": "집값"}
 
 
+def test_catalog_check_uses_the_word_the_user_wrote(catalog) -> None:
+    # '전세가'는 인구 표의 '전세가구' 안에 있지만 물은 말은 '전세가격'이다
+    # (출생아 수만 답하고 전세가격을 조용히 뺐다)
+    catalog.append(_table("점유형태별 전세가구 월세가구"))
+    res = early("부산 출생아 수와 전세가격 같이 알려줘")
+    assert res is not None and res["status"] == "out_of_scope"
+    assert "'전세가격'" in res["answer"]
+    assert table_guide.asked_word("전세가격 알려줘", "전세가") == "전세가격"
+    assert table_guide.asked_word("집값이 비싼", "집값") == "집값"
+
+
 def test_off_domain_modifier_after_conjunction_is_not_refused() -> None:
     assert early("2020년 서울과 집값이 비싼 부산의 1인 가구 수는?") is None
 

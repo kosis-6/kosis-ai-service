@@ -254,20 +254,26 @@ async def off_domain_early(question: str) -> dict | None:
     tables = await search.load_tables()
     catalog = [t["name_n"] + t["meta_n"] + t["path_n"] for t in tables]
     for word in words:
-        n = search.norm(word)
+        # 안전장치 1: 인구 표에 있는 말이면 거절하지 않는다. 정규식에 걸린 조각이 아니라 사용자가
+        # 쓴 낱말로 본다 ('전세가'는 '전세가구' 안에 있지만 물은 말은 '전세가격'이다)
+        n = search.norm(asked_word(question, word))
         if any(n in text for text in catalog):
-            continue  # 안전장치 1: 인구 표에 있는 말
+            continue
         if population and word not in asked:
             continue
+        from app.services.josa import josa
+
         if population:
             from app.services import refusal
 
             inside = list(dict.fromkeys(name for *_, name in indicators.find_in_text(question)))
             answer = refusal._outside_text([asked[word]], inside)
-            reason = f"'{asked[word]}'은 인구 통계 범위 밖입니다 (함께 물은 지표, LLM 호출 전 검사)"
+            said = josa(f"'{asked[word]}'", "은는")
+            reason = f"{said} 인구 통계 범위 밖입니다 (함께 물은 지표, LLM 호출 전 검사)"
         else:
             answer = out_of_scope_text(word, question)
-            reason = f"'{word}'은 인구 통계 범위 밖입니다 (LLM 호출 전 단어 검사)"
+            said = josa(f"'{word}'", "은는")
+            reason = f"{said} 인구 통계 범위 밖입니다 (LLM 호출 전 단어 검사)"
         found = {
             "session_id": None,
             "status": "out_of_scope",
@@ -303,6 +309,20 @@ def coordinated_words(question: str, words: list[str]) -> dict[str, str]:
         trimmed = PHRASE_JOSA.sub("", phrase)
         out[word] = trimmed if word in trimmed else phrase  # "매매가"의 '가'는 조사가 아니다
     return out
+
+
+def asked_word(question: str, word: str) -> str:
+    """정규식에 걸린 범위 밖 말을 사용자가 쓴 낱말 끝까지 늘린다 (끝의 조사 · 문장부호는 뗀다).
+    "전세가격 알려줘"의 '전세가' → '전세가격', "집값이" → '집값'"""
+    i = question.find(word)
+    if i < 0:
+        return word
+    j = i + len(word)
+    while j < len(question) and not question[j].isspace():
+        j += 1
+    token = question[i:j].rstrip("?.!~,")
+    trimmed = PHRASE_JOSA.sub("", token)
+    return trimmed if word in trimmed else token
 
 
 def modifies_next(question: str, word: str) -> bool:

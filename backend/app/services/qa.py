@@ -1053,8 +1053,13 @@ def correct(question, parsed, today=None):
         current = indicators.canonical_name(parsed.get("indicator") or "")
         if name and current != name:
             # "인구"만 찾았고 HCX가 다른 지표를 골랐으면 그대로 둔다 (예: "인구에서 고령층 비중")
-            # 단, 연령 구간 인구 수를 물었으면 총인구 (예: "65세 이상 인구는?")
-            if name != "총인구" or current is None or (ages and not PCT_ASK.search(question)):
+            # 단, 연령 구간 인구 수를 물었으면 총인구 (예: "65세 이상 인구는?").
+            # HCX가 사전에 없는 지표를 골랐어도 그 표현이 질문에 그대로 있으면 그대로 둔다
+            # ("인구가 많고 집값이 비싼 서울의 1인 가구 수": 꾸밈말의 '인구'로 총인구가 됐다)
+            said = name == "총인구" and current is None and _says_other_indicator(question, parsed)
+            if not said and (
+                name != "총인구" or current is None or (ages and not PCT_ASK.search(question))
+            ):
                 fix("indicator", name, "질문의 지표 표현")
                 parsed.pop("unsupported", None)
         if sibling := _ratio_sibling(question, parsed, fix):
@@ -1686,6 +1691,29 @@ def _age_population(question, parsed, fix):
     parsed.pop("unsupported", None)
 
 
+def _says_other_indicator(question, parsed):
+    """HCX가 고른 사전 밖 지표 표현이 질문에 그대로 있고, 인구 · 연령 집단 · 지역 · 연도 표현이
+    아닌가 ("인구가 많은 서울의 1인 가구 수"의 '1인 가구'). 그러면 질문 속 '인구'는 그 지표를
+    꾸미는 말이다. 연령 집단("애들" = 0~14세 인구)을 물었으면 아니다"""
+    if parsed.get("ages") or parsed.get("age_group"):
+        return False
+    q = indicators._norm(question)
+    for phrase in (parsed.get("term"), parsed.get("indicator")):
+        if not phrase or not isinstance(phrase, str):
+            continue
+        p = indicators._norm(phrase)
+        if len(p) < 2 or p not in q or re.search(r"\d{4}", p):
+            continue
+        if extract_ages(phrase) or agegroup.resolve(phrase):
+            continue  # 연령 집단을 말한 표현
+        if any(n == "총인구" for *_, n in indicators.find_in_text(phrase)):
+            continue  # "서울 인구"처럼 인구를 말한 표현
+        if indicators.find_regions(phrase):
+            continue  # "2020년 서울"처럼 지표가 아닌 말
+        return True
+    return False
+
+
 def _guard_indicator(question, parsed, names, fix):
     """지원 지표로 바꿔서 답하지 않게 한다 (0회차: 다른 지표로 답한 8문항)
     - 계산 지표(고령인구 비율 등)는 질문에 그 지표 표현이 있어야 한다
@@ -1711,6 +1739,11 @@ def _guard_indicator(question, parsed, names, fix):
     if (k in ("ratio", "index") and asks_count) or ungrounded:
         if _asks_age_population(question, parsed):
             fix("indicator", "총인구", "연령 구간 인구 수를 물음")
+        elif parsed.get("type") == "composition" and "총인구" in names:
+            # "서울 남녀 인구 구성"을 HCX가 성비로 읽었다: 질문이 묻는 것은 인구의 구성이다.
+            # 지원하지 않는 지표로 두면 엉뚱한 표('5세 이상만 집계')로 넘어갔다
+            fix("indicator", "총인구", "인구 구성을 물음")
+            parsed.pop("unsupported", None)
         else:
             term = parsed.get("term") or parsed.get("indicator")
             fix("indicator", term, "질문에 근거가 없는 지표")
