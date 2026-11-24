@@ -954,10 +954,10 @@ def _load_version():
 
 
 def _forget_search_tables():
-    """통계표 찾기(search.py)가 메모리에 둔 표 정보도 버린다 (수록 기간·판 이름이 적재 때 바뀜)"""
+    """통계표 찾기(search.py)가 수록 기간·판 이름을 다음 검색 때 다시 읽게 한다"""
     from app.services import search  # search가 lookup을 부르므로 여기서 불러 순환을 피한다
 
-    search.forget_tables()
+    search.mark_periods_stale()
 
 
 def clear_table_caches():
