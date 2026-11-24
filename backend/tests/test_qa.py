@@ -162,7 +162,7 @@ def test_summary_compare_two() -> None:
     }
     assert qa.summary(r) == (
         "2025년 고령인구 비율은 부산광역시가 서울특별시보다 4.58%p 높습니다"
-        "(부산광역시 25.01%, 서울특별시 20.43%)."
+        "(부산광역시 25.01%, 서울특별시 20.43%, 1.22배)."
     )
 
 
@@ -639,3 +639,11 @@ def test_unknown_ratio_indicator_is_not_population_composition(monkeypatch) -> N
     monkeypatch.setattr(qa.indicators, "_data_years", lambda: (2008, 2025))
     r = qa.compute({"type": "composition", "indicator": "재혼 비율", "regions": [], "year": 2024})
     assert r["status"] == "unknown_indicator"
+
+
+def test_compare_times_against_nation_is_region_over_nation() -> None:
+    # "우리 동네 노인 비율 전국보다 높아?": 배수는 지역 ÷ 전국 (높은 ÷ 낮은 이 아니다)
+    assert qa._times({"region": "전국", "value": 21.21}, {"region": "순천시", "value": 20.66}) == (
+        ", 0.97배"
+    )
+    assert qa._times({"region": "A", "value": 0}, {"region": "B", "value": 3}) == ""

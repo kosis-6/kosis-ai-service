@@ -334,3 +334,35 @@ def test_refusal_type_matches_by_definition_group():
     r = row(**{"기대 행동": "답변 불가", "답변 불가 유형": "통계 질문이 아님 (chat)"})
     chat = {"status": "chat", "answer": "안녕하세요. 이런 질문을 해 주세요: …"}
     assert dg.grade(r, chat).correct == "O"
+
+
+def test_allowed_answer_line_is_accepted():
+    # 정답 수치의 "허용:" 줄: 다른 기준으로 계산한 값도 정답 (줄 하나를 통째로 맞아야 한다)
+    r = row(
+        **{
+            "질문 종류": "비교",
+            "정답 수치": "A 91.5, B 15.0. 차이 76.5, 6.10배\n"
+            "허용: A 99.86, B 15.92. 차이 83.94, 6.27배",
+        }
+    )
+    main = dg.grade(r, res("A가 B보다 76.5 높습니다 (6.1배).", result={"v": [91.5, 15.0]}))
+    alt = dg.grade(r, res("A가 B보다 83.94 높습니다 (6.27배).", result={"v": [99.86, 15.92]}))
+    half = dg.grade(r, res("A가 B보다 83.94 높습니다.", result={"v": [99.86, 15.92]}))
+    assert main.number == "O" and alt.number == "O" and half.number == "X"
+    assert "허용 정답" in alt.details and "허용 정답" not in main.details
+
+
+def test_allowed_answer_line_with_its_own_year():
+    # 허용 줄이 시점을 적었으면 조건의 기간도 그 시점으로 본다 (정답 2025, 허용 2026년 10월 말)
+    r = row(
+        **{
+            "질문 종류": "인구 통계 지표",
+            "정답 조건": "가상시, 2025, 노년부양비",
+            "정답 수치": "노년부양비 35.8명\n"
+            "허용: 주민등록인구 기준 노년부양비 37.66명 (2026년 10월 말)",
+        }
+    )
+    g = dg.grade(r, res("2026년 10월 말 가상시의 노년부양비는 37.66입니다.", year=2026))
+    assert g.number == "O" and g.condition == "O"
+    old = dg.grade(r, res("2025년 가상시의 노년부양비는 35.8입니다.", year=2025))
+    assert old.number == "O" and old.condition == "O"

@@ -75,6 +75,7 @@ INDICATORS = {
         "formula": "65세 이상 인구 ÷ 총인구 × 100",
         "calc": lambda c: _div(c["old"], c["total"]),
         "projection_c3": "33",
+        "operands": [("old", "65세 이상 인구", "명"), ("total", "총인구", "명")],
     },
     "유소년인구 비율": {
         "unit": "%",
@@ -82,6 +83,7 @@ INDICATORS = {
         "formula": "0~14세 인구 ÷ 총인구 × 100",
         "calc": lambda c: _div(c["young"], c["total"]),
         "projection_c3": "31",
+        "operands": [("young", "0~14세 인구", "명"), ("total", "총인구", "명")],
     },
     "노령화지수": {
         "unit": "유소년인구 100명당 명",
@@ -97,6 +99,7 @@ INDICATORS = {
         "kind": "ratio",
         "formula": "15~64세 인구 ÷ 총인구 × 100",
         "calc": lambda c: _div(c["working"], c["total"]),
+        "operands": [("working", "15~64세 인구", "명"), ("total", "총인구", "명")],
     },
     "노년부양비": {
         "unit": "생산연령인구 100명당 명",
@@ -925,10 +928,19 @@ def _prepare(indicator, region_names, year=None, ages=None):
     regions = []
     for rn in region_names:
         reg = resolve_region(rn, year, sigungu=True)
+        if reg["status"] == "ambiguous_region" and _all_sido(r for r in region_names if r != rn):
+            # "광주랑 전남": 함께 말한 지역이 모두 시도면 '광주'도 시도 (경기 광주시 아님, D-030)
+            reg = resolve_region(rn, year)
         if reg["status"] != "ok":
             return name, ind, None, {**reg, "indicator": name}
         regions.append(in_year(reg, year))
     return name, ind, regions, None
+
+
+def _all_sido(names):
+    """이름들이 하나 이상이고 모두 시도인가"""
+    kinds = [resolve_region(n) for n in names]
+    return bool(kinds) and all(k["status"] == "ok" and k["kind"] == "시도" for k in kinds)
 
 
 def in_year(reg, year):
