@@ -356,6 +356,19 @@ def test_retry_plan_groups(monkeypatch) -> None:
     assert binding.retry_plan(b, "부부 불화", {}) is None
 
 
+def test_retry_plan_marks_default_cells_quiet(monkeypatch) -> None:
+    """말하지 않아 기본으로 고른 칸(합계)은 고르기만 하고 지표 이름에 쓰지 않는다
+    ("사망자수"가 "계 수"로, D-125 11/24)"""
+    items = Dim(0, "항목", {"T1": "사망자수"})
+    sex = Dim(1, "성별", {"0": "계", "1": "남자", "2": "여자"})
+    _table(monkeypatch, [items, sex])
+    b = binding.bind("T", "작년에 돌아가신 분", {}, _slots(), {0: "T1"})
+    plan = binding.retry_plan(b, "작년에 돌아가신 분", {})
+    assert plan.forced == {0: "T1", 1: "0"} and plan.quiet == {1: "total"}
+    got, _ = d.choose("작년에 돌아가신 분", {}, [items, sex], None, plan.forced, quiet=plan.quiet)
+    assert got.pick == {0: "T1", 1: "0"} and 1 not in got.matched
+
+
 def test_compare_of_decimal_values_is_rounded() -> None:
     assert d._decimals(51.93) == 2 and d._decimals(1438) == 0 and d._decimals(47.4) == 1
 

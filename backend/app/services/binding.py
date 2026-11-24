@@ -609,6 +609,9 @@ def shadow(
 RANK_SKIP = re.compile(r"기타|미상")
 
 
+QUIET = ("total", "default", "couple")  # 질문이 말하지 않아 기본으로 고른 칸
+
+
 @dataclass
 class Retry:
     """잇기 결과를 지금 계산(build)에 넘기는 모양"""
@@ -618,9 +621,16 @@ class Retry:
         tuple[int, list[str], str] | None
     )  # 칸 여럿으로 하는 한 분류 안의 연산 (합 · 비교 · 순위)
     parsed: dict  # 표 전체가 만족한 조건은 뺀 질문 해석 (성별 '여' → 표 전체가 기혼여성)
+    # 질문이 말하지 않아 기본으로 정한 분류 → 어떻게 (total · default · couple).
+    # 계산은 이 칸을 고르기만 하고 지표 이름에는 쓰지 않는다 ("혼인 건수"가 "남자 수"로, 11/24)
+    quiet: dict[int, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        return {"forced": self.forced, "multi": list(self.multi) if self.multi else None}
+        return {
+            "forced": self.forced,
+            "multi": list(self.multi) if self.multi else None,
+            "quiet": self.quiet,
+        }
 
 
 def retry_plan(b: Binding, question: str, parsed: dict) -> Retry | None:
@@ -634,6 +644,7 @@ def retry_plan(b: Binding, question: str, parsed: dict) -> Retry | None:
         return None
     dims = {d.no: d for d in di.schema(b.tbl_id)[0]}
     forced: dict[int, str] = {}
+    quiet: dict[int, str] = {}
     multi = None
     q = dict(parsed)
     for x in b.bound:
@@ -656,10 +667,13 @@ def retry_plan(b: Binding, question: str, parsed: dict) -> Retry | None:
             if forced.get(x.dim, x.codes[0]) != x.codes[0]:
                 return None  # 한 분류에 다른 칸 둘
             forced[x.dim] = x.codes[0]
+            if x.by in QUIET:
+                quiet[x.dim] = x.by
             continue
         if multi is not None and multi[0] != group[0]:
             return None
         multi = group
     if multi is not None:
         forced.pop(multi[0], None)
-    return Retry(forced, multi, q)
+        quiet.pop(multi[0], None)
+    return Retry(forced, multi, q, quiet)

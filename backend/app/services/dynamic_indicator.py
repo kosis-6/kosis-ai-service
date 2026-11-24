@@ -400,6 +400,7 @@ def choose(
     tbl_nm: str = "",
     couple: bool = False,
     multi: tuple[int, list[str], str] | None = None,
+    quiet: dict[int, str] | None = None,
 ):
     """(Plan, None) 또는 (None, 고르지 못한 이유: 문자열 또는 Ask)
     forced: 사용자가 되묻기에서 고른 칸 {분류 번호: 코드}
@@ -434,7 +435,14 @@ def choose(
         if d.no in skip or (plan.multi and d.no == plan.multi[0]):
             continue
         if d.no in forced and forced[d.no] in d.codes:
-            plan.pick[d.no] = plan.matched[d.no] = forced[d.no]
+            plan.pick[d.no] = forced[d.no]
+            how = (quiet or {}).get(d.no)
+            if how is None:
+                plan.matched[d.no] = forced[d.no]
+            elif how == "couple":
+                # 잇기가 기본으로 고른 칸은 지표 이름에 쓰지 않는다 (아래 성별 기본값과 같게)
+                plan.defaults.append(f"{d.name}: {d.codes[forced[d.no]]} {couple_note(region_dim)}")
+                plan.couple = True
             continue
         codes = hits.get(d.no, [])
         if d is plan.sex_dim:
@@ -869,7 +877,8 @@ def build(
         logger.exception("부부 단위 표 확인 실패: %s", tbl_id)
         couple = False
     multi = (slots or {}).get("binding_multi")  # 잇기로 다시 계산할 때만 (binding.retry_plan)
-    plan, why = choose(question, parsed, dims, region_dim, forced, tbl_nm, couple, multi)
+    quiet = (slots or {}).get("binding_quiet")
+    plan, why = choose(question, parsed, dims, region_dim, forced, tbl_nm, couple, multi, quiet)
     if seen is not None:
         seen["plan"] = plan
     _report_cells(slots, plan, dims, parsed, region_dim)
@@ -1679,7 +1688,12 @@ async def _compute_target(
                 b.status if b.status != binding.BOUND else "연산 둘"
             )
             return None, None
-        slots_b = {**slots, "cells_by_binding": True, "binding_multi": plan.multi}
+        slots_b = {
+            **slots,
+            "cells_by_binding": True,
+            "binding_multi": plan.multi,
+            "binding_quiet": plan.quiet,
+        }
         res, ask = await _try(
             tbl_id,
             entry.get("org_id"),
@@ -1717,7 +1731,12 @@ async def _compute_target(
             if sub["dynamic"]:
                 sub["dynamic"][-1]["binding_skip"] = b.status
             return None, None
-        slots_b = {**slots_llm, "cells_by_binding": True, "binding_multi": plan.multi}
+        slots_b = {
+            **slots_llm,
+            "cells_by_binding": True,
+            "binding_multi": plan.multi,
+            "binding_quiet": plan.quiet,
+        }
         res, ask = await _try(
             tbl_id,
             entry.get("org_id"),
