@@ -163,8 +163,8 @@ def test_latest_note_when_dynamic_filled_year() -> None:
     [
         ("2020년 대구 성비", True),
         ("달서구 성비", True),
-        ("달서구성비", True),
-        ("대구성비", True),
+        pytest.param("달서구성비", True, marks=pytest.mark.needs_data),
+        pytest.param("대구성비", True, marks=pytest.mark.needs_data),
         ("중구 성비", True),
         ("연령 구성비", False),
         ("대구 연령 구성비", False),
@@ -178,7 +178,9 @@ def test_sex_ratio_not_blocked_across_words(question: str, found: bool) -> None:
     assert (indicators.excluded_phrase("성비", question) is None) is found
 
 
-@pytest.mark.parametrize("question", ["대전 출생아", "대전출생아"])
+@pytest.mark.parametrize(
+    "question", ["대전 출생아", pytest.param("대전출생아", marks=pytest.mark.needs_data)]
+)
 def test_region_boundary_still_blocks_split_alias(question: str) -> None:
     from app.services import indicators
 

@@ -317,7 +317,10 @@ def _exclusion_spans(text):
         if i and str(text)[i - 1].isspace():
             gaps.add(k)
         k += 1
-    gaps |= {k for a, b, _ in _region_matches(s) for k in (a, b)}
+    try:
+        gaps |= {k for a, b, _ in _region_matches(s) for k in (a, b)}
+    except StatsTableMissing:
+        pass
     return list(dict.fromkeys(found)), gaps
 
 

@@ -43,6 +43,7 @@ RESULT = {
 }
 
 
+@pytest.mark.needs_data
 def test_unbound_condition_hands_off(monkeypatch) -> None:
     items = Dim(0, "항목", {"T10": "출생건수", "T20": "사망건수"})
     monkeypatch.setattr(
@@ -63,6 +64,7 @@ def test_unbound_condition_hands_off(monkeypatch) -> None:
     assert rec["decision"] == dict_binding.HAND_OFF and rec["forced"] == {"0": "T10"}
 
 
+@pytest.mark.needs_data
 def test_plain_question_keeps_the_answer(monkeypatch) -> None:
     items = Dim(0, "항목", {"T10": "출생건수", "T20": "사망건수"})
     monkeypatch.setattr(
