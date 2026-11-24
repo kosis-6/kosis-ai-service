@@ -1661,3 +1661,18 @@ def test_single_relative_year_read_as_trend_becomes_value() -> None:
 def test_year_words_skip_verb_endings(question: str, said: bool) -> None:
     """연도를 말했는지: 동사 끝 '해', 지명 '김해', '~ㄹ 때', '미성년'은 연도가 아니다 (11/24)"""
     assert qa._says_year(question) is said
+
+
+def test_both_sexes_people_question_is_population(monkeypatch) -> None:
+    """'남자가 많아 여자가 많아?': HCX가 근거 없는 성비를 골라도 남녀 총인구로 (V2-061, 11/24)"""
+    monkeypatch.setattr(indicators, "_alias_map", REAL_ALIASES)
+    q = "경기도는 남자가 많아 여자가 많아? 얼마나 차이 나?"
+    p = qa.correct(q, parsed(type="compare", indicator="성비", regions=["경기도"]), TODAY)
+    assert p["indicator"] == "총인구" and p.get("split_sex") and p["grounded"] is True
+
+
+def test_student_age_band_is_population() -> None:
+    """'초등학생 나이(6~11살)'의 '학생'은 다른 통계의 사람이 아니라 연령을 말한 것 (D-050, 11/24)"""
+    q = "강원도 초등학생 나이(6~11살) 애들 최근 5년 동안 얼마나 줄었어?"
+    p = qa.correct(q, parsed(type="trend", indicator="초등학생 인구", regions=["강원도"]), TODAY)
+    assert p["indicator"] == "총인구" and p["ages"] == [[6, 11]]

@@ -684,7 +684,7 @@ PEOPLE_COUNT = re.compile(
 # ("외국인 등록한 사람", "통근한 사람", "사망자 중")
 OTHER_PEOPLE = re.compile(
     r"외국|등록|이사|전입|전출|이동|통근|통학|결혼|혼인|이혼|사망|돌아가|태어|출생|낳|가구|유학|귀화|"
-    r"근로|이민|입국|출국|취업|학생|"
+    r"근로|이민|입국|출국|취업|학생(?!\s*나이)|"
     # 사는 방식 · 집 · 장애는 다른 통계다 ("혼자 사는 사람" → 1인 가구,
     # "아파트에 사는 사람" → 거처별, "장애가 있는 사람" → 장애인).
     # 총인구로 답하면 전체 인구 숫자가 틀린 답으로 나간다 (11/18)
@@ -1137,7 +1137,10 @@ def correct(question, parsed, today=None):
         chosen = indicators.canonical_name(parsed.get("indicator") or "")
         # 지표가 없으면(원인 질문 등) 판단하지 않는다 (None)
         parsed["grounded"] = (chosen in names) if chosen else None
-        if chosen == "총인구" and parsed["grounded"] is False and _plain_people_question(question):
+        plain = _plain_people_question(question) or (
+            _both_sexes(question) and not OTHER_PEOPLE.search(question)
+        )
+        if chosen == "총인구" and parsed["grounded"] is False and plain:
             # "노원구가 강남구보다 사람이 많아 적어?": '인구'라는 말은 없지만 다른 통계를 가리키는
             # 말도 없다 → 총인구로 본다 (통계표 찾기로 돌아가지 않고 사전 계산으로 답한다)
             parsed["grounded"] = True
@@ -1796,10 +1799,20 @@ def _guard_indicator(question, parsed, names, fix):
     if (k in ("ratio", "index") and asks_count) or ungrounded:
         if _asks_age_population(question, parsed):
             fix("indicator", "총인구", "연령 구간 인구 수를 물음")
+        elif _both_sexes(question) and not OTHER_PEOPLE.search(question):
+            # "경기도는 남자가 많아 여자가 많아?": 남녀 인구를 견준다. HCX는 성비를 골랐고 근거가
+            # 없어 지원하지 않는 지표 '남자'로 끝나, 표에서 연간 값으로 답했다 (V2-061 11/24)
+            fix("indicator", "총인구", "남녀 인구를 견줌")
         else:
             term = parsed.get("term") or parsed.get("indicator")
             fix("indicator", term, "질문에 근거가 없는 지표")
             parsed["unsupported"] = True
+
+
+def _both_sexes(question):
+    """질문이 남녀를 함께 견주는가 ("남자가 많아 여자가 많아?", "남녀 인구 비교")"""
+    genders = [sex for sex, pattern in GENDER_WORDS.items() if pattern.search(question)]
+    return len(genders) == 2 or (not genders and bool(SEX_SPLIT.search(question)))
 
 
 def _region_list(question, parsed, fix):
