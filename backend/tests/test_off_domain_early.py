@@ -90,6 +90,16 @@ def test_coordinated_words_finds_the_asked_phrase() -> None:
     }
     # 꾸밈말은 나란히 물은 지표가 아니다
     assert table_guide.coordinated_words("물가 비싼 서울에 사는 1인 가구", ["물가"]) == {}
+    # '과' 뒤에 와도 뒤의 지역을 꾸미면 따로 물은 지표가 아니다 (거절했었다)
+    q = "2020년 서울과 집값이 비싼 부산의 1인 가구 수는?"
+    assert table_guide.coordinated_words(q, ["집값"]) == {}
+    assert table_guide.coordinated_words("서울과 집값 오른 지역의 인구", ["집값"]) == {}
+    # 주어로 쓰여도 꾸밈이 아니면 물은 지표다
+    assert table_guide.coordinated_words("출생아 수랑 집값이 궁금해", ["집값"]) == {"집값": "집값"}
+
+
+def test_off_domain_modifier_after_conjunction_is_not_refused() -> None:
+    assert early("2020년 서울과 집값이 비싼 부산의 1인 가구 수는?") is None
 
 
 def test_plain_population_question_is_untouched() -> None:

@@ -121,7 +121,7 @@ SUMMARY_REQUEST = re.compile(
     r"^\s*((한|두|세)\s*줄로|짧게|간단히|간단하게|간략히)?\s*(요약|정리)\s*"
     r"(좀\s*)?(해\s*(줘요?|주세요|줄래요?|봐요?|주라)?|부탁\s*(해요?|합니다|드려요)?)?\s*[.!?~]*$"
 )
-SEX_WORDS = re.compile(r"남자|여자|남성|여성|남녀|성별")
+SEX_WORDS = re.compile(r"남자|여자|남성|여성|남녀|(?<![구특])성별")  # "세대구성별"은 아니다
 
 LABELS = {"indicator": "지표", "regions": "지역", "period": "기간", "sex": "성별"}
 SOURCE_WORDS = {"inherited": "이어받음", "default": "기본값"}

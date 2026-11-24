@@ -230,13 +230,16 @@ def _indicator_list():
 GENDER_WORDS = {"여": re.compile(r"여성|여자"), "남": re.compile(r"남성|남자")}
 # "경력단절여성이 있는 가구"의 여성은 가구 유형을 설명한다.
 HOUSEHOLD_MEMBER_GENDER = re.compile(r"(?:여성|여자|남성|남자)\s*(?:이|가)\s*(?:있|없)는\s*가구")
+# '성별'이라는 말. "세대구성별", "다문화가구 구성별", "특성별" 안의 '성별'은 아니다
+# ("아파트 가구 수를 세대구성별로"가 서울 총인구의 성별 구성으로 답했다)
+SEX_WORD = r"(?<![구특])성별"
 # 남녀를 함께 묻는 표현 (구성비 질문이면 성별 구성)
-SEX_SPLIT = re.compile(r"남녀|성별|(남성|남자).*(여성|여자)|(여성|여자).*(남성|남자)")
+SEX_SPLIT = re.compile(rf"남녀|{SEX_WORD}|(남성|남자).*(여성|여자)|(여성|여자).*(남성|남자)")
 # 남녀를 나누지 않고 합계를 물음 ("남녀 합계 인구", "성별 구분 없이")
 SEX_TOTAL = re.compile(
-    r"(?:남녀|성별|(?:남성|남자).*(?:여성|여자)|(?:여성|여자).*(?:남성|남자))"
+    rf"(?:남녀|{SEX_WORD}|(?:남성|남자).*(?:여성|여자)|(?:여성|여자).*(?:남성|남자))"
     r"\s*(?:인구\s*)?(?:합계|전체|합산|합쳐|합치|합한|모두|통틀어)"
-    r"|성별\s*(?:구분\s*없이|상관\s*없이)"
+    rf"|{SEX_WORD}\s*(?:구분\s*없이|상관\s*없이)"
 )
 # 낱말 자체에 성별이 든 말: 성별 말(GENDER_WORDS)이 없어도 HCX가 읽은 성별을 지우지 않는다
 # ("남편 평균 초혼연령" → 남, "미혼모" → 여)
@@ -981,7 +984,7 @@ def correct(question, parsed, today=None):
         kind = "causal"
     elif kind == "other" and STATS_WORDS.search(question):
         kind = "compare" if len(parsed.get("regions") or []) > 1 else "value"
-        if COMPOSITION_WORDS.search(question) and re.search(r"남녀|성별|연령", question):
+        if COMPOSITION_WORDS.search(question) and re.search(rf"남녀|{SEX_WORD}|연령", question):
             kind = "composition"  # 예: "전국 인구 중 남녀 비중"
         fix("type", kind, "통계를 묻는 질문")
         if indicators.spec(parsed.get("indicator")) is None:
@@ -1311,7 +1314,7 @@ def _mean_of_regions(q):
     return out
 
 
-PEOPLE_INDICATOR = re.compile(r"인구|사람|주민|남녀|성별|연령|나이")
+PEOPLE_INDICATOR = re.compile(rf"인구|사람|주민|남녀|{SEX_WORD}|연령|나이")
 CROSS_DYNAMIC = "cross_dynamic"  # 두 값 중 한쪽이 사전에 없음 (ask_session이 마저 계산)
 
 

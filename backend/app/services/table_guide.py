@@ -297,12 +297,29 @@ def coordinated_words(question: str, words: list[str]) -> dict[str, str]:
         m = re.search(rf"{CONJ}\s*((?:[^\s,]+\s+)?[^\s,]*{w}[^\s,]*)", question) or re.search(
             rf"((?:[^\s,]+\s+)?[^\s,]*{w}[^\s,]*?)\s*{CONJ}(?=\s)", question
         )
-        if m is None:
+        if m is None or modifies_next(question, word):
             continue
         phrase = m.group(1).strip()
         trimmed = PHRASE_JOSA.sub("", phrase)
         out[word] = trimmed if word in trimmed else phrase  # "매매가"의 '가'는 조사가 아니다
     return out
+
+
+def modifies_next(question: str, word: str) -> bool:
+    """범위 밖 말이 뒤의 말을 꾸미는가 ("집값이 비싼 부산의", "집값 오른 지역의"): 말 다음
+    낱말이 꾸미는 꼴(-ㄴ/-은/-는, 받침 ㄴ)이고 그 뒤에 꾸밈을 받는 낱말이 있다.
+    "서울과 집값이 비싼 부산의 1인 가구 수"가 '과' 뒤의 집값을 따로 물은 지표로 읽혀 거절됐다"""
+    i = question.find(word)
+    if i < 0:
+        return False
+    j = i + len(word)
+    while j < len(question) and not question[j].isspace():
+        j += 1  # 말이 든 낱말 끝까지 ("집값이")
+    rest = question[j:].split()
+    if len(rest) < 2:
+        return False
+    last = rest[0].rstrip("?.!~,")[-1:]
+    return bool(last) and "가" <= last <= "힣" and (ord(last) - 0xAC00) % 28 == 4  # 받침 ㄴ
 
 
 def waiting_choice(found: dict | None) -> bool:
@@ -326,7 +343,10 @@ HANDOFF_VERSION = 1
 MAX_CANDIDATES = 5
 COMPUTABLE = ("ok", "partial_match")  # 표를 골랐다 (후보를 넘긴다). 그 밖은 targets가 빈 목록
 REGION_SUFFIX = re.compile(r"(특별자치시|특별자치도|특별시|광역시|도|시|군|구)$")
-SEX_SAID = {"남": re.compile(r"남(자|성|녀)|성별"), "여": re.compile(r"여(자|성)|남녀|성별")}
+SEX_SAID = {  # "세대구성별"의 성별은 아니다
+    "남": re.compile(r"남(자|성|녀)|(?<![구특])성별"),
+    "여": re.compile(r"여(자|성)|남녀|(?<![구특])성별"),
+}
 YEAR_SAID = re.compile(r"(?:19|20)\d{2}(?!\d|\s*세대)")  # "2030세대"는 연도가 아니다
 
 

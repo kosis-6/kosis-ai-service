@@ -84,12 +84,34 @@ def test_female_elderly_ratio() -> None:
         ("2025년 전국 인구 중 남녀 비중은 어떻게 돼?", "sex"),
         ("서울 인구의 남자와 여자 구성비는?", "sex"),
         ("2025년 서울 인구의 연령대별 구성비는?", None),
+        # '구성별'·'특성별' 안의 '성별'은 남녀가 아니다 (서울 총인구의 성별 구성으로 답했다)
+        ("2020년 서울 아파트 가구 수를 세대구성별로 알려줘", None),
+        ("2020년 서울 다문화가구 구성별 비중", None),
+        ("서울 가구주성별 1인 가구 구성비", "sex"),
     ],
 )
 def test_composition_by_sex(question: str, by: str | None) -> None:
     # HCX가 by를 비워도 남녀를 묻는 구성비 질문은 성별 구성으로
     p = qa.correct(question, parsed(type="composition", regions=["서울"]), TODAY)
     assert p.get("by") == by
+
+
+@pytest.mark.parametrize(
+    ("text", "sex"),
+    [
+        ("세대구성별 아파트 가구 수", False),
+        ("특성별 인구", False),
+        ("남녀 인구", True),
+        ("성별 인구", True),
+    ],
+)
+def test_sex_word_inside_other_class_names(text: str, sex: bool) -> None:
+    # "세대구성별 아파트 가구 수"를 인구 지표로 보면 물은 지표 대신 총인구 구성을 낸다
+    from app.services import slots
+
+    assert bool(qa.SEX_SPLIT.search(text)) is sex
+    assert bool(qa.PEOPLE_INDICATOR.search(text)) is (sex or "인구" in text)
+    assert bool(slots.BOTH_SEX.search(text)) is sex
 
 
 def test_nationwide_region() -> None:

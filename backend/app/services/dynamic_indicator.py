@@ -302,7 +302,11 @@ def _is_place_cell(name: str) -> bool:
     n = _norm(name)
     if n == "전국":
         return True
-    found = [f for f in indicators.find_regions(name) if f not in NOT_PLACE_WORDS]
+    try:
+        found = [f for f in indicators.find_regions(name) if f not in NOT_PLACE_WORDS]
+    except Exception:  # 지역 이름 목록을 읽지 못하면 지역 칸으로 보지 않는다 (전처럼 칸을 쓴다)
+        logger.warning("지역 이름 확인 실패 → 지역 칸 검사 건너뜀: %s", name)
+        return False
     for f in sorted(found, key=len, reverse=True):
         n = n.replace(f, "")
     return bool(found) and not PLACE_REST.sub("", n)
@@ -325,6 +329,20 @@ def _drop_region_words(
         if kept:
             out[no] = kept
     return out
+
+
+def _place_cell_unasked(question: str, d: Dim, code: str, region_dim: int | None) -> bool:
+    """저장된 칸 · 칸 고르기 LLM이 고른 칸(forced)이 질문이 묻지 않은 다른 장소 칸인가
+    (출생지 '서울'). _drop_region_words와 같은 기준을 규칙 밖에서 고른 칸에도 쓴다.
+    캐시에 출생지 '서울' 칸이 있으면 "서울 1인 가구 수"가 434,920가구로 나왔다.
+    합계 칸('전국' = 출생지 전체)은 질문의 범위를 좁히지 않아 그대로 쓴다"""
+    return (
+        region_dim is not None
+        and d.no != region_dim
+        and code != d.total()
+        and not OTHER_PLACE.search(question)
+        and _is_place_cell(d.codes[code])
+    )
 
 
 def _text_hits(question: str, dims: list[Dim], skip: set[int]) -> dict[int, list[str]]:
@@ -541,7 +559,11 @@ def choose(
     for d in dims:
         if d.no in skip or (plan.multi and d.no == plan.multi[0]):
             continue
-        if d.no in forced and forced[d.no] in d.codes:
+        if (
+            d.no in forced
+            and forced[d.no] in d.codes
+            and not _place_cell_unasked(question, d, forced[d.no], region_dim)
+        ):
             plan.pick[d.no] = plan.matched[d.no] = forced[d.no]
             continue
         codes = hits.get(d.no, [])
@@ -772,6 +794,7 @@ def uncovered(
     dims: list[Dim],
     parsed: dict,
     region_dim: int | None = None,
+    question: str = "",
 ) -> "str | BandMiss | None":
     """통계표 찾기가 질문에서 뽑은 조건 중 고른 칸에 반영되지 않은 것 (있으면 계산하지 않는다)
 
@@ -818,25 +841,29 @@ def uncovered(
             return f"질문의 대상 '{slots['target']}'이 표나 고른 칸에 없음"
     # 성별, 그리고 질문에 연령 구간이 있을 때의 '연령'은 나눠 보기가 아니라 조건이다
     skip = {"성별"} | ({"연령", "나이"} if parsed.get("ages") else set())
+    said = _text_hits(question, dims, {region_dim}) if question else {}
     classes = [
         c
         for c in cond.get("classes") or []
-        if _norm(c) not in skip and not _class_narrowed(c, plan, dims)
+        if _norm(c) not in skip and not _class_narrowed(c, plan, dims, said)
     ]
     if classes and parsed.get("type") not in ("composition", "rank", "trend"):
         return f"나눠 보기({', '.join(classes)}별)는 값 하나로 답할 수 없음"
     return None
 
 
-def _class_narrowed(cls: str, plan: Plan, dims: list[Dim]) -> bool:
-    """나눠 보기로 읽힌 분류(cls)에서 질문이 한 칸을 직접 골랐는가. "2세대가구 수"의 '세대'는
-    세대구성별로 나눠 보라는 말이 아니라 그 안의 2세대가구다 (표 안내로 끝났다)"""
+def _class_narrowed(cls: str, plan: Plan, dims: list[Dim], said: dict[int, list[str]]) -> bool:
+    """나눠 보기로 읽힌 분류(cls)에서 질문이 한 칸을 글자로 직접 말했는가 (said: _text_hits).
+    "2세대가구 수"의 '세대'는 세대구성별로 나눠 보라는 말이 아니라 그 안의 2세대가구다.
+    칸 고르기 LLM · 캐시가 고른 칸은 근거가 되지 않는다: "아파트 가구 수를 세대구성별로"에서
+    LLM이 고른 비친족가구 칸(22,804가구)이 세대구성별 답으로 통과했다"""
     word = _norm(cls)
     if len(word) < 2:
         return False
     return any(
         d.no in plan.matched
         and plan.matched[d.no] != d.total()
+        and plan.matched[d.no] in (said.get(d.no) or [])
         and (word in _norm(d.name) or word in _norm(d.codes[plan.matched[d.no]]))
         for d in dims
     )
@@ -1021,7 +1048,7 @@ def build(
         names = [_norm(d.codes[plan.matched[d.no]]) for d in dims if d.no in plan.matched]
         if not expr or not any(expr in n for n in names):
             return None, "질문의 연령 조건을 표의 칸에 반영할 수 없음"
-    if why := uncovered(slots, plan, dims, parsed, region_dim):
+    if why := uncovered(slots, plan, dims, parsed, region_dim, question):
         return None, why
     # 통계표 찾기가 조건으로 뽑지 않았어도, 질문의 숫자 조건(3.2kg 등)이 이 표의 구간 분류에
     # 해당하는데 그 분류를 질문의 말로 고르지 못했으면(합계로 둠) 조건을 버리게 된다
@@ -1083,6 +1110,15 @@ def build(
         return _parts_spec(spec, src, plan, dims, tbl_nm)
     if kind == "composition" or PCT_ASK.search(question):
         made = _composition(spec, src, plan, dims, question) if kind == "composition" else None
+        if made is None and kind == "composition":
+            # "아파트 가구 수를 세대구성별로": 그 분류로 구성비를 낼 수 없으면(표에 분류가 없거나
+            # 합계 칸이 없음) 질문에 나온 다른 칸의 비율("가구 중 아파트 비율 43.02%")로 바꿔
+            # 답하지 않는다. 통계표 찾기가 지표별로 다시 쓴 문장은 '~별'을 바꾸기도 해서
+            # ("시도별 아파트 가구 수"), 한 칸의 비율은 질문이 %·비율·비중을 물을 때만 낸다
+            if axis := _asked_axis(question):
+                return None, f"{axis}별 구성비를 이 표로 낼 수 없음"
+            if not PCT_ASK.search(question):
+                return None, "구성비를 낼 분류를 표에서 찾지 못함"
         if made is None:
             made, why = _ratio(spec, src, plan, dims, parsed, tbl_nm, question=question)
             if made is None:
@@ -1452,6 +1488,20 @@ def _part_rows(tbl_id, col, num, den, fixed, item) -> list[tuple[float | None, f
 def _without_age(src: dict) -> dict:
     """연령을 lookup의 age_dim 대신 직접 거를 때 (연령이 비율의 분자이거나 구성비로 나눌 분류)"""
     return {k: v for k, v in src.items() if k not in ("age_dim", "age_total", "age_min")}
+
+
+# 질문이 '~별'로 나눠 보라고 댄 분류 ("세대구성별로"의 세대구성)
+AXIS_WORD = re.compile(r"([가-힣]{2,})별(?=로|\s|$|[?.!,]|의|은|는|구성|비중|비율)")
+# 다른 경로가 맡는 '~별' (성별 · 연령 구성, 지역 · 기간 나눠 보기)
+OTHER_AXES = {"남녀", "연령", "연령대", "나이", "시도", "시군구", "지역", "읍면동", "연도", "년도"}
+
+
+def _asked_axis(question: str) -> str | None:
+    """질문이 '~별'로 나눠 보라고 이름을 댄 분류 ("세대구성별로" → 세대구성). 없으면 None"""
+    for m in AXIS_WORD.finditer(question):
+        if m.group(1) not in OTHER_AXES:
+            return m.group(1)
+    return None
 
 
 def _composition(spec: dict, src: dict, plan: Plan, dims: list[Dim], question: str) -> dict | None:
@@ -2215,13 +2265,16 @@ def reusable_forced(
       - 그 밖 (근거를 새 질문에서 찾을 수 없음)               → 쓰지 않는다
     쓰지 않은 분류는 규칙이 새 질문으로 다시 고른다 (못 고르면 되묻기나 통계표 찾기)"""
     by_no = {d.no: d for d in dims}
-    hits = _text_hits(question, dims, {region_dim})
+    # 질문의 지역 이름이 다른 장소 칸(출생지 '서울')에 걸린 것은 그 칸을 말한 것으로 보지 않는다
+    hits = _drop_region_words(question, _text_hits(question, dims, {region_dim}), dims, region_dim)
     q = _norm(question)
     out = {}
     for no, code in forced.items():
         d = by_no.get(no)
         if d is None or code not in d.codes:
             continue  # 표가 다시 적재돼 칸이 없어졌다
+        if _place_cell_unasked(question, d, code, region_dim):
+            continue
         said = hits.get(no) or []
         if said and code not in said:
             continue

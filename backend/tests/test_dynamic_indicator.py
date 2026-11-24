@@ -1709,6 +1709,80 @@ def test_named_cell_is_not_a_split_view(fake_table, monkeypatch, question, class
         assert spec is None
 
 
+def test_llm_or_cached_cell_does_not_make_a_split_view_one_value(fake_table, monkeypatch) -> None:
+    # "아파트 가구 수를 세대구성별로": 칸 고르기 LLM · 캐시가 고른 칸(질문에 없는 2세대가구)은
+    # 나눠 보기가 아니라는 근거가 되지 않는다 (비친족 22,804가구가 통과했다)
+    title = "세대구성/가구원 수/활동제약자수별 가구(일반가구)-시도"
+    monkeypatch.setattr(lookup, "_table", lambda _: {"tbl_nm": title})
+    fake_table["tables"]["GEN"] = (GENERATIONS, 1, "시도")
+    fake_table["units"]["GEN"] = ("가구", True)
+    slots = {"conditions": {"classes": ["세대구성"]}}
+    parsed = {**BASE, "indicator": "", "term": ""}
+    question = "2020년 서울 가구 수를 세대구성별로 알려줘"
+    spec, why = d.build("GEN", question, parsed, forced={2: "200"}, slots=slots)
+    assert spec is None and "나눠 보기" in str(why)
+
+
+DWELLING = [  # '거처의 종류별 가구(일반가구)': 세대구성 분류가 없는 표
+    d.Dim(0, "항목", {"T1": "일반가구"}),
+    d.Dim(1, "행정구역별", {"00": "전국", "11": "서울특별시"}),
+    d.Dim(2, "거처의 종류별", {"0": "계", "1": "아파트", "2": "단독주택"}),
+]
+
+
+@pytest.mark.parametrize(
+    ("question", "kind", "ok"),
+    [
+        # 세대구성별로 구성비를 낼 수 없는 표에서 아파트 칸의 비율("가구 중 아파트 비율 43.02%")로
+        # 답했다
+        ("2020년 서울 아파트 가구 수를 세대구성별로 알려줘", "composition", False),
+        ("2020년 서울 일반가구의 거처의 종류별 구성비", "composition", True),  # 표에 있는 분류
+        ("2020년 서울 가구 중 아파트 비율은?", "value", True),  # '~별'이 없는 비율 질문
+    ],
+)
+def test_composition_by_named_class_is_not_replaced_by_another_ratio(
+    fake_table, monkeypatch, question: str, kind: str, ok: bool
+) -> None:
+    title = "거처의 종류별 가구(일반가구)"
+    monkeypatch.setattr(lookup, "_table", lambda _: {"tbl_nm": title})
+    fake_table["tables"]["DWELL"] = (DWELLING, 1, "시도")
+    fake_table["units"]["DWELL"] = ("가구", True)
+    parsed = {**BASE, "type": kind, "indicator": "", "term": ""}
+    spec, why = d.build("DWELL", question, parsed)
+    if ok:
+        assert spec is not None, why
+    else:
+        assert spec is None and "세대구성별 구성비" in str(why)
+
+
+@pytest.mark.parametrize(
+    ("question", "forced", "item"),
+    [
+        ("2020년 서울 1인 가구 수는?", {0: "11"}, None),  # 캐시의 출생지 '서울' 칸은 쓰지 않는다
+        ("2020년 서울 1인 가구 수는?", {0: "00"}, "00"),  # 합계(출생지 전체)는 그대로
+        ("2020년 서울 출생 1인 가구 수는?", {0: "11"}, "11"),  # 출생지를 말하면 그 칸
+    ],
+)
+def test_forced_place_cells_need_the_question_to_ask_them(
+    fake_table, monkeypatch, question: str, forced: dict, item: str | None
+) -> None:
+    names = ("서울특별시", "부산광역시", "서울", "부산")
+    monkeypatch.setattr(indicators, "find_regions", lambda t: [n for n in names if n in t][:1])
+    fake_table["tables"]["BIRTH"] = (BIRTHPLACE, 1, "시도")
+    fake_table["units"]["BIRTH"] = ("가구", True)
+    parsed = {**BASE, "indicator": "1인 가구", "term": "1인 가구"}
+    # 캐시에서 다시 쓸 칸
+    reused = d.reusable_forced(question, forced, [], BIRTHPLACE, 1)
+    assert reused == ({0: item} if item else {})
+    # 칸 고르기 LLM이 고른 칸으로 바로 계산할 때도 같다
+    spec, why = d.build("BIRTH", question, parsed, forced=forced)
+    if item:
+        assert spec is not None, why
+        assert spec["sources"][0]["item_id"] == item
+    else:
+        assert spec is None and why == "질문의 말과 맞는 칸이 없음"
+
+
 def test_name_from_underscored_total_cell() -> None:
     # "2023년 서울 이주배경인구 어때?": 질문 해석이 지표 표현을 비워 칸 이름으로 이름을 지었다
     item = d.Dim(0, "항목", {"T10": "이주배경인구_계", "T20": "내국인(귀화)_계"})
