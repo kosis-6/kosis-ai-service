@@ -485,9 +485,11 @@ TOP_N = re.compile(r"(상위|하위)\s*(\d+)|(\d+)\s*(곳|개|위까지)(?!\s*\S
 # "최근 5년", "과거 10년간", "지난 3년 동안" (timeref와 같은 표현)
 RECENT = timeref.RECENT_N_YEARS
 UNIT_SUFFIX = re.compile(r"\s*\([^()]*\)\s*$")  # 지표 이름 뒤의 "(명)"·"(%)"
-LATEST = re.compile(r"최근|최신|현재|요즘|요새|지금")
+# '요 몇 년 새' · '몇 년 사이'도 요즘과 같다 (D-036 · 044, 11/24: HCX가 2020~2025처럼 짐작했다)
+FEW_YEARS = r"요\s*몇\s*년|몇\s*년\s*(새|사이|동안)|근\s*몇\s*년"
+LATEST = re.compile(rf"최근|최신|현재|요즘|요새|지금|{FEW_YEARS}")
 # 기간 변화를 묻는 표현 ("최근 부산 인구 추이"는 추이, "최근 부산 인구"는 최신 값)
-THESE_DAYS = re.compile(r"요즘|요새")
+THESE_DAYS = re.compile(rf"요즘|요새|{FEW_YEARS}")
 LATEST_KINDS = ("value", "compare", "rank")  # "최근"이면 마지막 해로 답하는 질문 유형
 CHANGE_ASK = re.compile(r"추이|변화|변동|흐름|증감|추세|늘|줄|증가|감소|동안|사이|년간|그래프")
 # 두 연도 사이: "2020년부터 2025년", "2020년 대비 2023년", 조사만 다른 "2020년이랑 2023년" ·
@@ -500,7 +502,30 @@ YEAR_NUMBER = re.compile(r"(?<!\d)((?:19|20)\d{2})(?!\d)")
 YEAR = re.compile(r"((?:19|20)\d{2})\s*년(?!대(?!비)|생)")
 # 한글 숫자·사건으로 말한 해 ("이천이십이년", "십 년 전", "코로나 첫 해", "월드컵 때", "그 당시")
 # 청년·유소년·노년·중년·장년의 "년"은 연도가 아니다
-YEAR_WORDS = re.compile(r"(?<![청소노중장])년|때|당시|해(?![가-힣])")
+YEAR_WORDS = re.compile(r"(?<![청소노중장성])년|때|당시|해(?![가-힣])")
+# '해' 앞이 이 낱말이면 그 해를 말한 것 ("그해", "첫 해", "같은 해"). 다른 한글에 붙은 '해'는
+# 동사 끝("부양해?", "추천해 줘")이나 지명("김해")이다
+# (D-100 · V2-097: HCX가 짐작한 2025를 그대로 써서 최신 달로 답하지 못했다, 11/24)
+HAE_ATTACHED = ("그", "첫", "이듬", "다음")
+HAE_SPACED = (*HAE_ATTACHED, "이", "한", "같은", "어느", "몇")
+
+
+def _year_word(question):
+    """질문에 연도를 가리키는 낱말이 있는가 (YEAR_WORDS에서 동사 끝 '해' · '~ㄹ 때'는 뺀다)"""
+    for m in YEAR_WORDS.finditer(question):
+        word, head = m.group(0), question[: m.start()]
+        last = head[-1:] if head else ""
+        if word == "해" and "가" <= last <= "힣" and not head.endswith(HAE_ATTACHED):
+            continue  # 붙어 쓴 '부양해' · '김해'
+        if word == "해" and last == " " and head.rstrip().split(" ")[-1] not in HAE_SPACED:
+            continue  # "안 해?", "어떻게 해?"
+        tail = head.rstrip()[-1:]
+        if word == "때" and "가" <= tail <= "힣" and (ord(tail) - 0xAC00) % 28 == 8:
+            continue  # "태어날 때": '~ㄹ 때'는 그 시점이 아니라 경우를 말한다
+        return True
+    return False
+
+
 # 지역 이름이면서 흔한 낱말인 짧은 이름 ("고령 인구", "장수 노인", "영양 상태", "이천 명")
 COMMON_WORD_REGIONS = frozenset({"고령", "장수", "영양", "이천", "예산", "수영"})
 
@@ -513,7 +538,7 @@ def _says_year(question):
     return bool(
         YEAR.search(question)
         or ask_followup.has_explicit_year(question)
-        or YEAR_WORDS.search(question)
+        or _year_word(question)
         or timeref.resolve(question)
     )
 

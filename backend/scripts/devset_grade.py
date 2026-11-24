@@ -547,7 +547,12 @@ def grade(row: dict[str, str], first: dict, final: dict | None = None) -> Grade:
     g.details["찾은 숫자"] = found
     g.number = "O" if answered and exp and all(found.values()) else "X"
 
-    cond_wrong = check_conditions(row["정답 조건"], final) if answered else ["답하지 않음"]
+    cond = row["정답 조건"]
+    if (alt := g.details.get("허용 정답")) and golden_years(alt):
+        # 허용 줄이 시점을 적었으면 (예: "… 37.66명 (2026년 10월 말)") 기간은 그 시점으로 본다
+        lo, hi = golden_years(alt)
+        cond = YEAR.sub("", cond) + (f", {lo}" if lo == hi else f", {lo}~{hi}")
+    cond_wrong = check_conditions(cond, final) if answered else ["답하지 않음"]
     g.details["조건 차이"] = cond_wrong
     g.condition = "X" if cond_wrong else "O"
 

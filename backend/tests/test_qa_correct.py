@@ -1642,3 +1642,22 @@ def test_single_relative_year_read_as_trend_becomes_value() -> None:
         "작년 서울 인구 추이", parsed(type="trend", indicator="총인구", year=2024), TODAY
     )
     assert p["type"] == "trend"
+
+
+@pytest.mark.parametrize(
+    ("question", "said"),
+    [
+        ("해운대구는 일할 나이 100명이 노인 몇 명 부양해?", False),  # 동사 끝 '해' (D-100)
+        ("김해 사는 등록외국인 몇 명이야?", False),  # 지명
+        ("요즘 사람들 왜 결혼을 안 해?", False),
+        ("여자 아기 100명 태어날 때 남자 아기는 몇 명 태어나?", False),  # '~ㄹ 때'
+        ("세종시에 미성년 자녀가 딱 셋인 집 몇 가구야?", False),  # 미성년
+        ("코로나 첫 해 출생아 수", True),
+        ("그해 서울 인구", True),
+        ("월드컵 때 태어난 아기 수", True),
+        ("이천이십이년 서울 인구", True),
+    ],
+)
+def test_year_words_skip_verb_endings(question: str, said: bool) -> None:
+    """연도를 말했는지: 동사 끝 '해', 지명 '김해', '~ㄹ 때', '미성년'은 연도가 아니다 (11/24)"""
+    assert qa._says_year(question) is said
