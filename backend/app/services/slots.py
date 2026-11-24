@@ -160,8 +160,8 @@ LEVEL_WORDS = [
 ]
 MALE = re.compile(r"남자|남성|남아")
 FEMALE = re.compile(r"여자|여성|여아")
-BOTH_SEX = re.compile(r"남녀|성별")
-TOTAL_SEX = re.compile(r"남녀\s*(?:합계|전체|합산)|성별\s*(?:합계|전체)")
+BOTH_SEX = re.compile(r"남녀|(?<![구특])성별")  # "세대구성별" · "특성별"의 성별은 아니다
+TOTAL_SEX = re.compile(r"남녀\s*(?:합계|전체|합산)|(?<![구특])성별\s*(?:합계|전체)")
 SEX_VALUES = {"남", "여", "남자", "여자", "남성", "여성", "계", "전체"}
 REGION_CLASS = re.compile(
     r"(?:시도|시군구|읍면동|지역|행정구역|시·도|시·군·구|구|시군|군|읍|면|동)별?"

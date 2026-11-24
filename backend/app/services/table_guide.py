@@ -21,7 +21,7 @@ from uuid import uuid4
 
 from app.agent import graph, multi
 from app.core.config import get_settings
-from app.services import flow, search, search_answer, search_llm, search_log
+from app.services import flow, search, search_answer, search_llm, search_log, synonyms
 from app.services import slots as slot_parser
 
 logger = logging.getLogger(__name__)
@@ -35,7 +35,8 @@ SEARCH_INSTEAD = {"unknown_indicator", "not_supported_question", "parse_error"}
 #   out_of_range        사전의 표 수록 기간 밖 (추계값 제안 suggestion이 있으면 넘기지 않는다)
 #   region_not_in_year  그해에 없던 지역 (행정구역 개편)
 # 되묻기(지역 · 연도), 지역을 모름, 표 받는 중, 계산 오류는 넘기지 않는다 (2026-11-18 세진 결정)
-SEARCH_AFTER = {"missing_data", "out_of_range", "region_not_in_year"}
+#   no_region_level     그 지역 단위 자료가 사전의 표에 없음 ("시도 단위까지만")
+SEARCH_AFTER = {"missing_data", "no_region_level", "out_of_range", "region_not_in_year"}
 # 통계표 찾기도 답하지 못한 상태: 제공 범위(인구 분야) 밖, 통계 질문이 아님.
 # /ask 응답의 status도 이 값으로 둔다 (표 안내 "tables"와 구분해 거절로 센다)
 REFUSED = ("out_of_scope", "not_statistics")
@@ -53,6 +54,8 @@ REFUSED = ("out_of_scope", "not_statistics")
 # '인구성장률'에 걸려 뺐다)
 OFF_DOMAIN_EARLY = re.compile(
     r"아파트\s*값|집\s*값|땅\s*값|공시지가|전셋값|"
+    # "아파트 평균 가격", "주택 매매 시세": 집 · 땅의 가격은 인구 통계가 아니다 (11/24, S-38)
+    r"(?:아파트|주택|집|빌라|오피스텔|땅|토지|부동산)\S*\s*(?:평균\s*|매매\s*)?(?:가격|시세)|"
     r"실업률|취업률|고용률|연봉|급여|최저임금|"
     r"미세먼지|오염|날씨|강수량|폭염|공기\s*질|공기\S*\s*(?:제일\s*|가장\s*)?(?:안\s*좋|나쁜|나빠)|"
     r"경제\s*성장|GDP|국내총생산|물가|금리|환율|교통량",
@@ -243,27 +246,110 @@ async def off_domain_early(question: str) -> dict | None:
     rest = question
     for word in words:
         rest = re.sub(rf"\S*\s*{re.escape(word)}", " ", rest)
-    if POPULATION_SIGNAL.search(rest) or indicators.find_in_text(question):
+    population = bool(POPULATION_SIGNAL.search(rest) or indicators.find_in_text(question))
+    # 인구 통계도 묻는 질문은 범위 밖 말이 인구 지표와 나란히 물은 지표일 때만 거절한다
+    # ("출생아 수랑 아파트 매매가격": 출생아 수만 답하면 다른 질문의 답이 된다).
+    # "물가 비싼 서울에 사는 1인 가구"처럼 꾸밈말이면 지금처럼 뒤 단계로
+    asked = coordinated_words(question, words) if population else {}
+    if population and not asked:
         return None
     tables = await search.load_tables()
     catalog = [t["name_n"] + t["meta_n"] + t["path_n"] for t in tables]
     for word in words:
-        n = search.norm(word)
+        # 안전장치 1: 인구 표에 있는 말이면 거절하지 않는다. 정규식에 걸린 조각이 아니라 사용자가
+        # 쓴 낱말로 본다 ('전세가'는 '전세가구' 안에 있지만 물은 말은 '전세가격'이다)
+        n = search.norm(asked_word(asked.get(word, question), word))
         if any(n in text for text in catalog):
-            continue  # 안전장치 1: 인구 표에 있는 말
+            continue
+        if population and word not in asked:
+            continue
+        from app.services.josa import josa
+
+        if population:
+            from app.services import refusal
+
+            inside = list(dict.fromkeys(name for *_, name in indicators.find_in_text(question)))
+            answer = refusal._outside_text([asked[word]], inside)
+            said = josa(f"'{asked[word]}'", "은는")
+            reason = f"{said} 인구 통계 범위 밖입니다 (함께 물은 지표, LLM 호출 전 검사)"
+        else:
+            answer = out_of_scope_text(word, question)
+            said = josa(f"'{word}'", "은는")
+            reason = f"{said} 인구 통계 범위 밖입니다 (LLM 호출 전 단어 검사)"
         found = {
             "session_id": None,
             "status": "out_of_scope",
-            "answer": out_of_scope_text(word, question),
+            "answer": answer,
             "parsed": {},
             "clarify": None,
             "recommendations": [],
             "together": [],
             "notice": None,
-            "reason": f"'{word}'은 인구 통계 범위 밖입니다 (LLM 호출 전 단어 검사)",
+            "reason": reason,
         }
         return tables_answer(found)
     return None
+
+
+# 지표 둘을 나란히 묻는 말 ("출생아 수랑 아파트 매매가격", "집값과 인구")
+PHRASE_JOSA = re.compile(r"(?:을|를|은|는|이|가|도|의)$")
+
+
+def coordinated_words(question: str, words: list[str]) -> dict[str, str]:
+    """범위 밖 말 중 다른 지표와 '랑 · 와 · 과 · 하고 · 및 · ,'로 이어 물은 것 {말: 지표 표현}.
+    "출생아 수랑 아파트 매매가격 알려줘" → {"매매가": "아파트 매매가격"}"""
+    tokens = synonyms.tokenize(question)
+    joins = [t for t in tokens if t.tag == "JC" or t.form in {",", "및", "그리고"}]
+    out = {}
+    bounds = [0, *(join.end for join in joins), len(question)]
+    for i, join in enumerate(joins):
+        left = question[bounds[i] : join.start].rstrip()
+        right = question[join.end : joins[i + 1].start if i + 1 < len(joins) else bounds[-1]]
+        for word in words:
+            if word in out:
+                continue
+            phrase = rf"(?:[^\s,]+\s+)?[^\s,]*{re.escape(word)}[^\s,]*"
+            if m := re.search(rf"{phrase}$", left):
+                out[word] = _trim_phrase(m[0], word)
+            elif (m := re.match(rf"\s*({phrase})", right)) and not _modifies_next(
+                tokens, join.end + m.end()
+            ):
+                out[word] = _trim_phrase(m[1], word)
+    return out
+
+
+def _trim_phrase(phrase: str, word: str) -> str:
+    phrase = phrase.rstrip("?.!~,")
+    trimmed = PHRASE_JOSA.sub("", phrase)
+    return trimmed if word in trimmed else phrase  # "매매가"의 '가'는 조사가 아니다
+
+
+def asked_word(question: str, word: str) -> str:
+    """정규식에 걸린 범위 밖 말을 사용자가 쓴 낱말 끝까지 늘린다 (끝의 조사 · 문장부호는 뗀다).
+    "전세가격 알려줘"의 '전세가' → '전세가격', "집값이" → '집값'"""
+    i = question.find(word)
+    if i < 0:
+        return word
+    j = i + len(word)
+    while j < len(question) and not question[j].isspace():
+        j += 1
+    return _trim_phrase(question[i:j], word)
+
+
+def _modifies_next(tokens: list, end: int) -> bool:
+    """뒤에 관형사형 어미와 그 꾸밈을 받는 명사가 이어지는가 ("집값이 정말 비싼 부산")."""
+    tail = [t for t in tokens if t.start >= end]
+    noun = ("NN", "NP", "NR", "SN")
+    for token, following in zip(tail, tail[1:], strict=False):
+        if token.tag == "ETM":
+            return following.tag.startswith((*noun, "MM"))
+        if token.tag in {"JC", "MAJ", "SP", "SF", "EF"}:
+            return False
+        if token.tag.startswith(noun) and not (
+            following.tag == "JKB" and token.end == following.start
+        ):
+            return False  # "생각보다"는 부사어지만 "부산 출생아"는 다음 명사구다
+    return False
 
 
 def waiting_choice(found: dict | None) -> bool:
@@ -287,7 +373,10 @@ HANDOFF_VERSION = 1
 MAX_CANDIDATES = 5
 COMPUTABLE = ("ok", "partial_match")  # 표를 골랐다 (후보를 넘긴다). 그 밖은 targets가 빈 목록
 REGION_SUFFIX = re.compile(r"(특별자치시|특별자치도|특별시|광역시|도|시|군|구)$")
-SEX_SAID = {"남": re.compile(r"남(자|성|녀)|성별"), "여": re.compile(r"여(자|성)|남녀|성별")}
+SEX_SAID = {  # "세대구성별"의 성별은 아니다
+    "남": re.compile(r"남(자|성|녀)|(?<![구특])성별"),
+    "여": re.compile(r"여(자|성)|남녀|(?<![구특])성별"),
+}
 YEAR_SAID = re.compile(r"(?:19|20)\d{2}(?!\d|\s*세대)")  # "2030세대"는 연도가 아니다
 
 

@@ -36,6 +36,15 @@ class Settings(BaseSettings):
     # (실험 2-A, app/services/understand_merged.py).
     # off(기본): 지금 그대로. gemma: 합친 프롬프트로 Gemma 1회, 실패하면 지금 방식(HCX)으로 넘어간다
     understand_merged: Literal["off", "gemma"] = "off"
+    # 조건 → 칸 잇기 1단계 (app/services/binding.py, docs/cell_binding_design_2026-11-23.md).
+    # true: 바로 계산이 표 하나를 계산할 때 같은 표로 잇기를 돌려 처리 기록에만 남긴다
+    # (답은 그대로).
+    # 개발셋 평가에서 BINDING_SHADOW=true로 켜고 scripts/binding_compare.py로 견준다
+    binding_shadow: bool = False
+    # 2단계: 규칙이 칸을 못 고른 '검토가 고른 표'를 잇기 결과의 칸으로 다시 계산하고, 칸 고르기
+    # LLM이 고른 칸에도 잇기를 붙인다 (답이 바뀐다). 지금 계산이 성공한 표는 그대로.
+    # 개발셋 v1.3 · v2.3에서 정답이 줄지 않아 기본으로 켠다 (11/24, 설계 9-1). 끄려면 false
+    binding_use: bool = True
 
     # 통계표 찾기(조건 추출·계획·최종 검토)에 쓰는 LLM (app/services/search_llm.py)
     # auto(기본): GEMMA_BASE_URL이 있으면 Gemma 4 31B, 없으면 HCX-007
