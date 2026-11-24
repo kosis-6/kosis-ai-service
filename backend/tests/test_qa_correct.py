@@ -25,6 +25,9 @@ ALIASES = {
 TODAY = date(2026, 10, 24)
 
 
+REAL_ALIASES = indicators._alias_map  # 실제 지표 사전 별칭 (아래 몇 테스트)
+
+
 @pytest.fixture(autouse=True)
 def fixed_aliases(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(indicators, "_alias_map", lambda: ALIASES)
@@ -865,6 +868,10 @@ def test_generation_population_is_total_population(question: str) -> None:
         ("요즘 사람들은 애를 몇 명씩 낳아?", "출생아 수", "합계출산율"),
         ("북구에 사는 이십대는 얼마나 돼?", "총인구", "총인구"),
         ("대전하고 충청남도 어르신 수 합쳐 줘", "고령인구 수", "총인구"),
+        # HCX가 맞게 고른 지표를 코드가 덮어쓰지 않는다 (11/24)
+        ("해운대구는 일할 나이 100명이 노인 몇 명 부양해?", "노년부양비", "노년부양비"),
+        ("고흥이랑 화성, 젊은 사람 대비 노인 부담 얼마나 차이 나?", "노년부양비", "노년부양비"),
+        ("세종은 일할 나이 100명이 아이 몇 명 부양해?", "총인구", "유소년부양비"),
     ],
 )
 def test_spelled_out_indicators(question: str, llm, expected: str) -> None:
@@ -1588,3 +1595,47 @@ def test_lookup_pick_skips_sources_without_years(monkeypatch: pytest.MonkeyPatch
     spec = {"name": "인구", "sources": [{"table": "X", "level": "시도"}]}
     src, err = qa.lookup._pick(spec, "시도", 1990, 2007, "계")
     assert src is None and err["status"] == "missing_data"
+
+
+@pytest.mark.parametrize(
+    ("question", "llm", "expected"),
+    [
+        ("화성시는 작년에 이사 들어온 사람이 나간 사람보다 많아?", "순이동", "순이동"),
+        (
+            "서초구랑 해남군 엄마들 평균 출산 나이 몇 살 차이야?",
+            "모의 평균 출산연령",
+            "모의 평균 출산연령",
+        ),
+        (
+            "첫째 아이 낳는 엄마 나이가 제일 어린 시도 3곳은?",
+            "모의 평균 출산연령",
+            "첫째아 평균 출산연령",
+        ),
+        ("작년에 이사 들어온 사람 몇 명이야?", "총인구", "전입자 수"),
+        ("경북 구미시 작년에 이사 나간 사람이 들어온 사람보다 많아?", "순이동", "순이동"),
+        # 한 쪽만 말하면 순이동이 아니다
+        ("작년에 서울에서 이사 나간 사람들 제일 많이 간 시도 3곳", "순이동", "전출자 수"),
+    ],
+)
+def test_hcx_indicator_kept_with_real_aliases(
+    monkeypatch, question: str, llm, expected: str
+) -> None:
+    """실제 별칭으로: 찾은 지표가 HCX 지표의 한 쪽(순이동의 전입)이거나 HCX 지표도 질문에 있으면
+    HCX 쪽을 둔다. HCX가 엉뚱한 지표면 찾은 지표로 바꾼다 (11/24, D-123 · V2-063 · 071)"""
+    monkeypatch.setattr(indicators, "_alias_map", REAL_ALIASES)
+    p = qa.correct(question, parsed(indicator=llm, regions=["서울"]), TODAY)
+    assert p["indicator"] == expected
+
+
+def test_single_relative_year_read_as_trend_becomes_value() -> None:
+    """'작년에'만 말하고 변화를 묻지 않았으면 추이가 아니라 그 해 값 (D-123, 11/24)"""
+    q = "화성시는 작년에 이사 들어온 사람이 나간 사람보다 많아?"
+    h = parsed(type="trend", indicator="순이동", regions=["화성시"], year=2024)
+    h.update(start_year=2023, end_year=2024)
+    p = qa.correct(q, h, TODAY)
+    assert p["type"] == "value" and p["year"] == TODAY.year - 1
+    # 변화를 물었으면 추이 그대로
+    p = qa.correct(
+        "작년 서울 인구 추이", parsed(type="trend", indicator="총인구", year=2024), TODAY
+    )
+    assert p["type"] == "trend"

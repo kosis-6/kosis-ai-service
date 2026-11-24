@@ -576,6 +576,17 @@ INDICATOR_PATTERNS = [
         ),
         "노년부양비",
     ),
+    # "일할 나이 100명이 노인 몇 명 부양해", "젊은 사람 대비 노인 부담" → 노년부양비.
+    # 못 알아보면 '노인'(연령)만 보고 총인구로 바꿔 HCX의 노년부양비를 덮었다 (D-064 · 100, 11/24)
+    (
+        re.compile(
+            r"(노인|어르신|고령)\S*\s*(\S+\s*){0,2}부양"
+            r"|(젊은|일할|일하는|생산\s*가능|생산\s*연령)\s*(나이\s*)?(인구|사람)?\S*\s*"
+            r"(\S+\s*){0,3}?(노인|어르신|고령)\S*\s*(부양|부담)"
+        ),
+        "노년부양비",
+    ),
+    (re.compile(r"(아이|어린이|유소년|아동)\S*\s*(\S+\s*){0,2}부양"), "유소년부양비"),
     # "어르신 수가 아이들 수의 몇 배" → 노령화지수 (노인이 주어일 때만. "노인 대비 유소년"은 아니다)
     (
         re.compile(
@@ -606,6 +617,9 @@ MORE_SPECIFIC = {
     "조출생률": {"출생아 수"},
     "셋째 이상 출생아 수": {"출생아 수"},
     "다문화 출생아 수": {"출생아 수"},
+    # "첫째 아이 낳는 엄마 나이": '낳는 엄마 나이'(모의 평균 출산연령) · '첫째 아이'(출산순위별
+    # 구성)도 걸리지만 첫째아 평균 출산연령이다 (V2-036 · 071, 11/24)
+    "첫째아 평균 출산연령": {"모의 평균 출산연령", "출산순위별 출생 구성"},
 }
 # 변화량 순위 ("작년에 인구 제일 많이 줄어든 시도 세 군데", "인구 증가 폭이 큰 구"):
 # 그해 값이 아니라 전년 대비 변화량으로 순위를 매긴다
@@ -729,6 +743,34 @@ def _pick_indicator(question, names):
         if len(ratio) == 1:
             return next(iter(ratio))
     return None
+
+
+def _both_sides(current: str | None, name: str, question: str) -> bool:
+    """current가 차이 지표(순이동 '전입 − 전출')이고 질문이 두 쪽을 다 말했는가.
+    "이사 들어온 사람이 나간 사람보다 많아?"는 전입자 수(찾은 지표) 한 쪽이 아니라 순이동이다
+    (D-123 · V2-125, 11/24). 한 쪽만 말했으면("서울에서 이사 나간 사람들 제일 많이 간 시도")
+    찾은 지표로 바꾼다. 비율(÷)은 보지 않는다"""
+    sp = indicators.spec(current) if current else None
+    formula = (sp or {}).get("formula") or ""
+    if "−" not in formula or "÷" in formula:
+        return False
+    stems = [x.strip() for x in formula.split("−")]
+    stem = re.sub(r"자?\s*수$", "", name).strip()
+    if not stem or stem not in stems:
+        return False
+    text = re.sub(r"\s+", "", question)
+    aliases = indicators._alias_map()
+    for other in (x for x in stems if x != stem):
+        # 다른 쪽 지표(전출 → 전출자 수)의 별칭에서 끝의 '수 · 몇'을 떼고 질문에서 찾는다
+        words = [
+            re.sub(r"\s*(수|몇|이\s*몇|들\s*몇)$", "", a)
+            for n, al in aliases.items()
+            if n.startswith(other)
+            for a in [n, *al]
+        ]
+        if not any(len(w) >= 2 and re.sub(r"\s+", "", w) in text for w in words):
+            return False
+    return True
 
 
 def _ratio_sibling(question, parsed, fix):
@@ -1006,7 +1048,9 @@ def correct(question, parsed, today=None):
         if name and current != name:
             # "인구"만 찾았고 HCX가 다른 지표를 골랐으면 그대로 둔다 (예: "인구에서 고령층 비중")
             # 단, 연령 구간 인구 수를 물었으면 총인구 (예: "65세 이상 인구는?")
-            if name != "총인구" or current is None or (ages and not PCT_ASK.search(question)):
+            if _both_sides(current, name, question):
+                names = names | {current}  # 질문이 차이의 두 쪽을 다 말했다: HCX의 차이 지표가 근거
+            elif name != "총인구" or current is None or (ages and not PCT_ASK.search(question)):
                 fix("indicator", name, "질문의 지표 표현")
                 parsed.pop("unsupported", None)
         if sibling := _ratio_sibling(question, parsed, fix):
@@ -1110,6 +1154,13 @@ def correct(question, parsed, today=None):
                 kind = "trend"
         elif kind not in ("trend", "other", "parse_error") and parsed.get("year") != ref.year:
             fix("year", ref.year, ref.describe(today))
+        elif kind == "trend" and not CHANGE_ASK.search(question) and not SPAN.search(question):
+            # 한 시점('작년에')만 말하고 변화를 묻지 않았는데 HCX가 추이로 읽었다
+            # ("작년에 이사 들어온 사람이 나간 사람보다 많아?" → 2019~2024 추이, D-123 11/24)
+            fix("type", "value", "한 시점만 물음 (변화를 묻는 말 없음)")
+            kind = "value"
+            if parsed.get("year") != ref.year:
+                fix("year", ref.year, ref.describe(today))
     if spans and kind in ("value", "trend", "compare"):
         # '1990년대 서울 인구' → 1990~1999 변화. '1990년대부터 2010년까지'처럼 연도와 섞이면 합친다
         said = {int(y) for y in YEAR.findall(question)}  # 위에서 years.pop()으로 비었을 수 있다
