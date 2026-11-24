@@ -1593,3 +1593,13 @@ def test_sum_indicators_refuses_mixed_periods_or_rates() -> None:
     assert qa._sum_indicators([{**one, "year": 2025}, {**one, "year": 2024}], {}) is None
     assert qa._sum_indicators([{**one, "year": 2025}, {**one, "year": 2025, "unit": "%",
                                                        "kind": "rate"}], {}) is None  # fmt: skip
+
+
+def test_two_word_time_refs_become_start_and_end(monkeypatch) -> None:
+    # "작년이랑 재작년": 낱말 시점 둘을 다 풀어 놓고도 쓰지 않아 HCX의 year 하나만 남았다 (11/24)
+    monkeypatch.setattr(indicators, "_data_years", lambda: (2008, 2025))
+    q = "작년이랑 재작년 혼인 건수 비교해 줘"
+    p = qa.correct(q, parsed(type="trend", indicator="총인구", year=2024), TODAY)
+    assert (p["start_year"], p["end_year"]) == (2024, 2025)
+    p = qa.correct(q, parsed(type="value", indicator="총인구", year=2024), TODAY)
+    assert p["type"] == "trend" and (p["start_year"], p["end_year"]) == (2024, 2025)

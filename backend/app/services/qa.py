@@ -860,6 +860,7 @@ def _apply_time(question, parsed, fix, today):
     여기서 고치는 것은 지금까지 코드가 풀지 못한 모양뿐이다.
       기간(최근 N년 · N년 동안 · N년 전보다 · ○년부터 N년 동안 · 지금까지): 시작 · 끝
       숫자 연도 + 낱말 시점인 추이("2018년이랑 작년"): 두 해를 시작 · 끝으로
+      낱말 시점 둘("작년이랑 재작년"): 두 해를 시작 · 끝으로 (추이 2점)
       N년 뒤: 그 해
     작년 · N년 전 한 시점은 아래 timeref.resolve 가 지금처럼 푼다.
     상대 기간을 풀었는데 질문에 숫자 연도가 없으면, HCX가 직접 채운 시작 · 끝은 버린다"""
@@ -892,6 +893,14 @@ def _apply_time(question, parsed, fix, today):
             put("end_year", hi, f"{why} = {got['year']}년 (올해 {today.year} 기준)")
         elif ref["kind"] == "later" and not said and kind_now != "trend":
             put("year", got["year"], f"{why} = {got['year']}년 (올해 {today.year} 기준)")
+    words = sorted({r["year"] for r in resolved if r.get("kind") == "word" and r.get("year")})
+    if len(words) >= 2 and not said:
+        # "작년이랑 재작년 비교": 낱말 시점이 둘이면 두 해를 시작 · 끝으로 (추이 2점). 전에는
+        # 두 해를 다 풀어 놓고도 쓰지 않아 HCX의 year 하나만 남고 추이 기본 창으로 답했다 (11/24)
+        put("start_year", words[0], f"낱말 시점 {len(words)}개 = {words[0]}년부터")
+        put("end_year", words[-1], f"낱말 시점 {len(words)}개 = {words[-1]}년까지")
+        if kind_now == "value":
+            fix("type", "trend", "두 시점을 견줌")
     if not said and not slots.short_years(question):  # "22년"처럼 두 자리로 말한 연도는 둔다
         keys = ["start_year", "end_year"]
         if kind_now == "trend" and any(r["kind"] in PERIOD_KINDS for r in refs):
