@@ -2342,14 +2342,29 @@ async def _dynamic_instead(res: dict, state: dict | None, asked: str, user_id: i
     except Exception:
         logger.exception("근거 없는 지표의 바로 계산 실패")
         return False
+    also_asked = parsed.get("also_asked")  # 사전 밖 지표도 함께 물음 ("출생아 수랑 1인 가구 수")
     if computed is None and found is None:
+        if also_asked and res.get("answer"):
+            # 함께 물은 지표를 찾지 못했다: 조용히 빼지 않고 알린다
+            said = josa(f"'{also_asked}'", "은는")
+            res["answer"] += f"\n※ 함께 물은 {said} 통계표를 찾지 못해 답에 넣지 못했습니다."
         return False
-    if res.get("status") == "ok" and (same := _same_dictionary_table(parsed, computed, found)):
+    if (
+        res.get("status") == "ok"
+        and not also_asked
+        and (same := _same_dictionary_table(parsed, computed, found))
+    ):
         # 바로 계산이 사전 지표가 쓰는 표를 골랐다 (예: 출생아 수 표 DT_1B8000H).
         # 표 안내나 칸 되묻기, 같은 표의 다른 칸 대신 검증된 사전 계산을 쓴다
         # (변형셋 1차: 사전 표를 고르고도 안내로 끝남)
         trace["dynamic_kept"] = {"indicator": parsed.get("indicator"), "tbl_id": same}
         return False
+    if also_asked and res.get("status") == "ok" and _one_indicator(computed):
+        # 바로 계산이 함께 물은 지표 하나만 답했다 (캐시한 표 · 지표 하나로 읽은 통계표 찾기).
+        # 그 답으로 바꾸기만 하면 사전 지표를 조용히 뺀다 ("1인 가구 수하고 사망자 수" → 1인 가구만,
+        # 11/24) → 사전 지표 답과 나란히 둔다
+        pair = [(parsed.get("indicator") or "", dict(res)), (also_asked, computed)]
+        computed = multi_indicator.side_by_side(asked, parsed, pair, trace) or computed
     # 바꾼 원래 답 (요청 기록·회귀 평가에서 사전 지표 답과 비교한다)
     trace["replaced"] = {
         "indicator": parsed.get("indicator"),
@@ -2408,6 +2423,16 @@ async def _axis_rank(asked: str, parsed: dict, trace: dict) -> dict | None:
             trace["axis_rank"] = {"tbl_id": src["table"], "axis": parsed.get("rank_axis")}
             return part
     return None
+
+
+def _one_indicator(computed: dict | None) -> bool:
+    """바로 계산한 답이 지표 하나의 값인가 (지표별로 나눈 답 · 되묻기 · 안내가 아니다)"""
+    return bool(
+        computed
+        and computed.get("status") == "ok"
+        and not computed.get("clarification")
+        and (computed.get("result") or {}).get("split_by") != "indicator"
+    )
 
 
 def _same_dictionary_table(parsed: dict, computed: dict | None, found: dict | None) -> str | None:

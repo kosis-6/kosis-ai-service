@@ -721,10 +721,22 @@ def check(t: dict[str, Any], slots: dict[str, Any]) -> dict[str, bool]:
                 t.get("male_value") and t.get("female_value")
             )
         out[f"class:{cls}"] = ok
+    question = slots.get("question") or ""
     for item in c["items"]:
         key = norm(item)
-        ok = has_value(t, key) or key in t["name_n"]
-        if not ok:
+        if counted := agegroup.count_words(item, question):
+            # 수를 말로 쓴 조건 ("아이 넷", "미성년 자녀 셋"): 표 칸은 '4자녀'처럼 숫자로 적는다.
+            # 바꾼 낱말이 모두 표 이름이나 칸에 있어야 한다 ('미성년' + '4자녀'). 글자 그대로
+            # 보면 '넷'이 '인터넷' 표에, '둘'이 다른 말에 걸린다
+            ok = all(
+                w in t["name_n"] or has_value(t, w) or stem(w) in t.get("words", ())
+                for w in counted
+            )
+        elif agegroup.count_digits(item).strip().isdigit():
+            ok = False  # 수뿐인데 무엇을 센 수인지 질문에서 찾지 못했다 ("넷" → '인터넷')
+        else:
+            ok = has_value(t, key) or key in t["name_n"]
+        if not ok and not counted:
             # '가구수' ↔ '가구_계', '주택수' ↔ '주택_계': 꼬리를 뗀 낱말끼리 같으면 같은 항목.
             # 부분 문자열이 아니라 낱말 단위로 본다 ('가구'가 '가구주' 표에 걸리지 않게)
             ok = stem(key) in t.get("words", ())

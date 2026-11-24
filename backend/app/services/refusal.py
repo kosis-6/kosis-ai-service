@@ -198,17 +198,23 @@ def _band_text(rec: dict, bands: list[str]) -> str:
 
 @llm_calls.staged("refusal_reason")
 async def _ask(question: str, reason: str) -> dict[str, Any] | None:
-    result = await search_llm.GemmaClient(retry_waits=()).chat(
-        MODEL,
-        [
+    # 다른 통계표 찾기 LLM 호출처럼 search_llm.ask로 부른다: Gemma가 응답하지 않으면 HCX로
+    # 넘어간다. 전에는 Gemma에만 보내 Gemma가 내려가면 "거절 사유 분류 실패 → 범위 밖 그대로"로
+    # 끝나 '없는 지역 단위' 같은 안내 대신 '범위 밖'이 나갔다
+    def request(llm: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        messages = [
             {"role": "system", "content": prompt.SYSTEM},
             {"role": "user", "content": prompt.user_text(question, reason)},
-        ],
-        thinking={"effort": "none"},
-        maxCompletionTokens=MAX_TOKENS,
-        temperature=0,
-        responseFormat={"type": "json", "schema": prompt.SCHEMA},
-    )
+        ]
+        return messages, {
+            "thinking": {"effort": "none"},
+            "maxCompletionTokens": MAX_TOKENS,
+            # 다른 통계표 찾기 호출과 같게 Gemma만 0 (HCX는 서버 기본값)
+            **({"temperature": 0} if llm == "gemma" else {}),
+            "responseFormat": {"type": "json", "schema": prompt.SCHEMA},
+        }
+
+    result, _ = await search_llm.ask(MODEL, request)
     return llm_json.loads(result.content)[0]
 
 

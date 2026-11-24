@@ -1206,6 +1206,15 @@ def correct(question, parsed, today=None):
             fix("type", "value", "여러 지역의 합계를 물음")
 
     names = asked_indicators(question)
+    if (
+        len(names) <= 1
+        and parsed.get("type") in ("value", "trend", "compare")
+        and (other := unlisted_measure(question))
+    ):
+        # "출생아 수랑 1인 가구 수": 사전에 없는 지표가 함께 물렸다. 사전 지표 하나로 답하면
+        # 다른 지표를 조용히 뺀다 → 통계표 찾기가 지표마다 나눠 계산하게 근거 없음으로 둔다
+        parsed["also_asked"] = other
+        parsed["grounded"] = False
     if len(names) > 1 and parsed.get("type") in ("value", "trend", "compare"):
         parsed["indicators"] = names  # 지표마다 따로 계산한다 (compute)
     elif (
@@ -1454,6 +1463,38 @@ def _region_name(word):
         return indicators.resolve_region(word).get("status") in ("ok", "ambiguous_region")
     except Exception:  # 지역 목록을 읽지 못하면 지역이 아닌 것으로 (전처럼)
         return False
+
+
+# 지표 둘을 잇는 말 ("출생아 수랑 1인 가구 수", "출생아 수, 1인 가구 수")
+# 숫자 사이의 쉼표("1,000명당")는 잇는 말이 아니다
+MEASURE_JOIN = re.compile(
+    r"(?<=[가-힣0-9])(?:이랑|랑|하고|와|과)\s+|\s*(?:(?<!\d),|,(?!\d))\s*|\s+(?:및|그리고)\s+"
+)
+# 수 · 비율을 묻는 지표 표현의 끝
+MEASURE_TAIL = re.compile(r"(?:수|율|비율|비중|인구|가구|건수|세대)$")
+# 지표 표현 뒤의 묻는 말 ("~ 알려줘", "~ 몇 명이야")
+ASK_TAIL = re.compile(r"\s+(?:알려|보여|얼마|몇|각각|비교|궁금|어때|좀|같이|함께).*$")
+
+
+def unlisted_measure(question):
+    """지표 사전에 있는 지표와 함께 물은, 사전에 없는 지표 표현. 없으면 None
+    ("2020년 서울 출생아 수랑 1인 가구 수 알려줘" → "1인 가구 수"). 지역 · 연도만 잇는 말
+    ("서울과 부산의 출생아 수")이나 사전 지표끼리 잇는 말은 아니다 (asked_indicators가 맡는다)"""
+    parts = [p for p in MEASURE_JOIN.split(question.strip()) if p and p.strip()]
+    if len(parts) < 2:
+        return None
+    listed = [bool(indicators.find_in_text(p)) for p in parts]
+    if not any(listed):
+        return None
+    for part, has in zip(parts, listed, strict=True):
+        if has:
+            continue
+        phrase = re.sub(r"(?:은|는|이|가|을|를|도)$", "", ASK_TAIL.sub("", part).strip(" ?.!"))
+        words = [w for w in phrase.split() if not YEAR.search(w) and not indicators.find_regions(w)]
+        phrase = " ".join(words)
+        if len(indicators._norm(phrase)) >= 2 and MEASURE_TAIL.search(indicators._norm(phrase)):
+            return phrase
+    return None
 
 
 def asked_indicators(question):

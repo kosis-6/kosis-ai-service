@@ -46,6 +46,7 @@ from starlette.concurrency import run_in_threadpool
 from app.core.stats_db import StatsTableMissing
 from app.core.stats_db import rows as _rows
 from app.services import (
+    agegroup,
     alternative,
     cell_pick,
     flow,
@@ -309,11 +310,16 @@ def _unit_cells(plan: Plan, dims: list[Dim], region_dim: int | None) -> dict[int
 # ---- 칸 고르기 -------------------------------------------------------------------
 
 
+# 수로 나눈 칸 이름 ('4자녀', '3명이상', '1인')과 그 칸이 셀 수 있는 표의 대상
+COUNT_CLASS = re.compile(r"^\d+\s*(?:자녀|명|인|세대)")
+COUNTED_UNITS = ("가구", "인구", "세대")
+
+
 def table_words(question: str) -> str:
     """칸 이름과 글자를 맞추기 전에 질문의 일상어를 표가 쓰는 말로 바꾼 글자 (공백 · 기호 뺌)"""
     if MOVE_CONTEXT.search(question):  # 띄어쓰기를 지우기 전에 봐야 "고등학교"를 피한다
         question = SCHOOL_GOING.sub("통학", question)
-    q = _norm(question)
+    q = _norm(agegroup.count_digits(question))
     for word, same in SAME_WORDS.items():  # "출퇴근" → "통근"
         q = q.replace(word, same)
     return q
@@ -913,7 +919,7 @@ def uncovered(
             continue
         if region_dim is not None and _lives_in_asked_region(item, parsed):
             continue  # 사는 곳("서울에 사는")은 지역 분류가 반영한다 (칸 이름에는 없다)
-        if not _item_left(item, names, read, plan, parsed):
+        if not _item_left(item, names, read, plan, parsed, question):
             continue
         if miss := _band_miss([item], dims, region_dim):
             return miss
@@ -1034,12 +1040,18 @@ def _lives_in_asked_region(item: str, parsed: dict) -> bool:
     return bool(place) and _is_place_cell(place) and _named_place(place, regions)
 
 
-def _item_left(item: str, names: list[str], read: list[str], plan: Plan, parsed: dict) -> bool:
+def _item_left(
+    item: str, names: list[str], read: list[str], plan: Plan, parsed: dict, question: str = ""
+) -> bool:
     """조건 낱말 하나가 고른 칸(이름 · 바꿔 읽은 말 · 연령 · 성별)으로 설명되지 않으면 True"""
     word = _norm(item)
     if not word:
         return False
     if any(word in n or n in word for n in names if len(n) >= 2):
+        return False
+    # 수를 말로 쓴 조건 ("넷", "아이 넷" → '4자녀'): 그 수의 칸을 골랐으면 반영됐다
+    counts = [w for w in agegroup.count_words(item, question) if re.search(r"\d", w)]
+    if counts and all(any(w in n for n in names) for w in counts):
         return False
     if any(word in r or r in word for r in read):
         return False
@@ -1072,7 +1084,12 @@ def _report_cells(
         names += [_norm(md.codes[c]) for c in plan.multi[1]]
     read = [_norm(a) for a, _ in (slots or {}).get("read_as") or [] if len(_norm(a)) >= 2]
     report.update(
-        cells=cells, leftover=[i for i in items if _item_left(i, names, read, plan, parsed)]
+        cells=cells,
+        leftover=[
+            i
+            for i in items
+            if _item_left(i, names, read, plan, parsed, (slots or {}).get("question") or "")
+        ],
     )
 
 
@@ -1150,6 +1167,11 @@ def _name(
     if not informative and target:
         words = [_label_name(target)]  # 고른 칸이 모두 합계: 표가 세는 대상
     name = " ".join(words)
+    # 수로 나눈 칸('4자녀', '3명이상')은 무엇을 센 칸인지 표의 대상을 붙인다
+    # ("4자녀 수" → "4자녀 가구 수")
+    head = (_label_name(target).split() or [""])[-1] if target else ""
+    if head in COUNTED_UNITS and COUNT_CLASS.match(name) and head not in name:
+        name = f"{name} {head}"
     return f"{name} 수" if counted and not name.endswith("수") else name
 
 
@@ -1235,7 +1257,9 @@ def build(
         # 아니면 질문의 연령 조건을 버리게 된다 ("노인 1인 가구" → 전 연령 1인 가구) → 계산하지 않음
         expr = _norm((parsed.get("age_group") or {}).get("expr") or "")
         names = [_norm(d.codes[plan.matched[d.no]]) for d in dims if d.no in plan.matched]
-        if not expr or not any(expr in n for n in names):
+        # 표 이름에 있으면 표가 그 대상만 센 것이다 ('미성년 자녀가 있는 가구의 자녀수별 가구'의
+        # 미성년). "울릉도에 미성년 자녀 넷 키우는 집"이 이 표를 찾고도 막혀 표 안내로 끝났다
+        if not expr or not (any(expr in n for n in names) or expr in _norm(tbl_nm)):
             return None, "질문의 연령 조건을 표의 칸에 반영할 수 없음"
     if why := uncovered(slots, plan, dims, parsed, region_dim, question):
         return None, why
