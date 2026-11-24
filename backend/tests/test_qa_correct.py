@@ -775,6 +775,9 @@ def test_unsupported_condition_is_not_dropped(monkeypatch: pytest.MonkeyPatch) -
         ("만 6~11세 초등학생 나이 인구는?", None),  # '나이'의 '이'는 조사가 아니다
         ("작년에 인구가 줄었나", None),
         ("주민등록인구", None),
+        # 시·군·구를 뗀 짧은 지역 이름은 지역 조건이다 (find_regions는 짧은 이름을 찾지 않는다)
+        ("강남 인구 알려줘", None),
+        ("수원 인구는?", None),
     ],
 )
 def test_population_modifier(monkeypatch, question: str, word) -> None:
