@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 from app import main
 from app.core import stats_db
 from app.services import ask_session as s
-from app.services import dynamic_indicator, indicators, qa, table_guide
+from app.services import dynamic_indicator, indicators, lookup, qa, table_guide
 
 BASE = {
     "type": "trend",
@@ -34,7 +34,7 @@ def names(monkeypatch: pytest.MonkeyPatch) -> None:
     def no_db():
         pytest.fail("대화 단위 테스트에서 실제 통계 DB를 호출했습니다")
 
-    def resolve_region(name):
+    def resolve_region(name, year=None, sigungu=False):
         if name == "수원":
             return {"status": "ok", "display": "경기도 수원시"}
         if name == "고성":
@@ -48,6 +48,7 @@ def names(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(stats_db, "_engine", no_db)
     monkeypatch.setattr(indicators, "resolve_region", resolve_region)
+    monkeypatch.setattr(lookup, "_table", lambda table: {})
     known = {"출생아 수", "사망자 수", "합계출산율", "고령인구 비율"}
     monkeypatch.setattr(indicators, "canonical_name", lambda n: n if n in known else None)
     aliases = {**dict.fromkeys(known), "65세 이상 비율": "고령인구 비율"}
@@ -1621,6 +1622,42 @@ ONE_PERSON = {**BASE, "type": "value", "indicator": "1인 가구", "term": "1인
 RATIO_SPEC = {"name": "1인 가구 중 70세 이상 비율", "unit": "%", "kind": "ratio", "dynamic": True}
 
 
+@pytest.mark.parametrize("followup", ["부산은?", "부산은 어때?"])
+def test_household_age_ratio_keeps_context_after_only_guiding_to_source(
+    talk, monkeypatch, followup
+):
+    table = {"tbl_nm": "성 및 연령별 1인가구 - 시군구", "start_year": 2015, "end_year": 2025}
+    monkeypatch.setattr(lookup, "_table", lambda tbl_id: table)
+    calls = []
+
+    async def try_table(tbl_id, org_id, question, parsed, trace, forced, slots):
+        calls.append((tbl_id, question))
+        if parsed["regions"] == ["서울"]:
+            return None, None  # 첫 조회는 표가 준비되지 않았다.
+        result = talk._result({**parsed, "dynamic_spec": RATIO_SPEC}, question)
+        result["result"].update(unit="%", tbl_id=tbl_id)
+        return result, None
+
+    monkeypatch.setattr(dynamic_indicator, "_try", try_table)
+    first = "2020년 서울 1인 가구 중 70세 이상 비율은?"
+    client = TestClient(main.app)
+    guide = client.post("/ask", json={"question": first}).json()
+    assert guide["status"] == "tables"
+    assert guide["tables"]["recommendations"][0]["tbl_id"] == "DT_1PL1502"
+    response = client.post(
+        "/ask", json={"question": followup, "session_id": guide["session_id"]}
+    ).json()
+    assert response["status"] == "ok" and response["request_type"] == s.CHANGE
+    assert response["parsed"]["ages"] == [[70, None]]
+    assert response["parsed"]["regions"] == ["부산"] and response["parsed"]["year"] == 2020
+    assert response["result"]["unit"] == "%"
+    assert calls == [
+        ("DT_1PL1502", "2020년 서울 1인 가구 중 70세 이상 비율"),
+        ("DT_1PL1502", "2020년 부산 1인 가구 중 70세 이상 비율"),
+    ]
+    assert talk.asked == talk.extracted == talk.searched == []
+
+
 @pytest.mark.parametrize(
     ("question", "part"),
     [
@@ -1683,16 +1720,108 @@ def test_ratio_follow_up_after_ratio_is_left_to_change_extraction(talk: Talk) ->
     assert talk.extracted == ["그중 여성 비율은?"]
 
 
-def test_region_only_follow_up_keeps_table_definition(talk: Talk) -> None:
+@pytest.mark.parametrize("followup", ["부산은?", "부산은 어때?"])
+def test_region_only_follow_up_keeps_table_definition(talk: Talk, followup: str) -> None:
     # "부산은?": HCX가 새 질문으로 읽으면 "부산은?" 글자로 표를 찾아 다른 표를 안내했다
     talk.parsed = {**ONE_PERSON, "indicator": RATIO_SPEC["name"], "dynamic_spec": RATIO_SPEC}
     talk.say("2020년 서울 1인 가구 중 70세 이상 비율은?")
-    res = talk.say("부산은?")  # 변경 추출은 new를 돌려주게 두었다
+    res = talk.say(followup)  # 변경 추출은 new를 돌려주게 두었다
     assert talk.extracted == [] and res["request_type"] == "change"
     assert talk.answered[-1]["regions"] == ["부산"]
     assert talk.answered[-1]["dynamic_spec"] == RATIO_SPEC  # 같은 표 정의로 다시 계산
     talk.say("서울도?")
     assert talk.answered[-1]["regions"] == ["부산", "서울"]
+
+
+@pytest.mark.parametrize(
+    ("question", "place"),
+    [("부산은?", "부산의"), ("부산은 어때?", "부산의"), ("서울과 부산은?", "서울 · 부산의")],
+)
+def test_region_only_first_question_asks_what_to_see(talk: Talk, question, place) -> None:
+    # 이어 갈 조건 없이 지역만 말하면 HCX가 지역을 범위 밖 지표로 읽어
+    # "'부산'은 인구 분야 통계가 아니라"로 답했다. 해석 · 표 찾기 없이 볼 통계를 묻는다
+    res = talk.say(question)
+    assert res["status"] == "unclear" and res["request_type"] == s.UNCLEAR
+    assert f"{place} 어떤 통계" in res["answer"] and "예)" in res["answer"]
+    assert talk.asked == [] and talk.searched == [] and talk.answered == []
+    talk.say("부산 출생아 최근 5년 보여 줘")  # 이어서 한 통계 질문은 평소처럼 답한다
+    assert talk.asked == ["부산 출생아 최근 5년 보여 줘"]
+
+
+@pytest.mark.parametrize(
+    ("first", "asked"),
+    [
+        ("부산은?", "부산 2020년 출생아 수는?"),
+        ("서울과 부산은?", "서울, 부산 2020년 출생아 수는?"),
+    ],
+)
+def test_answer_to_region_only_question_keeps_the_region(talk: Talk, first, asked) -> None:
+    # "부산은?" → 볼 통계를 물음 → "2020년 출생아 수는?": 부산을 잃고 전국 값으로 답했다
+    talk.say(first)
+    res = talk.say("2020년 출생아 수는?")
+    assert talk.asked == [asked] and res["request_type"] == "reply"
+    assert res["question"] == asked
+    talk.say("2021년 출생아 수는?")  # 한 번 답한 뒤에는 되묻기 대기가 아니다
+    assert talk.asked[-1] != "부산 2021년 출생아 수는?"
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "2020년 서울 출생아 수는?",
+        "2020년 전국 출생아 수는?",
+        "우리나라 2020년 출생아 수는?",
+        "우리 나라 2020년 출생아 수는?",
+        "2020년 국내 출생아 수는?",
+        "2020년 국내출생아 수는?",
+        "2020년 국내 인구 몇 명이야?",
+        "2020년 국내 합계출산율은?",
+        "2020년 국내 전체 출생아 수는?",
+    ],
+)
+def test_answer_to_region_only_question_can_name_another_region(talk: Talk, question) -> None:
+    # 다른 지역이나 전국을 말하면 앞의 지역을 붙이지 않는다 ("부산 2020년 전국 …"이 되었다)
+    talk.say("부산은?")
+    talk.say(question)
+    assert talk.asked == [question]
+
+
+@pytest.mark.parametrize(
+    "metric",
+    [
+        "국내이동자 수",
+        "국내 이동자 수",
+        "국내 인구이동 수",
+        "국내출생 다문화가구 자녀 수",
+        "다문화가구 자녀 중 국내에서 태어난 자녀 수",
+        "국내에서 태어난 다문화가구 자녀 수",
+    ],
+)
+def test_region_only_reply_keeps_place_when_domestic_is_part_of_metric(talk: Talk, metric) -> None:
+    talk.say("부산은?")
+    question = f"2020년 {metric}는?"
+    res = talk.say(question)
+    assert res["request_type"] == "reply"
+    assert talk.asked == [f"부산 {question}"]
+
+
+def test_region_only_question_keeps_waiting_after_small_talk(talk: Talk) -> None:
+    talk.say("부산은?")
+    talk.say("고마워")
+    talk.say("2020년 출생아 수는?")
+    assert talk.asked == ["부산 2020년 출생아 수는?"]
+
+
+def test_region_only_first_question_keeps_one_place_in_examples(talk: Talk) -> None:
+    res = talk.say("서울 부산은?")  # 잇는 말이 없으면 한 곳 ("서울 강남구는?")
+    assert res["answer"].startswith("서울 부산의 어떤 통계")
+    assert "2025년 서울 부산 인구" in res["answer"]
+
+
+def test_region_only_after_numeric_answer_still_changes_region(talk: Talk) -> None:
+    talk.say("부산 출생아 최근 5년 보여 줘")
+    res = talk.say("서울은?")
+    assert res["request_type"] == "change" and talk.answered[-1]["regions"] == ["서울"]
 
 
 def test_region_only_rule_needs_nothing_but_regions() -> None:
@@ -1702,6 +1831,15 @@ def test_region_only_rule_needs_nothing_but_regions() -> None:
     assert s.region_only_changes("부산 출생아 수는?", c) is None  # 지표를 말함
     assert s.region_only_changes("부산은 몇 명이야?", c) is None
     assert s.region_only_changes("부산은?", {"type": "rank", "regions": []}) is None  # 순위
+    # 받침 뒤의 '이랑'도 두 곳을 잇는 말이다 (전에는 지역만 말한 말로 보지 않았다)
+    both = {"regions": {"op": "set", "value": ["서울", "부산"]}}
+    assert s.region_only_changes("서울이랑 부산은?", c) == both
+
+
+def test_region_only_first_question_with_irang_asks_what_to_see(talk: Talk) -> None:
+    res = talk.say("서울이랑 부산은?")
+    assert res["request_type"] == s.UNCLEAR and res["answer"].startswith("서울 · 부산의 어떤 통계")
+    assert talk.asked == [] and talk.searched == []
 
 
 def test_people_question_does_not_inherit_other_indicator(talk: Talk) -> None:
@@ -1774,19 +1912,29 @@ def test_changed_conditions_search_with_rebuilt_question(talk: Talk) -> None:
     assert talk.searched[0][0] == "2020년 부산 1인 가구 중 70세 이상 비율"
 
 
-def test_follow_up_retries_search_when_saved_definition_cannot_read_region(talk, monkeypatch):
-    stale = {"name": "1인 가구", "sources": [{"table": "T", "national_only": True}]}
+@pytest.mark.parametrize("status_override", ["missing_data", None], ids=["missing_data", "lookup"])
+def test_follow_up_retries_search_when_saved_definition_cannot_read_region(
+    talk, monkeypatch, status_override
+):
+    stale = {
+        "name": "1인 가구",
+        "sources": [{"table": "T", "level": "전국", "national_only": True}],
+    }
     talk.parsed = {**ONE_PERSON, "regions": ["전국"], "dynamic_spec": stale}
     talk.say("2020년 전국 1인 가구 수는?")
 
-    async def missing_data(parsed, trace=None):
-        return {**await talk._answer(parsed, trace), "status": "missing_data"}
+    async def regional_lookup(parsed, trace=None):
+        year = parsed["year"]
+        _, result = lookup._pick(parsed["dynamic_spec"], "시도", year, year, parsed["sex"])
+        if status_override:
+            result["status"] = status_override
+        return {**await talk._answer(parsed, trace), "status": result["status"], "result": result}
 
     async def compute(question, parsed, found, trace):
         fresh = {**stale, "sources": [{"table": "T", "level": "시도"}]}
         return talk._result({**parsed, "dynamic_spec": fresh})
 
-    monkeypatch.setattr(qa, "answer", missing_data)
+    monkeypatch.setattr(qa, "answer", regional_lookup)
     monkeypatch.setattr(dynamic_indicator, "compute_from_handoff", compute)
     talk.searched.clear()
     res = talk.say("부산은?")

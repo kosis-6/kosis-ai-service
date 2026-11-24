@@ -40,6 +40,8 @@ def key_of(parsed: dict) -> tuple[str, str] | None:
     for term in (parsed.get("term"), parsed.get("indicator")):
         if not term or not isinstance(term, str):
             continue
+        # "전국 1인 가구 수"와 "1인 가구 수"는 같은 지표다 (범위는 지역 조건이 맡는다)
+        term = indicators.without_national(term)
         if indicators.canonical_name(term) or re.search(r"\d{4}", term):
             continue
         if indicators.find_regions(term):

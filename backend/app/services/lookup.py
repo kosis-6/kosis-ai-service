@@ -440,12 +440,19 @@ def _pick(spec, level, y0, y1, sex):
             "reason": f"{josa(spec['name'], '은는')} {top} 단위까지만 자료가 있습니다.",
             "level": top,
         }
-    for s in fits:
-        lo, hi = _years(s)
+    # 값이 적재되지 않은 항목은 수록 기간을 모른다 (None, None): 고르지 않는다 (D-055)
+    spans = [(s, _years(s)) for s in fits]
+    spans = [(s, span) for s, span in spans if None not in span]
+    if not spans:
+        return None, {
+            "status": "missing_data",
+            "indicator": spec["name"],
+            "reason": f"{josa(spec['name'], '은는')} 이 표에 값이 없습니다.",
+        }
+    for s, (lo, hi) in spans:
         if lo <= y0 and y1 <= hi:
             return s, None
-    spans = [_years(s) for s in fits]
-    lo, hi = min(a for a, _ in spans), max(b for _, b in spans)
+    lo, hi = min(a for _, (a, _) in spans), max(b for _, (_, b) in spans)
     return None, {
         "status": "out_of_range",
         "indicator": spec["name"],
@@ -956,10 +963,18 @@ def _load_version():
     return r["n"], r["loaded_at"], r["job_done_at"]
 
 
+def _forget_search_tables():
+    """통계표 찾기(search.py)가 수록 기간·판 이름을 다음 검색 때 다시 읽게 한다"""
+    from app.services import search  # search가 lookup을 부르므로 여기서 불러 순환을 피한다
+
+    search.mark_periods_stale()
+
+
 def clear_table_caches():
     """표 정보 캐시를 지금 비운다 (질문 처리 중에 표를 바로 적재한 뒤, table_cache.py)"""
     for cached in TABLE_CACHES:
         cached.cache_clear()
+    _forget_search_tables()
 
 
 def refresh_if_reloaded(now=None):
@@ -984,6 +999,7 @@ def refresh_if_reloaded(now=None):
     if changed:
         for cached in TABLE_CACHES:
             cached.cache_clear()
+        _forget_search_tables()
     return changed
 
 

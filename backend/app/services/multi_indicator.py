@@ -175,6 +175,22 @@ def _side_by_side(question, parsed, ok, failed, trace, notes=()):
     return _response(question, parsed, result, trace, notes, [_span(t) for t, _ in ok])
 
 
+def side_by_side(question: str, parsed: dict, answers: list[tuple[str, dict]], trace: dict):
+    """이미 계산한 지표별 답을 질문에 나온 순서대로 나란히 (사전 지표 답 + 함께 물은 사전 밖 지표
+    답). 계산된 답이 둘 미만이면 None"""
+    ok = [({"span": span}, res) for span, res in answers if _ok(res)]
+    if len(ok) < 2:
+        return None
+
+    def place(item):
+        at = question.replace(" ", "").find(item[0]["span"].replace(" ", ""))
+        return at if at >= 0 else len(question)
+
+    ok.sort(key=place)
+    trace["multi"] = {"op": "none", "targets": [{"span": t["span"]} for t, _ in ok]}
+    return _side_by_side(question, parsed, ok, [], trace)
+
+
 def _value(res: dict) -> dict | None:
     """값 질문의 결과 (한 지역 · 한 해 값이 있을 때만)"""
     r = (res or {}).get("result") or {}

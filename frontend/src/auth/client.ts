@@ -35,6 +35,7 @@ function readCache(): User | null {
 let token: string | null = null;
 let user: User | null = readCache();
 let refreshing: Promise<boolean> | null = null; // 요청 여러 개가 함께 401 을 받아도 한 번만 보낸다
+let sessionVersion = 0; // 로그아웃이나 다른 로그인 뒤에는 이전 요청의 갱신 결과를 버린다
 const listeners = new Set<() => void>();
 
 function remember(next: User | null): void {
@@ -48,8 +49,14 @@ function remember(next: User | null): void {
   listeners.forEach((fn) => fn());
 }
 
+function replaceSession(nextToken: string | null): void {
+  sessionVersion += 1;
+  refreshing = null;
+  token = nextToken;
+}
+
 function forget(): void {
-  token = null;
+  replaceSession(null);
   remember(null);
 }
 
@@ -100,22 +107,27 @@ export async function post<T>(url: string, body: Record<string, string>, form = 
 }
 
 function refresh(): Promise<boolean> {
-  refreshing ??= (async () => {
+  if (refreshing) return refreshing;
+  const version = sessionVersion;
+  const pending = (async () => {
     try {
       const res = await fetch("/auth/refresh", { method: "POST" });
       if (res.ok) {
-        token = ((await res.json()) as Token).access_token;
+        const { access_token: nextToken } = (await res.json()) as Token;
+        if (version !== sessionVersion || !nextToken) return false;
+        token = nextToken;
         return true;
       }
-      if (res.status === 401) forget(); // 만료·로그아웃·끊김. 서버 오류(5xx)면 그대로 둔다
+      if (res.status === 401 && version === sessionVersion) forget();
       return false;
     } catch {
       return false;
-    } finally {
-      refreshing = null;
     }
-  })();
-  return refreshing;
+  })().finally(() => {
+    if (refreshing === pending) refreshing = null;
+  });
+  refreshing = pending;
+  return pending;
 }
 
 function withToken(options: RequestInit): RequestInit {
@@ -124,24 +136,41 @@ function withToken(options: RequestInit): RequestInit {
   return { ...options, headers };
 }
 
-// 만료(401)면 한 번만 새로 받아 다시 부르고, 새로 받지 못하면 로그인 없이(손님으로) 다시 부른다
-// 401 이면 새 토큰을 받아 한 번 다시 보낸다
-//   - 함께 401 을 받은 요청들은 같은 refresh 를 기다린다. 다른 요청이 이미 새 토큰을 받았으면 그걸 쓴다
-//   - 새 토큰을 받지 못하면(서버 오류 등) 401 을 그대로 돌려준다. 토큰 없이 다시 보내면 서버가
-//     손님 요청으로 처리해, 로그인한 화면인데 기록·대화 이어 가기가 계정과 끊긴다
-async function call(url: string, options: RequestInit = {}): Promise<Response> {
+function currentSession(): number | null {
+  return token || user ? sessionVersion : null;
+}
+
+function sessionUnavailable(version: number): Response {
+  const active = version === sessionVersion;
+  const detail = active ? "로그인 확인에 실패했어요. 잠시 뒤에 다시 시도해 주세요." : "로그인이 필요합니다.";
+  return new Response(JSON.stringify({ detail }), {
+    status: active ? 503 : 401,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+// 로그인 상태에서 시작한 요청은 갱신에 성공해 토큰을 확보한 뒤 전송한다
+async function call(url: string, options: RequestInit = {}, version = currentSession()): Promise<Response> {
+  if (version !== null) {
+    if (version === sessionVersion && !token) await refresh();
+    if (version !== sessionVersion || !token) return sessionUnavailable(version);
+  }
+
   const sent = token;
   const res = await fetch(url, withToken(options));
-  if (res.status !== 401 || !sent) return res;
+  if (res.status !== 401 || !sent || version !== sessionVersion) return res;
   if (token === sent) token = null; // 이 토큰은 끝났다 (다른 요청이 먼저 새로 받았으면 그대로 둔다)
-  if (!token && !(await refresh())) return res;
+  if (!token) await refresh();
+  if (version !== sessionVersion || !token) return res;
   return fetch(url, withToken(options));
 }
 
 async function loadMe(): Promise<boolean> {
+  const version = sessionVersion;
   const res = await call("/auth/me");
   if (!res.ok) return false;
   const me = (await res.json()) as UserRead;
+  if (version !== sessionVersion) return false;
   remember({ name: me.nickname || me.email.split("@")[0], admin: me.is_admin });
   return true;
 }
@@ -154,26 +183,29 @@ export const ready: Promise<void> = (async () => {
 
 /** 로그인했으면 Access Token 을 붙여 부른다 (화면을 열 때의 로그인 확인이 끝난 뒤에) */
 export async function authFetch(url: string, options?: RequestInit): Promise<Response> {
+  const version = currentSession();
   await ready;
-  return call(url, options);
+  return call(url, options, version ?? currentSession());
 }
 
 export async function login(email: string, password: string, keep: boolean): Promise<Result<null>> {
   const r = await post<Token>("/auth/token", { username: email, password, keep: String(keep) }, true);
   if (!r.ok) return r;
-  token = r.data.access_token;
-  if (!(await loadMe())) remember({ name: email.split("@")[0], admin: false });
+  replaceSession(r.data.access_token);
+  const version = sessionVersion;
+  if (!(await loadMe()) && version === sessionVersion) remember({ name: email.split("@")[0], admin: false });
   return { ok: true, data: null };
 }
 
 export async function logout(): Promise<void> {
+  const options = withToken({ method: "POST" });
+  forget();
   try {
     // Access Token 이 없어도 쿠키만으로 서버의 로그인을 끊는다
-    await fetch("/auth/logout", withToken({ method: "POST" }));
+    await fetch("/auth/logout", options);
   } catch {
     /* 서버에 닿지 못해도 화면은 로그아웃 */
   }
-  forget();
 }
 
 // React 의 useSyncExternalStore 용

@@ -75,6 +75,7 @@ INDICATORS = {
         "formula": "65세 이상 인구 ÷ 총인구 × 100",
         "calc": lambda c: _div(c["old"], c["total"]),
         "projection_c3": "33",
+        "operands": [("old", "65세 이상 인구", "명"), ("total", "총인구", "명")],
     },
     "유소년인구 비율": {
         "unit": "%",
@@ -82,6 +83,7 @@ INDICATORS = {
         "formula": "0~14세 인구 ÷ 총인구 × 100",
         "calc": lambda c: _div(c["young"], c["total"]),
         "projection_c3": "31",
+        "operands": [("young", "0~14세 인구", "명"), ("total", "총인구", "명")],
     },
     "노령화지수": {
         "unit": "유소년인구 100명당 명",
@@ -97,6 +99,7 @@ INDICATORS = {
         "kind": "ratio",
         "formula": "15~64세 인구 ÷ 총인구 × 100",
         "calc": lambda c: _div(c["working"], c["total"]),
+        "operands": [("working", "15~64세 인구", "명"), ("total", "총인구", "명")],
     },
     "노년부양비": {
         "unit": "생산연령인구 100명당 명",
@@ -396,10 +399,22 @@ def find_in_text(text):
     예) "고령인구비율" 안의 "인구"(총인구), "인구순유입"(순이동) 안의 "인구"는 세지 않는다.
     """
     s = _norm(text)
+    # 공백을 뺀 위치 → 원문 위치. 두 글자 이하 이름이 원문의 띄어쓰기를 넘어 걸리면 두 낱말에
+    # 걸친 가짜 일치다 ("여성 비중"의 '성 비' → 성비로 읽어 "여성 성비 94.66"으로 답했다).
+    # 긴 이름은 띄어 쓴 복합어("합계 출산율")도 같은 말이라 그대로 맞춘다
+    where = [i for i, ch in enumerate(str(text)) if not ch.isspace()]
+
+    def one_word(start, end):
+        return end - start > 2 or where[end - 1] - where[start] == end - start - 1
+
     spans = []
     for name, names in _alias_map().items():
         for n in {_norm(x) for x in [name, *names]}:
-            spans += [(m.start(), m.end(), name) for m in re.finditer(re.escape(n), s)]
+            spans += [
+                (m.start(), m.end(), name)
+                for m in re.finditer(re.escape(n), s)
+                if one_word(m.start(), m.end())
+            ]
     # 제외 표현 안에 든 별칭은 세지 않는다 (예: "등록외국인수" 안의 "외국인수")
     blocked = [
         (m.start(), m.end(), name)
@@ -913,10 +928,19 @@ def _prepare(indicator, region_names, year=None, ages=None):
     regions = []
     for rn in region_names:
         reg = resolve_region(rn, year, sigungu=True)
+        if reg["status"] == "ambiguous_region" and _all_sido(r for r in region_names if r != rn):
+            # "광주랑 전남": 함께 말한 지역이 모두 시도면 '광주'도 시도 (경기 광주시 아님, D-030)
+            reg = resolve_region(rn, year)
         if reg["status"] != "ok":
             return name, ind, None, {**reg, "indicator": name}
         regions.append(in_year(reg, year))
     return name, ind, regions, None
+
+
+def _all_sido(names):
+    """이름들이 하나 이상이고 모두 시도인가"""
+    kinds = [resolve_region(n) for n in names]
+    return bool(kinds) and all(k["status"] == "ok" and k["kind"] == "시도" for k in kinds)
 
 
 def in_year(reg, year):
@@ -965,19 +989,49 @@ def _region_names():
     return sorted((_norm(n) for n in names if len(_norm(n)) >= 2), key=len, reverse=True)
 
 
-def find_regions(text):
-    """문장에 나온 지역 이름들 (나온 순서). HCX가 지역을 빠뜨렸을 때 쓴다
-    더 긴 이름 안에 든 짧은 이름(예: "광주광역시" 안의 "광주")은 세지 않는다"""
-    s = _norm(text)
+def _region_matches(text):
+    """공백을 뺀 문장에서 지역 이름이 나온 범위. 긴 이름 안의 짧은 이름은 세지 않는다"""
     taken, found = [], []
     for name in _region_names():
-        for m in re.finditer(re.escape(name), s):
-            if m.start() and s[m.start() - 1].isdigit():
+        for m in re.finditer(re.escape(name), text):
+            if m.start() and text[m.start() - 1].isdigit():
                 continue  # "30대 전체"의 '대전': 앞에 숫자가 붙은 것은 연령대 · 수량이다
             if not any(a < m.end() and m.start() < b for a, b in taken):
                 taken.append((m.start(), m.end()))
-                found.append((m.start(), name))
-    return [name for _, name in sorted(found)]
+                found.append((m.start(), m.end(), name))
+    return sorted(found)
+
+
+def find_regions(text):
+    """문장에 나온 지역 이름들 (나온 순서). HCX가 지역을 빠뜨렸을 때 쓴다"""
+    return [name for _, _, name in _region_matches(_norm(text))]
+
+
+def region_mentions(text: str) -> list[tuple[int, int, str]]:
+    """원문에서 지역 이름이 나온 위치 (시작, 끝, 이름). 같은 이름도 언급마다 돌려준다"""
+    positions = [i for i, char in enumerate(text) if not char.isspace()]
+    return [
+        (positions[start], positions[end - 1] + 1, name)
+        for start, end, name in _region_matches(_norm(text))
+    ]
+
+
+# 지표 표현 속 전국 범위 말 ("전국 1인 가구 수"의 "전국"). "전국민"은 낱말이라 두고,
+# 국내이동과 '국내(에서) 태어난 · 출생한'(다문화 자녀의 국내출생 등)은 지표 · 조건이라 둔다
+# ("국내에서 태어난 다문화가구 자녀 수"가 "태어난 다문화가구 자녀 수"와 같은 캐시 키가 됐다).
+# "국내 출생아"의 국내는 범위다 (qa.NATIONWIDE와 같은 기준)
+NATIONAL_WORDS = re.compile(
+    r"(?<![가-힣])(?:전국|우리\s*나라|대한민국|한국\s*전체"
+    r"|국내(?!\s*(?:이동|인구\s*이동))(?!(?:에서)?\s*(?:태어|출생(?!\s*아))))"
+    r"(?:의|에서)?(?![가-힣])"
+)
+
+
+def without_national(term):
+    """지표 표현에서 전국 범위 말을 뺀다 ("전국 1인 가구 수" → "1인 가구 수"). 범위는 지역 조건이
+    맡는다. HCX가 지표 표현에 '전국'을 넣으면 "전국의 전국 1인 가구 수"로 답했다"""
+    rest = " ".join(NATIONAL_WORDS.sub(" ", str(term)).split())
+    return rest or str(term)
 
 
 def _base_name(name):
@@ -1043,6 +1097,14 @@ def resolve_region(name, year=None, sigungu=False):
     for suffix in ("시", "군", "구"):
         if not found and not key.endswith(("시", "군", "구", "도")):
             found = _rows(sql.format(extra=""), [key + suffix, key + suffix])
+    # 섬 이름: "울릉도" → 울릉군, "강화도" → 강화군, "거제도" → 거제시, "진도" · "완도" → 진도군 ·
+    # 완도군. '도'로 끝나 위의 재시도를 건너뛰어 "지역을 찾지 못했습니다"로 끝났다.
+    # 시도 이름("경기도")과 여러 시도를 가리키는 이름("충청도")은 위에서 이미 찾거나 되묻는다
+    if not found and key.endswith("도") and len(key) >= 2:
+        for base in dict.fromkeys((key[:-1], key)):
+            for suffix in ("군", "시"):
+                if not found and len(base) >= 1:
+                    found = _rows(sql.format(extra=""), [base + suffix, base + suffix])
 
     parts = str(name).split()
     if not found and len(parts) >= 2:  # "서울 중구"
