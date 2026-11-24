@@ -251,6 +251,22 @@ def _unit(
     return (r[0]["u"], bool(r[0]["whole"])) if r else (None, False)
 
 
+# 칸 이름 끝 괄호에 적힌 수 아닌 단위 ("전세금 평균(만원)", "평균연령(세)", "비율(%)")
+NAME_UNIT = re.compile(r"\(\s*(백만원|천만원|만원|천원|원|%|세|㎡|m²|평)\s*\)\s*$")
+
+
+def _name_unit(plan: Plan, dims: list[Dim], unit: str) -> str:
+    """표가 값의 단위를 세는 단위(가구 · 명)로 적었는데 고른 칸 이름이 금액 · 나이 · 비율을
+    말하면 칸 이름의 단위를 쓴다. 인구총조사 주택 표(DT_1PI2015)는 항목 '전세금 평균(만원)'의
+    단위도 '가구'로 적혀 있어 "전세금 평균 아파트 수는 40,873가구"로 답했다 (11/24, S-38)"""
+    if unit not in COUNT_UNITS:
+        return unit
+    for d in sorted(dims, key=lambda d: d.no):  # 항목(0)부터
+        if (m := NAME_UNIT.search(d.codes.get(plan.pick.get(d.no, ""), ""))) is not None:
+            return m[1]
+    return unit
+
+
 def _unit_cells(plan: Plan, dims: list[Dim], region_dim: int | None) -> dict[int, list[str]]:
     """단위를 볼 때 좁힐 칸: 항목 · 지역 · 연령 밖에서 고른 칸 (여러 칸 연산이면 그 칸들)"""
     skip = {0, region_dim, plan.age_dim.no if plan.age_dim else None}
@@ -918,7 +934,7 @@ def build(
             age_min=min(b[0] for b in bands if b),
         )
     unit, whole = _unit(tbl_id, plan.pick[0], _unit_cells(plan, dims, region_dim))
-    unit = unit or ""
+    unit = _name_unit(plan, dims, unit or "")
     counted = unit in COUNT_UNITS and whole
     strip_age = bool(
         plan.age_dim
