@@ -235,6 +235,18 @@ def _conds(src, item_key, filters, age_codes):
 
 
 EMPTY_FLAGS: ContextVar[list | None] = ContextVar("empty_flags", default=None)
+MONTHS: ContextVar[tuple[int, int] | None] = ContextVar("months", default=None)
+
+
+def _period_where(y0, y1):
+    if (months := MONTHS.get()) is None:
+        return f"v.{YEARLY} and v.period between ? and ?", "v.period", [y0, y1]
+    m0, m1 = months
+    return (
+        "v.prd_se = 'M' and v.period between ? and ? and v.period % 100 between ? and ?",
+        "(v.period / 100)",
+        [y0 * 100 + m0, y1 * 100 + m1, m0, m1],
+    )
 
 
 def _sum(src, codes, y0, y1, item_key, filters, age_codes, group_dim=None):
@@ -265,17 +277,18 @@ def _sum(src, codes, y0, y1, item_key, filters, age_codes, group_dim=None):
     groups = "1, 2, 3" if group_dim else "1, 2"
     flags = EMPTY_FLAGS.get()
     flag_sql = ", max(v.flag) filter (where v.value is null) as flag" if flags is not None else ""
+    period_sql, year_sql, period_params = _period_where(y0, y1)
     rows = _rows(
         f"""
-        select v.period as year, {rc} as rc{part}, sum(v.value)::float8 as v, count(v.value) as n
+        select {year_sql} as year, {rc} as rc{part}, sum(v.value)::float8 as v, count(v.value) as n
                {flag_sql}
         from stat_value v{region_sql}
-        where v.tbl_key = ? and v.{YEARLY} and v.period between ? and ?
+        where v.tbl_key = ? and {period_sql}
               and {" and ".join(conds)}
         group by {groups}
         order by {groups}
     """,
-        [*region_params, _tbl_key(tbl), y0, y1, *params],
+        [*region_params, _tbl_key(tbl), *period_params, *params],
     )
     if group_dim:
         code_of = {key: code for code, (key, _) in _codes(tbl, _dim_no(group_dim)).items()}

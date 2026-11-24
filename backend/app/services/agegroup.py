@@ -124,9 +124,11 @@ NATIVE_COUNT = {
     "하나": 1, "한": 1, "둘": 2, "두": 2, "셋": 3, "세": 3, "넷": 4, "네": 4, "다섯": 5,
     "여섯": 6, "일곱": 7, "여덟": 8, "아홉": 9, "열": 10,
 }  # fmt: skip
+COUNT_RANGE_AFTER = r"(?!\s*(?:개|명|자녀)?\s*(?:이상|이하|넘|초과|미만))"
 COUNT_ALONE = re.compile(
     r"(?<![가-힣])(하나|둘|셋|넷|다섯|여섯|일곱|여덟|아홉)"
-    r"(?=\s|$|[?.!,~]|(?:이|을|를|은|는|인)(?![가-힣]))"
+    + COUNT_RANGE_AFTER
+    + r"(?=\s|$|[?.!,~]|(?:이|을|를|은|는|인)(?![가-힣]))"
 )
 COUNT_BEFORE_UNIT = re.compile(
     r"(?<![가-힣0-9])(한|두|세|네|다섯|여섯|일곱|여덟|아홉|열)\s*(?=명|가구|자녀|아이)"
@@ -134,7 +136,7 @@ COUNT_BEFORE_UNIT = re.compile(
 CHILD_WORD = r"(?:자녀|아이|(?<![가-힣])애|자식)"
 AGE_UNIT = r"\s*(?:살|세|개월|대)"
 CHILD_COUNT = re.compile(
-    rf"{CHILD_WORD}\s*(?:가|를|이)?\s*(\d+)(?![0-9]|{AGE_UNIT})(?:\s*명)?"
+    rf"{CHILD_WORD}\s*(?:가|를|이)?\s*(\d+)(?![0-9]|{AGE_UNIT})(?:\s*명)?{COUNT_RANGE_AFTER}"
     rf"|(?<![0-9])(\d+)\s*(?:명\s*의?\s*)?{CHILD_WORD}"
 )
 COUNT_SENSITIVE = {"아이", "아이들", "애들"}

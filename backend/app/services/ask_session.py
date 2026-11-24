@@ -2056,7 +2056,12 @@ async def _dynamic_instead(res: dict, state: dict | None, asked: str, user_id: i
         return False
     if computed is None and found is None:
         return False
-    if res.get("status") == "ok" and (same := _same_dictionary_table(parsed, computed, found)):
+    handed_off = bool(parsed.get("gate_reasons"))
+    if (
+        res.get("status") == "ok"
+        and not handed_off
+        and (same := _same_dictionary_table(parsed, computed, found))
+    ):
         trace["dynamic_kept"] = {"indicator": parsed.get("indicator"), "tbl_id": same}
         return False
     trace["replaced"] = {

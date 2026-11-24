@@ -1090,6 +1090,12 @@ def correct(question, parsed, today=None):
         parsed["rank_axis"] = OTHER_AXIS.search(question)[1]
         parsed["grounded"] = False
     _one_region_years(parsed, fix)
+    if months := months_asked(question):
+        parsed["months"] = months
+        if len(months) > 1 and parsed.get("type") in ("compare", "trend"):
+            fix("type", "value", "달마다 값 (달끼리 견줌)")
+        elif parsed.get("type") == "trend" and not parsed.get("start_year"):
+            fix("type", "value", "한 해의 달 범위")
     if fixes:
         parsed["corrections"] = fixes
     return parsed
@@ -1883,7 +1889,62 @@ def _splits_by_sex(q):
     return True
 
 
+MONTH_SPAN = re.compile(r"(\d{1,2})\s*월\s*(?:부터|에서|~|-|∼)\s*(\d{1,2})\s*월")
+MONTH_ONE = re.compile(r"(?<![\d개])(\d{1,2})\s*월(?!\s*(?:말|별|부터|에서))")
+HALF = {"상반기": (1, 6), "하반기": (7, 12)}
+QUARTER = re.compile(r"([1-4])\s*분기")
+
+
+def months_asked(question):
+    out = []
+    for m in MONTH_SPAN.finditer(question):
+        a, b = int(m[1]), int(m[2])
+        if 1 <= a <= b <= 12:
+            out.append((a, b))
+    rest = MONTH_SPAN.sub(" ", question)
+    for word, span in HALF.items():
+        if word in rest:
+            out.append(span)
+    for m in QUARTER.finditer(rest):
+        q = int(m[1])
+        out.append((q * 3 - 2, q * 3))
+    for m in MONTH_ONE.finditer(rest):
+        if 1 <= (a := int(m[1])) <= 12:
+            out.append((a, a))
+    return [list(x) for x in dict.fromkeys(out)]
+
+
+def _month_label(m0, m1):
+    return f"{m0}월" if m0 == m1 else f"{m0}~{m1}월"
+
+
+def _with_months(q):
+    months = q.get("months") or []
+    if len(months) > 1:
+        parts = [compute({**q, "months": [m]}) for m in months]
+        return _combine(parts, by="month")
+    m0, m1 = months[0]
+    token = lookup.MONTHS.set((m0, m1))
+    try:
+        result = compute(
+            {**q, "months": None, "asked": {**(q.get("asked") or {}), "latest": False}}
+        )
+    finally:
+        lookup.MONTHS.reset(token)
+    for r in _leaves(result):
+        if r.get("year"):
+            r["as_of"] = f"{r['year']}년 {_month_label(m0, m1)}"
+            r["month_label"] = _month_label(m0, m1)
+            summed = "을 더한 값" if m1 > m0 else ""
+            r.setdefault("notes", []).append(
+                f"KOSIS 월별 자료의 {_month_label(m0, m1)} 값{summed}입니다"
+            )
+    return result
+
+
 def compute(q):
+    if q.get("months"):
+        return _with_months(q)
     if (born := q.get("born")) and len(born["spans"]) > 1:
         spans = []
         for lo, hi in sorted(born["spans"]):
@@ -3099,7 +3160,7 @@ def _split_text(r):
             hi, lo = (a, b) if vals[0] > vals[1] else (b, a)
             gap = round(abs(vals[0] - vals[1]), 3)
             unit = lookup.diff_unit({"unit": hi["unit"], "kind": hi.get("kind")})
-            who = hi["indicator"]
+            who = hi.get("month_label") if r.get("split_by") == "month" else hi["indicator"]
             word = "많습니다" if hi.get("kind", "count") == "count" else "높습니다"
             same = a.get("indicator") == b.get("indicator")
             if same and {a.get("sex"), b.get("sex")} == {"남", "여"}:
@@ -3433,11 +3494,21 @@ async def answer(parsed, trace=None, question=""):
         flow.add("사전 계산", result.get("status"), flow_result(result))
         from app.core.config import get_settings
 
-        if get_settings().binding_dict_shadow and result.get("status") == "ok" and question:
+        if parsed.get("months") and not any(r.get("value") is not None for r in _leaves(result)):
+            parsed["grounded"] = False
+            parsed["gate_reasons"] = ["월을 물었는데 사전 표에 월별 값이 없음"]
+            flow.add("사전 문지기", "넘김", parsed["gate_reasons"][0])
+        settings = get_settings()
+        gate = settings.binding_dict_gate and parsed.get("grounded") is not False
+        if (gate or settings.binding_dict_shadow) and result.get("status") == "ok" and question:
             from app.services import dict_binding
 
             if (rec := await dict_binding.shadow(question, parsed, result)) is not None:
                 trace["dict_binding"] = rec
+                if gate and rec.get("decision") == dict_binding.HAND_OFF:
+                    parsed["grounded"] = False
+                    parsed["gate_reasons"] = rec.get("reasons") or []
+                    flow.add("사전 문지기", "넘김", " · ".join(parsed["gate_reasons"])[:200])
     return {
         "status": result.get("status"),
         "answer": f"{summary(result)}\n\n{render(result)}".strip(),
