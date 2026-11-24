@@ -1634,3 +1634,40 @@ def test_age_of_unlisted_measure_stays_with_it() -> None:
     p = qa.correct(q, parsed(indicator="총인구", regions=["서울"], year=2020), TODAY)
     assert p["ages"] == [[65, None]] and not p.get("also_asked_ages")
     assert qa.measure_question(q, "1인 가구 수") == "2020년 서울 1인 가구 수"
+
+
+def test_age_note_follows_the_unlisted_measure() -> None:
+    question = "2020년 서울 출생아 수랑 20대 후반 1인 가구 수 알려줘"
+    p = qa.correct(question, parsed(indicator="출생아 수", regions=["서울"], year=2020), TODAY)
+    assert p["also_asked"] == "20대 후반 1인 가구 수"
+    assert not p.get("ages") and not p.get("age_note")
+    other = p["also_asked_ages"]
+    assert other["ages"] == [[27, 29]] and "27~29세" in other["age_note"]
+
+
+def test_one_region_two_years_compare_is_a_trend(monkeypatch) -> None:
+    calls = []
+    monkeypatch.setattr(indicators, "trend", lambda ind, reg, a, b, *rest: calls.append((a, b)))
+    monkeypatch.setattr(indicators, "compare", lambda *a: pytest.fail("지역 비교로 계산함"))
+    q = {"type": "compare", "asked": {}, "start_year": 2010, "end_year": 2025}
+    qa._compute_population(q, "총인구", "compare", ["서울특별시"], 2025, "계", None, 2025)
+    assert calls == [(2010, 2025)]
+
+
+def test_decade_part_age_is_explained() -> None:
+    note = "'20대 후반'은 27~29세로 계산했습니다 (초반 0~3세 · 중반 4~6세 · 후반 7~9세)"
+    assert qa.decade_part_note("서울 20대 후반 여자 인구") == note
+    assert qa.decade_part_note("서울 20대 여자 인구") is None
+
+
+def test_one_region_two_years_compare_reads_as_trend() -> None:
+    asked = parsed(type="compare", indicator="총인구", regions=["서울"], year=2025)
+    p = qa.correct(
+        "2010년과 2025년 서울 인구수 비교해줘",
+        {**asked, "start_year": 2010, "end_year": 2025},
+        TODAY,
+    )
+    assert p["type"] == "trend" and (p["start_year"], p["end_year"]) == (2010, 2025)
+    two = parsed(type="compare", indicator="총인구", regions=["서울", "부산"], year=2025)
+    p = qa.correct("2025년 서울과 부산 인구 비교해줘", two, TODAY)
+    assert p["type"] == "compare"

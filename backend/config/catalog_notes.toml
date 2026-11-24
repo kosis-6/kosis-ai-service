@@ -235,11 +235,11 @@ verified = true
 survey = "인구총조사"
 producer = "국가데이터처 (구 통계청)"
 group = "census"
-reference_date = "인구총조사 기준 시점 (11월 1일로 알려져 있으나 원표에서 미확인)"
+reference_date = "각 연도 11월 1일"
 scope = "18세 이상 내국인의 혼인상태"
 note = "개인정보 보호를 위해 5 미만 값은 X로 비공개 (0이 아님). 조사명 「인구총조사」는 출처 표기로 확인"
-verified = false
-check = "조사기준시점 - 통계설명자료 또는 census.go.kr에서 확인 가능"
+verified = true
+check = "조사기준시점 11월 1일 0시: 인구주택총조사 조사 개요(2020 · 2025)에서 확인 (11/24)"
 
 [tables.TX_11025_A000_A]
 survey = "지방자치단체 외국인주민 현황"

@@ -230,6 +230,7 @@ def apply_changes(conditions: dict, changes: dict) -> tuple[dict, set[str]]:
         for key in (
             "ages",
             "age_group",
+            "age_note",
             "unsupported",
             "share_of",
             "aggregate",
@@ -336,6 +337,26 @@ def follow_year(question: str, conditions: dict, today: date | None = None) -> i
     return ref.year if ref and not ref.open_end else None
 
 
+def recent_years(question: str) -> int | None:
+    """숫자 연도 없는 후속 질문에서 '최근 N년'이나 'N년 동안'의 N을 찾는다."""
+    if FULL_YEAR.search(question):
+        return None
+    for ref in timeref.find(question):
+        if ref["kind"] in ("recent", "span") and ref.get("n"):
+            return ref["n"]
+    return None
+
+
+def with_recent(conditions: dict, changed: set[str], n: int) -> tuple[dict, set[str]]:
+    """조건을 '자료 마지막 해를 포함한 N개 해' 추이로 (계산 단계가 asked.recent로 표마다 센다)"""
+    c = copy.deepcopy(conditions)
+    c["asked"] = {**(c.get("asked") or {}), "recent": n}
+    c["start_year"] = c["end_year"] = None
+    if c.get("type") in ("value", "compare"):
+        c["type"] = "trend"
+    return c, changed | {"period"}
+
+
 VIEW_WORDS = {
     "추이",
     "변화",
@@ -357,7 +378,15 @@ def names_indicator(question: str, parsed: dict) -> bool:
         return True
     compact = question.replace(" ", "")
     words = [parsed.get("term"), parsed.get("indicator")]
-    return any(w and w.strip() not in VIEW_WORDS and w.replace(" ", "") in compact for w in words)
+    return any(_says_word(w, compact) for w in words)
+
+
+def _says_word(word: Any, compact: str) -> bool:
+    if not isinstance(word, str) or not word.strip() or word.strip() in VIEW_WORDS:
+        return False
+    if not dynamic_indicator._without_age_words(word):
+        return False
+    return word.replace(" ", "") in compact
 
 
 def complete_question(question: str) -> bool:
@@ -378,10 +407,18 @@ def inherit(
     if kind in NO_CONDITIONS or prev.get("type") in NO_CONDITIONS:
         return p, s
     if question and prev.get("indicator") and not names_indicator(question, p):
-        for key in ("indicator", "term", "ages", "age_group", "by", "dynamic_spec"):
+        keys = ["indicator", "term", "ages", "age_group", "age_note", "by", "dynamic_spec"]
+        said_ages = bool(p.get("ages")) and bool(qa.age_spans(question))
+        if said_ages:
+            keys = [k for k in keys if k not in ("term", "ages", "age_group", "age_note")]
+            p.pop("age_group", None)
+            p["term"] = prev["indicator"]
+        for key in keys:
             if prev.get(key) is not None:
                 p[key] = copy.deepcopy(prev[key])
         p.pop("unsupported", None)
+        if "grounded" in prev:
+            p["grounded"] = prev["grounded"]
         s["indicator"] = "inherited"
     if (
         question
@@ -1441,12 +1478,22 @@ async def _turn(
                 if k not in ("year", "start_year", "end_year")
             }
             delta.update(request_type=CHANGE, unclear=None, changes={**changes, "year": year})
+        recent = recent_years(question)
+        if recent and not names_indicator(question, {}) and delta["request_type"] != NEW:
+            changes = {
+                k: v
+                for k, v in (delta.get("changes") or {}).items()
+                if k not in ("year", "start_year", "end_year")
+            }
+            delta.update(request_type=CHANGE, unclear=None, changes=changes)
         if delta["unclear"]:
             return _unclear(state, delta["unclear"]), state["sources"], None
         if delta["request_type"] == SUMMARY and delta["changes"]:
             delta["request_type"] = CHANGE
         if delta["request_type"] == CHANGE:
             conditions, changed = apply_changes(state["conditions"], delta["changes"])
+            if recent and not names_indicator(question, {}):
+                conditions, changed = with_recent(conditions, changed, recent)
             if changed:
                 res = None
                 if "regions" in changed and (state.get("last") or {}).get("status") == TABLES:

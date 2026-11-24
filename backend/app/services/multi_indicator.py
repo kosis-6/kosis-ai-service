@@ -36,7 +36,7 @@ def says_age(text: str) -> bool:
 def without_unsaid_age(parsed: dict, phrase: str) -> dict:
     if says_age(phrase) or not (parsed.get("ages") or parsed.get("age_group")):
         return parsed
-    return {**parsed, "ages": None, "age_group": None}
+    return {**parsed, "ages": None, "age_group": None, "age_note": None}
 
 
 def target_parsed(parsed: dict, target: dict, kind: str | None = None) -> dict:
@@ -52,7 +52,7 @@ def target_parsed(parsed: dict, target: dict, kind: str | None = None) -> dict:
         "grounded": None,
     }
     if target.get("unsaid_age"):
-        q.update(ages=None, age_group=None)
+        q.update(ages=None, age_group=None, age_note=None)
     k = kind or parsed.get("type")
     if k == "compare" and len(parsed.get("regions") or []) <= 1:
         k = "value"

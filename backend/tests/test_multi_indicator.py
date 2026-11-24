@@ -416,3 +416,13 @@ def test_ratio_whole_side_does_not_take_question_age() -> None:
     assert not multi_indicator.says_age("전체 1인 가구")
     assert multi_indicator.without_unsaid_age(parsed, "전체 1인 가구")["ages"] is None
     assert multi_indicator.without_unsaid_age(parsed, "70세 이상 1인 가구") is parsed
+
+
+def test_age_note_only_applies_to_the_age_filtered_measure() -> None:
+    note = "'20대 후반'은 27~29세로 계산했습니다"
+    parsed = {"type": "value", "ages": [[27, 29]], "age_note": note}
+    whole = {"span": "전체 1인 가구", "unsaid_age": True}
+    part = {"span": "20대 후반 1인 가구", "unsaid_age": False}
+    assert multi_indicator.target_parsed(parsed, whole)["age_note"] is None
+    assert multi_indicator.target_parsed(parsed, part)["age_note"] == note
+    assert multi_indicator.without_unsaid_age(parsed, whole["span"])["age_note"] is None

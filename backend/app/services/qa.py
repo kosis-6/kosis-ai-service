@@ -847,6 +847,8 @@ def correct(question, parsed, today=None):
     ages = extract_ages(question)
     if ages:
         parsed["ages"] = ages
+        if note := decade_part_note(question):
+            parsed["age_note"] = note
     elif (group := agegroup.resolve(question)) and not (group.lo == 0 and _about_births(parsed)):
         parsed["age_group"] = {"expr": group.expr, "range": group.label(), "basis": group.basis}
         ages = [[group.lo, group.hi]]
@@ -1047,6 +1049,8 @@ def correct(question, parsed, today=None):
             and not _says_age(rest)
         ):
             parsed["also_asked_ages"] = {k: parsed.get(k) for k in ("ages", "age_group")}
+            if note := parsed.pop("age_note", None):
+                parsed["also_asked_ages"]["age_note"] = note
             fix("ages", None, "연령은 함께 물은 지표의 조건")
             parsed["age_group"] = None
     if len(names) > 1 and parsed.get("type") in ("value", "trend", "compare"):
@@ -1080,9 +1084,26 @@ def correct(question, parsed, today=None):
     if parsed.get("type") == "rank" and other_axis:
         parsed["rank_axis"] = OTHER_AXIS.search(question)[1]
         parsed["grounded"] = False
+    _one_region_years(parsed, fix)
     if fixes:
         parsed["corrections"] = fixes
     return parsed
+
+
+def _one_region_years(parsed, fix):
+    """한 지역의 두 연도 비교를 추이로 해석해 화면에도 기간을 표시한다."""
+    y0, y1 = parsed.get("start_year"), parsed.get("end_year")
+    if (
+        parsed.get("type") == "compare"
+        and len(parsed.get("regions") or []) == 1
+        and y0
+        and y1
+        and y0 != y1
+        and not parsed.get("split_sex")
+        and not parsed.get("indicators")
+        and not parsed.get("group")
+    ):
+        fix("type", "trend", "한 지역의 두 연도 비교는 그 기간의 추이")
 
 
 def _change_rank(question, parsed, fix):
@@ -1823,6 +1844,19 @@ def age_basis_note(group):
     return f"{josa(repr_q(group['expr']), '은는')} {ro(group['range'])} 계산했습니다 ({basis})"
 
 
+def decade_part_note(question):
+    """'20대 후반'처럼 초반·중반·후반으로 말한 연령의 계산 기준."""
+    said = []
+    for m in AGE_DECADE_PART.finditer(agegroup.native_to_digits(question)):
+        if int(m[1]) % 10 == 0:
+            lo, hi = DECADE_PART[m[2]]
+            band = f"{int(m[1]) + lo}~{int(m[1]) + hi}세"
+            said.append(f"{josa(repr_q(m[0]), '은는')} {ro(band)} 계산했습니다")
+    if not said:
+        return None
+    return f"{', '.join(said)} (초반 0~3세 · 중반 4~6세 · 후반 7~9세)"
+
+
 NO_SEX_SPLIT = frozenset({"성비", "세대당 인구", "인구밀도"})
 
 
@@ -2177,6 +2211,10 @@ def _compute(q):
         for r in _leaves(result):
             if note not in r.get("notes", []):
                 r["notes"] = [note] + r.get("notes", [])
+    if result.get("status") == "ok" and (note := q.get("age_note")):
+        for r in _leaves(result):
+            if note not in r.get("notes", []):
+                r["notes"] = [note] + r.get("notes", [])
     if (group := q.get("group")) and result.get("status") == "ok" and "values" in result:
         names = ", ".join(v["region"] for v in result["values"])
         scope = f"{_josa(group, '은는')} {names} 기준입니다."
@@ -2296,6 +2334,9 @@ def _compute_population(q, ind, kind, regions, year, sex, ages, hi):
         return _value_instead(result, ind)
     if kind in ("value", "trend", "compare") and not regions:
         regions = ["전국"]
+    if kind == "compare" and len(regions) == 1:
+        y0, y1 = q.get("start_year"), q.get("end_year")
+        kind = "trend" if y0 and y1 and y0 != y1 else "value"
     if (q.get("asked") or {}).get("latest") and kind in ("value", "compare", "rank"):
         year = indicators.latest_year([] if kind == "rank" else regions, sex)
     if q.get("born") and kind != "trend":

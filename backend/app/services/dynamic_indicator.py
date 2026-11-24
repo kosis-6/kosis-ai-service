@@ -2277,8 +2277,8 @@ async def _try_once(
         return None, why if isinstance(why, Ask) else None
     step["cells"] = spec["cells"]
     notice = table_notice(notice, bool(spec.get("couple")))
-    if notice:
-        spec["note"] = f"{spec['note']}. {notice}"
+    if notice and (notice := notice.strip(" .")):
+        spec["note"] = f"{spec['note'].rstrip(' .')}. {notice}"
     if spec.get("parts_op"):
         res = await run_in_threadpool(parts_answer, parsed, spec, question)
         res.setdefault("trace", trace)
