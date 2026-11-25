@@ -1008,9 +1008,6 @@ def correct(question, parsed, today=None):
     kind = parsed.get("type")
 
     _apply_time(question, parsed, fix, today)
-    if (mref := monthref.find(question)) and kind in (None, "value", "other"):
-        # "1월부터 3월까지" · "상반기": 달 묶음은 코드가 읽는다 (lookup.month_sum). 값 질문만
-        fix("months", [mref["m0"], mref["m1"]], f"'{mref['expr']}' = 달 묶음 합")
     _read_question(question, parsed, fix)
 
     gender_question = HOUSEHOLD_MEMBER_GENDER.sub("가구", question)
@@ -1027,6 +1024,8 @@ def correct(question, parsed, today=None):
         parsed["split_sex"] = True
         if kind == "compare" and len(parsed.get("regions") or []) == 1:
             fix("type", "value", "한 지역의 남녀 비교")
+    if (mref := monthref.find(question)) and parsed.get("type") in (None, "value", "other"):
+        fix("months", [mref["m0"], mref["m1"]], f"'{mref['expr']}' = 달 묶음 합")
     if kind == "composition" and parsed.get("by") != "sex" and SEX_SPLIT.search(gender_question):
         fix("by", "sex", "질문의 남녀 구성 표현")
 
@@ -2021,6 +2020,13 @@ def _splits_by_sex(q):
     if sp is None or sp["name"] in NO_SEX_SPLIT:
         return False
     if sp.get("method") == "lookup":
+        if (
+            q.get("months")
+            and sp.get("monthly_sources")
+            and q["type"] in ("value", "compare")
+            and len(q.get("regions") or []) <= 1
+        ):
+            return True
         return any(s.get("by_sex") for s in sp["sources"]) and not lookup.needs_split(sp, "계")
     return True
 
@@ -2594,11 +2600,12 @@ def _compute_lookup(q, sp, kind, regions, year, sex, ages):
     if kind == "compare" and len(regions) == 1:
         y0, y1 = q.get("start_year"), q.get("end_year")
         kind = "trend" if y0 and y1 and y0 != y1 and not q.get("months") else "value"
-    if not any(s.get("by_sex") for s in sp["sources"]):
-        sex = "계"
     if ages and len(ages) > 1:
         parts = [_compute_lookup(q, sp, kind, regions, year, sex, [a]) for a in ages]
         return _combine(parts)
+    monthly_sex = sex
+    if not any(s.get("by_sex") for s in sp["sources"]):
+        sex = "계"
     if lookup.needs_split(sp, sex) and kind != "composition":
         parts = [_compute_lookup(q, sp, kind, regions, year, s, ages) for s in ("남", "여")]
         return _combine(parts)
@@ -2615,7 +2622,7 @@ def _compute_lookup(q, sp, kind, regions, year, sex, ages):
         if not (start_year and end_year):
             start_year = end_year = year
         monthly = lookup.month_sum(
-            sp, regions[0], start_year, m0, m1, sex, ages=ages, end_year=end_year
+            sp, regions[0], start_year, m0, m1, monthly_sex, ages=ages, end_year=end_year
         )
         if monthly is not None:
             return monthly
@@ -3337,7 +3344,8 @@ def _body(r):
     if "split" in r:
         return [line for p in r["split"] for line in _body(p)]
     if "members" in r:
-        lines = [f"{r['region']} {name} ({_when(r)})"]
+        subject = _subject(r) if r.get("months") else name
+        lines = [f"{r['region']} {subject} ({_when(r)})"]
         lines += [f"- {m['region']}: {_num(m['value'], unit)}" for m in r["members"]]
         lines.append(f"- 합계: {_num(r['value'], unit)}")
         return lines

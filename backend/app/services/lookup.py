@@ -931,11 +931,13 @@ def data_gap(term):
 # ---- 달 묶음 합 (월별 자료) --------------------------------------------------------
 
 
-def _pick_monthly(spec, level):
-    """지역 수준에 맞는 월별 출처 (지표 사전의 monthly_sources). 없으면 None"""
+def _pick_monthly(spec, level, sex):
+    """요청한 지역 수준과 성별을 조회할 수 있는 월별 출처를 고른다."""
     for s in spec.get("monthly_sources") or []:
-        if LEVELS[s["level"]] >= LEVELS[level]:
-            return s
+        if LEVELS[s["level"]] < LEVELS[level] or (sex in SEX_WORDS and not s.get("by_sex")):
+            continue
+        if (src := _effective(s, sex)) is not None:
+            return src
     return None
 
 
@@ -953,9 +955,18 @@ def month_sum(spec, region, year, m0, m1, sex="계", *, ages=None, end_year=None
         return regs
     (reg,) = regs
     name, code = reg["display"], reg["region_code"]
-    src = _pick_monthly(spec, _level(regs))
+    level = _level(regs)
+    src = _pick_monthly(spec, level, sex)
     if src is None:
         top = max((s["level"] for s in sources), key=LEVELS.get)
+        if LEVELS[top] >= LEVELS[level]:
+            return {
+                "status": "band_mismatch",
+                "indicator": spec["name"],
+                "region": name,
+                "reason": f"{josa(spec['name'], '은는')} 월별 자료에서 요청하신 성별을 "
+                "구분해 계산할 수 없습니다.",
+            }
         return {
             "status": "no_region_level",
             "indicator": spec["name"],
@@ -965,13 +976,17 @@ def month_sum(spec, region, year, m0, m1, sex="계", *, ages=None, end_year=None
         }
     if ages and not src.get("age_dim"):
         age = ind_mod.age_label(ages[0])
-        return {
+        result = {
             "status": "band_mismatch",
             "indicator": spec["name"],
             "region": name,
             "reason": f"{josa(spec['name'], '은는')} 월별 자료에 연령 구분이 없어 "
             f"{age}의 값을 계산할 수 없습니다.",
         }
+        if table := spec.get("annual_age_table"):
+            result.update(_source_info({"table": table}))
+            result["alternative"] = "연간 연령별 자료는 아래 KOSIS 통계표에서 확인할 수 있습니다"
+        return result
     try:
         age_codes, label, notes = _ages(src, ages)
     except AgeMismatch:
