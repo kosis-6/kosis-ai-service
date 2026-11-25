@@ -1,3 +1,20 @@
+"""검색 뒤 HCX-007 최종 검토 (실전 2, 실험실 §56-4·§61-3): 상위 후보(TOP_K개) 중 질문에 맞는
+표 하나를 고르고,
+어느 후보도 질문 주제를 다루지 않으면 범위 밖으로 돌린다.
+
+- HCX-007, 생각 끄기(thinking none), Structured Outputs(responseFormat json + 후보 tbl_id enum)라
+  JSON이 깨지지 않고
+  약 1.5초·900토큰. 실험실: 범위 밖 재현율 30/30, 거짓 거절 1/102, 새 테스트셋 흐름 68→74.
+- 고른 표의 패밀리가 1위와 다르면 그 패밀리로 멤버·판 선택을 다시 한다(resolve). 되묻기(clarify)가
+  필요한 결과는
+  건드리지 않는다. 호출이 실패하면 검색 결과를 그대로 둔다.
+- 모드(LLM_PICK_MODE): filter(기본) = 거르기만 / pick = 고른 표로 패밀리 교체 /
+  resolve = 확정 결과는 거르기만,
+  멤버 되묻기(clarify) 상태에서는 고른 표로 멤버·판까지 확정 (되묻기 횟수가 준다). 패밀리 모호는 1위
+  유지.
+- 설정 LLM_PICK=false 로 끈다.
+"""
+
 import json
 import logging
 import re
@@ -141,6 +158,31 @@ def trust_exact(out: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# 검토를 건너뛰는 1위 · 2위 점수 차 (ANSWER_JUDGE=true 일 때만). 11/22 검토를 부른 166문항:
+# 검색 상태 ok + 1위 조건 모두 ✔ + 차 0.15 이상이면 17문항, 검토가 거절하거나 표를 바꾼 것은 0
+# (표를 바꾼 문항의 점수 차는 최대 0.092). 건너뛴 표는 검토가 '모두 충족'으로 본 것처럼 다룬다
+SURE_GAP = 0.15
+SURE_SKIP = "조건이 모두 맞고 2위와 점수 차가 커 검토를 건너뜀"
+
+
+def sure_first(result: dict[str, Any], cands: list[dict[str, Any]]) -> bool:
+    """검토 없이 1위 표를 그대로 써도 되는가: 검색이 표를 정했고(ok), 그 표가 후보 1위 패밀리이며,
+    확인한 조건이 모두 ✔이고, 2위(다른 패밀리)와 점수 차가 SURE_GAP 이상"""
+    if result.get("status") != "ok" or not cands:
+        return False
+    if (result.get("table") or {}).get("family_id") != cands[0]["family_id"]:
+        return False
+    scored = {c["tbl_id"]: c for c in result.get("candidates") or []}
+    first = scored.get(cands[0]["tbl_id"]) or {}
+    checks = first.get("checks") or {}
+    if first.get("score") is None or not checks or not all(checks.values()):
+        return False
+    if len(cands) == 1:
+        return True
+    second = (scored.get(cands[1]["tbl_id"]) or {}).get("score")
+    return second is not None and first["score"] - second >= SURE_GAP
+
+
 def review_candidates(
     result: dict[str, Any], by: dict[str, dict[str, Any]]
 ) -> list[dict[str, Any]]:
@@ -278,6 +320,9 @@ async def _review(
             "reason": f"'{m.group(0)}'은 인구 통계 범위 밖입니다",
             "llm_pick": trace["llm_pick"],
         }
+    if get_settings().answer_judge and sure_first(result, cands):
+        trace["llm_pick"] = {"raw": {"match": "exact"}, "pick": cand_ids[0], "skipped": SURE_SKIP}
+        return {**result, "llm_pick": trace["llm_pick"]}
     start = time.perf_counter()
     try:
         parsed = await _ask(question, cands)

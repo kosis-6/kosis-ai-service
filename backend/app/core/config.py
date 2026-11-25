@@ -24,6 +24,16 @@ class Settings(BaseSettings):
     question_cache: bool = True
     plan_cache: bool = True
     understand_merged: Literal["off", "gemma"] = "off"
+    # 답이 나간 뒤 Gemma 1회가 그 답이 질문에 맞는지 판정하고, 틀렸다고 보면 한 번 다시 계산한다
+    # (app/services/answer_judge.py, ask_session._judged). 사전 지표로 답했으면 통계표 찾기로,
+    # 통계표에서 계산했으면 그 표를 빼고 다음 후보로. 다시 한 답이 판정을 통과할 때만 바꾼다.
+    # 함께 켜지는 것: 조건이 모두 맞고 2위와 점수 차가 큰 1위 표는 검토(llm_pick)를 건너뛴다.
+    # 기본은 끔 (ANSWER_JUDGE=true 로 켠다). GEMMA_BASE_URL 이 없으면 켜도 판정하지 않는다
+    answer_judge: bool = False
+    # 조건 → 칸 잇기 1단계 (app/services/binding.py, docs/cell_binding_design_2026-11-23.md).
+    # true: 바로 계산이 표 하나를 계산할 때 같은 표로 잇기를 돌려 처리 기록에만 남긴다
+    # (답은 그대로).
+    # 개발셋 평가에서 BINDING_SHADOW=true로 켜고 scripts/binding_compare.py로 견준다
     binding_shadow: bool = False
     binding_use: bool = True
     binding_dict_shadow: bool = False

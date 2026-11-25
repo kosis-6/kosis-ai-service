@@ -523,6 +523,29 @@ desc = "주민등록 세대수 (주민등록표상 세대. 인구총조사의 '�
 note = "주민등록 신고 기준 세대 수입니다. 인구총조사의 가구 수와는 기준이 다릅니다"
 sources = [{ table = "DT_1B040B3", item_id = "T1", level = "시군구" }]
 
+[[indicators]]
+name = "1인 가구 수"
+definition = "1인 가구 수는 인구총조사 일반가구 중 가구원이 한 명인 가구의 수입니다"
+aliases = ["1인 가구", "1인가구", "1인가구 수", "1인 가구수", "일인 가구", "한 명 가구", "혼자 사는 집", "혼자 사는 가구", "혼자 사는 사람", "혼자 사는 세대", "혼자 살고 있는 집", "혼자 살고 있는 사람", "나홀로 가구", "나홀로 집", "독거 가구", "독거가구", "단독 가구", "싱글 가구"]
+unit = "가구"
+kind = "count"
+method = "lookup"
+desc = "인구총조사(등록센서스)의 1인 가구 수 (일반가구 중 가구원이 1명인 가구)"
+note = "인구총조사(등록센서스) 일반가구 기준(각 연도 11월 1일)입니다. 집단가구 · 외국인가구는 들어가지 않습니다"
+# 가구원수별 가구 표 (전국 · 시도 · 시군구 · 읍면동, 2015~). 항목 T0 일반가구 계, T1 1인 가구
+sources = [{ table = "DT_1JC1502", item_id = "T1", level = "시군구" }]
+
+[[indicators]]
+name = "1인 가구 비율"
+definition = "1인 가구 비율은 일반가구 중 가구원이 한 명인 가구의 비율입니다"
+aliases = ["1인가구 비율", "1인 가구 비중", "1인가구 비중", "1인 가구 구성비", "혼자 사는 집 비율", "혼자 사는 가구 비율", "혼자 사는 사람 비율", "혼자 사는 집 비중", "혼자 사는 가구 비중", "나홀로 가구 비율", "독거 가구 비율", "독거가구 비율", "1인 가구 몇 퍼센트", "1인 가구 몇 %"]
+unit = "%"
+method = "lookup"
+desc = "1인 가구 ÷ 일반가구 × 100 (인구총조사 등록센서스)"
+note = "1인 가구 수 ÷ 일반가구 수 × 100 입니다. 인구총조사(등록센서스) 일반가구 기준(각 연도 11월 1일)"
+# num_label · den_label · operand_unit: 답에 보여 줄 "계산: 1인 가구 N가구 ÷ 일반가구 M가구 × 100" 줄
+sources = [{ table = "DT_1JC1502", item_id = "T1", den_item_id = "T0", level = "시군구", num_label = "1인 가구", den_label = "일반가구", operand_unit = "가구" }]
+
 # ---- 출생·사망 ----------------------------------------------------------------
 
 [[indicators]]
@@ -536,6 +559,7 @@ sources = [
   { table = "DT_1B81A23", item_id = "T1", level = "시군구" },
   { table = "INH_1B8000F_01", item_id = "T1", level = "전국", national_only = true, filters = { c1_id = "11" } },
 ]
+monthly_sources = [{ table = "DT_1B8000G", item_id = "T1", level = "시도", filters = { c2_id = "10" } }]
 
 [[indicators]]
 name = "합계출산율"
@@ -582,11 +606,16 @@ sources = [
   # 1970~1989년: 전국 장기 표 (같은 인구동향조사, 1990년 이후 값은 시도 표의 전국과 같다)
   { table = "DT_1B8000F", item_id = "T1", level = "전국", national_only = true, years = [1970, 1989], filters = { c1_id = "12" } },
 ]
+# 달 묶음 합("1~3월 사망자")에 쓰는 월별 표 (prd_se = M 행, lookup.month_sum). 연간 답에는 쓰지 않는다
+monthly_sources = [
+  { table = "DT_1B8000G", item_id = "T1", level = "시도", filters = { c2_id = "15" } },
+  { table = "DT_1B82A01", item_id = "T1", level = "시군구" },
+]
 
 [[indicators]]
 name = "조사망률"
 definition = "조사망률은 인구 1,000명당 그해 사망자 수입니다"
-aliases = ["사망률"]
+aliases = ["사망률", "인구 10만 명당 사망자 수", "10만명당 사망자수", "인구 10만명당 사망자수"]
 # 기준이 여럿인 말(basis_terms)로 물으면 답에 기본값과 다른 기준을 안내한다
 basis_terms = ["사망률"]
 basis_note = "사망률은 조사망률(인구 1,000명당 사망자 수)로 답했습니다. 연령 구조 차이를 없앤 연령표준화 사망률이나 영아사망률과는 다릅니다"
@@ -628,6 +657,7 @@ sources = [
   # 1970~1989년: 전국 장기 표 (같은 인구동향조사, 1990년 이후 값은 시도 표의 전국과 같다)
   { table = "DT_1B8000F", item_id = "T1", level = "전국", national_only = true, years = [1970, 1989], filters = { c1_id = "41" } },
 ]
+monthly_sources = [{ table = "DT_1B8000G", item_id = "T1", level = "시도", filters = { c2_id = "20" } }]
 
 [[indicators]]
 name = "조혼인율"
@@ -669,6 +699,7 @@ sources = [
   # 1970~1989년: 전국 장기 표 (같은 인구동향조사, 1990년 이후 값은 시도 표의 전국과 같다)
   { table = "DT_1B8000F", item_id = "T1", level = "전국", national_only = true, years = [1970, 1989], filters = { c1_id = "51" } },
 ]
+monthly_sources = [{ table = "DT_1B8000G", item_id = "T1", level = "시도", filters = { c2_id = "30" } }]
 
 [[indicators]]
 name = "조이혼율"
@@ -959,7 +990,7 @@ sources = [{ table = "DT_110025_A045_A", item_id = "T001", level = "시군구", 
 [[indicators]]
 name = "다문화 출생아 수"
 definition = "다문화 출생아 수는 부모 중 한쪽 이상이 외국인이거나 귀화·인지로 한국 국적을 얻은 사람인 가정에서 태어난 아이 수입니다"
-aliases = ["다문화 출생 수", "다문화 출생아", "다문화 출생아수", "다문화 아이", "다문화 출생", "다문화 가정 아기", "다문화 가정 아이", "다문화 아기", "다문화 가정에서 태어난 아기", "다문화 가정에서 태어난 아이", "다문화 가정 출생아"]
+aliases = ["다문화 출생 수", "다문화 출생아", "다문화 출생아수", "다문화 아이", "다문화 출생", "다문화 가정 아기", "다문화 가정 아이", "다문화 아기", "다문화 가정에서 태어난 아기", "다문화 가정에서 태어난 아이", "다문화 가정 출생아", "다문화가정 출생아 수", "다문화 가정 출생아 수"]
 unit = "명"
 method = "lookup"
 sources = [{ table = "DT_1BB0006", item_id = "T01", level = "시군구" }]
@@ -983,7 +1014,7 @@ sources = [{ table = "DT_1BB0002", item_id = "T01", level = "시군구" }]
 [[indicators]]
 name = "다문화 혼인 비중"
 definition = "다문화 혼인 비중은 그해 전체 혼인 중 다문화 혼인의 비율입니다"
-aliases = ["다문화 혼인비중", "국제결혼 비율", "다문화 혼인 비율"]
+aliases = ["다문화 혼인비중", "국제결혼 비율", "다문화 혼인 비율", "다문화 결혼 비중", "다문화결혼 비중"]
 unit = "%"
 method = "lookup"
 sources = [{ table = "DT_1BB0002", item_id = "T02", level = "시군구" }]
