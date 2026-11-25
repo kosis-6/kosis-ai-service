@@ -111,7 +111,7 @@ async def _ask(question: str, cands: list[dict[str, Any]]) -> dict[str, Any] | N
         return messages, {
             "thinking": {"effort": "none"},
             "maxCompletionTokens": 300,
-            **({"temperature": 0} if gemma else {}),
+            "temperature": 0,
             "responseFormat": {
                 "type": "json",
                 "schema": {

@@ -24,6 +24,7 @@ async def call(question: str) -> Plan:
         return messages, {
             "thinking": {"effort": "none"},
             "maxCompletionTokens": MAX_TOKENS,
+            "temperature": 0,
             "responseFormat": {"type": "json", "schema": SCHEMA},
         }
 

@@ -16,6 +16,7 @@ def catalog(monkeypatch):
         _table("시군구별 주민등록인구"),
         _table("점유형태별 가구 월세"),
         _table("고용률 조사표"),
+        _table("거처 종류별 아파트 가구 수 전세금 평균(만원)"),
     ]
 
     async def load():
@@ -57,6 +58,7 @@ def test_word_found_in_catalog_is_not_refused() -> None:
         "물가 비싼 서울에 사는 1인 가구 몇 개야?",
         "미세먼지 심한 동네 인구 알려 줘",
         "날씨 좋은 제주로 이사 온 사람",
+        "서울 아파트에 사는 가구 수 알려줘",
     ],
 )
 def test_population_signal_is_not_refused(question: str) -> None:
@@ -120,12 +122,15 @@ def test_plain_population_question_is_untouched() -> None:
     assert early("강남구 사람 몇 명이야?") is None
 
 
-def test_new_question_skips_understanding(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    "question", ["서울 집값 요즘 얼마야", "서울 아파트 평균 가격은?", "강남 아파트 시세 알려줘"]
+)
+def test_new_question_skips_understanding(monkeypatch, question) -> None:
     async def never(*args, **kwargs):
         raise AssertionError("질문 이해(HCX)를 부르면 안 된다")
 
     monkeypatch.setattr(qa, "ask", never)
-    res, sources, notice = asyncio.run(ask_session._new("서울 집값 요즘 얼마야", None))
+    res, sources, notice = asyncio.run(ask_session._new(question, None))
     assert res["status"] == "out_of_scope" and res["request_type"] == ask_session.NEW
     assert sources == {} and notice is None
 

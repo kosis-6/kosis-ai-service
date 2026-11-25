@@ -199,7 +199,7 @@ SEX_IMPLIED = re.compile(
 NO_REGION_TYPES = {"rank", "other", "parse_error"}
 
 AGE_RANGE = re.compile(r"(?:만\s*)?(\d+)\s*(?:세|살)?\s*[~\-]\s*(\d+)\s*(?:세|살)")
-AGE_UNDER = re.compile(r"(?:만\s*)?(\d+)\s*(?:세|살)\s*(?:미만|도?\s*안\s*(?:된|되는))")
+AGE_UNDER = re.compile(r"(?:만\s*)?(\d+)\s*(?:세|살)\s*(?:미만|[이도]?\s*안\s*(?:된|되는))")
 AGE_UNDER_EQ = re.compile(r"(?:만\s*)?(\d+)\s*(?:세|살)\s*이하")
 AGE_SPAN = re.compile(
     r"(?:만\s*)?(\d{1,3})\s*(?:세|살)?\s*"
@@ -563,6 +563,20 @@ OTHER_PEOPLE = re.compile(
     r"근로|이민|입국|출국|취업|학생(?!\s*나이)|"
     r"혼자|홀로|독거|장애|아파트|주택|단독|연립|다세대|오피스텔|거처|셋방|기숙사"
 )
+HOUSING_CONDITION = re.compile(
+    r"(?:아파트|단독\s*주택|연립\s*주택|다세대\s*주택|다가구\s*주택|빌라|오피스텔|기숙사|고시원"
+    r"|(?<![가-힣])(?:주택|전세|월세|자가))"
+    r"(?=\s*(?:(?:에서?|으?로)(?:는|도|만)?\s*)?(?:살|사는|거주|인구|주민|사람|몇\s*명))"
+)
+HOUSING_PEOPLE = re.compile(r"인구(?!\s*(?:주택\s*)?총조사)|주민|사람|거주자|가구원|몇\s*명")
+
+
+def housing_population_condition(question: str) -> str | None:
+    if HOUSING_PEOPLE.search(question) and (match := HOUSING_CONDITION.search(question)):
+        return match[0]
+    return None
+
+
 FOCUS_WORDS = {
     "일자리": "직업",
     "직장": "직업",
@@ -774,7 +788,7 @@ def set_survey(question, parsed):
 
 
 YEAR_ARITH = re.compile(r":\s*(?:19|20)\d{2}\s*[-+]\s*\d{1,3}(?=\s*[,}])")
-PERIOD_KINDS = ("recent", "span", "compare_ago", "span_from", "until_now")
+PERIOD_KINDS = ("recent", "span", "compare_ago", "span_from", "span_until", "until_now")
 
 
 def _word_years(parsed):
@@ -801,7 +815,7 @@ def _apply_time(question, parsed, fix, today):
     if not refs:
         _drop_unsaid_years(question, parsed, fix, set())
         return
-    end = indicators._data_years()[1]
+    end = None
     said = sorted({int(y) for y in YEAR.findall(question)})
     kind_now, resolved, touched = parsed.get("type"), [], set()
 
@@ -811,10 +825,15 @@ def _apply_time(question, parsed, fix, today):
             fix(key, value, why)
 
     for ref in refs:
+        if end is None and ref["kind"] in ("recent", "span", "compare_ago"):
+            end = indicators._data_years()[1]
         got = timeref.period(ref, today, end)
         resolved.append({"expr": ref["expr"], "kind": ref["kind"], "n": ref.get("n"), **got})
         why = f"'{ref['expr']}'"
         if ref["kind"] in PERIOD_KINDS:
+            if ref["kind"] == "span_until" and kind_now == "value":
+                fix("type", "trend", "끝 연도와 기간을 물음")
+                kind_now = "trend"
             if "start" in got:
                 put("start_year", got["start"], f"{why} = {got['start']}년부터")
             if "end" in got:
@@ -990,8 +1009,11 @@ def correct(question, parsed, today=None):
         )
         if chosen == "총인구" and parsed["grounded"] is False and plain:
             parsed["grounded"] = True
-        if chosen == "총인구" and population_modifier(question):
-            parsed["grounded"] = False
+        if chosen == "총인구":
+            if population_modifier(question):
+                parsed["grounded"] = False
+            elif kind in ("value", "trend", "compare", "composition"):
+                _fix_short_population_region(question, parsed, fix)
         chosen_spec = indicators.spec(chosen) if chosen else None
         if undone_pct and chosen_spec and lookup.kind_of(chosen_spec) == "count":
             parsed["grounded"] = False
@@ -1015,9 +1037,6 @@ def correct(question, parsed, today=None):
     kind = parsed.get("type")
 
     _apply_time(question, parsed, fix, today)
-    if (mref := monthref.find(question)) and kind in (None, "value", "other"):
-        # "1월부터 3월까지" · "상반기": 달 묶음은 코드가 읽는다 (lookup.month_sum). 값 질문만
-        fix("months", [mref["m0"], mref["m1"]], f"'{mref['expr']}' = 달 묶음 합")
     _read_question(question, parsed, fix)
 
     gender_question = HOUSEHOLD_MEMBER_GENDER.sub("가구", question)
@@ -1034,6 +1053,8 @@ def correct(question, parsed, today=None):
         parsed["split_sex"] = True
         if kind == "compare" and len(parsed.get("regions") or []) == 1:
             fix("type", "value", "한 지역의 남녀 비교")
+    if (mref := monthref.find(question)) and parsed.get("type") in (None, "value", "other"):
+        fix("months", [mref["m0"], mref["m1"]], f"'{mref['expr']}' = 달 묶음 합")
     if kind == "composition" and parsed.get("by") != "sex" and SEX_SPLIT.search(gender_question):
         fix("by", "sex", "질문의 남녀 구성 표현")
 
@@ -1054,7 +1075,11 @@ def correct(question, parsed, today=None):
         if parsed.get("year") != year:
             fix("year", year, "질문의 연도")
 
-    if not has_abs_year and (ref := timeref.resolve(question, today)):
+    if (
+        not has_abs_year
+        and not timeref.SPAN_UNTIL.search(question)
+        and (ref := timeref.resolve(question, today))
+    ):
         if ref.open_end:
             if parsed.get("start_year") != ref.year:
                 fix("start_year", ref.year, ref.describe(today))
@@ -1159,6 +1184,8 @@ def correct(question, parsed, today=None):
     if parsed.get("type") == "rank" and other_axis:
         parsed["rank_axis"] = OTHER_AXIS.search(question)[1]
         parsed["grounded"] = False
+    if housing := housing_population_condition(question):
+        parsed["housing_condition"] = housing
     _one_region_years(parsed, fix)
     many_regions = len(parsed.get("regions") or []) > 1
     if parsed.get("months") and (parsed.get("type") != "value" or many_regions):
@@ -1308,6 +1335,7 @@ PLAIN_POPULATION = {
     "개", "곳", "군데",
 }  # fmt: skip
 POPULATION_NOUN = re.compile(r"([가-힣]+)\s*인구")
+POPULATION_PARTICLE = re.compile(r"(의|은|는|이|가|에서|에|별)$")
 
 
 PEOPLE_WORD = re.compile(r"사람|주민")
@@ -1358,24 +1386,50 @@ def population_modifier(question):
     if sub := find_sub_area(question):
         question = question.replace(sub[0], " ")
     for m in POPULATION_NOUN.finditer(question):
-        words = {m[1], re.sub(r"(의|은|는|이|가|에서|에|별)$", "", m[1]) or m[1]}
+        words = {m[1], POPULATION_PARTICLE.sub("", m[1]) or m[1]}
         if any(w in PLAIN_POPULATION or re.search(r"\d", w) for w in words):
             continue
         if any(
-            indicators.find_regions(w) or agegroup.resolve(w) or _short_region(w) for w in words
+            indicators.find_regions(w) or agegroup.resolve(w) or _resolve_short_region(w)
+            for w in words
         ):
             continue
         return min(words, key=len)
     return None
 
 
-def _short_region(word):
+def _resolve_short_region(word):
     if len(word) < 2 or word in COMMON_WORD_REGIONS:
-        return False
+        return None
     try:
-        return indicators.resolve_region(word)["status"] in ("ok", "ambiguous_region")
+        region = indicators.resolve_region(word)
     except StatsTableMissing:
-        return False
+        return None
+    return region if region["status"] in ("ok", "ambiguous_region") else None
+
+
+def _fix_short_population_region(question, parsed, fix):
+    matches = list(POPULATION_NOUN.finditer(question))
+    if len(matches) != 1 or len(parsed.get("regions") or []) > 1:
+        return
+    match = matches[0]
+    prefix = question[: match.start(1)].split()
+    explicit = indicators.find_regions(question)
+    if explicit and (len(explicit) != 1 or not prefix or explicit[0] != prefix[-1]):
+        return
+    for word in dict.fromkeys((match[1], POPULATION_PARTICLE.sub("", match[1]))):
+        if word in PLAIN_POPULATION or indicators.find_regions(word):
+            continue
+        if not (region := _resolve_short_region(word)):
+            continue
+        if explicit:
+            region = indicators.resolve_region(f"{explicit[0]} {word}")
+            if region["status"] != "ok" or region["kind"] not in ("시군구", "일반구"):
+                continue
+        name = region["display"] if region["status"] == "ok" else word
+        if parsed.get("regions") != [name]:
+            fix("regions", [name], "질문의 짧은 지역 이름")
+        return
 
 
 MEASURE_JOIN = re.compile(
@@ -1383,6 +1437,48 @@ MEASURE_JOIN = re.compile(
 )
 MEASURE_TAIL = re.compile(r"(?:수|율|비율|비중|인구|가구|건수|세대)$")
 ASK_TAIL = re.compile(r"\s+(?:알려|보여|얼마|몇|각각|비교|궁금|어때|좀|같이|함께).*$")
+MEASURE_LIST = re.compile(r"각각|둘\s*다|두\s*지표")
+MEASURE_RELATION = re.compile(r"비교|차이|대비|몇\s*배|나누|합쳐|더해|합산")
+
+
+def _measure_text(part):
+    return re.sub(r"(?:은|는|이|가|을|를|도)$", "", ASK_TAIL.sub("", part).strip(" ?.!"))
+
+
+def _measure_phrase(part):
+    text = _measure_text(part)
+    return " ".join(
+        w for w in text.split() if not YEAR.search(w) and not indicators.find_regions(w)
+    )
+
+
+def separate_measures(question):
+    parts = [p.strip() for p in MEASURE_JOIN.split(question.strip()) if p.strip()]
+    if len(parts) != 2 or MEASURE_RELATION.search(question):
+        return None
+    scoped_age = any(_says_age(p) for p in parts)
+    if not scoped_age and (not MEASURE_LIST.search(question) or asked_indicators(question)):
+        return None
+    names = [_measure_phrase(part) for part in parts]
+    if names[0] == names[1] or not all(
+        name and (MEASURE_TAIL.search(name) or indicators.find_in_text(name)) for name in names
+    ):
+        return None
+
+    first, second = map(_measure_text, parts)
+    shared = []
+    if not _says_year(second):
+        if explicit := SPAN.search(first) or YEAR.search(first):
+            shared.append(explicit[0])
+        elif len(refs := timeref.find(first)) == 1:
+            shared.append(refs[0]["expr"])
+    if not (NATIONWIDE.search(second) or indicators.find_regions(second)):
+        if NATIONWIDE.search(first):
+            shared.append("전국")
+        elif len(places := indicators.find_regions(first)) == 1:
+            shared.append(places[0])
+    questions = (f"{first} 알려줘", " ".join([*shared, second, "알려줘"]))
+    return list(zip(names, questions, strict=True))
 
 
 def unlisted_measure(question):
@@ -1395,9 +1491,7 @@ def unlisted_measure(question):
     for part, has in zip(parts, listed, strict=True):
         if has:
             continue
-        phrase = re.sub(r"(?:은|는|이|가|을|를|도)$", "", ASK_TAIL.sub("", part).strip(" ?.!"))
-        words = [w for w in phrase.split() if not YEAR.search(w) and not indicators.find_regions(w)]
-        phrase = " ".join(words)
+        phrase = _measure_phrase(part)
         if len(indicators._norm(phrase)) >= 2 and MEASURE_TAIL.search(indicators._norm(phrase)):
             return phrase
     return None
@@ -1419,7 +1513,7 @@ def measure_question(question, measure):
         for p in parts
         if p != own and indicators.find_in_text(p)
         for w in p.split()
-        if SHARED_WHEN.match(w) or indicators.find_regions(w) or _short_region(w)
+        if SHARED_WHEN.match(w) or indicators.find_regions(w) or _resolve_short_region(w)
     ]
     return " ".join([*shared, own])
 
@@ -1749,12 +1843,13 @@ def _read_question(question, parsed, fix):
             fix("end_year", end, "질문의 기간")
 
     asked = {}
+    fixed_end = any(r["kind"] == "span_until" for r in parsed.get("time_refs") or [])
     for mode, pattern in YEAR_EXTREME.items():
         if pattern.search(question):
             asked["extreme"] = mode
     if STREAK.search(question):
         asked["streak"] = "negative" if re.search(r"유출|빠져|감소|줄", question) else "positive"
-        if not SPAN.search(question) and not SINCE.search(question):
+        if not fixed_end and not SPAN.search(question) and not SINCE.search(question):
             for key in ("start_year", "end_year"):
                 if parsed.get(key):
                     fix(key, None, "연속 기간은 수록 기간 전체에서 셈")
@@ -1763,9 +1858,14 @@ def _read_question(question, parsed, fix):
     if PER_YEAR.search(question):
         asked["per_year"] = True
     by_year = {"extreme", "streak", "rebound", "per_year"} & set(asked)
-    if m := RECENT.search(question):
+    if not fixed_end and (m := RECENT.search(question)):
         asked["recent"] = int(m[2])
-    elif LATEST.search(question) and not YEAR.search(question) and not timeref.resolve(question):
+    elif (
+        not fixed_end
+        and LATEST.search(question)
+        and not YEAR.search(question)
+        and not timeref.resolve(question)
+    ):
         asked["latest"] = True
         if THESE_DAYS.search(question):
             asked["these_days"] = True
@@ -1965,11 +2065,24 @@ def _splits_by_sex(q):
     if sp is None or sp["name"] in NO_SEX_SPLIT:
         return False
     if sp.get("method") == "lookup":
+        if lookup.MONTHS.get() is not None and any(
+            s.get("by_sex") for s in sp.get("monthly_sources") or []
+        ):
+            return True
+        if (
+            q.get("months")
+            and sp.get("monthly_sources")
+            and q["type"] in ("value", "compare")
+            and len(q.get("regions") or []) <= 1
+        ):
+            return True
         return any(s.get("by_sex") for s in sp["sources"]) and not lookup.needs_split(sp, "계")
     return True
 
 
-MONTH_SPAN = re.compile(r"(\d{1,2})\s*월\s*(?:부터|에서|~|-|∼)\s*(\d{1,2})\s*월")
+MONTH_SPAN = re.compile(
+    r"(?<!\d)(\d{1,2})\s*(?:월\s*(?:부터|에서(?:부터)?)|(?:월\s*)?[~\-–∼])\s*(\d{1,2})\s*월"
+)
 MONTH_ONE = re.compile(r"(?<![\d개])(\d{1,2})\s*월(?!\s*(?:말|별|부터|에서))")
 HALF = {"상반기": (1, 6), "하반기": (7, 12)}
 QUARTER = re.compile(r"([1-4])\s*분기")
@@ -2211,12 +2324,25 @@ def _compute(q):
             "supported": list(indicators.specs()),
         }
 
+    if (housing := q.get("housing_condition")) and not _dynamic_fits(q):
+        return {
+            "status": "unknown_indicator",
+            "indicator": f"{housing} 거주 인구",
+            "reason": f"'{housing}' 조건의 인원 수를 확인할 수 없습니다.",
+        }
+
     names = q.get("indicators") or []
     if len(names) > 1 and kind in ("value", "trend", "compare"):
+        measures = q.get("measure_conditions") or {}
 
         def each(extra=None):
             return [
-                compute({**q, "indicators": None, "indicator": n, "term": n, **(extra or {})})
+                compute(
+                    {
+                        **measures.get(n, {**q, "indicators": None, "indicator": n, "term": n}),
+                        **(extra or {}),
+                    }
+                )
                 for n in names
             ]
 
@@ -2224,7 +2350,7 @@ def _compute(q):
         ok = [p for p in parts if p.get("status") == "ok"]
         if not ok:
             return parts[0]
-        if kind == "value" and not q.get("year") and (year := _common_year(ok)):
+        if not measures and kind == "value" and not q.get("year") and (year := _common_year(ok)):
             asked = {**(q.get("asked") or {}), "latest": False}
             parts = each({"year": year, "asked": asked})
             ok = [p for p in parts if p.get("status") == "ok"]
@@ -2299,7 +2425,12 @@ def _compute(q):
     dyn = q.get("dynamic_spec") if _dynamic_fits(q) else None
     sp = dyn or (None if q.get("unsupported") else indicators.spec(ind))
     if sp and sp.get("monthly_sources") and lookup.MONTHS.get() is not None:
-        sp = {**sp, "sources": sp["monthly_sources"]}
+        monthly_sources = sp["monthly_sources"]
+        if sex in ("남", "여"):
+            monthly_sources = [s for s in monthly_sources if sex in (s.get("by_sex") or {})] or (
+                monthly_sources
+            )
+        sp = {**sp, "sources": monthly_sources}
     if dyn and (dyn.get("ages_in_filters") or dyn.get("ignore_ages")):
         ages = None
     population = sp["name"] == "총인구" if sp else not ind or bool(PEOPLE_INDICATOR.search(ind))
@@ -2599,12 +2730,13 @@ def _compute_lookup(q, sp, kind, regions, year, sex, ages):
         regions = ["전국"]
     if kind == "compare" and len(regions) == 1:
         y0, y1 = q.get("start_year"), q.get("end_year")
-        kind = "trend" if y0 and y1 and y0 != y1 else "value"
-    if not any(s.get("by_sex") for s in sp["sources"]):
-        sex = "계"
+        kind = "trend" if y0 and y1 and y0 != y1 and not q.get("months") else "value"
     if ages and len(ages) > 1:
         parts = [_compute_lookup(q, sp, kind, regions, year, sex, [a]) for a in ages]
         return _combine(parts)
+    monthly_sex = sex
+    if not any(s.get("by_sex") for s in sp["sources"]):
+        sex = "계"
     if lookup.needs_split(sp, sex) and kind != "composition":
         parts = [_compute_lookup(q, sp, kind, regions, year, s, ages) for s in ("남", "여")]
         return _combine(parts)
@@ -2615,13 +2747,16 @@ def _compute_lookup(q, sp, kind, regions, year, sex, ages):
         return _sum_regions(lookup.compare(sp, regions, year, sex, ages), q)
     if kind == "value" and q.get("share_of"):
         return _share_of(lookup.value(sp, regions[0], year, sex, ages), sp, year, sex, ages)
-    if kind == "value" and q.get("months") and len(regions) == 1:
-        # 달 묶음 합: 월별 출처가 있는 지표는 월별 값을 더한다. 없으면 연간 값에 그 사실을 적는다
-        m0, m1 = q["months"][:2]
-        if (r := lookup.month_sum(sp, regions[0], year, m0, m1, sex)) is not None:
-            if r.get("status") == "ok":
-                r.setdefault("as_of", f"{year}년 {monthref.label(m0, m1)}")
-            return r
+    if kind == "value" and (months := q.get("months")) and len(regions) == 1:
+        m0, m1 = months[:2]
+        start_year, end_year = q.get("start_year"), q.get("end_year")
+        if not (start_year and end_year):
+            start_year = end_year = year
+        monthly = lookup.month_sum(
+            sp, regions[0], start_year, m0, m1, monthly_sex, ages=ages, end_year=end_year
+        )
+        if monthly is not None:
+            return monthly
         r = lookup.value(sp, regions[0], year, sex, ages)
         if r.get("status") == "ok":
             r.setdefault("notes", []).append(
@@ -2975,7 +3110,7 @@ NEGATIVE_MEANING = {
 
 
 def _when(r):
-    return r.get("as_of") or f"{r['year']}년"
+    return r.get("period_label") or r.get("as_of") or f"{r['year']}년"
 
 
 def _value_text(r):
@@ -3340,7 +3475,8 @@ def _body(r):
     if "split" in r:
         return [line for p in r["split"] for line in _body(p)]
     if "members" in r:
-        lines = [f"{r['region']} {name} ({r['year']}년)"]
+        subject = _subject(r) if r.get("months") else name
+        lines = [f"{r['region']} {subject} ({_when(r)})"]
         lines += [f"- {m['region']}: {_num(m['value'], unit)}" for m in r["members"]]
         lines.append(f"- 합계: {_num(r['value'], unit)}")
         return lines
@@ -3565,7 +3701,7 @@ def _add_data_end_note(parsed, result, today=None):
     refs = [r for r in parsed.get("time_refs") or [] if r.get("kind") in PERIOD_KINDS]
     recent = _asked_years(parsed)
     kinds = {r["kind"] for r in refs}
-    if not recent and not kinds - {"span_from"}:
+    if not recent and not kinds - {"span_from", "span_until"}:
         return
     parts = _leaves(result) if result.get("split") else [result]
     years = [
@@ -3606,9 +3742,10 @@ async def answer(parsed, trace=None, question=""):
     if not parsed.get("dynamic_spec"):
         flow.add("사전 계산", result.get("status"), flow_result(result))
         from app.core.config import get_settings
+        from app.services.dynamic_indicator import has_values
 
         months = parsed.get("months") or parsed.get("months_each")
-        if months and not any(r.get("value") is not None for r in _leaves(result)):
+        if months and not has_values(result):
             parsed["grounded"] = False
             parsed["gate_reasons"] = ["월을 물었는데 사전 표에 월별 값이 없음"]
             flow.add("사전 문지기", "넘김", parsed["gate_reasons"][0])

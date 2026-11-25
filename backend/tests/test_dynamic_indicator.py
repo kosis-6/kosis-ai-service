@@ -2349,6 +2349,20 @@ def test_cell_name_unit_wins_over_count_unit() -> None:
     assert d._name_unit(d.Plan(pick={0: "T2"}), dims, "%") == "%"
 
 
+def test_housing_amount_builds_a_monetary_indicator(fake_table, monkeypatch) -> None:
+    table = "DT_1PI2015"
+    item = d.Dim(0, "항목", {"T1": "가구", "T2": "전세금 평균(만원)"})
+    dwelling = d.Dim(2, "거처의 종류별", {"0": "계", "1": "아파트"})
+    fake_table["tables"][table] = ([item, ONE_PERSON[1], dwelling], 1, "시군구")
+    fake_table["units"][table] = ("가구", True)
+    monkeypatch.setattr(lookup, "_table", lambda _: {"tbl_nm": "점유형태별 가구"})
+    question = "2020년 서울 아파트 전세금 평균"
+    parsed = {**BASE, "indicator": "전세금 평균", "term": "전세금 평균"}
+    spec, reason = d.build(table, question, parsed, forced={0: "T2", 2: "1"})
+    assert spec is not None, reason
+    assert (spec["unit"], spec["kind"]) == ("만원", "value")
+
+
 def test_cell_llm_still_called_when_binding_retry_fails(cell_llm, monkeypatch) -> None:
     from app.core.config import get_settings
 

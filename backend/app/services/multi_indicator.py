@@ -141,9 +141,22 @@ def _side_by_side(question, parsed, ok, failed, trace, notes=()):
     return _response(question, parsed, result, trace, notes, [_span(t) for t, _ in ok])
 
 
-def side_by_side(question: str, parsed: dict, answers: list[tuple[str, dict]], trace: dict):
-    ok = [({"span": span}, res) for span, res in answers if _ok(res)]
-    if len(ok) < 2:
+def side_by_side(
+    question: str,
+    parsed: dict,
+    answers: list[tuple[str, dict]],
+    trace: dict,
+    *,
+    allow_partial=False,
+):
+    ok, failed = [], []
+    for span, res in answers:
+        if _ok(res):
+            ok.append(({"span": span}, res))
+        elif allow_partial:
+            tables = (res or {}).get("tables") or {}
+            failed.append({"span": span, "candidates": tables.get("recommendations") or []})
+    if not ok or (len(ok) < 2 and not allow_partial):
         return None
 
     def place(item):
@@ -152,7 +165,7 @@ def side_by_side(question: str, parsed: dict, answers: list[tuple[str, dict]], t
 
     ok.sort(key=place)
     trace["multi"] = {"op": "none", "targets": [{"span": t["span"]} for t, _ in ok]}
-    return _side_by_side(question, parsed, ok, [], trace)
+    return _side_by_side(question, parsed, ok, failed, trace)
 
 
 def _value(res: dict) -> dict | None:

@@ -167,7 +167,7 @@ async def _ask(question: str, reason: str) -> dict[str, Any] | None:
         return messages, {
             "thinking": {"effort": "none"},
             "maxCompletionTokens": MAX_TOKENS,
-            **({"temperature": 0} if llm == "gemma" else {}),
+            "temperature": 0,
             "responseFormat": {"type": "json", "schema": prompt.SCHEMA},
         }
 

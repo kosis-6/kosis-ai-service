@@ -6,7 +6,7 @@ from functools import lru_cache
 
 from app.core.stats_db import StatsNotLoadedError, StatsTableMissing
 from app.core.stats_db import rows as _rows
-from app.services import analysis, partial_table
+from app.services import analysis, monthref, partial_table
 from app.services import indicators as ind_mod
 from app.services.josa import josa
 from pipeline.region_map import find_region_dim
@@ -270,6 +270,7 @@ def _sum(src, codes, y0, y1, item_key, filters, age_codes, group_dim=None, month
         return partial_table.sum_rows(
             part, src, codes, y0, y1, item_key, filters, age_codes, group_dim, _projection(tbl)
         )
+    period_sql, year_sql, period_params = _period_where(y0, y1, monthly)
     conds, params = _conds(src, item_key, filters, age_codes)
     region_dim = _region_dim(tbl)
     if region_dim is None:
@@ -277,11 +278,12 @@ def _sum(src, codes, y0, y1, item_key, filters, age_codes, group_dim=None, month
     else:
         if src.get("national_only"):
             codes = ("00",)
+        region_year = "v.period / 100" if monthly else year_sql
         valid = (
             "true"
             if _projection(tbl)
-            else "(m.valid_from is null or v.period >= m.valid_from)"
-            " and (m.valid_to is null or v.period <= m.valid_to)"
+            else f"(m.valid_from is null or {region_year} >= m.valid_from)"
+            f" and (m.valid_to is null or {region_year} <= m.valid_to)"
         )
         region_sql = f"""
         join stat_code k on k.code_key = v.c{region_dim}
@@ -292,7 +294,6 @@ def _sum(src, codes, y0, y1, item_key, filters, age_codes, group_dim=None, month
     groups = "1, 2, 3" if group_dim else "1, 2"
     flags = EMPTY_FLAGS.get()
     flag_sql = ", max(v.flag) filter (where v.value is null) as flag" if flags is not None else ""
-    period_sql, year_sql, period_params = _period_where(y0, y1, monthly)
     rows = _rows(
         f"""
         select {year_sql} as year, {rc} as rc{part}, sum(v.value)::float8 as v, count(v.value) as n
@@ -949,36 +950,68 @@ def data_gap(term):
 # ---- 달 묶음 합 (월별 자료) --------------------------------------------------------
 
 
-def _pick_monthly(spec, level):
-    """지역 수준에 맞는 월별 출처 (지표 사전의 monthly_sources). 없으면 None"""
+def _pick_monthly(spec, level, sex):
+    """요청한 지역 수준과 성별을 조회할 수 있는 월별 출처를 고른다."""
     for s in spec.get("monthly_sources") or []:
-        if LEVELS[s["level"]] >= LEVELS[level]:
-            return s
+        if LEVELS[s["level"]] < LEVELS[level] or (sex in SEX_WORDS and not s.get("by_sex")):
+            continue
+        if (src := _effective(s, sex)) is not None:
+            return src
     return None
 
 
-def month_sum(spec, region, year, m0, m1, sex="계"):
-    """한 지역의 어느 해 m0~m1월 값의 합 ("작년 1월부터 3월까지 사망자"). 월별 출처가 없는 지표면
-    None, 그 밖의 실패는 value 와 같은 오류 dict. 달마다 값은 members 로 남긴다
-    (답 문장과 판정 요약이 '합계'로 본다)"""
-    if not spec.get("monthly_sources"):
+def month_sum(spec, region, year, m0, m1, sex="계", *, ages=None, end_year=None):
+    """한 지역의 시작 연월부터 종료 연월까지의 값을 더한다."""
+    if not (sources := spec.get("monthly_sources")):
         return None
-    regs = _resolve(spec, [region], year)
+    end_year = year if end_year is None else end_year
+    p0, p1 = year * 100 + m0, end_year * 100 + m1
+    if not (1 <= m0 <= 12 and 1 <= m1 <= 12 and p0 <= p1):
+        return {"status": "out_of_range", "reason": "시작 연월과 종료 연월을 확인해 주세요."}
+
+    regs = _resolve(spec, [region], end_year)
     if isinstance(regs, dict):
         return regs
     (reg,) = regs
-    src = _pick_monthly(spec, _level(regs))
+    name, code = reg["display"], reg["region_code"]
+    level = _level(regs)
+    src = _pick_monthly(spec, level, sex)
     if src is None:
-        top = max((s["level"] for s in spec["monthly_sources"]), key=LEVELS.get)
+        top = max((s["level"] for s in sources), key=LEVELS.get)
+        if LEVELS[top] >= LEVELS[level]:
+            return {
+                "status": "band_mismatch",
+                "indicator": spec["name"],
+                "region": name,
+                "reason": f"{josa(spec['name'], '은는')} 월별 자료에서 요청하신 성별을 "
+                "구분해 계산할 수 없습니다.",
+            }
         return {
             "status": "no_region_level",
             "indicator": spec["name"],
             "reason": f"{josa(spec['name'], '은는')} 월별 자료가 {top} 단위까지만 있습니다.",
             "level": top,
-            "region": reg["display"],
+            "region": name,
         }
+    if ages and not src.get("age_dim"):
+        age = ind_mod.age_label(ages[0])
+        result = {
+            "status": "band_mismatch",
+            "indicator": spec["name"],
+            "region": name,
+            "reason": f"{josa(spec['name'], '은는')} 월별 자료에 연령 구분이 없어 "
+            f"{age}의 값을 계산할 수 없습니다.",
+        }
+        if table := spec.get("annual_age_table"):
+            result.update(_source_info({"table": table}))
+            result["alternative"] = "연간 연령별 자료는 아래 KOSIS 통계표에서 확인할 수 있습니다"
+        return result
+    try:
+        age_codes, label, notes = _ages(src, ages)
+    except AgeMismatch:
+        return _band_mismatch(spec, src, ages)
+
     lo, hi = _month_range(src["table"], _items(src))
-    p0, p1 = year * 100 + m0, year * 100 + m1
     if lo is None or p0 < lo or p1 > hi:
         shown = f"{lo // 100}년 {lo % 100}월~{hi // 100}년 {hi % 100}월" if lo else "없음"
         return {
@@ -986,31 +1019,43 @@ def month_sum(spec, region, year, m0, m1, sex="계"):
             "indicator": spec["name"],
             "reason": f"{spec['name']} 월별 자료는 {shown}만 있습니다.",
             "available_years": [lo // 100, hi // 100] if lo else None,
-            "region": reg["display"],
+            "region": name,
         }
-    got = _sum(
-        src, [reg["region_code"]], p0, p1, "item_id", src.get("filters", {}), None, monthly=True
-    )
-    by_month = {period % 100: v for (period, _), v in got.items()}
-    months = list(range(m0, m1 + 1))
-    if any(by_month.get(m) is None for m in months):
-        missing = ", ".join(f"{m}월" for m in months if by_month.get(m) is None)
+    got = _sum(src, [code], p0, p1, "item_id", src.get("filters", {}), age_codes, monthly=True)
+    periods = [
+        y * 100 + month
+        for y in range(year, end_year + 1)
+        for month in range(m0 if y == year else 1, (m1 if y == end_year else 12) + 1)
+    ]
+    same_year = year == end_year
+    month_names = {p: f"{p % 100}월" if same_year else f"{p // 100}년 {p % 100}월" for p in periods}
+    if missing := [month_names[p] for p in periods if got.get((p, code)) is None]:
+        missing = ", ".join(missing)
+        if same_year:
+            missing = f"{year}년 {missing}"
         return {
             "status": "missing_data",
             "indicator": spec["name"],
-            "reason": f"{year}년 {missing} 값이 없습니다.",
-            "region": reg["display"],
+            "reason": f"{missing} 값이 없습니다.",
+            "region": name,
         }
-    span = f"{m0}월" if m0 == m1 else f"{m0}~{m1}월"
+    span = (
+        f"{year}년 {monthref.label(m0, m1)}"
+        if same_year
+        else f"{month_names[p0]}~{month_names[p1]}"
+    )
     return _base(
         spec,
         src,
-        region=reg["display"],
-        year=year,
+        label=label,
+        year=end_year,
+        region=name,
         sex=sex,
-        value=_round(sum(by_month[m] for m in months), spec),
-        members=[{"region": f"{m}월", "value": _round(by_month[m], spec)} for m in months],
+        value=_round(sum(got[p, code] for p in periods), spec),
+        members=[{"region": month_names[p], "value": _round(got[p, code], spec)} for p in periods],
         months=[m0, m1],
-        formula=f"{year}년 {span} 월별 값의 합",
-        notes=[f"{year}년 {span} 합계입니다 (월별 자료)"],
+        as_of=span,
+        period_label=span,
+        formula=f"{span} 월별 값의 합",
+        notes=[*notes, f"{span} 합계입니다 (월별 자료)"],
     )

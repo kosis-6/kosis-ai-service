@@ -123,6 +123,8 @@ async def _conditions(question: str) -> dict[str, Any]:
 
 
 def judge(question: str, parsed: dict, result: dict, u: dict) -> dict[str, Any] | None:
+    from app.services import qa
+
     tbl_id, forced, decided, sp = _source(result, parsed)
     if not tbl_id:
         return None
@@ -138,8 +140,9 @@ def judge(question: str, parsed: dict, result: dict, u: dict) -> dict[str, Any] 
     b = binding.bind(tbl_id, question, {**parsed, "sex": None}, slots, forced)
     words = _indicator_words(sp, parsed)
     reasons = _unbound_reasons(b, parsed, words) + _ignored(b, tbl_id, decided, words)
-    basis = str(result.get("basis") or "")
-    if SUB_YEAR.search(question) and not result.get("as_of") and not MONTHLY.search(basis):
+    if SUB_YEAR.search(question) and any(
+        not (r.get("as_of") or MONTHLY.search(r.get("basis") or "")) for r in qa._leaves(result)
+    ):
         reasons.append("월 · 분기 단위를 물었는데 연간 값")
     if FROM_TO.search(question):
         reasons.append("'○○에서 ○○로' 옮긴 사람 (전출지 → 전입지)")
