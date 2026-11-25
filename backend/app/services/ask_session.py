@@ -350,6 +350,10 @@ CONTEXT_YEAR = [
     (re.compile(r"다음\s*해|이듬해|다음\s*연도|익년|한\s*해\s*(?:뒤|후)"), 1),
 ]
 FULL_YEAR = re.compile(rf"(?:19|20)\d{{2}}{slots.NOT_YEAR_TAIL}")
+YEAR_ONLY_REPLY = re.compile(
+    rf"\s*{slots.YEAR.pattern}\s*(?:년도?\s*)?(?:(?:으로|로)\s*)?(?:은|는|도|만)?\s*(?:이?요)?"
+    r"(?:\s*(?:보여|알려|바꿔)\s*(?:줘요?|주세요))?\s*[?.!]*"
+)
 
 
 def follow_year(question: str, conditions: dict, today: date | None = None) -> int | None:
@@ -1625,15 +1629,21 @@ async def _turn(
         return res, sources, notice
     if view is None and not (has_last and summary_request(question)):
         trace: dict = {}
-        split = await asyncio.to_thread(region_split_changes, question, state["conditions"])
-        region_only = region_only or await asyncio.to_thread(
-            region_only_changes, question, state["conditions"]
-        )
-        if composition_request(question):
+        if year_reply := YEAR_ONLY_REPLY.fullmatch(question):
+            delta = {
+                "request_type": CHANGE,
+                "changes": {"year": int(year_reply[1])},
+                "chart": None,
+                "unclear": None,
+            }
+            flow.add("후속 질문", "연도 변경", f"{year_reply[1]}년")
+        elif composition_request(question):
             delta = parse_delta('{"request_type": "change", "changes": {"type": "composition"}}')
-        elif split:
+        elif split := await asyncio.to_thread(region_split_changes, question, state["conditions"]):
             delta = {"request_type": CHANGE, "changes": split, "chart": None, "unclear": None}
-        elif region_only:
+        elif region_only := region_only or await asyncio.to_thread(
+            region_only_changes, question, state["conditions"]
+        ):
             delta = {"request_type": CHANGE, "changes": region_only, "chart": None, "unclear": None}
         else:
             delta = await extract(state, question, trace)
