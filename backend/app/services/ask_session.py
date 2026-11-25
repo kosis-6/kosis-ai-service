@@ -1040,21 +1040,37 @@ def verify_restate(r: dict, conditions: dict, question: str) -> tuple[str, str, 
     return relation, restored, ""
 
 
+# unclear 일 때 사용자에게 보이는 문장. LLM 의 why 는 판단 메모라 화면에 내지 않고 기록에만 둔다
+# (11/25 경계 시험: "더" → "새 말이 불완전함 바꿀 조건을…"이 그대로 나왔다)
+RESTATE_UNCLEAR = "앞 대화에서 무엇을 가리키는지 알 수 없습니다."
+
+
+def restate_failed(r: dict) -> bool:
+    """복원을 쓸 수 없는가: 호출 실패 · JSON 못 읽음 · unclear 가 아닌데 문장이 빔"""
+    relation = r.get("relation") or ""
+    return not relation or (relation != "unclear" and not r.get("question"))
+
+
 async def _restated(
     state: dict, question: str, user_id: int | None
-) -> tuple[dict, dict, str | None]:
-    """FOLLOW_RESTATE: LLM 복원 → 코드 확인 → 복원 문장을 새 질문 경로로"""
+) -> tuple[dict, dict, str | None] | None:
+    """FOLLOW_RESTATE: LLM 복원 → 코드 확인 → 복원 문장을 새 질문 경로로.
+    복원을 쓸 수 없으면 None: 호출한 _turn 이 기존 경로(코드 규칙 + 변경 추출)로 이어 간다.
+    새 말만 새 질문으로 보내면 직전 대화를 잃는다
+    (11/25 HCX 42901에서 "2020년은?"이 맥락 없이 감)"""
     trace: dict = {}
     try:
         r = await restate(state, question, trace)
     except Exception:
-        logger.exception("이어 묻기 복원 실패")
+        logger.exception("이어 묻기 복원 실패 → 기존 경로")
         r = {"relation": "", "question": "", "why": "호출 실패"}
+    if restate_failed(r):
+        flow.add("이어 묻기 판단", "실패", f"{r.get('why') or '복원 못 읽음'} → 기존 경로")
+        return None
     relation, restored, note = verify_restate(r, state["conditions"], question)
     flow.add("이어 묻기 판단", relation, " · ".join(x for x in (restored, r.get("why"), note) if x))
     if relation == "unclear":
-        why = r.get("why") or "직전 답에서 무엇을 가리키는지 알 수 없습니다."
-        res = _unclear(state, why)
+        res = _unclear(state, RESTATE_UNCLEAR)
         res["trace"] = {"restate": {**r, "note": note, **trace}}
         return res, state["sources"], None
     res, sources, notice = await _new(restored, state)
@@ -1556,8 +1572,10 @@ async def _turn(
         and not (has_last and summary_request(question))
     ):
         # 이어 묻기 LLM 복원 (A_16): 아래 코드 규칙(비율 후속 · 구별로 · 지역만 · 구성비 · 사람 수)
-        # 과 변경 추출(FOLLOW_SYSTEM) 대신 LLM이 완전한 질문으로 복원하고 새 질문 경로로 간다
-        return await _restated(state, question, user_id)
+        # 과 변경 추출(FOLLOW_SYSTEM) 대신 LLM이 완전한 질문으로 복원하고 새 질문 경로로 간다.
+        # 복원을 쓸 수 없으면(None) 아래 기존 경로로 이어 간다
+        if (restated := await _restated(state, question, user_id)) is not None:
+            return restated
     if view is None and (asked := await asyncio.to_thread(ratio_followup, question, state)):
         flow.add("비율 후속 질문", "새 질문으로", asked)
         res, sources, notice = await _new(

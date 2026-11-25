@@ -32,7 +32,9 @@ class Settings(BaseSettings):
     answer_judge: bool = False
     # 이어 묻는 말 판단을 LLM이 먼저 (실험실 A_16, 11/25): 직전 질문 · 조건 · 답을 주고
     # followup / new / unclear 와 혼자 서는 완전한 질문 한 문장을 받아 새 질문 경로에 넣는다.
-    # 켜지면 코드 규칙(비율 후속 · 지역만 바꾸기 · 구별로 · 구성비로 · 사람 수 묻기)은 쓰지 않는다.
+    # 켜지면 ratio_followup 부터 뒤의 코드 규칙(비율 후속 · 지역만 바꾸기 · 구별로 · 구성비로 ·
+    # 사람 수 묻기)과 변경 추출은 쓰지 않는다. 그보다 앞의 규칙(되묻기 답 · 인사 · 완전한 질문
+    # complete_question · 요약 · 출처 · 왜)은 그대로 먼저 돈다. 복원 호출이 실패하면 기존 경로로.
     # 기본은 끔 (FOLLOW_RESTATE=true 로 켠다). 꺼지면 지금 구조(규칙 + FOLLOW_SYSTEM 변경 추출)
     follow_restate: bool = False
     # 조건 → 칸 잇기 1단계 (app/services/binding.py, docs/cell_binding_design_2026-11-23.md).

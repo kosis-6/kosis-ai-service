@@ -2054,3 +2054,65 @@ def test_verify_restate_keeps_recent_years_for_code(monkeypatch) -> None:
         "최근 5년 전국 고령인구 비율은?",
         "상대 기간은 코드로 최근 5년",
     )
+
+
+def test_restate_failed_when_call_or_parse_breaks() -> None:
+    assert s.restate_failed({"relation": "", "question": "", "why": "호출 실패"})
+    assert s.restate_failed(s.parse_restate("말로 답함"))
+    assert s.restate_failed({"relation": "followup", "question": ""})
+    # unclear 는 문장이 비어도 된다
+    assert not s.restate_failed({"relation": "unclear", "question": ""})
+    assert not s.restate_failed({"relation": "new", "question": "2024년 대구 출생아 수는?"})
+
+
+@pytest.fixture
+def restate_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(s.get_settings(), "follow_restate", True)
+
+
+def test_follow_restate_call_failure_goes_back_to_existing_path(
+    talk: Talk, restate_on: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """복원 호출이 실패하면 새 말만 새 질문으로 보내지 않고 기존 경로(규칙 + 변경 추출)로 이어 간다
+    (11/25 HCX 42901: "2020년은?"이 직전 대화 없이 새 질문으로 갔다)"""
+
+    async def broken(state, question, trace):
+        raise RuntimeError("HCX 42901")
+
+    monkeypatch.setattr(s, "restate", broken)
+    talk.say("부산 출생아 최근 5년 보여 줘")
+    res = talk.say("2022년만", request_type="change", changes={"year": 2022})
+    assert talk.extracted == ["2022년만"]  # 기존 변경 추출을 탔다
+    assert res["request_type"] == "change"
+    assert res["parsed"]["year"] == 2022 and res["parsed"]["regions"] == ["부산"]
+    assert talk.asked == ["부산 출생아 최근 5년 보여 줘"]  # 새 말만으로 새 질문을 하지 않았다
+
+
+def test_follow_restate_unreadable_answer_goes_back_to_existing_path(
+    talk: Talk, restate_on: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def prose(question, system):
+        return "죄송하지만 이해하지 못했습니다"
+
+    monkeypatch.setattr(s, "_chat", prose)
+    talk.say("부산 출생아 최근 5년 보여 줘")
+    res = talk.say("2022년만", request_type="change", changes={"year": 2022})
+    assert talk.extracted == ["2022년만"]
+    assert res["parsed"]["year"] == 2022 and res["parsed"]["regions"] == ["부산"]
+
+
+def test_follow_restate_unclear_shows_fixed_sentence_not_llm_note(
+    talk: Talk, restate_on: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """unclear 의 why 는 LLM 판단 메모라 화면에 내지 않는다 (11/25 "더" → "새 말이 불완전함 …")"""
+
+    async def unclear(question, system):
+        return '{"relation": "unclear", "question": "", "why": "새 말이 불완전함"}'
+
+    monkeypatch.setattr(s, "_chat", unclear)
+    talk.say("부산 출생아 최근 5년 보여 줘")
+    res = talk.say("더")
+    assert res["request_type"] == "unclear"
+    assert res["answer"].startswith(s.RESTATE_UNCLEAR)
+    assert "새 말이 불완전함" not in res["answer"]
+    assert talk.extracted == []  # unclear 는 복원의 판단이라 기존 경로로 가지 않는다
