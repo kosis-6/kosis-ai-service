@@ -2593,7 +2593,7 @@ def _compute_lookup(q, sp, kind, regions, year, sex, ages):
         regions = ["전국"]
     if kind == "compare" and len(regions) == 1:
         y0, y1 = q.get("start_year"), q.get("end_year")
-        kind = "trend" if y0 and y1 and y0 != y1 else "value"
+        kind = "trend" if y0 and y1 and y0 != y1 and not q.get("months") else "value"
     if not any(s.get("by_sex") for s in sp["sources"]):
         sex = "계"
     if ages and len(ages) > 1:
@@ -2609,11 +2609,16 @@ def _compute_lookup(q, sp, kind, regions, year, sex, ages):
         return _sum_regions(lookup.compare(sp, regions, year, sex, ages), q)
     if kind == "value" and q.get("share_of"):
         return _share_of(lookup.value(sp, regions[0], year, sex, ages), sp, year, sex, ages)
-    if kind == "value" and q.get("months") and len(regions) == 1:
-        # 달 묶음 합: 월별 출처가 있는 지표는 월별 값을 더한다. 없으면 연간 값에 그 사실을 적는다
-        m0, m1 = q["months"][:2]
-        if (r := lookup.month_sum(sp, regions[0], year, m0, m1, sex)) is not None:
-            return r
+    if kind == "value" and (months := q.get("months")) and len(regions) == 1:
+        m0, m1 = months[:2]
+        start_year, end_year = q.get("start_year"), q.get("end_year")
+        if not (start_year and end_year):
+            start_year = end_year = year
+        monthly = lookup.month_sum(
+            sp, regions[0], start_year, m0, m1, sex, ages=ages, end_year=end_year
+        )
+        if monthly is not None:
+            return monthly
         r = lookup.value(sp, regions[0], year, sex, ages)
         if r.get("status") == "ok":
             r.setdefault("notes", []).append(
@@ -2967,7 +2972,7 @@ NEGATIVE_MEANING = {
 
 
 def _when(r):
-    return r.get("as_of") or f"{r['year']}년"
+    return r.get("period_label") or r.get("as_of") or f"{r['year']}년"
 
 
 def _value_text(r):
@@ -3332,7 +3337,7 @@ def _body(r):
     if "split" in r:
         return [line for p in r["split"] for line in _body(p)]
     if "members" in r:
-        lines = [f"{r['region']} {name} ({r['year']}년)"]
+        lines = [f"{r['region']} {name} ({_when(r)})"]
         lines += [f"- {m['region']}: {_num(m['value'], unit)}" for m in r["members"]]
         lines.append(f"- 합계: {_num(r['value'], unit)}")
         return lines
