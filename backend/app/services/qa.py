@@ -540,7 +540,20 @@ INDICATOR_PATTERNS = [
         "고령인구 비율",
     ),
 ]
+BIRTH_SEX_RATIO = re.compile(
+    r"(?:여자|여아|딸|남자|남아|아들)\S*\s*(?:아기|아이|애기|애)?\S*\s*100\s*명\S*"
+    r"\s*(?:\S+\s*){0,3}(?:태어|출생)"
+    r"|(?:태어|출생|신생아|아기|아이)\S*\s*(?:\S+\s*){0,2}성비"
+)
+OUT_OF_WEDLOCK = re.compile(
+    r"(?:혼인|결혼)\s*신고\s*(?:를|도)?\s*(?:안|않|없|하지\s*않)"
+    r"|결혼\s*(?:을|도)?\s*안\s*한\s*(?:부모|엄마|아빠)|혼인\s*외|혼외"
+)
+BIRTH_WORDS = re.compile(r"태어|출생|낳|아기|아이|애기")
 MORE_SPECIFIC = {
+    "출생성비": {"출생아 수", "성비"},
+    "혼인 외 출생아 비율": {"출생아 수", "혼인 외 출생아 수"},
+    "혼인 외 출생아 수": {"출생아 수"},
     "조출생률": {"출생아 수"},
     "셋째 이상 출생아 수": {"출생아 수"},
     "삼태아 이상 출생아 수": {"출생아 수"},
@@ -701,6 +714,31 @@ def _pick_indicator(question, names):
         if len(ratio) == 1:
             return next(iter(ratio))
     return None
+
+
+RELATIVE_YEAR = {"재작년": 2, "작년": 1, "지난해": 1, "전년": 1, "올해": 0, "금년": 0}
+
+
+def _said_years(question: str, today: date) -> list[int]:
+    years = [int(y) for y in YEAR.findall(question)]
+    for word, back in RELATIVE_YEAR.items():
+        if word in question:
+            years.append(today.year - back)
+            question = question.replace(word, " ")
+    return years
+
+
+def _past_foreign_residents(question: str, today: date) -> bool:
+    years = _said_years(question, today)
+    if not years:
+        return False
+    try:
+        table = indicators.spec("외국인주민 수")["sources"][0]["table"]
+        last = lookup._table(table).get("end_year")
+    except Exception:
+        logger.exception("외국인주민 수 수록 연도 확인 실패")
+        return False
+    return bool(last) and max(years) > int(last)
 
 
 def _both_sides(current: str | None, name: str, question: str) -> bool:
@@ -1005,6 +1043,10 @@ def correct(question, parsed, today=None):
                     and not OTHER_PEOPLE.search(question)
                 ):
                     names |= {"총인구"}
+        if BIRTH_SEX_RATIO.search(question):
+            names |= {"출생성비"}
+        if OUT_OF_WEDLOCK.search(question) and BIRTH_WORDS.search(question):
+            names |= {"혼인 외 출생아 비율" if PCT_ASK.search(question) else "혼인 외 출생아 수"}
         for specific, general in MORE_SPECIFIC.items():
             if specific in names:
                 names -= general
@@ -1012,6 +1054,7 @@ def correct(question, parsed, today=None):
             not names
             and BARE_FOREIGNER.search(question)
             and not NOT_BARE_FOREIGNER.search(question)
+            and not _past_foreign_residents(question, today)
         ):
             names = {"외국인주민 수"}
         name = _pick_indicator(question, names)
