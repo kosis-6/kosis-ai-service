@@ -140,7 +140,9 @@ def period_text(c: dict) -> str | None:
     return f"{c['year']}년" if c.get("year") else None
 
 
-def applied(conditions: dict, sources: dict[str, str]) -> list[dict[str, str]]:
+def applied(
+    conditions: dict, sources: dict[str, str], *, include_regions: bool = True
+) -> list[dict[str, str]]:
     if conditions.get("type") in NO_CONDITIONS:
         return []
     regions = conditions.get("regions") or []
@@ -148,7 +150,7 @@ def applied(conditions: dict, sources: dict[str, str]) -> list[dict[str, str]]:
         regions = [f"{conditions.get('sido') or '전국'} {conditions.get('level') or '시도'}별"]
     values = {
         "indicator": ", ".join(conditions.get("indicators") or []) or conditions.get("indicator"),
-        "regions": ", ".join(regions) or None,
+        "regions": ", ".join(regions) if include_regions else None,
         "period": period_text(conditions),
         "sex": conditions.get("sex"),
     }
@@ -1427,6 +1429,22 @@ async def _movement_tables(question: str, user_id: int | None, told: str | None 
 async def _turn(
     state: dict | None, question: str, selections: dict | None = None, user_id: int | None = None
 ) -> tuple[dict, dict, str | None]:
+    if refusal.instruction_request(question):
+        flow.add("통계 질문 검사", "not_statistics", "내부 지시 요청")
+        return (
+            {
+                "status": "not_statistics",
+                "answer": refusal.INSTRUCTION_REFUSAL,
+                "parsed": {},
+                "result": {"status": "not_statistics"},
+                "sources": [],
+                "chart": None,
+                "request_type": UNCLEAR,
+                "trace": {"instruction_request": True},
+            },
+            {},
+            None,
+        )
     pending = (state or {}).get("pending")
     if pending and pending.get("missing") == "question_clarification":
         original = pending["original_question"]
@@ -1697,8 +1715,10 @@ async def _turn(
 
 def next_state(state: dict | None, question: str, res: dict, sources: dict) -> dict:
     prev = state or {}
-    recent = [*(prev.get("recent") or []), question][-RECENT:]
     turn_no = (prev.get("turn_no") or 0) + 1
+    if (res.get("trace") or {}).get("instruction_request"):
+        return {"conditions": {}, "sources": {}, **prev, "turn_no": turn_no}
+    recent = [*(prev.get("recent") or []), question][-RECENT:]
     if res.get("clarification"):
         before = prev.get("pending") or {}
         again = (
@@ -1764,8 +1784,13 @@ def next_state(state: dict | None, question: str, res: dict, sources: dict) -> d
             "turn_no": turn_no,
         }
     asked = res.get("question") or question
+    conditions = effective(res.get("parsed") or {}, res.get("result") or {})
+    if unconfirmed := conditions.pop("ungrounded_region", None):
+        conditions["regions"] = [r for r in conditions.get("regions") or [] if r != unconfirmed]
+        if conditions.get("sido") == unconfirmed:
+            conditions.pop("sido")
     return {
-        "conditions": effective(res.get("parsed") or {}, res.get("result") or {}),
+        "conditions": conditions,
         "sources": sources,
         "last": {
             "status": res.get("status"),
@@ -2708,8 +2733,18 @@ async def handle(
         res["session_id"] = sid
         res["applied"] = (
             []
-            if res.get("status") == TABLES
-            else applied(after.get("conditions") or {}, after.get("sources") or {})
+            if res.get("status") in (TABLES, *table_guide.REFUSED)
+            else applied(
+                after.get("conditions") or {},
+                after.get("sources") or {},
+                include_regions=(res.get("result") or {}).get("status")
+                not in {
+                    "unknown_region",
+                    "ambiguous_region",
+                    "missing_region",
+                    "region_not_in_year",
+                },
+            )
         )
         res["notice"] = notice
         first_line = (res.get("answer") or "").strip().split("\n")[0][:80]

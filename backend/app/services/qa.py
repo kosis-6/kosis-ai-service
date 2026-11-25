@@ -904,7 +904,25 @@ def _blank_to_none(parsed, fix):
         fix("sex", "계", "빈 값 정리")
 
 
+ENGLISH_POPULATION_ASK = re.compile(
+    r"^\s*(?:(?:what\s+is|what['’]s|(?:show|tell)\s+me)\s+)?"
+    r"(?:the\s+)?(?:total\s+)?population\s+(?:of|in)\s+(?P<region>[가-힣]+)"
+    r"(?:\s+in\s+(?P<year>(?:19|20)\d{2}))?\s*[?!.]*\s*$",
+    re.IGNORECASE,
+)
+
+
+def _localized_question(question):
+    question = indicators.localize_region_names(question)
+    if population := ENGLISH_POPULATION_ASK.fullmatch(question):
+        region, year = population["region"], population["year"]
+        when = f"{year}년 " if year else ""
+        return f"{when}{region} 총인구 알려줘"
+    return question
+
+
 def correct(question, parsed, today=None):
+    question = _localized_question(question)
     today = today or date.today()
     kind = parsed.get("type")
     fixes = []
@@ -3377,10 +3395,11 @@ def _projection_text(r):
 
 def _trend_text(r):
     name, unit, c = _subject(r), r.get("unit", ""), r["change"]
-    first, last = r["series"][0]["value"], r["series"][-1]["value"]
+    first, last = r["series"][0], r["series"][-1]
     text = (
-        f"{r['region']}의 {_josa(name, '은는')} {c['from_year']}년 {_val(first, unit, full=True)}, "
-        f"{c['to_year']}년 {_val(last, _tail(unit))}입니다. "
+        f"{r['region']}의 {_josa(name, '은는')} {_when(first)} "
+        f"{_val(first['value'], unit, full=True)}, {_when(last)} "
+        f"{_val(last['value'], _tail(unit))}입니다. "
     )
     if c["diff"] == 0:
         return text + f"{c['from_year']}년과 같습니다."
@@ -3724,7 +3743,7 @@ def _body(r):
         lines = [f"{r['region']} {name} ({r['sex']})"]
         prev_year = None
         for s in r["series"]:
-            line = f"- {s['year']}년: {_num(s['value'], unit)}"
+            line = f"- {_when(s)}: {_num(s['value'], unit)}"
             if "diff_from_prev" in s:
                 ch = _signed(s["diff_from_prev"], r["change"]["diff_unit"])
                 if "rate_from_prev" in s:
@@ -3925,6 +3944,7 @@ async def _loading_result(error):
 
 
 async def ask(question, adjust=None):
+    question = _localized_question(question)
     trace = {}
     start = time.perf_counter()
     parsed = await understand(question, trace)
