@@ -11,6 +11,16 @@ import re
 import sys
 
 M = r"(1[0-2]|[1-9])\s*월"
+YEAR = r"((?:19|20)\d{2})\s*년\s*"
+DATED_RANGE = re.compile(
+    r"(?<!\d)"
+    + YEAR
+    + M
+    + r"\s*(?:부터|에서(?:부터)?|~|∼|-|–)\s*"
+    + YEAR
+    + M
+    + r"\s*(?:까지|사이|동안)?"
+)
 RANGE = re.compile(M + r"\s*(?:부터|에서|~|-|–|에서부터)\s*" + M + r"\s*(?:까지|사이|동안)?")
 SHORT = re.compile(r"(1[0-2]|[1-9])\s*[~\-–]\s*(1[0-2]|[1-9])\s*월")
 HALF = re.compile(r"(상|하)반기")
@@ -18,7 +28,10 @@ QUARTER = re.compile(r"([1-4])\s*분기")
 
 
 def find(question: str) -> dict | None:
-    """{"m0": 시작 달, "m1": 끝 달, "expr": 질문의 표현} 또는 None. 시작이 끝보다 뒤면 안 읽는다"""
+    """달 범위를 읽고, 양쪽 연도가 명시되면 시작·종료 연도도 보존한다."""
+    if m := DATED_RANGE.search(question):
+        y0, m0, y1, m1 = map(int, m.groups())
+        return {"y0": y0, "m0": m0, "y1": y1, "m1": m1, "expr": m[0].strip()}
     for pattern in (RANGE, SHORT):
         if m := pattern.search(question):
             m0, m1 = int(m.group(1)), int(m.group(2))

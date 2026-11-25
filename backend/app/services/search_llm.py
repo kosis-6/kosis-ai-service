@@ -9,6 +9,7 @@ import httpx
 from app.core.config import get_settings
 from app.services import llm_calls
 from app.services.hcx_client import ChatResult, HcxClient, HcxError
+from app.services.memory_cache import MISSING, MemoryCache
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +18,8 @@ DEFAULT_MAX_TOKENS = 1024
 CONNECT_TIMEOUT = 5.0
 GEMMA_DOWN_SECONDS = 60.0
 _down_until = 0.0
+_health = MemoryCache("gemma_connection", maxsize=1, ttl=15)
+_health_lock = asyncio.Lock()
 
 Request = Callable[[str], tuple[list[dict[str, Any]], dict[str, Any]]]
 
@@ -34,6 +37,31 @@ def is_gemma() -> bool:
 
 def falling_back() -> bool:
     return get_settings().search_llm == "auto" and is_gemma() and time.monotonic() < _down_until
+
+
+async def connection() -> str:
+    if not is_gemma():
+        return "not_used"
+    async with _health_lock:
+        if (cached := _health.get("models")) is not MISSING:
+            return cached
+        gemma = GemmaClient()
+        result = "unavailable"
+        if gemma.base_url:
+            headers = {"Authorization": f"Bearer {gemma.api_key}"} if gemma.api_key else {}
+            try:
+                async with httpx.AsyncClient(timeout=2) as client:
+                    response = await client.get(f"{gemma.base_url}/models", headers=headers)
+                response.raise_for_status()
+                models = response.json()["data"]
+                if any(
+                    isinstance(model, dict) and model.get("id") == gemma.model for model in models
+                ):
+                    result = "ready"
+            except (httpx.HTTPError, httpx.InvalidURL, ValueError, TypeError, KeyError):
+                pass
+        _health.set("models", result)
+        return result
 
 
 async def ask(model: str, request: Request) -> tuple[ChatResult, str]:

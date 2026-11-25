@@ -41,7 +41,7 @@ export function SearchesView() {
             <option value="">모든 결과</option>
             {STATUSES.map((s) => (
               <option key={s} value={s}>
-                {statusLabel(s, true).text}
+                {statusLabel(s, true, true).text}
               </option>
             ))}
           </select>

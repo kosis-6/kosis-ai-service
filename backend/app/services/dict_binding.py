@@ -25,9 +25,13 @@ def _norm(text: str) -> str:
 
 def _spec_for(parsed: dict, tbl_id: str) -> dict:
     name = parsed.get("indicator") or ""
+    survey = (parsed.get("asked") or {}).get("survey")
     names = [name, *(n for *_, n in indicators.find_in_text(name))]
     for n in names:
         sp = indicators.spec(n)
+        if sp and survey and (alt := indicators.alt_spec(sp, survey)):
+            if any(s.get("table") == tbl_id for s in alt["sources"]):
+                return alt
         if sp and any(s.get("table") == tbl_id for s in sp.get("sources") or []):
             return sp
     return indicators.spec(name) or {}
@@ -36,20 +40,26 @@ def _spec_for(parsed: dict, tbl_id: str) -> dict:
 def _source(
     result: dict, parsed: dict
 ) -> tuple[str | None, dict[int, str], dict[int, set[str]], dict]:
-    from app.services import qa
+    from app.services import lookup, qa
 
     src = qa.sources(result)
     tbl_id = src[0]["tbl_id"] if src else None
     if not tbl_id:
         return None, {}, {}, {}
     sp = _spec_for(parsed, tbl_id)
-    used = next((s for s in sp.get("sources") or [] if s.get("table") == tbl_id), {})
+    source = next((s for s in sp.get("sources") or [] if s.get("table") == tbl_id), {})
+    sex = result.get("sex") or parsed.get("sex") or "계"
+    used = lookup._effective(source, sex) or {}
     forced: dict[int, str] = {}
     if used.get("item_id"):
-        forced[0] = used["item_id"]
+        items = used["item_id"]
+        if isinstance(items, str):
+            forced[0] = items
     elif tbl_id == indicators.POP_TABLE:
         forced[0] = POP_ITEMS.get(parsed.get("sex") or "계", POP_ITEMS["계"])
     decided: dict[int, set[str]] = {no: {code} for no, code in forced.items()}
+    if isinstance(used.get("item_id"), list):
+        decided[0] = set(used["item_id"])
     for key, value in (used.get("filters") or {}).items():
         if m := FILTER_KEY.fullmatch(key):
             codes = [value] if isinstance(value, str) else list(value)
@@ -130,6 +140,11 @@ def judge(question: str, parsed: dict, result: dict, u: dict) -> dict[str, Any] 
         return None
     cond = dict(u.get("conditions") or {})
     cond["classes"] = [c for c in cond.get("classes") or [] if not SEX_CLASS.match(c)]
+    if survey := sp.get("survey"):
+        question = qa.without_survey(question)
+        cond["classes"] = [c for c in cond["classes"] if qa.survey_said(c) != survey]
+    if parsed.get("level") == "시" and result.get("ranking") is not None:
+        cond["classes"] = [c for c in cond["classes"] if _norm(c) not in {"도시", "도시별"}]
     slots = {
         "conditions": cond,
         "target": u.get("target"),

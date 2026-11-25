@@ -279,7 +279,7 @@ async def _refresh_periods(tables: list[dict[str, Any]]) -> None:
 async def load_tables() -> list[dict[str, Any]]:
     global _tables, _vectors, _periods_stale
     await _check_reloaded()
-    if _tables is None:
+    if not _tables:
         _periods_stale = False
         from app.core.db import engine
 
