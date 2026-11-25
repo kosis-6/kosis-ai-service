@@ -1174,6 +1174,8 @@ async def _new(
         refused["request_type"], refused["question"] = NEW, question
         return refused, {}, None
     res = await qa.ask(question, adjust=adjust)
+    if alt := await _composite(question, res, state):
+        res = alt
     sources = kept.get("sources") or sources_of(question, res.get("parsed") or {})
     notice = inherited_notice(res.get("parsed") or {}, sources)
     if sources.get("indicator") == "inherited" and not scoped_age_ratio:
@@ -1204,6 +1206,32 @@ async def _new(
     res["chart"] = charts.build(res.get("result"))
     res["request_type"] = NEW
     return res, sources, notice
+
+
+async def _composite(question: str, res: dict, state: dict | None) -> dict | None:
+    """복합 질문(A_20): Gemma 판별이 복합이라 하면 통계표를 찾아 계산 계획(steps)으로 답한다.
+    계획이 단순하거나(연산 하나) 못 세우거나 값을 못 내면 None (사전 답이 그대로)"""
+    from app.services import composite
+
+    parsed = res.get("parsed") or {}
+    if res.get("clarification") or res.get("status") in table_guide.REFUSED:
+        return None
+    trace = res.get("trace") or {}
+    if not await composite.is_composite(question, trace):
+        return None
+    flow.add("복합 판별", "복합", str((trace.get("composite_gate") or {}).get("why") or "")[:120])
+    sid = (state or {}).get("search_session") or table_guide.new_search_session()
+    try:
+        found = _keep(await table_guide.find_tables(question, sid, None, None))
+        alt = await composite.answer(question, parsed, found, trace)
+    except Exception:
+        logger.exception("복합 질문 계산 실패")
+        return None
+    if alt is None:
+        return None
+    alt["search_session"] = sid
+    alt["trace"] = trace
+    return alt
 
 
 def _clarification_answer(question: str, clarification: dict) -> dict:
