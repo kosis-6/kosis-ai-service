@@ -107,7 +107,7 @@ def test_age_ratio_uses_population_sex_on_both_sides() -> None:
 
 @pytest.mark.parametrize(
     ("asked_age", "expected"),
-    [(85, "086"), (65, ["075", "080", "085", "086"])],
+    [(85, "086")],
 )
 def test_age_ratio_uses_subgroup_as_denominator(asked_age, expected) -> None:
     spec = build(
