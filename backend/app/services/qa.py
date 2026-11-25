@@ -703,12 +703,27 @@ def _ratio_sibling(question, parsed, fix):
         return None
     if not PCT_ASK.search(question) or CHANGE_ASK.search(question) or "전국" in question:
         return None
+    if _within_after(question, current):
+        # "1인 가구 중 여성 비율": 지표 안의 일부 비율이지 그 지표의 비율 지표가 아니다 (11/25,
+        # 사전에 1인 가구 비율이 들어가자 성별 칸 비율이 사전 비율 34.92%로 바뀌었다).
+        # 사전은 그 지표의 수만 낼 수 있으니 표 경로(성별 · 연령 칸 비율)로 보낸다
+        fix("unsupported", True, "지표 안의 일부 비율은 통계표의 칸으로 계산")
+        return None
     base = re.sub(r"\s*수$", "", current)
     for sibling in (f"{base} 비율", f"{base} 비중"):
         if sibling in indicators.specs():
             fix("indicator", sibling, "비율(몇 프로)을 물음")
             return sibling
     return None
+
+
+def _within_after(question, indicator):
+    """지표 이름 · 별칭 바로 뒤에 '중 · 가운데'가 오는가 ("1인 가구 중 여성 비율")"""
+    text = indicators._norm(question)  # find_in_text 의 위치는 공백을 뺀 문장 기준
+    for _start, end, name in indicators.find_in_text(question) or []:
+        if name == indicator and re.match(r"(?:중|가운데)", text[end:]):
+            return True
+    return False
 
 
 def survey_said(question):
