@@ -1794,3 +1794,24 @@ def test_month_sum_answer_says_the_months(monkeypatch) -> None:
     q = "작년 1월부터 3월까지 돌아가신 분 다 합치면 몇 명이야?"
     p = qa.correct(q, parsed(type="value", indicator="사망자 수", year=2025), TODAY)
     assert "1~3월" in qa.summary(qa.compute(p)).split("\n")[0]
+
+
+def test_guessed_sigungu_in_asked_sido_becomes_rank(monkeypatch) -> None:
+    monkeypatch.setattr(indicators, "_alias_map", REAL_ALIASES)
+    q = "경기도에서 제일 큰 도시 3개 인구로"
+    p = qa.correct(
+        q, parsed(type="value", indicator="총인구", regions=["수원시", "용인시", "고양시"]), TODAY
+    )
+    assert p["type"] == "rank" and p["regions"] == ["경기도"] and p["top"] == 3
+    assert not p.get("ungrounded_region")
+    p = qa.correct(
+        "경기도 인구 알려줘", parsed(type="value", indicator="총인구", regions=["수원시"]), TODAY
+    )
+    assert p.get("ungrounded_region") == "수원시"
+
+
+def test_rank_without_regions_is_missing_data_not_an_error() -> None:
+    from app.services import lookup
+
+    r = lookup.rank(indicators.spec("출생아 수"), 2025, "시군구", "서울특별시 강남구")
+    assert r["status"] == "missing_data" and "순위를 매길 지역이 없습니다" in r["reason"]
