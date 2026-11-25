@@ -2154,3 +2154,51 @@ def test_follow_restate_failure_keeps_llm_raw_in_flow(
     steps = [x for x in res["trace"]["flow"] if x["stage"] == "이어 묻기 판단"]
     assert steps and steps[0]["result"] == "실패"
     assert "죄송하지만 이해하지 못했습니다" in steps[0]["detail"]
+
+
+@pytest.fixture
+def sure_on(monkeypatch: pytest.MonkeyPatch) -> list:
+    """3-a 켬 + 복원 호출을 기록만 하는 가짜 (불리면 기록이 남는다)"""
+    monkeypatch.setattr(s.get_settings(), "follow_restate", True)
+    monkeypatch.setattr(s.get_settings(), "follow_sure_rules", True)
+    called: list = []
+
+    async def spy(state, question, trace):
+        called.append(question)
+        return {"relation": "new", "question": question, "why": "spy"}
+
+    monkeypatch.setattr(s, "restate", spy)
+    return called
+
+
+def test_sure_rule_picks_only_trusted_rules_after_an_ok_answer() -> None:
+    ok = {"last": {"status": "ok"}, "conditions": dict(BASE)}
+    assert asyncio.run(s._sure_rule(ok, "서울은?")) == "지역만"
+    assert asyncio.run(s._sure_rule(ok, "구성비로 보여줘")) is None  # 규칙도 틀리던 말 → LLM
+    assert asyncio.run(s._sure_rule(ok, "작년은?")) is None  # 규칙이 못 잡는 말 → LLM
+    # 거절 · 표 안내 뒤에는 규칙을 쓰지 않는다 (C27: 거절된 조건을 이어받았다)
+    refused = {"last": {"status": "partial_match"}, "conditions": dict(BASE)}
+    assert asyncio.run(s._sure_rule(refused, "서울은?")) is None
+
+
+def test_sure_rules_skip_restate_for_region_only(talk: Talk, sure_on: list) -> None:
+    talk.say("부산 출생아 최근 5년 보여 줘")
+    res = talk.say("서울은?")
+    assert sure_on == []  # LLM 복원을 부르지 않았다
+    assert talk.answered[-1]["regions"] == ["서울"] and res["request_type"] == "change"
+    steps = [x for x in res["trace"]["flow"] if x["stage"] == "이어 묻기 판단"]
+    assert steps and steps[0]["result"] == "규칙"
+
+
+def test_sure_rules_skip_restate_for_ratio_follow_up(talk: Talk, sure_on: list) -> None:
+    talk.parsed = dict(ONE_PERSON)
+    talk.say("2020년 서울 1인 가구 수는?")
+    talk.say("그중 여성 비율은?", request_type="change", changes={"sex": "여"})
+    assert sure_on == []
+    assert talk.asked[-1] == "2020년 서울 1인 가구 중 여성 비율은?"
+
+
+def test_sure_rules_leave_other_follow_ups_to_restate(talk: Talk, sure_on: list) -> None:
+    talk.say("부산 출생아 최근 5년 보여 줘")
+    talk.say("2022년만")
+    assert sure_on == ["2022년만"]  # 규칙 셋이 못 잡는 말은 LLM 복원으로

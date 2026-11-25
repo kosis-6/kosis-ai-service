@@ -37,6 +37,11 @@ class Settings(BaseSettings):
     # complete_question · 요약 · 출처 · 왜)은 그대로 먼저 돈다. 복원 호출이 실패하면 기존 경로로.
     # 기본은 끔 (FOLLOW_RESTATE=true 로 켠다). 꺼지면 지금 구조(규칙 + FOLLOW_SYSTEM 변경 추출)
     follow_restate: bool = False
+    # 제3안 3-a (FOLLOW_RESTATE=true 와 함께 켤 때만): 대화 셋에서 오판이 없던 코드 규칙
+    # (비율 후속 · 지역만 바꾸기 · 구별로)이 잡는 말은 LLM 복원 없이 그 규칙으로 처리하고,
+    # 나머지만 LLM 복원으로 보낸다. 직전 답이 정상(ok)일 때만 규칙을 쓴다 (거절 뒤 "부산은?"이
+    # 거절된 조건을 이어받던 C27). 기본은 끔 (FOLLOW_SURE_RULES=true 로 켠다)
+    follow_sure_rules: bool = False
     # 조건 → 칸 잇기 1단계 (app/services/binding.py, docs/cell_binding_design_2026-11-23.md).
     # true: 바로 계산이 표 하나를 계산할 때 같은 표로 잇기를 돌려 처리 기록에만 남긴다
     # (답은 그대로).

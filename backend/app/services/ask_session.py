@@ -1057,6 +1057,23 @@ def restate_outcome(r: dict, raw: str | None) -> str:
     return "ok" if r.get("relation") else "failed"
 
 
+async def _sure_rule(state: dict, question: str) -> str | None:
+    """3-a: LLM 복원보다 먼저 쓸 '확실한' 코드 규칙이 이 말을 잡는가 → 규칙 이름 (아니면 None).
+    11/25 대화 셋(끔)에서 오판이 없던 셋만: 비율 후속(C10 · C12 · C13) · 지역만(C01~C05) ·
+    구별로(C19). 구성비로는 규칙도 틀려(C20) 넣지 않는다. 기존 경로가 구성비로를 먼저 보므로
+    그 말이면 규칙으로 보내지 않는다. 직전 답이 정상(ok)이 아니면(거절 · 표 안내 뒤) 쓰지 않는다:
+    거절 뒤 "부산은?"이 거절된 조건(총인구)을 이어받았다 (C27)"""
+    if (state.get("last") or {}).get("status") != "ok" or composition_request(question):
+        return None
+    if await asyncio.to_thread(ratio_followup, question, state):
+        return "비율 후속"
+    if await asyncio.to_thread(region_split_changes, question, state["conditions"]):
+        return "구별로"
+    if await asyncio.to_thread(region_only_changes, question, state["conditions"]):
+        return "지역만"
+    return None
+
+
 async def _restated(
     state: dict, question: str, user_id: int | None
 ) -> tuple[dict, dict, str | None] | None:
@@ -1585,8 +1602,12 @@ async def _turn(
     ):
         # 이어 묻기 LLM 복원 (A_16): 아래 코드 규칙(비율 후속 · 구별로 · 지역만 · 구성비 · 사람 수)
         # 과 변경 추출(FOLLOW_SYSTEM) 대신 LLM이 완전한 질문으로 복원하고 새 질문 경로로 간다.
-        # 복원을 쓸 수 없으면(None) 아래 기존 경로로 이어 간다
-        if (restated := await _restated(state, question, user_id)) is not None:
+        # 복원을 쓸 수 없으면(None) 아래 기존 경로로 이어 간다.
+        # 3-a(FOLLOW_SURE_RULES): 오판이 없던 규칙이 잡는 말은 복원 없이 아래 규칙으로 간다
+        rule = await _sure_rule(state, question) if get_settings().follow_sure_rules else None
+        if rule:
+            flow.add("이어 묻기 판단", "규칙", f"{rule} 규칙이 잡음 → LLM 복원 건너뜀")
+        elif (restated := await _restated(state, question, user_id)) is not None:
             return restated
     if view is None and (asked := await asyncio.to_thread(ratio_followup, question, state)):
         flow.add("비율 후속 질문", "새 질문으로", asked)
