@@ -2056,13 +2056,19 @@ def test_verify_restate_keeps_recent_years_for_code(monkeypatch) -> None:
     )
 
 
-def test_restate_failed_when_call_or_parse_breaks() -> None:
-    assert s.restate_failed({"relation": "", "question": "", "why": "호출 실패"})
-    assert s.restate_failed(s.parse_restate("말로 답함"))
-    assert s.restate_failed({"relation": "followup", "question": ""})
-    # unclear 는 문장이 비어도 된다
-    assert not s.restate_failed({"relation": "unclear", "question": ""})
-    assert not s.restate_failed({"relation": "new", "question": "2024년 대구 출생아 수는?"})
+def test_restate_outcome_separates_broken_from_unfilled() -> None:
+    ok = '{"relation": "new", "question": "2024년 대구 출생아 수는?", "why": "x"}'
+    assert s.restate_outcome(s.parse_restate(ok), ok) == "ok"
+    # 호출 실패 · JSON 없음 → 기존 경로
+    assert s.restate_outcome({"relation": "", "question": "", "why": "호출 실패"}, None) == "failed"
+    assert s.restate_outcome(s.parse_restate("말로 답함"), "말로 답함") == "failed"
+    odd = '{"relation": "maybe", "question": "2024년 대구 출생아 수는?"}'
+    assert s.restate_outcome(s.parse_restate(odd), odd) == "failed"
+    # JSON 은 읽혔는데 문장을 못 채움 → 되묻기 (11/25 C25)
+    empty = '{"relation": "followup", "question": "", "why": "새로 언급한 대상이 없음"}'
+    assert s.restate_outcome(s.parse_restate(empty), empty) == "unclear"
+    unclear = '{"relation": "unclear", "question": "", "why": "x"}'
+    assert s.restate_outcome(s.parse_restate(unclear), unclear) == "unclear"
 
 
 @pytest.fixture
@@ -2116,3 +2122,35 @@ def test_follow_restate_unclear_shows_fixed_sentence_not_llm_note(
     assert res["answer"].startswith(s.RESTATE_UNCLEAR)
     assert "새 말이 불완전함" not in res["answer"]
     assert talk.extracted == []  # unclear 는 복원의 판단이라 기존 경로로 가지 않는다
+
+
+def test_follow_restate_unfilled_sentence_asks_back(
+    talk: Talk, restate_on: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """JSON 은 읽혔는데 문장이 비면 기존 경로가 아니라 되묻기 (11/25 C25 "거기는 작년에?")"""
+
+    async def unfilled(question, system):
+        return '{"relation": "followup", "question": "", "why": "새로 언급한 대상이 없음"}'
+
+    monkeypatch.setattr(s, "_chat", unfilled)
+    talk.say("부산 출생아 최근 5년 보여 줘")
+    res = talk.say("거기는 작년에 어땠어?")
+    assert res["request_type"] == "unclear"
+    assert res["answer"].startswith(s.RESTATE_UNCLEAR)
+    assert talk.extracted == []
+
+
+def test_follow_restate_failure_keeps_llm_raw_in_flow(
+    talk: Talk, restate_on: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """실패해 기존 경로로 가도 LLM 이 낸 원문은 처리 흐름에 남는다 (무엇이 깨졌는지 보려고)"""
+
+    async def prose(question, system):
+        return "죄송하지만 이해하지 못했습니다"
+
+    monkeypatch.setattr(s, "_chat", prose)
+    talk.say("부산 출생아 최근 5년 보여 줘")
+    res = talk.say("2022년만", request_type="change", changes={"year": 2022})
+    steps = [x for x in res["trace"]["flow"] if x["stage"] == "이어 묻기 판단"]
+    assert steps and steps[0]["result"] == "실패"
+    assert "죄송하지만 이해하지 못했습니다" in steps[0]["detail"]

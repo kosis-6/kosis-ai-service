@@ -1045,10 +1045,16 @@ def verify_restate(r: dict, conditions: dict, question: str) -> tuple[str, str, 
 RESTATE_UNCLEAR = "앞 대화에서 무엇을 가리키는지 알 수 없습니다."
 
 
-def restate_failed(r: dict) -> bool:
-    """복원을 쓸 수 없는가: 호출 실패 · JSON 못 읽음 · unclear 가 아닌데 문장이 빔"""
-    relation = r.get("relation") or ""
-    return not relation or (relation != "unclear" and not r.get("question"))
+def restate_outcome(r: dict, raw: str | None) -> str:
+    """복원 결과를 어떻게 쓸까 → "ok" · "unclear" · "failed".
+    · failed: 호출 실패 · JSON 이 없음 · 문장은 있는데 relation 이 셋 중 하나가 아님 → 기존 경로로
+    · unclear: JSON 은 읽혔는데 문장을 채우지 못함 → 되묻기. LLM 이 무엇을 가리키는지 못 찾은 것이다
+      (11/25 대화 셋 C25 "거기는 작년에?": why "새로 언급한 대상이 없음", 문장 비움)"""
+    if not qa._json_objects(raw or ""):
+        return "failed"
+    if r.get("relation") == "unclear" or not r.get("question"):
+        return "unclear"
+    return "ok" if r.get("relation") else "failed"
 
 
 async def _restated(
@@ -1064,9 +1070,15 @@ async def _restated(
     except Exception:
         logger.exception("이어 묻기 복원 실패 → 기존 경로")
         r = {"relation": "", "question": "", "why": "호출 실패"}
-    if restate_failed(r):
-        flow.add("이어 묻기 판단", "실패", f"{r.get('why') or '복원 못 읽음'} → 기존 경로")
+    outcome = restate_outcome(r, trace.get("restate_raw"))
+    if outcome == "failed":
+        # LLM 이 실제로 무엇을 냈는지 기록에 남긴다 (다음 경로의 trace 에는 restate 가 붙지 않는다)
+        raw = trace.get("restate_raw")
+        said = f"원문: {raw}" if raw else r.get("why") or "응답 없음"
+        flow.add("이어 묻기 판단", "실패", f"{said} → 기존 경로")
         return None
+    if outcome == "unclear":
+        r = {**r, "relation": "unclear"}
     relation, restored, note = verify_restate(r, state["conditions"], question)
     flow.add("이어 묻기 판단", relation, " · ".join(x for x in (restored, r.get("why"), note) if x))
     if relation == "unclear":
