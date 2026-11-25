@@ -1,3 +1,5 @@
+from datetime import date
+
 import pytest
 
 from app.services import cross_indicator as x
@@ -39,11 +41,20 @@ def test_out_of_wedlock_birth_words(question: str, hit: bool) -> None:
     assert found is hit
 
 
-def test_bare_foreigner_rule_steps_aside_after_residents_coverage(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    ("question", "past"),
+    [
+        ("외국인 작년에 얼마나 늘었어?", True),
+        ("2025년 외국인 몇 명이야?", True),
+        ("2024년 외국인 몇 명이야?", False),
+        ("외국인은 몇 명인가요?", False),
+        ("외국인 제일 많이 사는 데 세 곳 어디야?", False),
+        ("재작년 외국인 몇 명이야?", False),
+    ],
+)
+def test_bare_foreigner_rule_uses_years_said_in_question(monkeypatch, question, past) -> None:
     monkeypatch.setattr(lookup, "_table", lambda tbl_id: {"end_year": 2024})
-    assert qa._past_foreign_residents({"year": 2025})
-    assert not qa._past_foreign_residents({"year": 2024})
-    assert not qa._past_foreign_residents({"year": None})
+    assert qa._past_foreign_residents(question, date(2026, 11, 25)) is past
 
 
 @pytest.mark.parametrize(

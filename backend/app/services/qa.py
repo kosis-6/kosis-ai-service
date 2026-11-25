@@ -700,9 +700,21 @@ def _pick_indicator(question, names):
     return None
 
 
-def _past_foreign_residents(parsed: dict) -> bool:
-    asked = max((y for y in (parsed.get("year"), parsed.get("end_year")) if y), default=None)
-    if not asked:
+RELATIVE_YEAR = {"재작년": 2, "작년": 1, "지난해": 1, "전년": 1, "올해": 0, "금년": 0}
+
+
+def _said_years(question: str, today: date) -> list[int]:
+    years = [int(y) for y in YEAR.findall(question)]
+    for word, back in RELATIVE_YEAR.items():
+        if word in question:
+            years.append(today.year - back)
+            question = question.replace(word, " ")
+    return years
+
+
+def _past_foreign_residents(question: str, today: date) -> bool:
+    years = _said_years(question, today)
+    if not years:
         return False
     try:
         table = indicators.spec("외국인주민 수")["sources"][0]["table"]
@@ -710,7 +722,7 @@ def _past_foreign_residents(parsed: dict) -> bool:
     except Exception:
         logger.exception("외국인주민 수 수록 연도 확인 실패")
         return False
-    return bool(last) and int(asked) > int(last)
+    return bool(last) and max(years) > int(last)
 
 
 def _both_sides(current: str | None, name: str, question: str) -> bool:
@@ -1006,7 +1018,7 @@ def correct(question, parsed, today=None):
             not names
             and BARE_FOREIGNER.search(question)
             and not NOT_BARE_FOREIGNER.search(question)
-            and not _past_foreign_residents(parsed)
+            and not _past_foreign_residents(question, today)
         ):
             names = {"외국인주민 수"}
         name = _pick_indicator(question, names)
