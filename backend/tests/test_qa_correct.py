@@ -1708,3 +1708,49 @@ def test_one_region_two_years_compare_reads_as_trend() -> None:
     two = parsed(type="compare", indicator="총인구", regions=["서울", "부산"], year=2025)
     p = qa.correct("2025년 서울과 부산 인구 비교해줘", two, TODAY)
     assert p["type"] == "compare"
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "외국인은 몇 명인가요?",
+        "경기도에 외국인 얼마나 살아?",
+        "외국인 제일 많이 사는 데 세 곳 어디야?",
+    ],
+)
+def test_bare_foreigner_is_foreign_resident(monkeypatch, question: str) -> None:
+    monkeypatch.setattr(indicators, "_alias_map", REAL_ALIASES)
+    p = qa.correct(question, parsed(type="value", indicator=""), TODAY)
+    assert p["indicator"] == "외국인주민 수" and p["grounded"] is True
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "2010년 인구조사 때 서울이랑 경기도 중에 외국인 어디가 더 많이 살았어?",
+        "제주에 등록된 외국인 몇 명이야?",
+        "불법체류 외국인 중에 태국 사람 몇 명이야?",
+    ],
+)
+def test_other_foreigner_questions_are_not_foreign_residents(monkeypatch, question: str) -> None:
+    monkeypatch.setattr(indicators, "_alias_map", REAL_ALIASES)
+    p = qa.correct(question, parsed(type="value", indicator=""), TODAY)
+    assert p["indicator"] != "외국인주민 수"
+
+
+def test_children_before_elders_is_aging_index(monkeypatch) -> None:
+    monkeypatch.setattr(indicators, "_alias_map", REAL_ALIASES)
+    q = "의성군은 애들보다 노인이 몇 배나 많아?"
+    p = qa.correct(q, parsed(type="compare", indicator="노령화지수", regions=["의성군"]), TODAY)
+    assert p["indicator"] == "노령화지수" and p["grounded"] is True
+
+
+def test_month_range_compares_regions_with_monthly_sources(monkeypatch) -> None:
+    monkeypatch.setattr(indicators, "_alias_map", REAL_ALIASES)
+    q = "작년 상반기에 서울이랑 부산 중에 결혼 어디가 더 많이 했어?"
+    p = qa.correct(
+        q, parsed(type="compare", indicator="혼인 건수", regions=["서울", "부산"]), TODAY
+    )
+    r = qa.compute(p)
+    assert r["status"] == "ok" and all(v["value"] for v in r["values"])
+    assert "1~6월" in qa.summary(r)

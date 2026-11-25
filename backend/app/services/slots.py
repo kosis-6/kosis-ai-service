@@ -106,6 +106,10 @@ LEVEL_WORDS = [
     ("시도", re.compile(r"시도|시·도")),
 ]
 MALE = re.compile(r"남자|남성|남아")
+SPOUSE_PAIR = re.compile(
+    r"(?:남자|남성|여자|여성)\S*\s+(?:\S+\s+){0,2}(?:여자|여성|남자|남성)\S*?"
+    r"(?:랑|와|과|하고)\s*(?:결혼|혼인|재혼)"
+)
 FEMALE = re.compile(r"여자|여성|여아")
 BOTH_SEX = re.compile(r"남녀|(?<![구특])성별")
 TOTAL_SEX = re.compile(r"남녀\s*(?:합계|전체|합산)|(?<![구특])성별\s*(?:합계|전체)")
@@ -293,7 +297,9 @@ def correct(question: str, slots: dict[str, Any]) -> dict[str, Any]:
     if slots["spouse"]:
         plain = FOREIGN_HUSBAND.sub("", FOREIGN_WIFE.sub("", plain))
     male, female = bool(MALE.search(plain)), bool(FEMALE.search(plain))
-    if TOTAL_SEX.search(plain):
+    if SPOUSE_PAIR.search(question):
+        fix("sex", None, "결혼한 두 사람 (남편 · 아내)")
+    elif TOTAL_SEX.search(plain):
         fix("sex", "전체", "남녀 합계 명시")
     elif male != female:
         fix("sex", "남" if male else "여", "한 성별만 언급")

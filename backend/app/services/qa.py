@@ -488,6 +488,13 @@ BIRTHS_PER_WOMAN = re.compile(
 )
 PER_WOMAN_BIRTH = re.compile(r"(낳|출산)")
 BABIES_BORN = re.compile(r"(?:아이|아기|애|신생아)\S*\s*몇\s*명\S*\s*(?:\S+\s*){0,2}낳")
+BARE_FOREIGNER = re.compile(
+    r"(?<![가-힣])외국인(?!\s*(?:주민|아내|남편|며느리|사위|배우자|근로자|노동자|유학생|관광객|과의|와의|과|와\s|등록|비율|비중))"
+)
+NOT_BARE_FOREIGNER = re.compile(
+    r"불법\s*체류|체류|등록|결혼|혼인|이민|귀화|유학|근로|국적|아내|남편|이혼|출생|다문화|비율|비중"
+    r"|퍼센트|%|프로|입국|출국|들어왔|들어온|나갔|인구\s*조사|총조사|중에?\s*외국인"
+)
 INDICATOR_PATTERNS = [
     (re.compile(r"(아이|아기|신생아)\S*\s*(\S+\s*){0,3}태어"), "출생아 수"),
     (re.compile(r"결혼(을|한)?\s*(\S+\s*){0,2}(많이|적게)"), "혼인 건수"),
@@ -518,6 +525,7 @@ INDICATOR_PATTERNS = [
         re.compile(
             r"(노인|어르신|고령\S*)\s*(수|인구)?\s*(가|이)\s*(아이|어린이|유소년|애)\S*\s*"
             r"(수|인구)?\s*의\s*몇\s*배"
+            r"|(아이|어린이|유소년|애)\S*\s*보다\s*(노인|어르신|고령\S*)\S*\s*(\S+\s*){0,2}몇\s*배"
         ),
         "노령화지수",
     ),
@@ -930,6 +938,12 @@ def correct(question, parsed, today=None):
         for specific, general in MORE_SPECIFIC.items():
             if specific in names:
                 names -= general
+        if (
+            not names
+            and BARE_FOREIGNER.search(question)
+            and not NOT_BARE_FOREIGNER.search(question)
+        ):
+            names = {"외국인주민 수"}
         name = _pick_indicator(question, names)
         current = indicators.canonical_name(parsed.get("indicator") or "")
         if name and current != name:
@@ -2260,6 +2274,8 @@ def _compute(q):
         return result
     dyn = q.get("dynamic_spec") if _dynamic_fits(q) else None
     sp = dyn or (None if q.get("unsupported") else indicators.spec(ind))
+    if sp and sp.get("monthly_sources") and lookup.MONTHS.get() is not None:
+        sp = {**sp, "sources": sp["monthly_sources"]}
     if dyn and (dyn.get("ages_in_filters") or dyn.get("ignore_ages")):
         ages = None
     population = sp["name"] == "총인구" if sp else not ind or bool(PEOPLE_INDICATOR.search(ind))

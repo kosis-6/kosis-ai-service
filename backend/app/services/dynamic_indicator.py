@@ -1404,6 +1404,9 @@ def _ratio(spec, src, plan, dims, parsed, tbl_nm="", *, question=""):
                 parts.append((d.col, [code], whole, d.codes[code]))
     if len(parts) != 1:
         return None, "비율의 분자·분모를 정하지 못함"
+    _, num_codes, den_code, _ = parts[0]
+    if isinstance(den_code, str) and [den_code] == list(num_codes):
+        return None, "비율의 분자와 분모가 같은 칸"
     col, num, den, part = parts[0]
     if why := part_within_whole(src, col, num, den):
         return None, why

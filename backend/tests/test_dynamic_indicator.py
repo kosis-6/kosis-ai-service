@@ -2388,3 +2388,13 @@ def test_choose_does_not_fall_back_to_region_rank_when_axis_is_unmatched() -> No
         "어느 나라 사람이 제일 많아?", {**p, "rank_axis": "나라"}, [items, region, nat], 1
     )
     assert plan is not None and plan.multi and plan.multi[0] == nat.no
+
+
+def test_ratio_with_same_numerator_and_denominator_is_refused() -> None:
+    items = d.Dim(0, "항목", {"T1": "평균초혼연령"})
+    sex = d.Dim(1, "성별", {"1": "남편", "2": "아내"})
+    plan = d.Plan(pick={0: "T1", 1: "2"}, matched={1: "2"})
+    plan.sex_dim = sex
+    src = {"table": "X", "item_id": "T1", "filters": {}}
+    spec, why = d._ratio({"name": "비율"}, src, plan, [items, sex], {"sex": "여"})
+    assert spec is None and "같은 칸" in why
