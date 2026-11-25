@@ -10,6 +10,12 @@ def collect(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sys, "argv", ["run_all.py", "--source", "collect"])
 
 
+@pytest.fixture(autouse=True)
+def no_deferred_tables(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 스크립트를 실제로 돌리지 않으므로 catalog.py가 만드는 표가 없다
+    monkeypatch.setattr(run_all, "prepare_deferred", lambda: [])
+
+
 def fake_run(fail_on: str | None = None):
     calls = []
 

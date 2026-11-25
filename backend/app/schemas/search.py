@@ -2,14 +2,14 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from app.schemas.ask import Question, SessionId
+
 
 class SearchRequest(BaseModel):
-    question: str = Field(
-        min_length=1,
-        max_length=500,
+    question: Question = Field(
         examples=["2010년 한국국적 취득자 중 혼인 귀화자 여자 통계표"],
     )
-    session_id: str | None = Field(
+    session_id: SessionId | None = Field(
         default=None,
         description="없으면 새로 만들어 응답에 돌려준다. 되묻기에 답할 때 같은 값을 보낸다",
     )

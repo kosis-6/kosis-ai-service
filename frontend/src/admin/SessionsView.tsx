@@ -247,7 +247,7 @@ function Usage({ days }: { days: number }) {
             <ul className="tally-list">
               {data.by_request_type.map((t) => (
                 <li key={t.name}>
-                  <span className="chip plain">{requestLabel(t.name) || "기록 없음"}</span>
+                  <span className="chip plain">{requestLabel(t.name, true) || "기록 없음"}</span>
                   <span>{count(t.count)}</span>
                 </li>
               ))}
@@ -293,7 +293,7 @@ function Turn({ turn }: { turn: TurnDetail }) {
     <li className="turn">
       <p className="turn-meta">
         <span>{when(turn.created_at)}</span>
-        {turn.request_type && <span className="chip plain">{requestLabel(turn.request_type)}</span>}
+        {turn.request_type && <span className="chip plain">{requestLabel(turn.request_type, true)}</span>}
         <Status value={turn.status} />
         {!turn.recomputed && <span className="turn-note">다시 계산하지 않음</span>}
       </p>

@@ -2,6 +2,7 @@ import asyncio
 import copy
 import json
 import logging
+import math
 import re
 import time
 from contextvars import ContextVar
@@ -38,7 +39,7 @@ from app.services import (
     timeref,
     understand_merged,
 )
-from app.services.hcx_client import HcxClient
+from app.services.hcx_client import HcxClient, HcxError
 from app.services.josa import josa
 from app.services.log_redaction import mask, redact
 from app.services.memory_cache import MISSING, MemoryCache
@@ -132,12 +133,16 @@ def sources_of(question: str, parsed: dict) -> dict[str, str]:
 
 def period_text(c: dict) -> str | None:
     start, end = c.get("start_year"), c.get("end_year")
+    if c.get("dated_months") and start and end and (months := c.get("months")):
+        return f"{start}년 {months[0]}월~{end}년 {months[1]}월"
     if c.get("type") == "trend" and start and end:
         return f"{start}~{end}년" if start != end else f"{start}년"
     return f"{c['year']}년" if c.get("year") else None
 
 
-def applied(conditions: dict, sources: dict[str, str]) -> list[dict[str, str]]:
+def applied(
+    conditions: dict, sources: dict[str, str], *, include_regions: bool = True
+) -> list[dict[str, str]]:
     if conditions.get("type") in NO_CONDITIONS:
         return []
     regions = conditions.get("regions") or []
@@ -145,7 +150,7 @@ def applied(conditions: dict, sources: dict[str, str]) -> list[dict[str, str]]:
         regions = [f"{conditions.get('sido') or '전국'} {conditions.get('level') or '시도'}별"]
     values = {
         "indicator": ", ".join(conditions.get("indicators") or []) or conditions.get("indicator"),
-        "regions": ", ".join(regions) or None,
+        "regions": ", ".join(regions) if include_regions else None,
         "period": period_text(conditions),
         "sex": conditions.get("sex"),
     }
@@ -166,6 +171,11 @@ def _clear_period_questions(conditions: dict) -> None:
         conditions["asked"] = asked
     else:
         conditions.pop("asked", None)
+
+
+def _clear_dated_months(conditions: dict) -> None:
+    if conditions.pop("dated_months", False):
+        conditions.pop("months", None)
 
 
 def effective(parsed: dict, result: dict) -> dict:
@@ -277,7 +287,11 @@ def apply_changes(conditions: dict, changes: dict) -> tuple[dict, set[str]]:
         changed.add("period")
     if "period" in changed:
         _clear_period_questions(c)
+        _clear_dated_months(c)
         c.pop("time_refs", None)
+    if "indicator" in changed or "regions" in changed:
+        for key in ("movement_route", "movement_reason", "movement_ratio"):
+            c.pop(key, None)
 
     if changes.get("sex") in ("계", "남", "여"):
         old_sex = c.get("sex")
@@ -336,6 +350,10 @@ CONTEXT_YEAR = [
     (re.compile(r"다음\s*해|이듬해|다음\s*연도|익년|한\s*해\s*(?:뒤|후)"), 1),
 ]
 FULL_YEAR = re.compile(rf"(?:19|20)\d{{2}}{slots.NOT_YEAR_TAIL}")
+YEAR_ONLY_REPLY = re.compile(
+    rf"\s*{slots.YEAR.pattern}\s*(?:년도?\s*)?(?:(?:으로|로)\s*)?(?:은|는|도|만)?\s*(?:이?요)?"
+    r"(?:\s*(?:보여|알려|바꿔)\s*(?:줘요?|주세요))?\s*[?.!]*"
+)
 
 
 def follow_year(question: str, conditions: dict, today: date | None = None) -> int | None:
@@ -365,6 +383,7 @@ def with_recent(conditions: dict, changed: set[str], n: int) -> tuple[dict, set[
     c = copy.deepcopy(conditions)
     c["asked"] = {**(c.get("asked") or {}), "recent": n}
     c.pop("time_refs", None)
+    _clear_dated_months(c)
     c["start_year"] = c["end_year"] = None
     if c.get("type") in ("value", "compare"):
         c["type"] = "trend"
@@ -1285,7 +1304,14 @@ async def _separate_measures(question, measures, state, user_id):
                 raise outcome
             logger.error("묶음 질문 계산 실패: %s", name, exc_info=outcome)
             errors.append(outcome)
-            answers.append((name, {}))
+            failure = {}
+            if isinstance(outcome, HcxError) and outcome.is_rate_limit:
+                wait = f" (약 {math.ceil(outcome.retry_after)}초 뒤)" if outcome.retry_after else ""
+                failure = {
+                    "status": "rate_limited",
+                    "answer": "요청 한도에 도달했습니다. 잠시 후 다시 질문해 주세요." + wait,
+                }
+            answers.append((name, failure))
             continue
         res, sources = outcome
         answers.append((name, res))
@@ -1407,6 +1433,22 @@ async def _movement_tables(question: str, user_id: int | None, told: str | None 
 async def _turn(
     state: dict | None, question: str, selections: dict | None = None, user_id: int | None = None
 ) -> tuple[dict, dict, str | None]:
+    if refusal.instruction_request(question):
+        flow.add("통계 질문 검사", "not_statistics", "내부 지시 요청")
+        return (
+            {
+                "status": "not_statistics",
+                "answer": refusal.INSTRUCTION_REFUSAL,
+                "parsed": {},
+                "result": {"status": "not_statistics"},
+                "sources": [],
+                "chart": None,
+                "request_type": UNCLEAR,
+                "trace": {"instruction_request": True},
+            },
+            {},
+            None,
+        )
     pending = (state or {}).get("pending")
     if pending and pending.get("missing") == "question_clarification":
         original = pending["original_question"]
@@ -1587,15 +1629,21 @@ async def _turn(
         return res, sources, notice
     if view is None and not (has_last and summary_request(question)):
         trace: dict = {}
-        split = await asyncio.to_thread(region_split_changes, question, state["conditions"])
-        region_only = region_only or await asyncio.to_thread(
-            region_only_changes, question, state["conditions"]
-        )
-        if composition_request(question):
+        if year_reply := YEAR_ONLY_REPLY.fullmatch(question):
+            delta = {
+                "request_type": CHANGE,
+                "changes": {"year": int(year_reply[1])},
+                "chart": None,
+                "unclear": None,
+            }
+            flow.add("후속 질문", "연도 변경", f"{year_reply[1]}년")
+        elif composition_request(question):
             delta = parse_delta('{"request_type": "change", "changes": {"type": "composition"}}')
-        elif split:
+        elif split := await asyncio.to_thread(region_split_changes, question, state["conditions"]):
             delta = {"request_type": CHANGE, "changes": split, "chart": None, "unclear": None}
-        elif region_only:
+        elif region_only := region_only or await asyncio.to_thread(
+            region_only_changes, question, state["conditions"]
+        ):
             delta = {"request_type": CHANGE, "changes": region_only, "chart": None, "unclear": None}
         else:
             delta = await extract(state, question, trace)
@@ -1677,8 +1725,10 @@ async def _turn(
 
 def next_state(state: dict | None, question: str, res: dict, sources: dict) -> dict:
     prev = state or {}
-    recent = [*(prev.get("recent") or []), question][-RECENT:]
     turn_no = (prev.get("turn_no") or 0) + 1
+    if (res.get("trace") or {}).get("instruction_request"):
+        return {"conditions": {}, "sources": {}, **prev, "turn_no": turn_no}
+    recent = [*(prev.get("recent") or []), question][-RECENT:]
     if res.get("clarification"):
         before = prev.get("pending") or {}
         again = (
@@ -1744,8 +1794,13 @@ def next_state(state: dict | None, question: str, res: dict, sources: dict) -> d
             "turn_no": turn_no,
         }
     asked = res.get("question") or question
+    conditions = effective(res.get("parsed") or {}, res.get("result") or {})
+    if unconfirmed := conditions.pop("ungrounded_region", None):
+        conditions["regions"] = [r for r in conditions.get("regions") or [] if r != unconfirmed]
+        if conditions.get("sido") == unconfirmed:
+            conditions.pop("sido")
     return {
-        "conditions": effective(res.get("parsed") or {}, res.get("result") or {}),
+        "conditions": conditions,
         "sources": sources,
         "last": {
             "status": res.get("status"),
@@ -2688,8 +2743,18 @@ async def handle(
         res["session_id"] = sid
         res["applied"] = (
             []
-            if res.get("status") == TABLES
-            else applied(after.get("conditions") or {}, after.get("sources") or {})
+            if res.get("status") in (TABLES, *table_guide.REFUSED)
+            else applied(
+                after.get("conditions") or {},
+                after.get("sources") or {},
+                include_regions=(res.get("result") or {}).get("status")
+                not in {
+                    "unknown_region",
+                    "ambiguous_region",
+                    "missing_region",
+                    "region_not_in_year",
+                },
+            )
         )
         res["notice"] = notice
         first_line = (res.get("answer") or "").strip().split("\n")[0][:80]

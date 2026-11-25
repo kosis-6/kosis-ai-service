@@ -31,6 +31,21 @@ def load_notes():
         return tomllib.load(f)
 
 
+def missing_deferred(con, notes):
+    declared = notes.get("bootstrap", {}).get("deferred_tables", [])
+    return {
+        row[0]
+        for row in con.execute(
+            """
+            select distinct s.tbl_id from indicator_sources s
+            left join catalog c using (tbl_id)
+            where c.tbl_id is null and s.tbl_id = any(?)
+            """,
+            [declared],
+        ).fetchall()
+    }
+
+
 def build(con, notes):
     groups = [{"group_id": gid, **g} for gid, g in notes["groups"].items()]
     compat = [
@@ -119,6 +134,7 @@ def check(con, notes):
     data_tables = {r[0] for r in con.sql("select tbl_id from catalog").fetchall()}
     note_tables = set(notes["tables"])
     group_ids = set(notes["groups"])
+    deferred = set(notes.get("bootstrap", {}).get("deferred_tables", []))
 
     for t in sorted(data_tables - note_tables):
         issues.append(f"설명이 없는 표: {t}")
@@ -147,7 +163,8 @@ def check(con, notes):
             seen[key] = ind["name"]
         for s in base_sources(ind):
             if s["table"] not in data_tables:
-                issues.append(f"{ind['name']}: 데이터에 없는 표 {s['table']}")
+                if s["table"] not in deferred:
+                    issues.append(f"{ind['name']}: 데이터에 없는 표 {s['table']}")
                 continue
             for item in _as_list(s.get("item_id", [])):
                 where = [f"tbl_id = '{s['table']}'", f"item_id = '{item}'"]

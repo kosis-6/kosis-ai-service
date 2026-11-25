@@ -70,7 +70,7 @@ export function useSettled(value: string, ms = 300): string {
 }
 
 export function Status({ value, search = false }: { value: string | null | undefined; search?: boolean }) {
-  const label = statusLabel(value, search);
+  const label = statusLabel(value, search, true);
   return (
     <span className={`chip ${label.tone}`} title={value ?? undefined}>
       {label.text}
