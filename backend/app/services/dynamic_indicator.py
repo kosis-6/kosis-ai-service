@@ -15,6 +15,7 @@ from app.core.stats_db import rows as _rows
 from app.services import (
     agegroup,
     alternative,
+    band,
     cell_pick,
     flow,
     indicators,
@@ -146,6 +147,9 @@ class Plan:
     multi_dim: Dim | None = None
     couple: bool = False
     split_sex: dict[str, str] | None = None
+    # 숫자 구간 축의 구간 합 (band.py): 분류 번호 → (칸 코드들, 답에 쓰는 말).
+    # 건수면 합, 비율이면 합 ÷ 합계
+    bands: dict[int, tuple[list[str], str]] = field(default_factory=dict)
 
 
 def schema(tbl_id: str) -> tuple[list[Dim], int | None, str]:
@@ -579,11 +583,20 @@ def choose(
     couple: bool = False,
     multi: tuple[int, list[str], str] | None = None,
     quiet: dict[int, str] | None = None,
+    bands: dict[int, tuple[list[str], str]] | None = None,
 ):
     forced = forced or {}
     plan = Plan()
     sex = parsed.get("sex") or "계"
+    # 숫자 구간 축의 구간 합(band.find): 그 축은 질문 조건을 이미 이은 것으로 본다
+    for no, (codes, label) in (bands or {}).items():
+        d = next((x for x in dims if x.no == no), None)
+        if d is not None and codes and all(c in d.codes for c in codes):
+            plan.bands[no] = (list(codes), label)
+            plan.pick[no] = plan.matched[no] = codes[0]
     for d in dims:
+        if d.no in plan.bands:
+            continue
         if d.no != region_dim and d.sex_codes():
             plan.sex_dim = d
         elif d.no not in (0, region_dim) and d.is_age() and d.total():
@@ -592,7 +605,7 @@ def choose(
         return None, "표에 성별 구분이 없음"
     if plan.age_dim is None and parsed.get("ages"):
         return None, "표에 연령 구분이 없음"
-    skip = {region_dim} | ({plan.age_dim.no} if plan.age_dim else set())
+    skip = {region_dim} | ({plan.age_dim.no} if plan.age_dim else set()) | set(plan.bands)
     hits = _drop_region_words(question, _text_hits(question, dims, skip), dims, region_dim)
     household_table = HOUSEHOLD_CELL.search(_table_target(tbl_nm))
     asks: list[Ask] = []
@@ -797,6 +810,10 @@ def _unit_norm(text: str) -> str:
     return unicodedata.normalize("NFKC", re.sub(r"\s+", "", str(text))).lower()
 
 
+def _band_unions(plan: Plan) -> list[band.Union]:
+    return [band.Union(no, tuple(codes), label) for no, (codes, label) in plan.bands.items()]
+
+
 def _band_miss(texts: list[str], dims: list[Dim], region_dim: int | None) -> BandMiss | None:
     for text in texts:
         for m in MEASURE_UNIT.finditer(_unit_norm(text)):
@@ -835,6 +852,8 @@ def uncovered(
             continue
         if not _item_left(item, names, read, plan, parsed, question):
             continue
+        if any(u.label and _norm(item) in _norm(u.label) for u in _band_unions(plan)):
+            continue  # 구간 합으로 이미 이었다 ("저체중아" → 2.5kg 미만 칸들)
         if miss := _band_miss([item], dims, region_dim):
             return miss
         return f"질문의 조건 '{item}'을 표의 칸에 반영할 수 없음"
@@ -987,9 +1006,13 @@ def _has_age_dim(dims: list[Dim], region_dim: int | None) -> bool:
 
 
 def _filters(plan: Plan, dims: list[Dim], region_dim: int | None) -> dict:
-    return {
+    out = {
         d.col: plan.pick[d.no] for d in dims if d.no not in (0, region_dim) and d.no in plan.pick
     }
+    for d in dims:
+        if d.no in plan.bands and d.no not in (0, region_dim):
+            out[d.col] = list(plan.bands[d.no][0])  # 칸 여러 개 → lookup 이 더한다
+    return out
 
 
 def _sex_override(plan: Plan, sex: str) -> dict:
@@ -1014,7 +1037,7 @@ def _name(
     unit: str = "",
     target: str = "",
 ) -> str:
-    named = [d for d in dims if d.no in plan.matched]
+    named = [d for d in dims if d.no in plan.matched and d.no not in plan.bands]
     named = [d for d in named if len(d.codes) > 1] or named
     words = [d.codes[plan.matched[d.no]] for d in named]
     words = words or [dims[0].codes[plan.pick[0]]]
@@ -1102,7 +1125,19 @@ def build(
         couple = False
     multi = (slots or {}).get("binding_multi")
     quiet = (slots or {}).get("binding_quiet")
-    plan, why = choose(question, parsed, dims, region_dim, forced, tbl_nm, couple, multi, quiet)
+    # 숫자 구간 축의 구간 합: "2.5kg 미만" · "고령산모(35세 이상)"가 덮는 칸들을 그 축에 잇는다
+    items = list(((slots or {}).get("conditions") or {}).get("items") or [])
+    literal = set(
+        _text_hits(question, dims, {region_dim})
+    )  # 칸 이름이 글자로 있으면 그 매칭이 맡는다
+    bands = {
+        u.dim_no: (list(u.codes), u.label)
+        for u in band.find([question, *items], dims, region_dim)
+        if u.dim_no not in literal
+    }
+    plan, why = choose(
+        question, parsed, dims, region_dim, forced, tbl_nm, couple, multi, quiet, bands or None
+    )
     if (seen := (slots or {}).get("seen")) is not None:
         seen["plan"] = plan
     _report_cells(slots, plan, dims, parsed, region_dim)
@@ -1126,7 +1161,7 @@ def build(
     if why := uncovered(slots, plan, dims, parsed, region_dim, question):
         return None, why
     miss = _band_miss([question], dims, region_dim)
-    if miss and miss.dim_no not in plan.matched:
+    if miss and miss.dim_no not in plan.matched and miss.dim_no not in plan.bands:
         return None, miss
     src = {"table": tbl_id, "level": level, "item_id": plan.pick[0]}
     if level == "전국":
@@ -1396,7 +1431,10 @@ def _ratio(spec, src, plan, dims, parsed, tbl_nm="", *, question=""):
         parts.append((age_dim.col, codes, den, "·".join(map(indicators.age_label, ages))))
     for d in dims:
         whole = d.total() or _item_whole(d, tbl_nm)
-        if d.no in plan.matched and whole and plan.matched[d.no] != whole:
+        if d.no in plan.bands and whole:
+            codes, label = plan.bands[d.no]
+            parts.append((d.col, list(codes), whole, label))
+        elif d.no in plan.matched and whole and plan.matched[d.no] != whole:
             if d is not plan.sex_dim:
                 code = plan.matched[d.no]
                 if indicators.find_regions(d.codes[code]):
@@ -1420,6 +1458,12 @@ def _ratio(spec, src, plan, dims, parsed, tbl_nm="", *, question=""):
         num_src["filters"] = {**filters, col: num if len(num) > 1 else num[0]}
         num_src["den_item_id"] = src["item_id"]
         num_src["den_filters"] = {**filters, col: den}
+    if plan.sex_dim is not None and plan.sex_dim.no != 0 and sex == "계" and not population_sex:
+        # 성별 '계' 칸을 분자 · 분모 조회에 붙인다. 건수 경로는 by_sex 로 붙지만 비율 경로는 빠져
+        # 계 + 남 + 여가 합산됐다 (값은 같은 비율이라 맞았지만 보이는 분자 · 분모가 2배, 11/26)
+        whole_sex = {plan.sex_dim.col: plan.pick[plan.sex_dim.no]}
+        num_src["filters"] = {**whole_sex, **num_src.get("filters", {})}
+        num_src["den_filters"] = {**whole_sex, **num_src.get("den_filters", {})}
     whole = next(d.codes for d in dims if d.col == col)
     name = spec["name"]
     if population_label:

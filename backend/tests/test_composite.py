@@ -55,7 +55,7 @@ def test_result_shapes_render_with_the_existing_summary() -> None:
     assert "서울" in qa.summary(r) and "출처: A" in qa.render(r)
     one = Table({"서울": {"2019→2024": 3.0}}, unit="명", label="차이")
     r1 = composite._result(one, G(), "시도")
-    assert r1["value"] == 3.0 and r1["period_label"] == "2019→2024" and "서울" in qa.summary(r1)
+    assert r1["value"] == 3.0 and r1["as_of"] == "2019년→2024년" and "서울" in qa.summary(r1)
 
 
 def test_answer_runs_plan_and_falls_back_to_none_on_failure(monkeypatch) -> None:

@@ -183,32 +183,39 @@ def _resolve_period(t: Table, expr: str) -> str:
     raise PlanError("out_of_range", None, f"시점 {e} 가 표에 없음 ({ps[0]}~{ps[-1]})")
 
 
+def _round(v: float | None) -> float | None:
+    return None if v is None else round(v, 2)
+
+
 def _change_value(a: float | None, b: float | None, how: str) -> float | None:
     if a is None or b is None:
         return None
     if how == "diff":
-        return b - a
+        return _round(b - a)
     if how == "rate":
-        return None if a == 0 else (b - a) / a * 100
-    return None if a == 0 else b / a  # ratio
+        return None if a == 0 else _round((b - a) / a * 100)
+    return None if a == 0 else _round(b / a)  # ratio
 
 
 def change(t: Table, from_: str, to: str, how: str = "diff") -> Table:
     p0, p1 = _resolve_period(t, from_), _resolve_period(t, to)
     label = f"{p0}→{p1}"
     rows = {r: {label: _change_value(v.get(p0), v.get(p1), how)} for r, v in t.rows.items()}
-    unit = {"diff": t.unit, "rate": "%", "ratio": "배"}[how]
-    return Table(rows, t.indicator, unit, f"{t.label or t.indicator or ''} {label} {how}".strip())
+    unit = {"diff": "%p" if t.unit == "%" else t.unit, "rate": "%", "ratio": "배"}[how]
+    how_ko = {"diff": "변화", "rate": "증감률", "ratio": "배"}[how]
+    return Table(
+        rows, t.indicator, unit, f"{t.label or t.indicator or ''} {p0}→{p1} {how_ko}".strip()
+    )
 
 
 def _combine_value(a: float | None, b: float | None, how: str, scale: float) -> float | None:
     if a is None or b is None:
         return None
     if how == "sum":
-        return a + b
+        return _round(a + b)
     if how == "ratio":
-        return None if b == 0 else a / b * scale
-    return a - b  # diff · which_larger
+        return None if b == 0 else _round(a / b * scale)
+    return _round(a - b)  # diff · which_larger
 
 
 def combine(a: Table, b: Table, how: str, scale: float = 1.0) -> Table:
@@ -239,7 +246,12 @@ def combine(a: Table, b: Table, how: str, scale: float = 1.0) -> Table:
         "which_larger": a.unit,
         "ratio": "%" if scale == 100 else "배",
     }
-    out = Table(rows, None, unit[how], f"{a.label or ''} {how} {b.label or ''}".strip())
+    how_ko = {"sum": "합", "diff": "차이", "ratio": "비율", "which_larger": "비교"}[how]
+    out = Table(rows, None, unit[how], f"{a.label or ''} − {b.label or ''} {how_ko}".strip())
+    if how in ("sum", "ratio"):
+        out.label = (
+            f"{a.label or ''} {'+' if how == 'sum' else '÷'} {b.label or ''} {how_ko}".strip()
+        )
     if larger:
         out.meta["larger"] = larger
     return out

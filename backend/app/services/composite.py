@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 
 from app.agent import plan_steps
@@ -25,6 +26,9 @@ logger = logging.getLogger(__name__)
 MODEL = "HCX-007"  # GemmaClient 는 GEMMA_MODEL 로 바꿔 보낸다
 MAX_TOKENS = 700
 NATION = "전국"
+# 지표 질문 글에 통계표 찾기가 붙인 연도("2019~2024년 …"). get 이 시점을 정해 다시 붙인다
+RATIO_WORD = re.compile(r"비율|비중|%|집중도|(?<![가-힣])률|율(?![가-힣])")
+YEARS_IN_TEXT = re.compile(r"(?:19|20)\d{2}\s*(?:~\s*(?:19|20)\d{2})?\s*년\s*")
 
 
 # ---------------------------------------------------------------- 복합 판별 (Gemma)
@@ -139,15 +143,25 @@ class Getter:
             "ascending": False,
             "asked": {**(self.parsed.get("asked") or {}), "latest": year is None},
         }
-        asked = self.question
+        # 지표마다 통계표 찾기가 만든 그 지표만의 질문 글(target.question)을 쓴다. 질문 전체를 주면
+        # 다른 지표의 조건(저체중아 …)까지 칸에 잇어 비율의 분자 · 분모가 둘이 된다 (11/26 손 확인)
+        base = YEARS_IN_TEXT.sub("", target.get("question") or self.question).strip()
+        span = _span(target)
+        if RATIO_WORD.search(span) and not RATIO_WORD.search(base):
+            # 지표 이름이 비율(비중 · 집중도 · 률)인데 지표 질문 글에 그 말이 없으면 건수로 계산된다
+            base = f"{base} 비율"
+        asked = base or self.question
         if year is not None:
-            # 표 경로는 질문 글에서 연도를 읽으므로 연도를 질문 앞에 붙이고 target 조건에도 둔다
-            asked = f"{year}년 {self.question}"
-            target = {
-                **target,
-                "question": asked,
-                "conditions": {**(target.get("conditions") or {}), "year": year},
-            }
+            # 표 경로는 질문 글에서 연도를 읽으므로 연도를 앞에 붙이고 target 조건에도 둔다
+            asked = f"{year}년 {base}"
+        target = {
+            **target,
+            "question": asked,
+            "conditions": {
+                **{k: v for k, v in (target.get("conditions") or {}).items() if k != "year_end"},
+                "year": year,
+            },
+        }
         self.calls += 1
         res, sub = await multi_indicator._one(asked, p, self.found, target, "rank")
         self.trace.setdefault("dynamic", []).extend(sub.get("dynamic") or [])
@@ -203,7 +217,8 @@ def _result(table: Table, getter: Getter, level: str) -> dict:
         "indicator": table.label or table.indicator or "",
         "unit": table.unit or "",
         "year": int(period) if period.isdigit() else None,
-        "period_label": period if not period.isdigit() else None,
+        # 기존 답 문장은 as_of 또는 year 로 시점을 적는다 ("2020→2025" 같은 구간은 as_of 로)
+        "as_of": None if period.isdigit() else period.replace("→", "년→") + "년",
         "kind": "composite",
         "notes": [],
         **src,
@@ -216,6 +231,9 @@ def _result(table: Table, getter: Getter, level: str) -> dict:
     if len(regions) == 1 and table.order is None:
         r = regions[0]
         return {**base, "region": r, "value": table.single(r)}
+    if table.order is None:
+        # 순위 step 이 아닌 결과(여러 지역의 변화 · 비율)는 값이 큰 순으로 보여 준다
+        regions = sorted(regions, key=lambda r: (table.single(r) is None, -(table.single(r) or 0)))
     items = [{"rank": i + 1, "region": r, "value": table.single(r)} for i, r in enumerate(regions)]
     return {
         **base,
