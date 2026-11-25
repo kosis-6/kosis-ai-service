@@ -515,6 +515,7 @@ RANK_SKIP = re.compile(r"기타|미상")
 
 
 QUIET = ("total", "default", "couple")
+RANK_ASK = re.compile(r"\d+\s*위|순위|제일|가장")
 
 
 @dataclass
@@ -532,10 +533,11 @@ class Retry:
         }
 
 
-def retry_plan(b: Binding, question: str, parsed: dict) -> Retry | None:
+def retry_plan(b: Binding, question: str, parsed: dict, ratio_ok: bool = False) -> Retry | None:
     if b.status != BOUND:
         return None
-    if parsed.get("type") == "composition" or di.PCT_ASK.search(question):
+    ratio = parsed.get("type") == "composition" or bool(di.PCT_ASK.search(question))
+    if ratio and not ratio_ok:
         return None
     dims = {d.no: d for d in di.schema(b.tbl_id)[0]}
     forced: dict[int, str] = {}
@@ -553,7 +555,11 @@ def retry_plan(b: Binding, question: str, parsed: dict) -> Retry | None:
             continue
         if x.by == "dim":
             d = dims[x.dim]
-            rank = parsed.get("type") == "rank" or bool(di.TOP_N.search(question))
+            rank = (
+                parsed.get("type") == "rank"
+                or bool(di.TOP_N.search(question))
+                or bool(RANK_ASK.search(question))
+            )
             codes = [c for c in di._leaf_codes(d) if not (rank and RANK_SKIP.search(d.codes[c]))]
             group = (x.dim, codes, "rank" if rank else "compare")
         elif len(x.codes) > 1:
@@ -569,6 +575,8 @@ def retry_plan(b: Binding, question: str, parsed: dict) -> Retry | None:
             return None
         multi = group
     if multi is not None:
+        if ratio:
+            return None
         forced.pop(multi[0], None)
         quiet.pop(multi[0], None)
     return Retry(forced, multi, q, quiet)

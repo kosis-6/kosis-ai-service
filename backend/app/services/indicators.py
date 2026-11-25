@@ -158,10 +158,30 @@ AMBIGUOUS_NAMES = {
     "경상도": ["경상북도", "경상남도"],
     "전라도": ["전북특별자치도", "전라남도"],
 }
+ROMANIZED_REGIONS = {
+    "seoul": "서울",
+    "busan": "부산",
+    "daegu": "대구",
+    "incheon": "인천",
+    "gwangju": "광주",
+    "daejeon": "대전",
+    "ulsan": "울산",
+    "sejong": "세종",
+    "gyeonggi": "경기",
+    "gangwon": "강원",
+    "jeju": "제주",
+}
+ROMANIZED_REGION = re.compile(
+    rf"(?<![a-z0-9])(?:{'|'.join(ROMANIZED_REGIONS)})(?:-do)?(?![a-z0-9])", re.IGNORECASE
+)
 
 
 def _norm(text):
     return re.sub(r"\s+", "", str(text))
+
+
+def localize_region_names(text: str) -> str:
+    return ROMANIZED_REGION.sub(lambda m: ROMANIZED_REGIONS[m[0].lower().removesuffix("-do")], text)
 
 
 def _div(a, b):
@@ -909,7 +929,7 @@ def _region_matches(text):
 
 
 def find_regions(text):
-    return [name for _, _, name in _region_matches(_norm(text))]
+    return [name for _, _, name in _region_matches(_norm(localize_region_names(str(text))))]
 
 
 def region_mentions(text: str) -> list[tuple[int, int, str]]:
@@ -973,7 +993,7 @@ def resolve_region(name, year=None, sigungu=False):
                or r.region_code = ?) {extra}
         order by r.region_code
     """
-    key = _norm(name)
+    key = _norm(localize_region_names(str(name)))
     found = _rows(sql.format(extra=""), [key, key])
     for suffix in ("시", "군", "구"):
         if not found and not key.endswith(("시", "군", "구", "도")):
@@ -1143,8 +1163,11 @@ def trend(indicator, region, start_year, end_year, sex="계", ages=None):
     )
     if (m := _monthly(reg["region_code"], sex, end_year)) and series[-1]["year"] == end_year:
         hi = _data_years()[1]
+        as_of = f"{m['year']}년 {m['month']}월 말"
+        series[-1]["as_of"] = as_of
+        out["basis"] = f"주민등록인구, {hi}년까지 12월 말 · 마지막 값은 {as_of} 기준"
         out["notes"].append(
-            f"{end_year}년 값은 {m['year']}년 {m['month']}월 말 기준입니다 "
+            f"{end_year}년 값은 {as_of} 기준입니다 "
             f"(KOSIS 월별 자료의 최신 달, {hi}년까지는 12월 말)"
         )
     return out
@@ -1291,6 +1314,8 @@ def rank(
             available_years=[lo, hi],
         )
 
+    if sido and (gap := not_yet_founded(resolve_region(sido), year, name)):
+        return gap
     cond = rank_where(level, sido)
     if isinstance(cond, dict):
         return {**cond, "indicator": name}
@@ -1315,6 +1340,14 @@ def rank(
             order by r.region_code
         """,
             [year, *params],
+        )
+    if not regs:
+        return _base(
+            name,
+            ind,
+            "missing_data",
+            year=year,
+            reason=f"{year}년에는 해당 지역 단위의 순위 자료가 없습니다.",
         )
     comps = _components(
         [r["region_code"] for r in regs], year, year, sex, ind.get("band"), ind.get("area"), ind

@@ -29,9 +29,14 @@ def append(path: Path, record: dict) -> None:
 
 
 def purge(path: Path, cutoff: datetime) -> None:
-    if not path.exists():
+    if not path.parent.is_dir():
         return
     with locked(path):
+        # 같은 잠금 아래에서는 현재 쓰는 사본이 없다. 잠금 파일은 이름이 일치하지 않는다.
+        for orphan in path.parent.glob(f".{path.name}." + "[a-z0-9_]" * 8):
+            orphan.unlink(missing_ok=True)
+        if not path.exists():
+            return
         temporary = None
         try:
             with (

@@ -335,7 +335,9 @@ def database_url() -> str:
     return get_settings().database_url.replace("postgresql+psycopg://", "postgresql://", 1)
 
 
-def load(records: list[dict[str, Any]], url: str, recreate: bool = False) -> dict[str, int]:
+def load(
+    records: list[dict[str, Any]], url: str, recreate: bool = False, *, prune: bool = True
+) -> dict[str, int]:
     import psycopg
     from psycopg.types.json import Jsonb
 
@@ -357,10 +359,12 @@ def load(records: list[dict[str, Any]], url: str, recreate: bool = False) -> dic
                 ON CONFLICT (tbl_id) DO UPDATE SET {updates}, loaded_at = now()
                 RETURNING xmax = 0"""
         ).fetchall()
-        deleted = conn.execute(
-            "DELETE FROM catalog.table_meta s WHERE NOT EXISTS "
-            "(SELECT 1 FROM incoming i WHERE i.tbl_id = s.tbl_id)"
-        ).rowcount
+        deleted = 0
+        if prune:
+            deleted = conn.execute(
+                "DELETE FROM catalog.table_meta s WHERE NOT EXISTS "
+                "(SELECT 1 FROM incoming i WHERE i.tbl_id = s.tbl_id)"
+            ).rowcount
         total = conn.execute("SELECT count(*) FROM catalog.table_meta").fetchone()[0]
     inserted = sum(1 for (is_new,) in upserted if is_new)
     return {

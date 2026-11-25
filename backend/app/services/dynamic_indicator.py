@@ -851,7 +851,8 @@ def uncovered(
         for c in cond.get("classes") or []
         if _norm(c) not in skip and not _class_narrowed(c, plan, dims, said)
     ]
-    if classes and parsed.get("type") not in ("composition", "rank", "trend"):
+    split = bool(slots.get("cells_by_binding") and plan.multi and plan.multi[2] in SPLIT_OPS)
+    if classes and not split and parsed.get("type") not in ("composition", "rank", "trend"):
         return f"나눠 보기({', '.join(classes)}별)는 값 하나로 답할 수 없음"
     return None
 
@@ -1635,8 +1636,13 @@ def _age_check(key: str, parsed: dict) -> bool:
 MAX_ATTEMPTS = 5
 MAX_FETCH_AT_ONCE = 3
 MAX_CELL_LLM = 3
+MAX_RECELL = 1
+SPLIT_OPS = ("rank", "compare")
 _cell_llm_budget: contextvars.ContextVar[list[int] | None] = contextvars.ContextVar(
     "cell_llm_budget", default=None
+)
+_recell_budget: contextvars.ContextVar[list[int] | None] = contextvars.ContextVar(
+    "recell_budget", default=None
 )
 HANDOFF_STATUSES = ("ok", "partial_match")
 WHOLE_COUNTRY = {"전국", "우리나라", "한국", "대한민국", "국내"}
@@ -1798,6 +1804,7 @@ async def compute_from_handoff(
     if h.get("status") not in HANDOFF_STATUSES or not h.get("targets"):
         return None
     _cell_llm_budget.set([MAX_CELL_LLM])
+    _recell_budget.set([MAX_RECELL])
     targets = h["targets"]
     target = targets[0]
     if len(targets) > 1:
@@ -1939,7 +1946,12 @@ async def _compute_target(
             sub["dynamic"][-1]["binding_skip"] = (
                 b.status if b.status != binding.BOUND else "연산 둘"
             )
+            if b.status == binding.PARTIAL:
+                sub["_partial"] = (b, sub["dynamic"][-1])
             return None, None
+        return await run_binding(entry, plan, q_used, sub, slots, notice, "binding")
+
+    async def run_binding(entry, plan, q_used, sub, slots, notice, by):
         slots_b = {
             **slots,
             "cells_by_binding": True,
@@ -1947,7 +1959,7 @@ async def _compute_target(
             "binding_quiet": plan.quiet,
         }
         res, ask = await _try(
-            tbl_id,
+            entry["tbl_id"],
             entry.get("org_id"),
             question,
             plan.parsed,
@@ -1957,12 +1969,43 @@ async def _compute_target(
             notice,
             sem,
         )
-        sub["dynamic"][-1]["by"] = "binding"
+        sub["dynamic"][-1]["by"] = by
         sub["dynamic"][-1]["binding_plan"] = plan.to_dict()
         said_sex = q_used.get("sex")
         if res is not None and said_sex in ("남", "여") and plan.parsed.get("sex") != said_sex:
             res["parsed"] = {**(res.get("parsed") or {}), "sex": said_sex}
         return res, ask
+
+    async def with_recell(entry: dict, q_used: dict, sub: dict, slots: dict, notice):
+        from app.core.config import get_settings
+        from app.services import binding, recell
+
+        partial = sub.pop("_partial", None)
+        if partial is None or not get_settings().binding_recell:
+            return None, None
+        b, step = partial
+        left = _recell_budget.get()
+        if left is None:
+            left = [MAX_RECELL]
+            _recell_budget.set(left)
+        if left[0] <= 0:
+            step["recell_skip"] = f"질문당 recell 상한({MAX_RECELL}회)"
+            return None, None
+        left[0] -= 1
+        try:
+            fixed = await recell.fix(question, entry.get("tbl_nm"), b, u.get("topic"), step)
+            plan = None
+            if fixed is not None:
+                plan = await run_in_threadpool(
+                    binding.retry_plan, fixed.binding, question, q_used, True
+                )
+        except Exception:
+            logger.exception("recell 실패: %s", entry["tbl_id"])
+            return None, None
+        if plan is None:
+            return None, None
+        notice = ". ".join(n for n in (notice, fixed.notice) if n) or None
+        return await run_binding(entry, plan, q_used, sub, slots, notice, "binding+recell")
 
     async def llm_then_binding(entry, q_used, sub, slots_llm, lines, picked):
         from app.services import binding
@@ -2111,6 +2154,14 @@ async def _compute_target(
                 outs[k] = (res, ask, sub)
                 if is_ok(res):
                     break
+            if not any(is_ok(res) for res, _, _ in outs):
+                for k, (_res, ask, sub) in enumerate(outs):
+                    if ask is None and sub.get("_partial"):
+                        slots, notice = context(entries[idx[k]])
+                        got = await with_recell(entries[idx[k]], q, sub, slots, notice)
+                        if got[0] is not None or got[1] is not None:
+                            outs[k] = (got[0], got[1], sub)
+                        break
         return outs
 
     outcomes = await run_round(list(range(len(entries))), picked_exact)

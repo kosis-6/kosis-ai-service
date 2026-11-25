@@ -32,6 +32,10 @@ BARE_HOUSEHOLD = re.compile(r"세대(?!\s*수)(?=\s*(?:[\d,]+|천|만|백)?\s*(?
 
 
 AFTER_VERSUS = re.compile(r"^(?:에|의)?대비")
+DIVIDE_MARKER = re.compile(r"^(?:으)?로$")
+DIVIDE_AFTER = re.compile(r"^(?:으)?로나(?:누|눈|눠|눌|눴)")
+DIVIDE_NUMERATOR = re.compile(r"^(?:을|를)?나(?:누|눈|눠|눌|눴)")
+OBJECT = re.compile(r"^(?:을|를)?$")
 AND_BETWEEN = re.compile(r"^(?:와|과|하고|랑|이랑|및|,|그리고)$")
 SUM_TAIL = re.compile(r"^(?:의|을|를)?(?:합계|합친것|합친|합해서|합하면|합|더한것|더한|더하면)")
 DEN_LABEL = {"총인구": "인구", "세대수": "세대"}
@@ -183,6 +187,10 @@ def detect(question: str) -> Cross | None:
     if not (_countable(a) and _countable(b)) or (plus and not _countable(plus)):
         return None
     between, after = text[a_end:b_start], text[b_end:]
+    if OBJECT.fullmatch(between) and DIVIDE_AFTER.match(after) and not plus:
+        return _division(a, b, after)
+    if DIVIDE_MARKER.fullmatch(between) and DIVIDE_NUMERATOR.match(after) and not plus:
+        return _division(b, a, after)
     if found := _diff_or_times(a, b, between, after, plus):
         return found
     if not between and not plus and (m := AFTER_VERSUS.match(after)):
@@ -207,6 +215,12 @@ def detect(question: str) -> Cross | None:
     if plus:
         return Cross(num=b, den=a, scale=scale, form=form, plus=plus)
     return Cross(num=b, den=a, scale=scale, form=form, official=OFFICIAL.get((b, a, scale)))
+
+
+def _division(num: str, den: str, after: str) -> Cross:
+    scale = 100 if RATE_ANYWHERE.search(after) else 1
+    form = "versus" if scale == 100 or _unit(num) == _unit(den) else "per"
+    return Cross(num=num, den=den, scale=scale, form=form)
 
 
 MARKER = re.compile(r"^(?P<stem>.*?)(?P<n>[\d,]+|천|만|백)?(?P<unit>명|세대|가구|건)?당$")
