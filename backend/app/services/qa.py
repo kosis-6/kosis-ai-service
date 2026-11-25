@@ -985,16 +985,22 @@ def correct(question, parsed, today=None):
         kind = parsed.get("type")
         chosen = indicators.canonical_name(parsed.get("indicator") or "")
         parsed["grounded"] = (chosen in names) if chosen else None
+        parsed.pop("ungrounded_by", None)
+        if parsed["grounded"] is False:
+            # 질문에 지표 이름 · 별칭이 글자로 없을 뿐이다. 이 경우만 사전 문지기가 조건을 검사해
+            # 사전 답을 둘지 정한다 (사전 지름길 D1). 아래의 다른 이유는 검사 없이 넘긴다
+            parsed["ungrounded_by"] = "name"
         plain = _plain_people_question(question) or (
             _both_sexes(question) and not OTHER_PEOPLE.search(question)
         )
         if chosen == "총인구" and parsed["grounded"] is False and plain:
             parsed["grounded"] = True
+            parsed.pop("ungrounded_by", None)
         if chosen == "총인구" and population_modifier(question):
-            parsed["grounded"] = False
+            _hard_ungrounded(parsed, "인구에 수식어")
         chosen_spec = indicators.spec(chosen) if chosen else None
         if undone_pct and chosen_spec and lookup.kind_of(chosen_spec) == "count":
-            parsed["grounded"] = False
+            _hard_ungrounded(parsed, "비율을 물었는데 건수 지표")
 
     sp = indicators.spec(parsed.get("indicator"))
     is_comp = sp is not None and lookup.kind_of(sp) == "composition"
@@ -1116,7 +1122,7 @@ def correct(question, parsed, today=None):
         and (other := unlisted_measure(question))
     ):
         parsed["also_asked"] = other
-        parsed["grounded"] = False
+        _hard_ungrounded(parsed, "다른 지표도 함께 물음")
         rest = question.replace(other, " ")
         if (
             (parsed.get("ages") or parsed.get("age_group"))
@@ -1139,12 +1145,14 @@ def correct(question, parsed, today=None):
             fix("indicator", "합계출산율", "'한 명이 몇 명 낳는지'는 합계출산율")
         parsed["term"] = "합계출산율"
         parsed["grounded"] = True
+        parsed.pop("ungrounded_by", None)
         parsed.setdefault("asked", {})["birth_explain"] = True
     elif BIRTH_HOW_MANY.search(question) and not BIRTH_CLEAR.search(question):
         if parsed.get("indicator") in (None, "합계출산율", "출생아 수", "조출생률", *BIRTH_TOPIC):
             fix("indicator", "합계출산율", "'얼마나 낳아'는 합계출산율 + 출생아 수")
             parsed["term"] = "합계출산율"
             parsed["grounded"] = True
+            parsed.pop("ungrounded_by", None)
             parsed.pop("unsupported", None)
             if parsed.get("type") in (None, "other", "parse_error"):
                 fix("type", "value", "'얼마나 낳아'")
@@ -1158,7 +1166,7 @@ def correct(question, parsed, today=None):
     other_axis = OTHER_AXIS.search(question) and not AXIS_REGION.search(question)
     if parsed.get("type") == "rank" and other_axis:
         parsed["rank_axis"] = OTHER_AXIS.search(question)[1]
-        parsed["grounded"] = False
+        _hard_ungrounded(parsed, "순위 축이 지역이 아님")
     _one_region_years(parsed, fix)
     many_regions = len(parsed.get("regions") or []) > 1
     if parsed.get("months") and (parsed.get("type") != "value" or many_regions):
@@ -1214,6 +1222,7 @@ def _change_rank(question, parsed, fix):
     if names == {"총인구"} and parsed.get("indicator") != "총인구":
         fix("indicator", "총인구", "'인구'의 변화량")
         parsed["grounded"] = True
+        parsed.pop("ungrounded_by", None)
 
 
 REGION_MEAN = re.compile(
@@ -1290,6 +1299,7 @@ def _cross(question, parsed, fix):
     parsed["term"] = found.official or found.name
     parsed["indicators"] = None
     parsed["grounded"] = True
+    parsed.pop("ungrounded_by", None)
     parsed.pop("unsupported", None)
     if (found.plus or found.form == "sum") and not parsed.get("group"):
         parsed.pop("aggregate", None)
@@ -1337,6 +1347,13 @@ def _plain_token(token):
             if indicators.resolve_region(form).get("status") == "ok":
                 return True
     return False
+
+
+def _hard_ungrounded(parsed, why):
+    """사전 답을 검사 없이 표 경로로 넘긴다. 질문에 지표 이름이 없을 뿐인 경우("name")와 달리
+    사전이 그 조건을 낼 수 없다는 뜻이 또렷한 이유다 (사전 지름길 D1이 건너뛰지 않음)"""
+    parsed["grounded"] = False
+    parsed["ungrounded_by"] = why
 
 
 def _plain_people_question(question):
@@ -3609,11 +3626,14 @@ async def answer(parsed, trace=None, question=""):
 
         months = parsed.get("months") or parsed.get("months_each")
         if months and not any(r.get("value") is not None for r in _leaves(result)):
-            parsed["grounded"] = False
+            _hard_ungrounded(parsed, "월별 값 없음")
             parsed["gate_reasons"] = ["월을 물었는데 사전 표에 월별 값이 없음"]
             flow.add("사전 문지기", "넘김", parsed["gate_reasons"][0])
         settings = get_settings()
-        gate = settings.binding_dict_gate and parsed.get("grounded") is not False
+        # 사전 지름길 (D1): 질문에 지표 이름이 글자로 없어 '근거 없음'이 된 것은 바로 넘기지 않고
+        # 문지기가 조건을 검사한다. 조건을 모두 담았으면 사전 답을 둔다
+        shortcut = parsed.get("grounded") is False and parsed.get("ungrounded_by") == "name"
+        gate = settings.binding_dict_gate and (parsed.get("grounded") is not False or shortcut)
         if (gate or settings.binding_dict_shadow) and result.get("status") == "ok" and question:
             from app.services import dict_binding
 
@@ -3623,6 +3643,10 @@ async def answer(parsed, trace=None, question=""):
                     parsed["grounded"] = False
                     parsed["gate_reasons"] = rec.get("reasons") or []
                     flow.add("사전 문지기", "넘김", " · ".join(parsed["gate_reasons"])[:200])
+                elif gate and shortcut and rec.get("decision") == dict_binding.KEEP:
+                    parsed["grounded"] = True
+                    parsed["dictionary_shortcut"] = True
+                    flow.add("사전 지름길", "사전 답 유지", "지표 이름은 없지만 조건을 모두 담음")
     return {
         "status": result.get("status"),
         "answer": f"{summary(result)}\n\n{render(result)}".strip(),

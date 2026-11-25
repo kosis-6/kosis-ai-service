@@ -15,6 +15,16 @@ SUB_YEAR = re.compile(r"\d{1,2}\s*월|상반기|하반기|\d\s*분기|분기별|
 SEX_CLASS = re.compile(r"^(성별?|남녀|성\s*별)$")
 MONTHLY = re.compile(r"월\s*말|월별")
 FROM_TO = re.compile(r"\S+에서\s*\S+?(?:으로|로)\s*(?:이사|이동|옮|간|가|온|오|빠져)")
+# '다른 시도에서 경기도로 이사 오는 사람'은 특정 경로가 아니라 전입자 수(밖에서 들어온 사람 전체)다
+GENERIC_ORIGIN = re.compile(
+    r"(?:다른|타|여타|외부|딴)\s*(?:시도|지역|시군구|도시|곳|데)\s*에서|밖에서"
+)
+
+
+def specific_route(question: str) -> bool:
+    return bool(FROM_TO.search(question)) and not GENERIC_ORIGIN.search(question)
+
+
 FILTER_KEY = re.compile(r"c(\d+)_id")
 PERIOD_CONDS = ("year", "period")
 
@@ -141,7 +151,7 @@ def judge(question: str, parsed: dict, result: dict, u: dict) -> dict[str, Any] 
     basis = str(result.get("basis") or "")
     if SUB_YEAR.search(question) and not result.get("as_of") and not MONTHLY.search(basis):
         reasons.append("월 · 분기 단위를 물었는데 연간 값")
-    if FROM_TO.search(question):
+    if specific_route(question):
         reasons.append("'○○에서 ○○로' 옮긴 사람 (전출지 → 전입지)")
     out = b.to_dict()
     out.update(
