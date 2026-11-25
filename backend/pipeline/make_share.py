@@ -1,14 +1,3 @@
-"""팀 공유용 전처리 자료 묶기 → dist/kosis_share_YYYYMMDD.zip
-
-담는 것
-  preview/*.csv          엑셀로 열어볼 미리보기
-  catalog_notes.toml     통계표 설명서 (DB에 들어간 설명의 원본)
-  DATA_README.md         자료 설명 (이 스크립트가 DB 내용을 보고 생성)
-
-API 키(.env)나 원본 CSV는 담지 않는다.
-실행: python pipeline/run_all.py --share   (검증까지 통과한 뒤 묶기)
-"""
-
 import sys
 import zipfile
 from datetime import date

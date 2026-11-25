@@ -1,6 +1,3 @@
-"""자동 채점 규칙(scripts/devset_grade.py): 챗봇·HCX 없이 가짜 문항과 가짜 응답으로 확인한다
-(실제 골든셋 문항·정답은 쓰지 않는다)"""
-
 from scripts import devset_grade as dg
 
 SRC = {
@@ -44,27 +41,21 @@ def res(answer, status="ok", result=None, regions=("가상시",), year=2025, **k
     return base
 
 
-# ---- 숫자 ---------------------------------------------------------------------------------
-
-
 def test_rounding_and_unit_conversion_match():
     exp = dg.numbers("20.62%")[0]
     assert dg.same_number(exp, dg.numbers("20.6%")[0])
     assert not dg.same_number(exp, dg.numbers("20.4%")[0])
     assert dg.same_number(dg.numbers("52,000명")[0], dg.numbers("5.2만 명")[0])
-    # 단위 설명의 "1천 명당"은 환산하지 않는다
     assert dg.numbers("인구 1천 명당 4.7건")[0].value == 1
 
 
 def test_coarser_rounding_in_answer_matches():
-    """답이 자릿수를 줄여 적거나 만 단위로 적은 것은 같은 수"""
     assert dg.same_number(dg.numbers("0.107")[0], dg.numbers("0.11")[0])
     assert dg.same_number(dg.numbers("1,604,920명")[0], dg.numbers("160만 명")[0])
     assert dg.same_number(dg.numbers("18,145명")[0], dg.numbers("18,145명")[0])
 
 
 def test_unitless_integer_in_answer_does_not_match_decimal():
-    """출처 · 단위 문구의 정수가 소수 정답과 같은 수로 잡히지 않는다"""
     assert not dg.same_number(dg.numbers("1.17배")[0], dg.numbers("가임여성 1명당")[0])
     assert not dg.same_number(dg.numbers("1.39배")[0], dg.numbers("1세별 주민등록인구")[0])
     assert not dg.same_number(dg.numbers("5.2명")[0], dg.numbers("연령(5세)별 이동자수")[0])
@@ -72,7 +63,6 @@ def test_unitless_integer_in_answer_does_not_match_decimal():
 
 
 def test_ratio_not_found_from_source_text():
-    """비교 정답의 배수가 답에 없으면 출처 문구의 1로 채우지 않는다"""
     exp = dg.expected_numbers("비교", "서울 0.632명, 부산 0.739명. 차이 +0.107명 (부산이 1.17배)")
     answer = "부산이 0.107명 높습니다. ※ 가임여성 1명당 명 · 각 연도 1월 1일 기준"
     nums = dg.numbers(answer)
@@ -119,9 +109,6 @@ def test_rank_order():
     assert not dg.ranks_in_order(["전라남도", "세종특별자치시"], "1위 세종 1.06, 2위 전남 1.09")
 
 
-# ---- 한 문항 ---------------------------------------------------------------------------------
-
-
 def test_correct_answer():
     g = dg.grade(row(), res("가상시 인구는 123,456명입니다."))
     assert (g.actual, g.number, g.condition, g.source, g.correct) == ("답변", "O", "O", "O", "O")
@@ -156,7 +143,7 @@ def test_number_in_result_but_not_in_answer_is_summary():
     g = dg.grade(row(), res("가상시 인구는 120,000명입니다."))
     assert g.number == "X"
     assert g.reason == "요약"
-    assert g.hallucination == 1  # 120,000은 계산 결과에 없다
+    assert g.hallucination == 1
 
 
 def test_wrong_calculation_is_calculation():
@@ -172,9 +159,6 @@ def test_years_and_rank_labels_are_not_hallucination():
 def test_claim_sentence_candidates():
     text = "인구는 123,456명입니다. 이는 일자리 정책 때문으로 보입니다."
     assert dg.claim_sentences(text) == ["이는 일자리 정책 때문으로 보입니다."]
-
-
-# ---- 행동 ---------------------------------------------------------------------------------
 
 
 def test_clarify_then_final_answer():
@@ -225,7 +209,6 @@ def test_search_out_of_scope_is_off_topic_refusal():
     g = dg.grade(r, off)
     assert g.correct == "O"
     assert g.details["거절 근거"].startswith("검토 결과")
-    # 표를 추천한 답은 범위 밖 거절이 아니다
     rec = {"status": "tables", "answer": "추천 통계표: …", "tables": {"status": "ok"}}
     assert dg.grade(r, rec).reason == "행동 (불가 유형 오류)"
 
@@ -286,9 +269,7 @@ def test_single_sex_condition_checks_sex():
     right = res("2025년 가상시 여자 인구는 123,456명입니다.")
     right["parsed"]["sex"] = "여"
     assert dg.check_conditions(female, right) == []
-    # 아내·남편도 성별로 본다 ("평균 초혼연령(아내)")
     assert dg.golden_sex("전국, 2025, 평균 초혼연령(아내)") == "여"
-    # 두 성별이 다 나오면 성별로 가르지 않는다
     assert dg.golden_sex("전국, 2025, 평균 초혼연령 남편 vs 아내") is None
     assert dg.golden_sex("전국, 2021~2025, 외국인과의 혼인(한국인 남편+외국인 아내)") is None
     assert dg.golden_sex("가상시, 2025, 인구, 계") is None
@@ -317,7 +298,7 @@ def test_golden_refusal_type_reads_code():
     assert dg.golden_refusal_type("그해에 없던 지역 (region_not_in_year)") == "그해에 없던 지역"
     label = "원인·예측·평가 질문 (prediction_question)"
     assert dg.golden_refusal_type(label) == "원인·예측·평가 질문"
-    assert dg.golden_refusal_type("원인·예측 질문") == "원인·예측·평가 질문"  # 옛 표기
+    assert dg.golden_refusal_type("원인·예측 질문") == "원인·예측·평가 질문"
     assert dg.golden_refusal_type("없는 연도") == "없는 연도"
 
 
@@ -327,7 +308,6 @@ def test_refusal_type_matches_by_definition_group():
     r = row(**{"기대 행동": "답변 불가", "답변 불가 유형": want})
     assert dg.grade(r, {"status": "region_not_in_year", **alt}).correct == "O"
     assert dg.grade(r, {"status": "out_of_range", **alt}).reason == "행동 (불가 유형 오류)"
-    # 같은 유형의 다른 코드는 맞음
     want = "원인·예측·평가 질문 (prediction_question)"
     r = row(**{"기대 행동": "답변 불가", "답변 불가 유형": want})
     assert dg.grade(r, {"status": "causal_question", **alt}).correct == "O"
@@ -337,7 +317,6 @@ def test_refusal_type_matches_by_definition_group():
 
 
 def test_allowed_answer_line_is_accepted():
-    # 정답 수치의 "허용:" 줄: 다른 기준으로 계산한 값도 정답 (줄 하나를 통째로 맞아야 한다)
     r = row(
         **{
             "질문 종류": "비교",
@@ -353,7 +332,6 @@ def test_allowed_answer_line_is_accepted():
 
 
 def test_allowed_answer_line_with_its_own_year():
-    # 허용 줄이 시점을 적었으면 조건의 기간도 그 시점으로 본다 (정답 2025, 허용 2026년 10월 말)
     r = row(
         **{
             "질문 종류": "인구 통계 지표",

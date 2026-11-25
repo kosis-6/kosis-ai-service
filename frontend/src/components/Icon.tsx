@@ -1,5 +1,3 @@
-// 화면의 선 아이콘 한 세트. 경로는 lucide(ISC 라이선스)와 같다.
-// 글자색(currentColor)을 따라가므로 버튼·링크 색이 바뀌면 아이콘도 함께 바뀐다
 const PATHS = {
   search: (
     <>
@@ -59,7 +57,6 @@ export type IconName = keyof typeof PATHS;
 
 type Props = { name: IconName; size?: number; stroke?: number; className?: string };
 
-/** 장식용 아이콘 (스크린 리더는 읽지 않는다. 뜻은 옆의 글자나 aria-label 이 전한다) */
 export function Icon({ name, size = 16, stroke = 1.5, className = "icon" }: Props) {
   return (
     <svg

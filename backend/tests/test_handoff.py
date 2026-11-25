@@ -1,8 +1,3 @@
-"""넘기기 꾸러미(table_guide.build_handoff): 통계표 찾기가 한 일을 뒤 단계에 넘기는 모양
-
-HCX · 임베딩 · DB 없이 돈다 (test_agent_graph의 world를 쓴다). 예문은 평가 문항이 아니다.
-"""
-
 import asyncio
 
 import pytest
@@ -33,21 +28,23 @@ def test_one_indicator_question_hands_off_up_to_five_candidates(world, quiet_log
     cands = target["candidates"]
     assert 1 <= len(cands) <= table_guide.MAX_CANDIDATES
     first = cands[0]
-    # 1위는 탐색이 고른 표 (기존 응답의 추천 1번과 같다)
     assert first["tbl_id"] == found["recommendations"][0]["tbl_id"] == "M1"
     assert (first["picked"], first["source"], first["rank"]) == (True, "whole", 1)
     assert [c["rank"] for c in cands] == list(range(1, len(cands) + 1))
     assert not any(c["picked"] for c in cands[1:])
-    assert len({c["family_id"] for c in cands}) == len(cands)  # 묶음마다 하나
+    assert len({c["family_id"] for c in cands}) == len(cands)
     for c in cands:
         assert isinstance(c["checks"], dict) and isinstance(c["editions"], list)
     assert h["combine"] == {
-        "op": "none", "note": None, "num": None, "den": None, "out_of_scope": []
+        "op": "none",
+        "note": None,
+        "num": None,
+        "den": None,
+        "out_of_scope": [],
     }
 
 
 def test_existing_response_fields_are_unchanged(world, quiet_log, monkeypatch) -> None:  # noqa: F811
-    """꾸러미는 칸 하나를 더할 뿐이다. 만들다 실패해도 나머지 응답은 그대로"""
     with_handoff = _find("시도별 혼인", "S_a")
 
     def broken(*args, **kwargs):
@@ -90,10 +87,9 @@ def test_understanding_carries_what_the_response_used_to_drop() -> None:
         dropped_conditions=["거주형태"],
     )
     u = table_guide._understanding(slots)
-    assert u["exclude"] == ["귀화한"]  # 동적 지표의 '빼 달라는 대상' 검사가 읽을 칸
+    assert u["exclude"] == ["귀화한"]
     assert u["age"]["basis"] == "노인복지법"
     assert (u["search_query"], u["dropped"]) == ("고령 인구", ["거주형태"])
-    # 출처: 지역은 질문에 있음, 연도는 질문에 없어 규칙이 채움, 성별은 질문에 없는데 붙음
     assert u["origin"] == {"region": "question", "year": "default", "sex": "guess"}
 
 
@@ -105,9 +101,9 @@ def test_review_is_kept_only_for_the_picked_family() -> None:
     }
     raw = {"pick": "A2", "match": "exact", "reason": "모두 충족"}
     result = {"llm_pick": {"raw": raw, "pick": "A2", "llm": "gemma"}}
-    got = table_guide._review_of(result, by_id["A1"], by_id)  # 같은 묶음의 다른 판
+    got = table_guide._review_of(result, by_id["A1"], by_id)
     assert got == {"match": "exact", "reason": "모두 충족", "llm": "gemma"}
-    result["llm_pick"]["pick"] = "B1"  # 검토가 다른 묶음을 골랐는데 표는 바뀌지 않음 (HCX 거르기)
+    result["llm_pick"]["pick"] = "B1"
     assert table_guide._review_of(result, by_id["A1"], by_id) is None
     assert table_guide._review_of({}, by_id["A1"], by_id) is None
 

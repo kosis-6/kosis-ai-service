@@ -2,8 +2,11 @@ from app.services import llm_pick
 
 
 def test_class_values_text_shows_child_values() -> None:
-    # 장애유형처럼 대표 값이 '합계'뿐인 분류도 AI 후보 설명에는 하위 값이 보여야 한다
-    c = {"name": "장애유형별", "sample_values": ["합계"], "values": ["합계", "지체", "시각", "청각"]}
+    c = {
+        "name": "장애유형별",
+        "sample_values": ["합계"],
+        "values": ["합계", "지체", "시각", "청각"],
+    }
     assert llm_pick.class_values_text(c) == "합계, 지체, 시각, 청각"
 
 

@@ -1,22 +1,3 @@
-"""조건 → 칸 잇기 1단계 비교: 지금 계산이 고른 칸과 잇기가 고른 칸을 견준다
-
-평가를 BINDING_SHADOW=true로 돌리면 바로 계산이 표마다 처리 기록(trace["dynamic"])의 그 표 칸에
-"binding"(잇기 결과 + 지금 계산과의 비교)을 남긴다 (app/services/binding.py). 이 스크립트는
-평가 원응답에서 문항마다 대표 표 하나를 골라 네 가지로 나눈다:
-
-  같음 · 다름        지금 계산도 잇기도 성공. 다름이면 잇기 규칙을 확인한다
-  잇기만 성공         지금은 표 안내로 끝나지만 잇기는 모든 조건을 이었다 → 2단계에서 고쳐질 문항
-  지금 계산만 성공    잇기가 못 이은 조건이 있다 → 규칙이 빠졌다 (2단계 전에 채울 것)
-  둘 다 실패          잇지 못한 조건과 이유 → 2단계에서 LLM을 붙일 대상
-
-대표 표: 답을 낸 표(status ok) → 검토가 고른 표(kind picked) → 첫 시도.
-같은 표를 여러 번 계산했으면(칸 고르기 LLM 뒤 다시 계산) 마지막 기록을 쓴다.
-
-실행 (backend 에서):
-  BINDING_SHADOW=true python -m scripts.eval_devset --golden eval/devset_v2.2.csv …
-  python -m scripts.binding_compare data/eval/devset_….raw.jsonl [--out 결과.md]
-"""
-
 import argparse
 from collections import defaultdict
 from pathlib import Path
@@ -36,7 +17,6 @@ ORDER = [
 
 
 def representative(turn: dict[str, Any]) -> dict[str, Any] | None:
-    """문항의 대표 표 기록 (binding이 있는 것만)"""
     steps = [s for s in (turn.get("trace") or {}).get("dynamic") or [] if s.get("binding")]
     if not steps:
         return None
@@ -48,7 +28,6 @@ def representative(turn: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def collect(path: Path) -> dict[str, list[tuple[str, dict]]]:
-    """분류 → [(문항, 대표 표 기록)]"""
     out: dict[str, list[tuple[str, dict]]] = defaultdict(list)
     for key, turn in rr.turns(path):
         step = representative(turn)
@@ -99,9 +78,6 @@ def report(by: dict[str, list[tuple[str, dict]]], name: str) -> list[str]:
 
 
 def binding_used(path: Path) -> dict[str, list[str]]:
-    """2단계(BINDING_USE): 잇기로 다시 계산한 문항 → 결과별. 처리 흐름(flow)의 '표 칸으로 계산'에
-    '(잇기)'가 붙은 단계를 본다 (한 분류 안의 연산으로 답하면 trace.dynamic이 응답에 남지 않아
-    흐름으로 센다)"""
     out: dict[str, list[str]] = defaultdict(list)
     for key, turn in rr.turns(path):
         for f in (turn.get("trace") or {}).get("flow") or []:

@@ -1,4 +1,3 @@
-// 관리자 API(/admin/logs/*) 호출. 로그인 토큰을 붙여 부르고, 권한이 없으면 무엇이 문제인지 알려 준다
 import type {
   LogSummary,
   PersonList,
@@ -9,7 +8,6 @@ import type {
 } from "../api/types";
 import { authFetch } from "../auth/client";
 
-/** status: 401 로그인 필요, 403 관리자 아님, 0 서버에 닿지 못함 */
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -38,15 +36,12 @@ async function get<T>(path: string, query: Query = {}): Promise<T> {
     try {
       detail = (await res.json()).detail;
     } catch {
-      /* 본문 없음 */
     }
     throw new ApiError(res.status, typeof detail === "string" ? detail : `서버 오류 ${res.status}`);
   }
   return (await res.json()) as T;
 }
 
-/** 기간(일) → 그 시작 시각. 거르는 조건이 같은 동안은 한 번 구한 값을 계속 쓴다
- * ("더 보기"로 이어 붙일 때 기준이 움직이면 줄이 겹치거나 빠진다) */
 export function sinceDays(days: number, now = new Date()): string {
   return new Date(now.getTime() - days * 86_400_000).toISOString();
 }
@@ -60,7 +55,6 @@ export function summary(days: number): Promise<LogSummary> {
   return get("/admin/logs/summary", { days });
 }
 
-/** 대화를 사람별로 묶은 목록. 로그인 사용자는 한 사람이 한 줄, 비로그인 사용자는 한 줄로 모인다 */
 export function people(filter: { since: string; who: Who; q: string }, offset: number): Promise<PersonList> {
   return get("/admin/logs/people", {
     since: filter.since,
@@ -71,7 +65,6 @@ export function people(filter: { since: string; who: Who; q: string }, offset: n
   });
 }
 
-/** 한 사람의 대화 창들. owner 가 null 이면 비로그인 사용자의 대화 */
 export function sessions(
   filter: { since: string; q: string; owner: number | null },
   offset: number,

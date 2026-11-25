@@ -20,8 +20,10 @@ expected_status 읽는 법
 결과: eval/results/clarify_scenarios_YYYYMMDD.md
 실행
   python -m scripts.check_clarify_scenarios              # 실제 검색 (HCX 슬롯 + 임베딩)
-  python -m scripts.check_clarify_scenarios --rule-slots # HCX 없이 규칙 슬롯 (빠름, 대화 규칙 점검용)
-  python -m scripts.check_clarify_scenarios --sleep 3    # 턴 사이 3초 쉬기 (HCX 호출 제한 42901 대응)
+  python -m scripts.check_clarify_scenarios --rule-slots
+      HCX 없이 규칙 슬롯 (빠름, 대화 규칙 점검용)
+  python -m scripts.check_clarify_scenarios --sleep 3
+      턴 사이 3초 쉬기 (HCX 호출 제한 42901 대응)
 """
 
 import argparse
@@ -32,8 +34,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from app.services import dialog
-from app.services import search
+from app.services import dialog, search
 from app.services import slots as slot_parser
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -49,8 +50,6 @@ def read_scenarios(path: Path) -> list[dict[str, Any]]:
 
 
 class MemorySessions:
-    """dialog.load_state·save_state를 메모리로 바꾼다 (DB 세션과 같은 필드)"""
-
     def __init__(self) -> None:
         self.saved: dict[str, str] = {}
 
@@ -90,7 +89,6 @@ def status_ok(expected: str, result: dict[str, Any], before: dict[str, Any] | No
 
 
 def options_diff(expected: list[dict[str, Any]] | None, result: dict[str, Any]) -> str | None:
-    """되물을 축·선택지가 기대와 다르면 한 줄 설명 (선택지가 문장으로 적힌 축은 보지 않음)"""
     if not expected or result["status"] != "clarify":
         return None
     got = {a["axis"]: a["options"] for a in result.get("clarify_axes") or []}
@@ -236,7 +234,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--file", type=Path, default=SCENARIOS)
     parser.add_argument("--rule-slots", action="store_true", help="HCX 없이 규칙 슬롯으로 검색")
-    parser.add_argument("--sleep", type=float, default=0.0, help="턴 사이 쉬는 초 (HCX 호출 제한 대응)")
+    parser.add_argument(
+        "--sleep", type=float, default=0.0, help="턴 사이 쉬는 초 (HCX 호출 제한 대응)"
+    )
     args = parser.parse_args()
     asyncio.run(main_async(args.file, args.rule_slots, args.sleep))
     return 0

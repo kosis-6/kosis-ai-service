@@ -1,12 +1,3 @@
-"""통계표 검색 요청 로그 (실전 2 F-09) → PostgreSQL search_logs
-
-질문, 슬롯, 후보 상위 10개와 점수, 최종 응답, 단계별 시간, 오류를 남긴다.
-실패 사례 분석(F-12)에서 원인(슬롯 / 검색 / 재순위 / 패밀리·판 선택 / 판단)을 가를 때 쓴다.
-테이블은 처음 기록할 때 만든다 (사용자 연결과 인덱스는 마이그레이션 0017).
-KEEP_DAYS 가 지난 기록은 기록할 때 지운다: 질문에 사용자 id 가 붙어 있어 기한 없이 두지 않는다
-(대화 턴 기록 app.chat_turns 와 같은 30일).
-"""
-
 import json
 from typing import Any
 
@@ -33,7 +24,6 @@ CREATE TABLE IF NOT EXISTS app.search_logs (
     error        text
 )
 """
-# 사용자 id 칸을 더하기 전에 만든 테이블에도 칸을 붙인다 (손님 질문은 NULL)
 ADD_USER_ID = "ALTER TABLE app.search_logs ADD COLUMN IF NOT EXISTS user_id bigint"
 INSERT = """
 INSERT INTO app.search_logs (session_id, user_id, question, status, tbl_id, slots, candidates,

@@ -1,23 +1,4 @@
 # ruff: noqa: E501  (보고서 문장이 길어서)
-"""패밀리 맵핑 점검: 표가 맞는 패밀리에 들어가 있나
-
-이미 본 것
-  family_check.py   묶여야 할 표가 덜 묶였나 (표기 변형·대상·지역 분할)
-  edition_check.py  연도만 다른 표가 같은 멤버의 판인가
-  axes_check.py     패밀리 선택지(대상·성별·판)가 제대로 만들어졌나
-
-여기서 보는 것
-  1 빠짐·겹침   모든 표가 패밀리 하나에만 들어갔나
-  2 잘못 섞임   한 패밀리 안에 다른 데이터가 섞였나 (사람이 확인할 후보)
-     - 지역 수준이 다름 (시도 표와 시군구 표, 규칙상 다른 패밀리)
-     - 추계 표와 실적 표가 섞임
-     - 판끼리 항목이 거의 안 겹침 (항목 이름 겹침 비율 < 0.2)
-  3 표본 검수   묶인 표가 많은 패밀리와 무작위 패밀리를 사람이 볼 수 있게 표로
-
-입력: data/catalog/population_table_catalog_with_meta.jsonl (DB 불필요)
-출력: eval/results/mapping_check_YYYYMMDD.md
-실행: python -m scripts.mapping_check
-"""
 
 import random
 import re
@@ -54,7 +35,6 @@ def main() -> None:
         fam[r["family_id"]].append(r)
     name = {f: rs[0]["family_name"] for f, rs in fam.items()}
 
-    # 1. 빠짐·겹침
     ids = Counter(r["tbl_id"] for r in rows)
     missing = [t["tbl_id"] for t in tables if t["tbl_id"] not in ids]
     dup = [i for i, n in ids.items() if n > 1]
@@ -62,14 +42,11 @@ def main() -> None:
         f for f, rs in fam.items() if len({by[r["tbl_id"]]["survey_name"] for r in rs}) > 1
     ]
 
-    # 2. 잘못 섞임 후보
     level_mixed, proj_mixed, low_overlap = [], [], []
     for f, rs in fam.items():
         if len(rs) < 2:
             continue
         ts = [by[r["tbl_id"]] for r in rs]
-        # 지역 멤버(target이 지역)는 지역 수준이 같아야 하고, 판끼리는 수준이 바뀌어도 같은 표일 수 있어
-        # 같은 멤버 안에서만 비교한다
         members: dict[tuple[Any, Any], list[dict[str, Any]]] = defaultdict(list)
         for r in rs:
             members[(r["target"], r["sex"])].append(by[r["tbl_id"]])
@@ -91,7 +68,6 @@ def main() -> None:
                 if ia and ib and len(ia & ib) / len(ia | ib) < ITEM_OVERLAP:
                     low_overlap.append((f, a, b, len(ia & ib) / len(ia | ib)))
 
-    # 3. 표본
     multi = [f for f, rs in fam.items() if len(rs) > 1]
     random.seed(20261102)
     sample = sorted(random.sample(multi, min(15, len(multi))), key=lambda f: name[f])

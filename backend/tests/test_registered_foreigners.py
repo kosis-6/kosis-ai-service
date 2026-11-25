@@ -1,5 +1,3 @@
-"""등록외국인 비율 = 법무부 등록외국인 수(DT_1B040A9C) ÷ 주민등록 총인구 × 100 (11/18)"""
-
 import pytest
 
 from app.core.stats_db import StatsTableMissing
@@ -21,7 +19,7 @@ needs_table = pytest.mark.skipif(not loaded(), reason="DT_1B040A9C 적재 안 �
     [
         ("부산의 등록된 외국인 비율", "등록외국인 비율"),
         ("등록 외국인 비중이 높은 곳", "등록외국인 비율"),
-        ("대구 외국인 비율", "외국인주민 비율"),  # 등록이라는 말이 없으면 행정안전부 외국인주민
+        ("대구 외국인 비율", "외국인주민 비율"),
         ("등록된 외국인 몇 명", "등록외국인 수"),
     ],
 )
@@ -30,7 +28,6 @@ def test_registered_foreigner_words(text, name) -> None:
 
 
 def test_foreign_resident_aliases_skip_registered_words() -> None:
-    # "등록된 외국인"이 끼면 외국인주민 지표의 별칭("외국인 비율", "외국인 수")으로 세지 않는다
     assert "외국인주민 비율" not in [s[2] for s in indicators.find_in_text("등록된외국인비율")]
     assert "외국인주민 수" not in [s[2] for s in indicators.find_in_text("등록 외국인 수")]
 
@@ -63,7 +60,7 @@ def test_sex_changes_the_numerator_cell() -> None:
 @needs_table
 def test_years_follow_the_foreigner_table() -> None:
     lo, hi, monthly = indicators._years_of(indicators.INDICATORS["등록외국인 비율"])
-    assert monthly is False  # 등록외국인은 연간 자료만
+    assert monthly is False
     r = indicators.value("등록외국인 비율", "서울", lo - 1)
     assert r["status"] == "out_of_range"
     assert r["reason"].startswith("등록외국인(법무부) 자료가")
@@ -93,7 +90,7 @@ def test_value_answer_shows_numerator_and_denominator() -> None:
         ],
     }
     assert qa._body(r) == ["- 계산: 등록외국인 250명 ÷ 주민등록인구 10,000명 × 100 = 2.5%"]
-    r["operands"][1]["value"] = None  # 값이 빠지면 줄을 만들지 않는다
+    r["operands"][1]["value"] = None
     assert qa._body(r) == []
 
 
@@ -124,7 +121,6 @@ def test_trend_change_uses_unrounded_values() -> None:
 
 @needs_table
 def test_dictionary_note_is_in_the_answer() -> None:
-    # 계산 지표도 사전에 적은 주의 문구를 답에 붙인다 (외국인주민 비율과 기준이 다르다는 안내)
     year = indicators._years_of(indicators.INDICATORS["등록외국인 비율"])[1]
     note = indicators.specs()["등록외국인 비율"]["note"]
     assert note in indicators.value("등록외국인 비율", "서울", year)["notes"]

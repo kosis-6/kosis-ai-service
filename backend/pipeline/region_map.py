@@ -37,57 +37,47 @@ sys.path.insert(0, str(ROOT))
 
 logger = logging.getLogger("region_map")
 
-# 지역 분류가 이름으로 찾은 칸이 아닌 표 (None = 지역 분류 없는 전국 자료)
 REGION_COLUMN = {
     "DT_1BPB002": "c2",
     "DT_1BPB003": "c2",
     "DT_1BPB101": "c2",
     "INH_1B8000F_01": None,
 }
-# 지역 분류 칸 이름에 들어가는 말 (적재한 722개 표의 분류 이름 기준, 2026-11-11)
 REGION_WORDS = re.compile(r"행정구역|시도|시군구|읍면동|동읍면|거주지|전입지|전출지|지역")
-# 지역이라는 말이 있어도 국내 지역이 아닌 칸 (국적(지역)별, 외국인 아내의 국적별 …)
 NOT_REGION_WORDS = re.compile(r"국적")
 
-# 예전 시도 이름 → 현재 이름 (다른 표의 지역 경로를 맞출 때 사용)
-OLD_SIDO_NAMES = {"강원도": "강원특별자치도", "전라북도": "전북특별자치도", "제주도": "제주특별자치도"}
-# 옛 시도 이름 아래의 시군구는 잇지 않는다 (시도는 범위가 같지만 그 아래 시군구는 범위가 달랐음)
-# 제주도(2006년 전): 제주시·서귀포시는 북제주군·남제주군이 합쳐지기 전의 작은 범위
+OLD_SIDO_NAMES = {
+    "강원도": "강원특별자치도",
+    "전라북도": "전북특별자치도",
+    "제주도": "제주특별자치도",
+}
 OLD_SIDO_SIGUNGU_SKIP = {"제주도"}
-# 전국 합계를 뜻하는 지역 이름
 TOTAL_NAMES = {"전국", "계", "합계", "총계"}
-# 표마다 다르게 쓰는 지역 경로 (공백 제거한 '시도>시군구' 형태)
 PATH_FIXES = {
     "세종특별자치시>세종시": "세종특별자치시>세종특별자치시",
     "경상남도>통합창원시": "경상남도>창원시(통합)",
-    # 2008년 전에 이름만 바뀐 시군구 (군 → 시 승격, 범위 같음)
-    "경기도>포천군": "경기도>포천시",  # 2003
-    "경기도>양주군": "경기도>양주시",  # 2003
-    "경기도>광주군": "경기도>광주시",  # 2001
-    "경기도>화성군": "경기도>화성시",  # 2001
-    "경기도>김포군": "경기도>김포시",  # 1998
-    "경기도>안성군": "경기도>안성시",  # 1998
-    "경기도>용인군": "경기도>용인시",  # 1996
-    "경기도>이천군": "경기도>이천시",  # 1996
-    "경기도>파주군": "경기도>파주시",  # 1996
-    "충청남도>논산군": "충청남도>논산시",  # 1996
-    "경상남도>양산군": "경상남도>양산시",  # 1996
-    # 2008년 전에 시도만 바뀐 군 (1995, 범위 같음)
+    "경기도>포천군": "경기도>포천시",
+    "경기도>양주군": "경기도>양주시",
+    "경기도>광주군": "경기도>광주시",
+    "경기도>화성군": "경기도>화성시",
+    "경기도>김포군": "경기도>김포시",
+    "경기도>안성군": "경기도>안성시",
+    "경기도>용인군": "경기도>용인시",
+    "경기도>이천군": "경기도>이천시",
+    "경기도>파주군": "경기도>파주시",
+    "충청남도>논산군": "충청남도>논산시",
+    "경상남도>양산군": "경상남도>양산시",
     "경기도>강화군": "인천광역시>강화군",
     "경기도>옹진군": "인천광역시>옹진군",
     "경상북도>달성군": "대구광역시>달성군",
-    # 합쳐져 범위가 달라진 곳(남·북제주군, 여천군·여천시, 1995 도농통합, 울산시, 일산구 등)은 잇지 않는다
 }
-# 시도 없이 이름만 적힌 옛 시군구 (같은 이름이 다른 시도에 없는 것만)
 OLD_NAME_ONLY = {
     "포천군": "경기도>포천시",
     "양주군": "경기도>양주시",
     "광주군": "경기도>광주시",
     "화성군": "경기도>화성시",
 }
-# 일반구를 시 이름과 붙여 쓴 경우 ('수원시 권선구', '부천시소사구'). 기준 목록은 '경기도 > 권선구'
 CITY_GU = re.compile(r"^.+시(.+구)$")
-# 읍·면·동 (기준 목록은 시군구까지라 잇지 않음)
 TOWN_END = re.compile(r"(읍|면|동|가|리)$")
 
 MAP_COLUMNS = [
@@ -105,12 +95,10 @@ MAP_COLUMNS = [
 
 
 def norm(text: str | None) -> str:
-    """지역 이름 비교용: 공백 제거 ('중  구' == '중구')"""
     return re.sub(r"\s+", "", text or "")
 
 
 def find_region_dim(tbl_id: str, dims: list[tuple[int, str]]) -> int | None:
-    """지역 분류 칸 번호 (c1 → 1). dims는 (칸 번호, 분류 이름). 없으면 None"""
     if tbl_id in REGION_COLUMN:
         col = REGION_COLUMN[tbl_id]
         return int(col[1:]) if col else None
@@ -122,8 +110,6 @@ def find_region_dim(tbl_id: str, dims: list[tuple[int, str]]) -> int | None:
 
 @dataclass(frozen=True)
 class Source:
-    """표의 지역 칸에 들어 있는 코드 하나"""
-
     code: str
     name: str | None
     level: int | str | None
@@ -131,8 +117,6 @@ class Source:
 
 
 class RegionIndex:
-    """기준 지역 목록(regions)을 연결용으로 정리한 것. rows는 (코드, 이름, 종류, 경로)"""
-
     def __init__(self, rows: list[tuple[str, str, str, str | None]]) -> None:
         self.name_by_code = {code: norm(name) for code, name, _, _ in rows}
         self.codes_by_path: dict[str, list[str]] = {}
@@ -142,17 +126,6 @@ class RegionIndex:
 
 
 def match_region(idx: RegionIndex, org_id: str, src: Source) -> tuple[list[str], str | None]:
-    """원래 지역 → (기준 코드 후보, 연결 방식)
-
-    통계청 표 중에도 예전 코드 체계를 쓰는 표가 있다 (예전 31=경기도, 현재 31=울산광역시).
-    그래서 코드만 보고 연결하지 않고, 아래 순서로 이름까지 확인한다.
-      total : 전국/계/합계
-      code  : 코드가 같고 이름도 같음 (통계청 표만)
-      path  : '시도 > 시군구' 이름 경로가 같음 (3단계 경로는 시도와 마지막 이름만 사용)
-      sido  : 시도 이름이 같음 (예전 시도 이름 포함)
-    같은 경로에 코드가 둘 이상이면(예: 부천시 원미구 41195 → 41192) 후보를 모두 돌려준다.
-    서비스는 유효 연도(valid_from, valid_to)로 하나를 고른다.
-    """
     name = norm(src.name)
     if name in TOTAL_NAMES and str(src.level) == "1":
         return ["00"], "total"
@@ -167,12 +140,10 @@ def match_region(idx: RegionIndex, org_id: str, src: Source) -> tuple[list[str],
         key = PATH_FIXES.get(f"{parts[0]}>{parts[-1]}", f"{parts[0]}>{parts[-1]}")
         if key in idx.codes_by_path:
             return idx.codes_by_path[key], "path"
-        # '경기도 > 수원시 권선구' → '경기도 > 권선구' (못 찾았을 때만)
         if m := CITY_GU.match(parts[-1]):
             key = f"{parts[0]}>{m[1]}"
             if key in idx.codes_by_path:
                 return idx.codes_by_path[key], "path"
-        # '전남광주통합특별시 > 광주광역시'처럼 경로 끝이 시도 이름 (KOSIS가 2026년 이름으로 경로를 바꾼 표)
         if len(parts) == 2 and parts[-1] in idx.sido_by_name:
             return [idx.sido_by_name[parts[-1]]], "sido"
     if len(parts) == 1:
@@ -207,7 +178,6 @@ def unmatched_reason(name: str | None, path: str | None = None) -> str:
 def map_rows(
     idx: RegionIndex, tbl_id: str, org_id: str, src_dim: int, sources: list[Source]
 ) -> list[dict]:
-    """표 하나의 대응 줄. 연결한 코드는 후보마다 한 줄, 못 한 코드는 사유와 함께 한 줄"""
     rows = []
     for src in sources:
         codes, method = match_region(idx, org_id, src)
@@ -235,9 +205,6 @@ def map_rows(
     return rows
 
 
-# ---- DB -------------------------------------------------------------------------------------
-
-
 def load_index(pg: psycopg.Connection) -> RegionIndex:
     return RegionIndex(
         pg.execute("SELECT region_code, region_name, kind, path FROM mart.regions").fetchall()
@@ -245,10 +212,6 @@ def load_index(pg: psycopg.Connection) -> RegionIndex:
 
 
 def map_table(pg: psycopg.Connection, tbl_id: str, idx: RegionIndex | None = None) -> int:
-    """표 하나의 region_code_map을 새로 만든다. 돌려주는 값은 기준 지역과 이어진 원래 코드 수
-
-    지역 칸이 없거나 하나도 이어지지 않으면 그 표의 대응을 지우고 0을 돌려준다 (전국 값만 조회).
-    """
     found = pg.execute(
         "SELECT tbl_key, org_id FROM catalog.stat_table WHERE tbl_id = %s", [tbl_id]
     ).fetchone()
@@ -285,7 +248,6 @@ def map_table(pg: psycopg.Connection, tbl_id: str, idx: RegionIndex | None = Non
 
 
 def _insert(pg: psycopg.Connection, rows: list[dict]) -> None:
-    """유효 연도는 기준 지역(regions)에서 가져온다"""
     names = ", ".join(MAP_COLUMNS[:8])
     with pg.cursor() as cur:
         cur.execute(
@@ -304,7 +266,6 @@ def _insert(pg: psycopg.Connection, rows: list[dict]) -> None:
 
 
 def missing_tables(pg: psycopg.Connection) -> list[str]:
-    """적재했는데(raw.stat_load) 지역 대응이 없는 표"""
     return [
         r[0]
         for r in pg.execute("""

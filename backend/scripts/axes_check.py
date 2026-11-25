@@ -1,23 +1,4 @@
 # ruff: noqa: E501  (보고서 문장이 길어서)
-"""패밀리 선택지(family_axes) 점검: 패밀리마다 고를 수 있는 칸이 제대로 만들어졌나
-
-검색 결과를 패밀리로 접은 뒤 챗봇은 패밀리의 축(대상 target / 성별 sex / 판 edition)과 선택지로
-표 하나를 고르고, 기본값이 없으면 되묻는다(F-18, F-14). 축은 app/services/search.family_axes와
-같은 방식으로 만든다 (선택지가 2개 이상인 축만).
-
-  1 축 구성     패밀리마다 어떤 축이 있나
-  2 기본값      대상 축에 '전체', 성별 축에 '계'가 있나 (없으면 되묻기 대상)
-  3 이상한 이름  대상 선택지가 지역 수준 단어·빈 괄호·너무 긴 이름·뜻이 안 드러나는 이름('기타')인가,
-                한 패밀리에 표기만 다른 같은 대상('결혼이민자'/'결혼 이민자')이 있나,
-                지역 이름과 다른 대상이 섞였나
-  4 성별        선택지가 계/남/여 밖이거나, 남·여만 있고 계가 없나
-  5 빈칸        대상 × 성별 조합 중 빠진 칸 (예: 기타는 계·남만 있음)
-  6 판          같은 패밀리의 멤버끼리 판(연도) 구성이 다른가 (멤버를 바꾸면 고를 수 있는 연도가 달라짐)
-
-입력: data/catalog/population_table_catalog_with_meta.jsonl (DB 불필요)
-출력: eval/results/axes_check_YYYYMMDD.md
-실행: python -m scripts.axes_check
-"""
 
 import re
 from collections import Counter, defaultdict
@@ -40,7 +21,6 @@ def norm(v: str) -> str:
 
 
 def axes_of(rows: list[dict[str, Any]], by: dict[str, dict[str, Any]]) -> dict[str, list[str]]:
-    """app/services/search.family_axes와 같은 규칙"""
 
     def options(key: str) -> list[str]:
         values = {r[key] for r in rows if r[key] is not None}
@@ -64,14 +44,11 @@ def main() -> None:
     name = {f: rs[0]["family_name"] for f, rs in families.items()}
     axes = {f: axes_of(rs, by) for f, rs in families.items()}
 
-    # 1. 축 구성
     combo = Counter(" + ".join(a) if a else "(없음: 표 1개 또는 판 1개)" for a in axes.values())
 
-    # 2. 기본값
     no_target_default = [f for f, a in axes.items() if "target" in a and "전체" not in a["target"]]
     no_sex_default = [f for f, a in axes.items() if "sex" in a and "계" not in a["sex"]]
 
-    # 3. 이상한 대상 이름
     odd: list[tuple[str, str, str]] = []
     for f, a in axes.items():
         targets = [t for t in a.get("target", []) if t != "전체"]
@@ -94,14 +71,12 @@ def main() -> None:
         if regional and len(regional) != len(targets):
             odd.append((f, " / ".join(targets[:6]), "지역 이름과 다른 대상이 섞임"))
 
-    # 4. 성별
     bad_sex = [
         (f, a["sex"])
         for f, a in axes.items()
         if "sex" in a and not set(a["sex"]) <= {"계", "남", "여"}
     ]
 
-    # 5. 대상 × 성별 빈칸
     holes: list[tuple[str, str, list[str]]] = []
     for f, a in axes.items():
         if "target" in a and "sex" in a:
@@ -111,7 +86,6 @@ def main() -> None:
                 if missing:
                     holes.append((f, t, missing))
 
-    # 6. 멤버끼리 판 구성이 다른 패밀리
     diff_editions: list[tuple[str, dict[tuple[Any, Any], list[str]]]] = []
     for f, rs in families.items():
         members: dict[tuple[Any, Any], set[str]] = defaultdict(set)

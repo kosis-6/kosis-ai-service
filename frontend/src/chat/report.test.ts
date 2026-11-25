@@ -101,19 +101,16 @@ describe("분석 보고서", () => {
     const data = { ...base, answer: "</script><script>alert(1)</script>" };
     const assets = { css: "http://localhost/chat/assets/report.css", script: "http://localhost/chat/assets/report-view.js" };
     const preview = buildPreview(data, assets, at);
-    // 채팅 화면 CSP(script-src·style-src 'self')에서 막히는 것이 없어야 한다 (저장할 파일 JSON은 데이터라 제외)
     const markup = preview.replace(/<script type="application\/json"[\s\S]*?<\/script>/, "");
     expect(markup).not.toMatch(/<style|onclick=|style="/);
     expect(preview).toContain('<link rel="stylesheet" href="http://localhost/chat/assets/report.css">');
     expect(preview).toContain('<script src="http://localhost/chat/assets/report-view.js"></script>');
     expect(preview).toContain('id="report-save"');
-    // 저장할 파일: JSON 안의 </script>가 미리보기의 script 태그를 닫지 않는다
     const json = preview.match(/<script type="application\/json" id="report-file"[^>]*>([\s\S]*?)<\/script>/)![1];
     expect(json).not.toContain("<");
     expect(JSON.parse(json)).toBe(buildReport(data, at));
     expect(preview).toContain(`data-filename="${reportFileName(at)}"`);
     expect(reportFileName(at)).toBe("통계보고서-2026-11-14.html");
-    // 저장 파일은 혼자 열려야 하므로 스타일을 안에 담는다
     expect(buildReport(data, at)).toContain("<style>");
   });
   it("지역이 선 색보다 많으면 지역마다 작은 그래프로 그린다 (색을 돌려 쓰지 않는다)", () => {

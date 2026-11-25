@@ -1,19 +1,4 @@
 # ruff: noqa: E501  (보고서 문장이 길어서)
-"""판(연도) 묶기 검증: 연도만 다른 표가 같은 패밀리·같은 멤버의 다른 판으로 들어가 있는가
-
-검색 규칙 1.1: 같은 데이터에서 수록 기간만 다른 표는 같은 멤버의 판이다. 이를 네 가지로 확인한다.
-
-  A 같은 조사 + 이름 속 연도 표기만 다른 표 ('…(2007~2015)' / '…')  → 같은 멤버여야 한다
-  B 같은 멤버 안에 수록 기간이 똑같은 판이 둘 이상                     → 판으로 구분되지 않는다
-  C 같은 멤버 안에 수록 기간이 겹치는 판                                → 연도로 판을 고를 때 둘 다 맞는다
-  D 이름의 어느 자리든 연도만 다르고(예: '2010년 행정구역 기준') 아직 다른 멤버인 표 → 사람이 확인
-
-그리고 패밀리 전체가 어떻게 처리돼 있는지(멤버·판 구성, 기본 판 규칙)를 요약한다.
-
-입력: data/catalog/population_table_catalog_with_meta.jsonl (DB 불필요)
-출력: eval/results/edition_check_YYYYMMDD.md
-실행: python -m scripts.edition_check
-"""
 
 import re
 from collections import Counter, defaultdict
@@ -26,7 +11,6 @@ from pipeline.load_catalog import read_catalog
 
 ROOT = Path(__file__).resolve().parent.parent
 RESULTS = ROOT / "eval" / "results"
-# 이름 어디에 있든 연도 표기 ('2010년', '(2007~2015)', '2015년 이후', '(~1992)')
 ANY_YEAR = re.compile(
     r"\(?\s*~?\s*(?:19|20)\d{2}\s*년?\s*(?:이후|이전|기준)?\s*(?:~\s*(?:(?:19|20)\d{2}\s*년?)?)?\s*\)?"
 )
@@ -46,17 +30,13 @@ def main() -> None:
         r = fam[tbl]
         return r["family_id"], r["target"], r["sex"]
 
-    # A. 이름 속 연도 표기만 다른 표
     groups_a: dict[tuple[str, str], list[str]] = defaultdict(list)
     for t in tables:
         groups_a[(t["survey_name"], edition_name(t["table_name"]))].append(t["tbl_id"])
     multi_a = {k: v for k, v in groups_a.items() if len(v) > 1}
     split_a = {k: v for k, v in multi_a.items() if len({member(i) for i in v}) > 1}
-    with_year = [
-        k for k, v in multi_a.items() if any(by[i]["table_name"] != k[1] for i in v)
-    ]  # 이름에 연도 표기가 실제로 있던 묶음
+    with_year = [k for k, v in multi_a.items() if any(by[i]["table_name"] != k[1] for i in v)]
 
-    # B·C. 멤버 안의 판
     members: dict[tuple[str, str | None, str | None], list[str]] = defaultdict(list)
     for r in rows:
         members[(r["family_id"], r["target"], r["sex"])].append(r["tbl_id"])
@@ -71,13 +51,11 @@ def main() -> None:
             if s2 <= e1:
                 overlap.append((key, (s1, e1), (s2, e2)))
 
-    # D. 이름 어디든 연도만 다른데 다른 멤버
     groups_d: dict[tuple[str, str], list[str]] = defaultdict(list)
     for t in tables:
         groups_d[(t["survey_name"], name_key(ANY_YEAR.sub("", t["table_name"])))].append(
             t["tbl_id"]
         )
-    # 이름이 연도까지 같은 표(기호만 다른 다른 표, B에서 나눈 것)는 빼고 연도가 실제로 다른 것만
     split_d = [
         v
         for v in groups_d.values()
@@ -85,7 +63,6 @@ def main() -> None:
         and len({name_key(edition_name(by[i]["table_name"])) for i in v}) > 1
     ]
 
-    # 패밀리 요약
     fam_size = Counter(r["family_id"] for r in rows)
     member_count = Counter(k[0] for k in members)
     editions_per_member = Counter(len(v) for v in members.values())

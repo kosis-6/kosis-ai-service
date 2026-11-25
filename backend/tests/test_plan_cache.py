@@ -1,8 +1,3 @@
-"""동적 지표 4단계: 계산 방법 캐시 (plan_cache.py), 서버 메모리 캐시 (memory_cache.py)
-
-DB 없이: plan_cache의 DB 함수를 바꿔 끼우고, 메모리 캐시는 가짜 시계로 만료를 본다.
-"""
-
 import asyncio
 from types import SimpleNamespace
 
@@ -16,7 +11,12 @@ from app.services import dynamic_indicator as d
 from app.services import indicators, plan_cache
 from app.services.memory_cache import MISSING, MemoryCache
 
-# ---- 메모리 캐시 -------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def plan_cache_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "plan_cache", True)
 
 
 class Clock:
@@ -32,10 +32,10 @@ def test_memory_cache_lru_and_ttl() -> None:
     cache = MemoryCache("t", maxsize=2, ttl=10, clock=clock)
     cache.set("a", 1)
     cache.set("b", 2)
-    assert cache.get("a") == 1  # a를 최근에 씀 → b가 가장 오래됨
+    assert cache.get("a") == 1
     cache.set("c", 3)
     assert cache.get("b") is MISSING and cache.get("a") == 1 and cache.get("c") == 3
-    clock.now = 11  # ttl이 지나면 없음
+    clock.now = 11
     assert cache.get("a") is MISSING
     stats = cache.stats()
     assert (stats["hits"], stats["misses"], stats["size"]) == (3, 2, 1)
@@ -44,14 +44,10 @@ def test_memory_cache_lru_and_ttl() -> None:
 
 
 def test_memory_cache_can_be_turned_off(monkeypatch: pytest.MonkeyPatch) -> None:
-    # 캐시를 켤 때와 끌 때의 응답 시간을 비교하려고 끌 수 있다
     monkeypatch.setenv("MEMORY_CACHE", "0")
     cache = MemoryCache("t")
     cache.set("a", 1)
     assert cache.get("a") is MISSING and cache.stats()["enabled"] is False
-
-
-# ---- 키 ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -59,18 +55,18 @@ def test_memory_cache_can_be_turned_off(monkeypatch: pytest.MonkeyPatch) -> None
     [
         ({"term": "1인 가구 중 여성 비율"}, "1인가구중여성비율"),
         (
-            {"term": "2020년 서울", "indicator": "1인 가구 수"},
-            "1인가구수",
-        ),  # 연도 섞인 표현은 건너뜀
+            {"term": "2020년 서울", "indicator": "다문화가구 수"},
+            "다문화가구수",
+        ),  # 연도 섞인 표현은 건너뜀 (사전에 없는 예문: 1인 가구는 11/25 사전에 들어갔다)
         ({"term": "서울 1인 가구", "indicator": None}, None),  # 지역 섞인 표현
         # 전국 범위 말은 지표가 아니다: "1인 가구 수"와 같은 계획을 쓴다 (전에는 전국1인가구수)
-        ({"term": "전국 1인 가구 수"}, "1인가구수"),
-        ({"term": "우리나라 1인 가구 수"}, "1인가구수"),
+        ({"term": "전국 다문화가구 수"}, "다문화가구수"),
+        ({"term": "우리나라 다문화가구 수"}, "다문화가구수"),
         ({"term": "국내이동자 수"}, "국내이동자수"),  # 국내이동은 지표 이름이다
         # '국내에서 태어난'은 조건이다: "태어난 다문화가구 자녀 수"와 같은 키가 되면 안 된다
         ({"term": "국내에서 태어난 다문화가구 자녀 수"}, "국내에서태어난다문화가구자녀수"),
         ({"term": "국내에서 출생한 외국인 자녀 수"}, "국내에서출생한외국인자녀수"),
-        ({"term": "출생아 수"}, None),  # 사전 지표는 캐시하지 않는다
+        ({"term": "출생아 수"}, None),
         ({}, None),
     ],
 )
@@ -79,8 +75,6 @@ def test_key_of(monkeypatch: pytest.MonkeyPatch, parsed: dict, key: str | None) 
     found = plan_cache.key_of(parsed)
     assert (found[0] if found else None) == key
 
-
-# ---- 캐시에서 꺼내 계산하기 ------------------------------------------------------------
 
 PARSED = {"type": "value", "term": "1인 가구 수", "regions": ["서울"], "year": 2020}
 PLAN = {"id": 5, "key": "1인가구수", "tbl_id": "DT_1PL1502", "forced": {"0": "2"}}
@@ -101,7 +95,7 @@ def plans(monkeypatch: pytest.MonkeyPatch) -> dict:
         state["saved"].append((key, tbl_id, forced, spec["name"]))
         state.setdefault("words", []).append(list(words or []))
 
-    def schema(tbl_id):  # 성별이 항목에 있는 1인가구 표 (항목 0: 1인가구 · 남자 · 여자)
+    def schema(tbl_id):
         dims = [
             d.Dim(0, "항목", {"1": "1인가구", "3": "남자", "2": "여자"}),
             d.Dim(1, "행정구역별", {"00": "전국", "11": "서울특별시"}),
@@ -113,10 +107,10 @@ def plans(monkeypatch: pytest.MonkeyPatch) -> dict:
 
     async def fake_try(tbl_id, org_id, question, parsed, trace, forced, slots=None, notice=None):
         state["tried"].append((tbl_id, forced))
-        trace.setdefault("dynamic", []).append({"tbl_id": tbl_id})  # 진짜 _try처럼 단계를 남긴다
+        trace.setdefault("dynamic", []).append({"tbl_id": tbl_id})
         if state.get("fail"):
             return None, None
-        if state.get("status"):  # 저장한 표에 그 연도 자료가 없는 경우 등
+        if state.get("status"):
             return {"status": state["status"], "parsed": parsed, "result": {}}, None
         spec = {"name": "1인 가구 수"}
         res = {"status": "ok", "parsed": {**parsed, "dynamic_spec": spec}, "result": {"value": 1}}
@@ -133,27 +127,23 @@ def test_cached_plan_skips_table_search(plans: dict) -> None:
     trace: dict = {}
     res = asyncio.run(d.cached_answer("2020년 서울 여자 1인 가구 수", PARSED, trace))
     assert res["status"] == "ok"
-    # 저장한 표와 칸으로 다시 계산 (새 질문도 그 칸 '여자'를 말함). 칸 고르기·검증은 _try가 다시
     assert plans["tried"] == [("DT_1PL1502", {0: "2"})]
     assert plans["used"] == [5] and trace["plan_cache"] == {"hit": 5, "tbl_id": "DT_1PL1502"}
 
 
 def test_cached_cell_is_not_used_when_new_question_names_another_cell(plans: dict) -> None:
-    # 앞 질문(여자)에서 저장한 칸을, 지표 표현만 같은 "남자" 질문에 쓰지 않는다
     trace: dict = {}
     asyncio.run(d.cached_answer("2020년 서울 남자 1인 가구 수", PARSED, trace))
-    assert plans["tried"] == [("DT_1PL1502", {})]  # 규칙이 새 질문으로 다시 고른다
+    assert plans["tried"] == [("DT_1PL1502", {})]
     assert trace["dynamic"][-1]["cache_dropped"] == {0: "2"}
 
 
 def test_cached_cell_without_grounds_in_new_question_is_dropped(plans: dict) -> None:
-    # 새 질문에 그 칸을 고른 근거가 없다: 예전 칸으로 계산하지 않는다
     asyncio.run(d.cached_answer("2020년 서울 1인 가구 수", PARSED, {}))
     assert plans["tried"] == [("DT_1PL1502", {})]
 
 
 def test_cached_llm_cell_kept_when_its_words_are_in_new_question(plans: dict) -> None:
-    # 칸 고르기 LLM이 "결혼한"을 '유배우'로 읽어 고른 칸: 새 질문에도 "결혼한"이 있으면 쓴다
     plans["plans"] = [{**PLAN, "forced": {"4": "M"}, "words": [["결혼한", "유배우"]]}]
     asyncio.run(d.cached_answer("2020년 서울 결혼한 1인 가구 수", PARSED, {}))
     assert plans["tried"] == [("DT_1PL1502", {4: "M"})]
@@ -163,14 +153,13 @@ def test_cached_llm_cell_kept_when_its_words_are_in_new_question(plans: dict) ->
 
 
 def test_cached_total_cell_is_kept(plans: dict) -> None:
-    # 합계 칸은 질문이 말하지 않아도 그대로 쓴다 (규칙도 같은 칸을 고른다)
     plans["plans"] = [{**PLAN, "forced": {"4": "0"}}]
     asyncio.run(d.cached_answer("2020년 서울 1인 가구 수", PARSED, {}))
     assert plans["tried"] == [("DT_1PL1502", {4: "0"})]
 
 
 def test_cached_plan_that_no_longer_computes_is_a_miss(plans: dict) -> None:
-    plans["fail"] = True  # 표가 다시 적재돼 칸이 없어짐 등
+    plans["fail"] = True
     trace: dict = {}
     assert asyncio.run(d.cached_answer("2020년 서울 1인 가구 수", PARSED, trace)) is None
     assert trace["plan_cache"] == "miss" and plans["used"] == []
@@ -183,8 +172,6 @@ def test_success_from_search_is_remembered(plans: dict) -> None:
 
 
 def test_choice_is_remembered_without_picked_cell(plans: dict) -> None:
-    # 한 사람이 되묻기에서 고른 칸이 모두의 기본값이 되지 않게 표만 남긴다
-    # (다음 사람은 다시 묻는다)
     context = {"tbl_id": "DT_1PL1502", "dim_no": 3, "parsed": PARSED, "forced": {}}
     asyncio.run(d.answer_choice("서울 1인 가구 수", context, "2", {}))
     assert plans["tried"] == [("DT_1PL1502", {3: "2"})]
@@ -192,7 +179,6 @@ def test_choice_is_remembered_without_picked_cell(plans: dict) -> None:
 
 
 def test_cached_plan_without_data_falls_back_to_search(plans: dict) -> None:
-    # 저장한 표에 그 연도가 없어도 "수록 기간 밖"으로 끝내지 않고 통계표 찾기로 넘긴다
     plans["status"] = "out_of_range"
     trace: dict = {}
     assert asyncio.run(d.cached_answer("2010년 서울 1인 가구 수", PARSED, trace)) is None
@@ -205,9 +191,6 @@ def test_cache_errors_do_not_break_answer(monkeypatch: pytest.MonkeyPatch) -> No
 
     monkeypatch.setattr(plan_cache, "key_of", broken)
     assert asyncio.run(d.cached_answer("질문", PARSED, {})) is None
-
-
-# ---- 관리자 API --------------------------------------------------------------------
 
 
 @pytest.fixture

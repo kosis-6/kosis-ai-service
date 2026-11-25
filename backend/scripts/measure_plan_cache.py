@@ -26,7 +26,6 @@ from app.services import dynamic_indicator, plan_cache, table_guide
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "data" / "measure" / "plan_cache.json"
-# (질문, 질문 해석 결과). 해석은 /ask에서 실제로 나온 값을 고정해 둔다
 CASES = [
     (
         "2020년 서울 2인 가구 수",
@@ -68,7 +67,7 @@ async def measure(rounds: int, skip_search: bool, pause: float) -> dict:
                 ms, res = await _timed(miss())
                 times.append(ms)
                 status = (res or {}).get("status")
-                await asyncio.sleep(pause)  # HCX 한도 (분당 60회)
+                await asyncio.sleep(pause)
             row["no_cache_ms"], row["no_cache_status"] = statistics.median(times), status
         for label, clear in (("db_cache_ms", True), ("memory_cache_ms", False)):
             times, status = [], None
@@ -108,7 +107,7 @@ def main() -> None:
     parser.add_argument("--pause", type=float, default=8.0, help="캐시 없음 반복 사이 쉬는 초")
     args = parser.parse_args()
     logging.basicConfig(level=logging.WARNING)
-    logging.getLogger("httpx").setLevel(logging.WARNING)  # 요청 주소(키)를 찍지 않는다
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     result = asyncio.run(measure(args.rounds, args.skip_search, args.pause))
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text(json.dumps(result, ensure_ascii=False, indent=2))

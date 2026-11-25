@@ -1,6 +1,3 @@
-// 보고서 미리보기 탭의 버튼 (report.ts의 buildPreview).
-// 새 탭은 채팅 화면의 CSP(인라인 스크립트 금지)를 물려받으므로 onclick 대신 이 파일을 불러온다.
-// 저장하는 파일은 미리보기와 같은 내용을 스타일까지 담은 한 파일이다 (#report-file에 들어 있다)
 const file = document.getElementById("report-file");
 
 document.getElementById("report-print")?.addEventListener("click", () => window.print());

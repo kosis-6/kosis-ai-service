@@ -1,22 +1,3 @@
-"""'표 찾고도 거절' 원인 집계: 표를 찾았는데 수치 대신 통계표 안내로 끝난 이유를 센다
-
-바로 계산(app/services/dynamic_indicator.py)은 후보 표를 건너뛸 때마다 trace["dynamic"]에
-이유(skip)를 남긴다. 최종 답이 통계표 안내(status = tables)인 턴에서 검토가 고른 표
-(kind = picked)의 건너뛴 이유를 원인으로 본다. 고른 표가 없으면 첫 시도의 이유를 쓴다.
-"질문의 말과 맞는 칸이 없음"은 칸 고르기 LLM의 판단에 따라 다시 나눈다
-(LLM이 맞는 칸 없다고 봄 / LLM은 맞다고 했지만 칸을 못 정함 / LLM 오류 / 규칙에서 끝남).
-
-입력: 평가 원응답(data/eval/*.raw.jsonl)
-      또는 요청 기록(data/requests/requests.jsonl, dynamic 칸이 있는 줄)
-실행: python -m scripts.refusal_reasons data/eval/devset_r1_….raw.jsonl
-      python -m scripts.refusal_reasons 새.raw.jsonl --compare 예전.raw.jsonl   (회차 비교)
-      python -m scripts.refusal_reasons ….raw.jsonl --golden eval/devset_v2.csv
-          (답해야 하는 문항에 * 표시)
-      python -m scripts.refusal_reasons data/requests/requests.jsonl --all
-          (후보 표 전체의 건너뛴 이유도)
-개발셋 평가(scripts.eval_devset)는 문항별 '거절 원인' 칸과 요약의 같은 표를 이 모듈로 만든다
-"""
-
 import argparse
 import csv
 import json
@@ -26,14 +7,9 @@ from collections.abc import Iterable, Iterator
 from pathlib import Path
 from typing import Any
 
-TABLES = "tables"  # 표를 찾았지만 수치 대신 통계표를 안내한 답
-# 통계표 찾기가 질문의 조건을 모두 만족하는 표를 찾았다고 판정한 상태 (일부 일치는 partial_match).
-# 이 판정인데 통계표 안내로 끝났으면 통계표 찾기와 계산의 기준이 어긋난 것이다
-# (docs/cell_binding_design_2026-11-23.md 6장 0단계)
+TABLES = "tables"
 SEARCH_OK = "ok"
 
-# (키, 원인, skip 문구 정규식, 막힌 단계, 고칠 곳). 위에서부터 처음 맞는 것.
-# skip 문구가 바뀌면 '분류 안 됨'으로 잡힌다
 CATEGORIES: list[tuple[str, str, str, str, str]] = [
     (
         "cell_none",
@@ -171,7 +147,6 @@ WHERE = {k: (stage, where) for k, _, _, stage, where in CATEGORIES} | {
 
 
 def category(skip: str) -> str:
-    """skip 문구 → 원인 키"""
     for key, _, pattern, *_ in _COMPILED:
         if pattern.search(skip):
             return key
@@ -189,7 +164,6 @@ def _cell_split(entry: dict[str, Any]) -> str:
 
 
 def reason_of(turn: dict[str, Any] | None) -> dict[str, Any] | None:
-    """통계표 안내로 끝난 턴 → 원인 {key, label, sub, skip, tbl_id}. 그 밖의 턴이면 None"""
     if not turn or turn.get("status") != TABLES:
         return None
     steps = (turn.get("trace") or {}).get("dynamic") or turn.get("dynamic") or []
@@ -220,12 +194,10 @@ def reason_of(turn: dict[str, Any] | None) -> dict[str, Any] | None:
 
 
 def _search_status(turn: dict[str, Any]) -> str:
-    """통계표 찾기의 판정 (ok · partial_match …). 없으면 빈 문자열"""
     return str((turn.get("tables") or {}).get("status") or "")
 
 
 def exact_ids(items: Iterable[tuple[str, dict[str, Any]]]) -> set[str]:
-    """통계표 안내로 끝난 턴 중 통계표 찾기가 '조건 충족'(ok)이라고 판정한 것"""
     return {
         key
         for key, turn in items
@@ -234,7 +206,6 @@ def exact_ids(items: Iterable[tuple[str, dict[str, Any]]]) -> set[str]:
 
 
 def all_skips(turn: dict[str, Any] | None) -> Counter:
-    """후보 표 전체의 건너뛴 이유 (고른 표 + 다른 후보). 후보를 몇 개까지 볼지 정할 때 쓴다"""
     steps = (turn or {}).get("trace", {}).get("dynamic") or (turn or {}).get("dynamic") or []
     return Counter(category(s["skip"]) for s in steps if s.get("skip"))
 
@@ -243,23 +214,18 @@ def label_text(r: dict[str, Any]) -> str:
     return f"{r['label']} — {CELL_SPLIT[r['sub']]}" if r.get("sub") else r["label"]
 
 
-# ---- 읽기 -----------------------------------------------------------------------------------
-
-
 def turns(path: Path) -> Iterator[tuple[str, dict[str, Any]]]:
-    """(문항 ID 또는 요청 시각, 최종 턴). 평가 원응답은 되묻기 뒤 답(final)이 있으면 그것을 본다"""
     for line in path.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         d = json.loads(line)
-        if "first" in d:  # 평가 원응답
+        if "first" in d:
             yield d["id"], d.get("final") or d["first"]
-        else:  # 요청 기록 (qa.log_request)
+        else:
             yield d.get("at") or "", d
 
 
 def answer_ids(golden: Path | None) -> set[str]:
-    """골든셋에서 기대 행동이 '답변'인 문항 (정답 값은 읽지 않는다)"""
     if golden is None:
         return set()
     with golden.open(encoding="utf-8-sig") as f:
@@ -269,7 +235,6 @@ def answer_ids(golden: Path | None) -> set[str]:
 def collect(
     items: Iterable[tuple[str, dict[str, Any]]],
 ) -> tuple[dict[str, list[str]], int, Counter]:
-    """→ (원인 글 → 문항 목록, 통계표 안내 턴 수, 후보 전체 이유)"""
     by: dict[str, list[str]] = defaultdict(list)
     total, everything = 0, Counter()
     for key, turn in items:
@@ -279,9 +244,6 @@ def collect(
         total += 1
         by[label_text(r)].append(key)
     return by, total, everything
-
-
-# ---- 표 ------------------------------------------------------------------------------------
 
 
 def _key_of(text: str) -> str:
@@ -297,8 +259,6 @@ def table(
     old_total: int = 0,
     exact: set[str] | None = None,
 ) -> list[str]:
-    """원인별 표 (markdown 줄). answers에 있는 문항은 * (답해야 하는 문항).
-    exact를 주면 통계표 찾기가 '조건 충족'이라 한 문항을 † 로 표시하고 원인마다 그 수를 센다"""
 
     def mark(ids: list[str]) -> str:
         return " ".join(

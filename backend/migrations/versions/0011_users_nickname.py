@@ -1,12 +1,3 @@
-"""app.users.nickname: 회원가입 때 적는 닉네임 (화면 표시용)
-
-같은 닉네임을 여러 사람이 써도 된다 (로그인 아이디는 이메일).
-이 열을 넣기 전에 가입한 계정은 비어 있다(NULL). PATCH /auth/me 로 적을 수 있다.
-
-Revision ID: 0011
-Revises: 0010
-"""
-
 from collections.abc import Sequence
 
 import sqlalchemy as sa

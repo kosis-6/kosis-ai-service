@@ -1,13 +1,9 @@
-// 대화 기록: 기간의 사용량 → 사람 → 그 사람의 대화 창 → 고른 창의 턴 (말한 순서대로)
-// 로그인 사용자는 창을 여러 개 열어 따로 물어도 그 사람 아래로 모인다. 비로그인 사용자는 누구인지
-// 알 수 없어 한 묶음으로 모은다
 import { useEffect, useMemo, useState } from "react";
 import type { FlowStep, PersonRead, SessionRead, TurnDetail } from "../api/types";
 import * as api from "./api";
 import { changes, conditionLine, count, day, flowLabel, person, requestLabel, stuckStep, when } from "./format";
 import { Choice, DAYS, Empty, More, Problem, SkeletonRows, Status, useLoad, usePaged, useSettled, WHO } from "./parts";
 
-/** 고른 사람. id 가 null 이면 비로그인 사용자 묶음 */
 type Owner = { id: number | null; name: string };
 
 export function SessionsView() {
@@ -20,7 +16,6 @@ export function SessionsView() {
 
   const key = `${days}|${who}|${q}`;
   const since = useMemo(() => api.sinceDays(days), [key]);
-  // 거르는 조건을 바꾸면 사람 목록으로 돌아간다 (목록에 없는 사람·대화가 열려 있지 않게)
   useEffect(() => {
     setOwner(null);
     setPicked(null);
@@ -72,7 +67,6 @@ export function SessionsView() {
   );
 }
 
-/** 사람 목록: 마지막 대화가 최근인 사람부터. 사람마다 대화 창 수 · 질문 수 */
 function People({
   filter,
   onOpen,
@@ -85,7 +79,6 @@ function People({
     return { rows: found.people, total: found.total };
   }, `${filter.since}|${filter.who}|${filter.q}`);
 
-  // 권한 문제는 화면 전체의 문제라 목록 자리 대신 한 번만 보여 준다
   if (list.error && (list.error.status === 401 || list.error.status === 403)) {
     return <Problem error={list.error} />;
   }
@@ -135,7 +128,6 @@ function PersonRow({ row, onOpen }: { row: PersonRead; onOpen: (owner: Owner) =>
   );
 }
 
-/** 한 사람의 대화 창들 (마지막 턴이 최근인 것부터) */
 function OwnerSessions({
   owner,
   filter,
@@ -197,10 +189,9 @@ function SessionRow({ row, open, onOpen }: { row: SessionRead; open: boolean; on
   );
 }
 
-/** 기간의 사용량: 숫자 한 줄 + 날짜별·결과별 개수 */
 function Usage({ days }: { days: number }) {
   const { data, error, loading } = useLoad(() => api.summary(days), String(days));
-  if (error) return null; // 목록이 같은 문제를 알려 준다
+  if (error) return null;
   const facts: [string, number | null][] = [
     ["질문", data?.turns ?? null],
     ["대화 창", data?.sessions ?? null],
@@ -332,7 +323,6 @@ function Turn({ turn }: { turn: TurnDetail }) {
   );
 }
 
-/** 처리 흐름: 이 턴이 거친 단계와 순서. 접어 두고, 막힌 단계는 접힌 채로도 보여 준다 */
 function Flow({ steps }: { steps: FlowStep[] }) {
   const stuck = stuckStep(steps);
   return (

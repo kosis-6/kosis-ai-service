@@ -1,5 +1,3 @@
-"""조건 → 칸 잇기 1단계 (app/services/binding.py): 기록만, 답은 그대로"""
-
 import asyncio
 
 import pytest
@@ -31,7 +29,6 @@ def _by(b: binding.Binding, cond: str) -> binding.Bound:
 
 
 def test_female_only_table_and_count_range(monkeypatch) -> None:
-    # V2-034: 기혼여성 표는 성별 분류가 없어도 '여'를 만족하고, '셋 이상'은 출생자녀 3명 ~ 10명이상
     items = Dim(
         0,
         "항목",
@@ -50,7 +47,7 @@ def test_female_only_table_and_count_range(monkeypatch) -> None:
     assert _by(b, "sex").by == "table"
     item = _by(b, "item")
     assert item.codes == [f"T{i}" for i in range(3, 11)]
-    assert _by(b, "사망자녀수별").codes == ["0"]  # 말하지 않은 분류는 합계
+    assert _by(b, "사망자녀수별").codes == ["0"]
 
 
 def test_exact_count_and_age_words_are_not_counts(monkeypatch) -> None:
@@ -61,12 +58,11 @@ def test_exact_count_and_age_words_are_not_counts(monkeypatch) -> None:
     assert _by(b, "item").codes == ["T22"]
     b = binding.bind("T", "자녀 넷 이상", {}, _slots(items=["자녀 넷 이상"]))
     assert _by(b, "item").codes == ["T23", "T24"]
-    assert binding._count_ask("65살 이상") is None  # 나이는 수 조건이 아니다
+    assert binding._count_ask("65살 이상") is None
     assert binding._count_ask("30세") is None
 
 
 def test_age_cells_come_before_table_name_range(monkeypatch) -> None:
-    # '고령자(65세이상) 가구' 표도 65세 이상 없는 가구까지 담는다: 표 이름만 보고 잇지 않는다
     names = ["일반가구_계", "가구원 모두 65세이상", "가구원 65세이상+65세미만"]
     names.append("가구원 65세이상 없음")
     items = Dim(0, "항목", {str(i): n for i, n in enumerate(names)})
@@ -74,7 +70,6 @@ def test_age_cells_come_before_table_name_range(monkeypatch) -> None:
     b = binding.bind("T", "식구가 전부 65살 이상인 집", {"ages": [[65, None]]}, _slots())
     assert b.status == binding.PARTIAL
     assert any(u.cond == "age" and "여럿" in u.why for u in b.unbound)
-    # 그 연령이 든 칸이 없을 때만 표 이름의 연령 범위로 표 전체를 본다
     only = Dim(0, "항목", {"0": "가구", "1": "인구"})
     _table(monkeypatch, [only], name="고령자(65세이상) 가구")
     b = binding.bind("T", "65세 이상 가구", {"ages": [[65, None]]}, _slots())
@@ -161,7 +156,7 @@ def test_build_records_binding_only_when_switched_on(monkeypatch, on: bool) -> N
     monkeypatch.setattr(get_settings(), "binding_shadow", on)
     step: dict = {}
     spec, why = asyncio.run(d._build("T", "101", "인구", {}, step))
-    assert spec == {"cells": "항목 인구"} and why is None  # 답(정의)은 그대로
+    assert spec == {"cells": "항목 인구"} and why is None
     if on:
         assert step["binding"]["vs_current"] == "같음" and got == {"plan": plan, "ok": True}
     else:
@@ -201,7 +196,7 @@ def test_compare_script_picks_the_answering_table(tmp_path) -> None:
     path.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows))
     by = bc.collect(path)
     assert {k: [i for i, _ in v] for k, v in by.items()} == {
-        "같음": ["D-1"],  # 답을 낸 표가 대표
+        "같음": ["D-1"],
         "잇기만 성공": ["D-2"],
         "둘 다 실패": ["D-3"],
     }
@@ -211,20 +206,17 @@ def test_compare_script_picks_the_answering_table(tmp_path) -> None:
 
 
 def test_no_question_word_means_not_bound(monkeypatch) -> None:
-    # '아이 키우기 좋은 동네': 말하지 않은 분류를 모두 합계로 채워도 질문과 잇는 말이 없으면 못 이음
     items = Dim(0, "항목", {"1": "계"})
     order = Dim(2, "출산순위별", {"0": "총계", "1": "첫째아"})
     _table(monkeypatch, [items, order], name="출산순위별 출생")
     b = binding.bind("T", "아이 키우기 좋은 동네 추천해 줘", {}, {"topic": "동네 추천"})
     assert b.status == binding.PARTIAL
     assert [u.cond for u in b.unbound] == ["topic"]
-    # 주제 낱말이 표 이름에 있다는 것만으로는 잇지 않는다 (D-063)
     b = binding.bind("T", "출생 몇 명", {}, {"topic": "출생"})
     assert b.status == binding.PARTIAL
 
 
 def test_husband_cell_only_for_couple_counted_tables(monkeypatch) -> None:
-    # 평균 초혼연령(남편 · 아내 값이 다름)은 남편 칸 하나가 아니라 남녀 따로 (V2-116)
     items = Dim(0, "항목", {"T1": "남편", "T2": "아내"})
     _table(monkeypatch, [items], name="시도별 평균초혼연령", couple=False)
     b = binding.bind("T", "평균초혼연령", {}, _slots())
@@ -238,7 +230,6 @@ def test_forced_cells_and_sex_from_parsed_only(monkeypatch) -> None:
     items = Dim(0, "항목", {"1": "인구", "2": "가구"})
     nation = Dim(2, "외국인 아내의 국적별", {"0": "계", "5": "베트남"})
     _table(monkeypatch, [items, nation])
-    # 통계표 찾기의 성별 '여'(외국인 아내)는 보지 않는다 (V2-001)
     b = binding.bind("T", "베트남 여자랑 결혼", {"sex": ""}, _slots(sex="여"), forced={0: "1"})
     assert b.status == binding.BOUND
     assert _by(b, "forced").codes == ["1"] and _by(b, "word").codes == ["5"]
@@ -260,7 +251,6 @@ def test_ratio_questions_are_not_compared(monkeypatch) -> None:
 
 
 def test_all_leaf_cells_mean_the_total(monkeypatch) -> None:
-    # '출퇴근하거나 학교 다닌' = 통근 + 통학 → 통근·통학여부 계 (지금 계산의 choose와 같다, D-015)
     items = Dim(0, "항목", {"1": "전철 지하철", "2": "시내버스"})
     kind = Dim(2, "통근·통학여부별", {"0": "계", "1": "통근", "2": "통학"})
     _table(monkeypatch, [items, kind])
@@ -271,7 +261,6 @@ def test_all_leaf_cells_mean_the_total(monkeypatch) -> None:
 
 
 def test_short_cell_inside_long_condition_is_not_linked(monkeypatch) -> None:
-    # '부부 및 미혼 형제자매' 안의 '미혼'은 혼인상태 칸이 아니다 (D-144)
     items = Dim(0, "항목", {"T12": "1세대가구-부부+미혼형제자매"})
     marry = Dim(3, "혼인상태별", {"0": "합계", "1": "미혼", "2": "유배우"})
     _table(monkeypatch, [items, marry])
@@ -279,14 +268,11 @@ def test_short_cell_inside_long_condition_is_not_linked(monkeypatch) -> None:
         "T", "부부랑 미혼 형제자매가 같이 사는 집", {}, _slots(items=["부부 및 미혼 형제자매"])
     )
     assert not any(x.cond == "item" and x.dim == 3 for x in b.bound)
-    # 조건의 낱말이 모두 든 칸이 하나뿐이면 그 칸 ('및'은 잇는 말)
     assert _by(b, "item").codes == ["T12"]
     assert binding._related("지하철", "전철 지하철")
 
 
 def test_age_condition_missed_by_understanding_shows_as_differ(monkeypatch) -> None:
-    # 질문 이해가 '85세 넘은'을 놓치고 통계표 찾기만 조건으로 뽑음: 표에 연령 분류가 있으면 잇고,
-    # 연령 없이 계산한 지금 계산과는 '다름' (D-144)
     items = Dim(0, "항목", {"T12": "1세대가구-부부+미혼형제자매"})
     age = Dim(4, "연령별", {"000": "합계", "1": "80~84세", "2": "85세이상", "3": "20~24세"})
     _table(monkeypatch, [items, age])
@@ -304,16 +290,13 @@ def test_item_already_in_forced_cell_and_age_endpoints(monkeypatch) -> None:
     items = Dim(0, "항목", {"T10": "내국인(15세이상)-계", "T14": "내국인-이혼", "T24": "남자-이혼"})
     age = Dim(2, "연령별", {"000": "합계", "1": "60~64세", "2": "65~69세", "3": "70~74세"})
     _table(monkeypatch, [items, age])
-    # 칸 고르기 LLM이 고른 '내국인-이혼'이 '이혼' 조건을 담는다 (V2-016)
     b = binding.bind("T", "이혼한 상태인 사람", {}, _slots(items=["이혼"]), forced={0: "T14"})
     assert b.status == binding.BOUND and _by(b, "item").by == "forced"
-    # '65살부터 72살까지'의 양 끝을 따로 뽑은 조건은 연령에서 이미 봤다 (V2-137)
     b = binding.bind("T", "65살부터 72살까지", {"ages": [[65, 72]]}, _slots(items=["65세", "72세"]))
     assert not any(u.cond == "item" for u in b.unbound)
 
 
 def test_count_condition_skips_age_cells(monkeypatch) -> None:
-    # '셋 이상'을 나이 칸 '3세 · 4세 · 5세'에 잇지 않는다 (DT_1YC1601)
     items = Dim(
         0, "항목", {"T13": "3자녀이상", "T24": "3세", "T25": "4세", "T26": "5세", "T27": "6세"}
     )
@@ -323,8 +306,6 @@ def test_count_condition_skips_age_cells(monkeypatch) -> None:
 
 
 def test_age_class_with_age_condition_is_that_age(monkeypatch) -> None:
-    # '스무 살 안 됐는데 혼자 사는 사람' + 연령별: 20세 미만 하나
-    # (연령 칸 모두의 비교가 아님, V2-144)
     items = Dim(0, "항목", {"T00": "1인가구"})
     age = Dim(2, "연령별", {"000": "합계", "024": "20세미만", "025": "20~24세", "030": "25~29세"})
     _table(monkeypatch, [items, age])
@@ -340,25 +321,20 @@ def test_retry_plan_groups(monkeypatch) -> None:
     b = binding.bind("T", "자녀 셋 이상 가구", {}, _slots(items=["셋 이상"]))
     plan = binding.retry_plan(b, "자녀 셋 이상 가구", {})
     assert plan.multi == (0, ["T22", "T23", "T24"], "sum") and plan.forced == {}
-    # 국적별 순위: 기타 · 미상은 뺀다
     nation = Dim(1, "국적별", {"0": "계", "1": "미국", "2": "중국", "9": "기타 및 미상"})
     _table(monkeypatch, [Dim(0, "항목", {"T3": "혼인"}), nation])
     b = binding.bind("T", "국적별 혼인 상위 3", {"type": "rank"}, _slots(classes=["국적"]))
     plan = binding.retry_plan(b, "국적별 혼인 상위 3", {"type": "rank"})
     assert plan.multi == (1, ["1", "2"], "rank") and plan.forced == {0: "T3"}
-    # 표 전체가 여성: 질문 해석의 성별을 뺀다
     married = Dim(0, "항목", {"T05": "출생자녀 3명", "T06": "출생자녀 4명", "T07": "출생자녀 5명"})
     _table(monkeypatch, [married], name="출생자녀수별 기혼여성인구")
     b = binding.bind("T", "셋 이상 낳은 기혼 여성", {"sex": "여"}, _slots(items=["셋 이상"]))
     assert binding.retry_plan(b, "셋 이상 낳은 기혼 여성", {"sex": "여"}).parsed["sex"] is None
-    # 못 이었으면 다시 계산하지 않는다
     b = binding.bind("T", "부부 불화", {}, _slots(items=["부부 불화"]))
     assert binding.retry_plan(b, "부부 불화", {}) is None
 
 
 def test_retry_plan_marks_default_cells_quiet(monkeypatch) -> None:
-    """말하지 않아 기본으로 고른 칸(합계)은 고르기만 하고 지표 이름에 쓰지 않는다
-    ("사망자수"가 "계 수"로, D-125 11/24)"""
     items = Dim(0, "항목", {"T1": "사망자수"})
     sex = Dim(1, "성별", {"0": "계", "1": "남자", "2": "여자"})
     _table(monkeypatch, [items, sex])
@@ -374,7 +350,6 @@ def test_compare_of_decimal_values_is_rounded() -> None:
 
 
 def test_forced_cell_settles_age_cells(monkeypatch) -> None:
-    # 그 연령이 든 칸이 여럿이면 규칙은 못 고르지만, 칸 고르기 LLM이 하나를 고르면 그 칸 (V2-013)
     names = ["일반가구_계", "가구원 모두 65세이상", "가구원 65세이상+65세미만"]
     names.append("가구원 65세이상 없음")
     items = Dim(0, "항목", {str(i): n for i, n in enumerate(names)})
@@ -387,8 +362,6 @@ def test_forced_cell_settles_age_cells(monkeypatch) -> None:
 
 
 def test_scenario_default_over_llm_pick(monkeypatch) -> None:
-    # 시나리오를 말하지 않았는데 LLM이 '현수준'을 골랐으면 기본값 '중위' (V2-050).
-    # 질문이 그 시나리오를 말했으면 LLM의 칸 그대로
     items = Dim(0, "항목", {"T10": "총인구"})
     scen = Dim(1, "시나리오별", {"01": "중위 추계", "02": "고위 추계", "03": "저위 추계",
                                  "04": "출산율 현수준 추계"})  # fmt: skip
@@ -402,7 +375,6 @@ def test_scenario_default_over_llm_pick(monkeypatch) -> None:
 
 
 def test_special_projection_table_without_baseline(monkeypatch) -> None:
-    # 중위 추계가 없는 특별 추계 표: 시나리오를 말하지 않았으면 잇지 못함 → 다음 후보 표로 (V2-050)
     items = Dim(0, "항목", {"T10": "총인구"})
     scen = Dim(1, "시나리오별", {"01": "높은 출산율 추계(출산율-고위)",
                                  "03": "출산율 현수준 추계",
@@ -416,7 +388,6 @@ def test_special_projection_table_without_baseline(monkeypatch) -> None:
 
 
 def test_no_retry_for_ratio_questions(monkeypatch) -> None:
-    # 비율 질문은 잇기의 칸으로 다시 계산하지 않는다 (V2-090: 분자 = 분모 → 100%)
     items = Dim(0, "항목", {"0": "일반가구_계", "1": "가구원 모두 65세이상"})
     _table(monkeypatch, [items])
     q = "전체 가구 중에 식구가 전부 65살 이상인 집은 몇 퍼센트야?"
@@ -425,13 +396,10 @@ def test_no_retry_for_ratio_questions(monkeypatch) -> None:
 
 
 def test_binding_retry_with_only_default_cells_is_not_rejected() -> None:
-    """잇기가 이은 칸이 모두 기본 칸(합계)이면 matched가 비지만, 잇기로 다시 계산할 때는
-    '질문의 말과 맞는 칸이 없음'으로 막지 않는다 (V2-139: 가구주 32~37세 · 2030년, 11/24)"""
     items = Dim(0, "항목", {"T1": "계"})
     sex = Dim(1, "성별", {"0": "계", "1": "남자", "2": "여자"})
     forced, quiet = {1: "0"}, {1: "total"}
     got, why = d.choose("가구 몇 가구", {}, [items, sex], None, forced, quiet=quiet)
     assert got is not None and got.pick == {0: "T1", 1: "0"} and not got.matched
-    # 잇기 재계산이 아니면 지금처럼 막는다
     got, why = d.choose("가구 몇 가구", {}, [items, sex], None, forced)
-    assert got is not None or why  # forced 칸은 matched로 들어간다 (기존 동작)
+    assert got is not None or why

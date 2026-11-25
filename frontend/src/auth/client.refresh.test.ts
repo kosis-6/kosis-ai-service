@@ -1,6 +1,3 @@
-// Access Token 이 만료됐을 때 다시 보내기 (client.ts 의 call)
-//   - 요청 여러 개가 함께 401 을 받아도 새 토큰은 한 번만 받고, 모두 새 토큰으로 다시 보낸다
-//   - 갱신 중 새 요청과 갱신 실패 뒤 다시 보낸 요청도 인증을 유지한다
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 type Call = { url: string; auth: string | null };
@@ -50,7 +47,7 @@ async function signedIn(...refreshStatuses: number[]) {
   vi.stubGlobal("fetch", s.fetchMock);
   const client = await import("./client");
   await client.login("a@b.co", "pw1234!", false);
-  s.expire(); // 이제 "old" 토큰은 401
+  s.expire();
   return { ...s, client };
 }
 
@@ -70,7 +67,7 @@ describe("토큰 만료 뒤 다시 보내기", () => {
     const res = await client.authFetch("/ask");
     expect(res.status).toBe(401);
     expect(calls.filter((c) => c.url === "/ask" && c.auth === null)).toHaveLength(0);
-    expect(client.currentUser()).not.toBeNull(); // 서버 오류라 로그인 표시는 남긴다 (다시 시도할 수 있게)
+    expect(client.currentUser()).not.toBeNull();
   });
 
   it("갱신 중 시작된 질문은 같은 갱신을 기다리고 새 토큰을 붙인다", async () => {

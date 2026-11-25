@@ -35,7 +35,7 @@ def test_plain_removes_decimal(value: object, expected: object, kind: type) -> N
     [
         (["a", None], "text"),
         ([1, 2], "bigint"),
-        ([None, 2030], "double precision"),  # 빈 값이 있으면 pandas가 실수로 읽는다
+        ([None, 2030], "double precision"),
         ([1.5, None], "double precision"),
         ([True, False], "boolean"),
         ([None, None], "text"),

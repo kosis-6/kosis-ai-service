@@ -1,15 +1,3 @@
-"""전처리 결과(build 스키마) 정합성 검증
-
-검사마다 '규칙을 어긴 행'을 찾는 SQL을 하나씩 둔다.
-  결과가 0행 → 통과(PASS), 1행 이상 → 실패(FAIL) + 예시 출력
-실패가 하나라도 있으면 종료 코드 1 (나중에 자동 테스트에 연결할 수 있도록)
-
-지역 코드 연결 검증은 preprocess.py 실행 요약에서 따로 출력한다.
-카탈로그 검사는 catalog.py 실행 후에 통과한다 (run_all.py가 순서대로 실행).
-
-실행: python pipeline/validate.py   (가상환경 활성화 후, README 참고)
-"""
-
 import sys
 from pathlib import Path
 
@@ -21,12 +9,9 @@ sys.path.insert(0, str(ROOT))
 
 from pipeline.stats_build import Build  # noqa: E402
 
-# 비율·소수 값을 비교할 때 허용 오차 (발표값 반올림 차이)
 TOLERANCE = 0.01
 
-# (검사 이름, 규칙을 어긴 행을 찾는 SQL)
 CHECKS = [
-    # ---- population: 1세별 주민등록인구 -------------------------------------
     (
         "population: 값이 비었거나 음수인 행",
         """
@@ -87,7 +72,6 @@ CHECKS = [
         from population group by 1, 2, 3 having count(*) <> 102
     """,
     ),
-    # ---- regions: 기준 지역 (새로 넣은 지역도 기존 지역과 같은 모양인지) ----------
     (
         "regions: 시군구는 모두 is_basic",
         """
@@ -101,7 +85,6 @@ CHECKS = [
         where kind in ('시군구', '일반구', '출장소') and (sido_code is null or sido_name is null)
     """,
     ),
-    # ---- facts: 통계표 20개 통합 ----------------------------------------------
     (
         "facts: 결측이 아닌데 값이 빈 행",
         """
@@ -143,7 +126,6 @@ CHECKS = [
         where c.is_projection_table and f.scenario is null
     """,
     ),
-    # ---- 카탈로그 (catalog.py 결과) -------------------------------------------
     (
         "카탈로그: 설명(table_notes)이 없는 표",
         """
@@ -169,11 +151,7 @@ CHECKS = [
     ),
 ]
 
-# ---- 표끼리 교차 검증: 같은 지표를 다른 표에서 비교 ------------------------------
-# 지역 코드가 표마다 올바르게 연결됐는지도 함께 확인된다.
-# 비교한 쌍이 MIN_PAIRS보다 적으면(연결이 끊기면 0쌍이 되어 '위반 0건'으로 통과해 버림) 실패로 본다.
 MIN_PAIRS = 100
-# (검사 이름, 두 표를 연결하는 조건)
 CROSS_CHECKS = [
     (
         "교차: 출생아 수 (인구동태 DT_1B8000H = 시군구 출생 DT_1B81A23)",
@@ -200,8 +178,6 @@ CROSS_CHECKS = [
 
 
 def check_indicator_names(con):
-    """indicators.py의 계산 지표와 카탈로그 지표 사전(computed)의 이름이 같은지"""
-    # 서비스 코드(app/services/indicators.py)를 불러오려면 프로젝트 루트가 경로에 있어야 함
     sys.path.insert(0, str(ROOT))
     from app.services.indicators import INDICATORS
 
@@ -220,12 +196,12 @@ def main():
     if con.sql("select to_regclass('build.facts')").fetchall()[0][0] is None:
         raise SystemExit("먼저 pipeline/preprocess.py를 실행하세요.")
 
-    results = []  # (이름, 위반 행 DataFrame 또는 list, 추가 설명)
+    results = []
 
     for name, sql in CHECKS:
         try:
             results.append((name, con.sql(sql).df(), ""))
-        except psycopg.errors.UndefinedTable as e:  # catalog.py를 안 돌려 테이블이 없는 경우
+        except psycopg.errors.UndefinedTable as e:
             results.append(
                 (name, [{"error": str(e).splitlines()[0]}], "catalog.py를 먼저 실행하세요.")
             )

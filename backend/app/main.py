@@ -23,7 +23,6 @@ settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    # 통계표 검색 데이터(표 2천여 개 + 벡터)를 서버가 뜰 때 미리 읽어 첫 질문이 느려지지 않게 한다
     await search.warm_up()
     await _queue_indicator_tables()
     cleanup = asyncio.create_task(log_retention.run_forever())
@@ -36,8 +35,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 async def _queue_indicator_tables() -> None:
-    """지표 사전이 쓰는 표 중 적재 안 된 표를 적재 대기열에 넣는다 (지표만 등록하면 표가 적재되게).
-    DB 문제로 실패해도 서버는 띄운다. 그 표를 묻는 질문이 오면 그때 다시 넣는다"""
     try:
         queued = await load_queue.enqueue_missing(indicators.spec_tables(), "indicator")
     except Exception:  # noqa: BLE001
@@ -47,8 +44,6 @@ async def _queue_indicator_tables() -> None:
         logger.info("적재 대기열에 넣은 지표 표 %d개: %s", len(queued), ", ".join(queued))
 
 
-# /docs(Swagger) 화면에 보이는 설명.
-# 버튼(Try it out, Execute 등)은 Swagger 자체 글자라 바꾸지 않는다
 DESCRIPTION = """KOSIS 인구 통계를 자연어로 묻고 답하는 서비스의 API입니다.
 
 로그인이 필요한 API는 오른쪽 위 **Authorize**를 눌러
@@ -67,7 +62,6 @@ TAGS = [
     {"name": "관리자", "description": "관리자 계정만 쓸 수 있다"},
     {"name": "서버 상태", "description": "서버·DB·검색 준비 상태 확인"},
 ]
-# FastAPI가 자동으로 넣는 영문 응답 설명을 한글로 바꾼다
 RESPONSE_TEXT = {"Successful Response": "성공", "Validation Error": "입력값이 규칙에 맞지 않음"}
 
 app = FastAPI(
@@ -76,7 +70,6 @@ app = FastAPI(
     openapi_tags=TAGS,
     debug=settings.debug,
     lifespan=lifespan,
-    # API 문서는 API_DOCS=true 일 때만 연다 (개발용. 기본은 닫힘)
     docs_url="/docs" if settings.api_docs else None,
     redoc_url="/redoc" if settings.api_docs else None,
     openapi_url="/openapi.json" if settings.api_docs else None,
@@ -112,13 +105,10 @@ async def not_configured(request: Request, exc: RuntimeError) -> JSONResponse:
     return JSONResponse(status_code=503, content={"detail": str(exc)})
 
 
-# 화면 (React, frontend/ 를 빌드한 frontend/dist). /chat
-# API와 같은 주소로 서빙해 CORS가 필요 없다
 FRONTEND_DIR = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 app.mount("/chat", SpaFiles(directory=str(FRONTEND_DIR)), name="chat")
 
 
 @app.get("/", include_in_schema=False)
 async def home() -> RedirectResponse:
-    """서비스 주소만 치고 들어오면 화면으로 보낸다"""
     return RedirectResponse("/chat/", status_code=302)

@@ -1,7 +1,3 @@
-"""조회 지표는 연 단위 시점만 읽는다. 표 전체를 적재하면 월·분기 행(시점 202401 등)이 같은 표에
-섞여 들어와, 거르지 않으면 수록 기간이 2000~202402년처럼 잡혀 정상 질문이 답변 불가가 된다
-(2026-11-09 로컬 DB에 월 행을 넣어 확인: 조건 없이 5,438개 중 4,522개 결과가 바뀜)"""
-
 import inspect
 import re
 import sqlite3
@@ -27,10 +23,12 @@ def test_item_years_reads_yearly_rows_only(monkeypatch) -> None:
 
 
 def test_every_stat_value_query_filters_period_type() -> None:
-    # stat_value를 읽는 쿼리를 새로 만들 때 YEARLY 조건을 빠뜨리지 않게 한다
+    # stat_value를 읽는 쿼리를 새로 만들 때 시점 종류 조건(YEARLY, 달 묶음 합은 MONTHLY)을
+    # 빠뜨리지 않게 한다
     source = inspect.getsource(lookup)
     queries = len(re.findall(r"from stat_value", source))
-    assert queries == len(re.findall(r"\{YEARLY\}", source)) >= 3
+    filtered = re.findall(r"\{(?:YEARLY|MONTHLY|MONTHLY if monthly else YEARLY)\}", source)
+    assert queries == len(filtered) >= 3
 
 
 @pytest.mark.parametrize(
@@ -45,7 +43,6 @@ def test_every_stat_value_query_filters_period_type() -> None:
 def test_value_uses_only_mapped_regions_when_region_axis_exists(
     monkeypatch, region_code, source_code, region, level, expected
 ) -> None:
-    # 합계와 상세 행이 있는 표에 기준 지역 매핑이 없거나 하나만 있다.
     with closing(sqlite3.connect(":memory:")) as db:
         db.row_factory = sqlite3.Row
         db.executescript("""

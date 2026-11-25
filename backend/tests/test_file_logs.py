@@ -1,5 +1,3 @@
-"""기존·새 JSONL 요청 로그의 마스킹, 만료 정리, 동시 쓰기 보호."""
-
 import asyncio
 import json
 from concurrent.futures import ThreadPoolExecutor
@@ -32,7 +30,7 @@ def test_request_and_missing_logs_mask_secrets_before_writing(tmp_path, missing)
     assert datetime.fromisoformat(row["at"]).utcoffset() == timedelta(0)
     if not missing:
         assert row["user_id"] == 7 and row["hcx_raw"]
-    assert res["parsed"]["password"] == "SYNTHETIC_SECRET"  # 응답 객체는 바꾸지 않는다
+    assert res["parsed"]["password"] == "SYNTHETIC_SECRET"
 
 
 def test_cleanup_removes_expired_and_unreadable_rows_and_masks_existing_rows(tmp_path):

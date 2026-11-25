@@ -1,10 +1,3 @@
-"""in_year: 그 연도에 없던 지역을 그 해에 있던 같은 이름의 지역으로 바꾸기
-
-DB 없이 돌리기 위해 indicators._rows를 작은 지역 목록으로 바꿔 끼운다.
-2026년 전남광주 통합처럼 같은 이름이 여러 곳(동구 등)이면
-같은 행정구역 변경 기록(region_changes)에 함께 적힌 지역으로 좁힌다.
-"""
-
 import pytest
 
 from app.services import indicators
@@ -74,18 +67,15 @@ def test_valid_year_unchanged() -> None:
 
 
 def test_unique_name_follows_new_code() -> None:
-    # 목포시: 2026년에 같은 이름이 하나뿐 → 원래도 이어지던 경우
     assert indicators.in_year(_get("46110"), 2026)["region_code"] == "12110"
 
 
 def test_same_name_many_follows_change_record() -> None:
-    # 광주 동구: 2026년 동구는 부산·대구·전남광주 3곳 → 변경 기록으로 12210만 남음
     out = indicators.in_year(_get("29110"), 2026)
     assert out["region_code"] == "12210"
     assert "note" in out
 
 
 def test_same_name_without_change_record_unchanged() -> None:
-    # 인천 동구: 변경 기록에 없으니 부산·대구 동구로 잘못 바꾸지 않는다
     reg = _get("28140")
     assert indicators.in_year(reg, 2026) is reg

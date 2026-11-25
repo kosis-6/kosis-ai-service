@@ -49,7 +49,7 @@ def test_retrieval_from_candidates() -> None:
     assert sl.retrieval(_record()) == "hybrid"
     keyword_only = [{**c, "dense": None} for c in _record()["candidates"]]
     assert sl.retrieval(_record(candidates=keyword_only)) == "keyword"
-    assert sl.retrieval(_record(candidates=[])) == "-"  # 되묻기 답처럼 검색을 다시 하지 않은 턴
+    assert sl.retrieval(_record(candidates=[])) == "-"
 
 
 def test_summarize_counts_status_mode_and_stage_times() -> None:
@@ -61,7 +61,7 @@ def test_summarize_counts_status_mode_and_stage_times() -> None:
 
 def test_show_marks_failed_checks_and_uses_korean_time() -> None:
     text = sl.show(_record())
-    assert text.startswith("[10-31 19:38:51]")  # UTC 10:38 → 한국 19:38
+    assert text.startswith("[10-31 19:38:51]")
     assert "보정: sex '여' → None (성별 언급 없음)" in text
     assert "시도별 인구 [B] ✘year" in text
     assert "HCX 원문" not in text and "HCX 원문" in sl.show(_record(), detail=True)
