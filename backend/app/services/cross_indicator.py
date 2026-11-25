@@ -137,7 +137,11 @@ DIFF_AFTER = re.compile(r"^(?:의)?(?:차이|격차)")
 MORE_AFTER = re.compile(r"^보다\S*?몇\S*?(?:많|적|높|낮|더)")
 MINUS = (re.compile(r"^에서$"), re.compile(r"^(?:을|를)?(?:빼|뺀)"))
 TIMES_AFTER = re.compile(r"^의?몇배")
-INCLUDE_AFTER = re.compile(r"^(?:도|까지|을|를|와|과)?(?:포함|합쳐|합친|합하면|더해|더하면)")
+INCLUDE_AFTER = re.compile(
+    r"^(?:도|까지|을|를|와|과)?(?:다|모두|전부)?(?:포함|합쳐|합친|합하면|합치면|더해|더하면)"
+)
+LIVING_PEOPLE = re.compile(r"(?:사는|살고\s*있는)\s*사람(?:들)?")
+INCLUDE_WORDS = re.compile(r"까지\s*(?:다|모두|전부)?\s*(?:포함|합쳐|합치|합하|더해|더하)")
 OFFICIAL_DIFF = {("출생아 수", "사망자 수"): "자연증가 건수"}
 
 
@@ -161,6 +165,8 @@ def _diff_or_times(a: str, b: str, between: str, after: str, plus) -> "Cross | N
 def detect(question: str) -> Cross | None:
     question = BARE_HOUSEHOLD.sub("세대 수", question)
     question = _bare_per_people(question)
+    if INCLUDE_WORDS.search(question):
+        question = LIVING_PEOPLE.sub("인구", question, count=1)
     spans = sorted(indicators.find_in_text(question) or [])
     names = list(dict.fromkeys(name for _, _, name in spans))
     text = indicators._norm(question)
