@@ -1754,3 +1754,43 @@ def test_month_range_compares_regions_with_monthly_sources(monkeypatch) -> None:
     r = qa.compute(p)
     assert r["status"] == "ok" and all(v["value"] for v in r["values"])
     assert "1~6월" in qa.summary(r)
+
+
+def test_this_year_months_use_monthly_coverage(monkeypatch) -> None:
+    monkeypatch.setattr(indicators, "_alias_map", REAL_ALIASES)
+    q = "올해 3월 서울이랑 부산 출생아 비교"
+    p = qa.correct(
+        q, parsed(type="compare", indicator="출생아 수", regions=["서울", "부산"]), TODAY
+    )
+    p["year"] = 2026
+    r = qa.compute(p)
+    assert r["status"] == "ok" and "2026년 3월" in qa.summary(r)
+
+
+@pytest.mark.parametrize(
+    ("question", "llm_type", "months_each", "want"),
+    [
+        ("작년 1월이랑 7월 서울이랑 부산 출생아 비교해줘", "compare", [[1, 1], [7, 7]], "compare"),
+        ("작년 1월부터 3월까지 서울이랑 부산 출생아 몇 명이야?", "value", [[1, 3]], "compare"),
+        ("작년 3월 서울이랑 부산 출생아 몇 명이야?", "value", [[3, 3]], "compare"),
+    ],
+)
+def test_months_with_many_regions_compare_every_region(
+    monkeypatch, question, llm_type, months_each, want
+) -> None:
+    monkeypatch.setattr(indicators, "_alias_map", REAL_ALIASES)
+    p = qa.correct(
+        question,
+        parsed(type=llm_type, indicator="출생아 수", regions=["서울", "부산"], year=2025),
+        TODAY,
+    )
+    assert p["months_each"] == months_each and p["type"] == want and not p.get("months")
+    text = qa.summary(qa.compute(p))
+    assert "서울특별시" in text and "부산광역시" in text
+
+
+def test_month_sum_answer_says_the_months(monkeypatch) -> None:
+    monkeypatch.setattr(indicators, "_alias_map", REAL_ALIASES)
+    q = "작년 1월부터 3월까지 돌아가신 분 다 합치면 몇 명이야?"
+    p = qa.correct(q, parsed(type="value", indicator="사망자 수", year=2025), TODAY)
+    assert "1~3월" in qa.summary(qa.compute(p)).split("\n")[0]

@@ -173,6 +173,12 @@ def _years(src):
     if src.get("years"):
         lo, hi = src["years"]
         return lo, hi
+    if (months := MONTHS.get()) is not None:
+        lo, hi = _month_range(src["table"], _items(src))
+        if lo is None:
+            return None, None
+        last = hi // 100 if hi % 100 >= months[1] else hi // 100 - 1
+        return lo // 100, last
     return _item_years(src["table"], _items(src))
 
 

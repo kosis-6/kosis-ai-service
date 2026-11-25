@@ -1145,11 +1145,20 @@ def correct(question, parsed, today=None):
         parsed["rank_axis"] = OTHER_AXIS.search(question)[1]
         parsed["grounded"] = False
     _one_region_years(parsed, fix)
+    many_regions = len(parsed.get("regions") or []) > 1
+    if parsed.get("months") and (parsed.get("type") != "value" or many_regions):
+        fix("months_each", [list(parsed["months"][:2])], "달 범위를 지역 비교 · 순위에도")
+        parsed["months"] = None
     each = months_asked(question)
     if not parsed.get("months") and each and _month_points_ok(question, parsed):
         parsed["months_each"] = each
-        if len(each) > 1 and parsed.get("type") in ("compare", "trend"):
+        if len(each) > 1 and many_regions:
+            if parsed.get("type") != "compare":
+                fix("type", "compare", "달마다 지역끼리 견줌")
+        elif len(each) > 1 and parsed.get("type") in ("compare", "trend"):
             fix("type", "value", "달마다 값 (달끼리 견줌)")
+        elif many_regions and parsed.get("type") == "value":
+            fix("type", "compare", "여러 지역의 달 값")
         elif parsed.get("type") == "trend" and not parsed.get("start_year"):
             fix("type", "value", "한 해의 달")
     if fixes:
@@ -2595,6 +2604,8 @@ def _compute_lookup(q, sp, kind, regions, year, sex, ages):
         # 달 묶음 합: 월별 출처가 있는 지표는 월별 값을 더한다. 없으면 연간 값에 그 사실을 적는다
         m0, m1 = q["months"][:2]
         if (r := lookup.month_sum(sp, regions[0], year, m0, m1, sex)) is not None:
+            if r.get("status") == "ok":
+                r.setdefault("as_of", f"{year}년 {monthref.label(m0, m1)}")
             return r
         r = lookup.value(sp, regions[0], year, sex, ages)
         if r.get("status") == "ok":
