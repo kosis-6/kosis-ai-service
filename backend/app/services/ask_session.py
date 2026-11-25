@@ -33,6 +33,7 @@ from app.services import (
     qa,
     question_clarify,
     refusal,
+    search_llm,
     slots,
     table_guide,
     timeref,
@@ -985,7 +986,7 @@ async def restate(state: dict, question: str, trace: dict) -> dict:
         .replace("{STATE}", state_text(state["conditions"], state["sources"]))
         .replace("{LAST}", last_text(state.get("last")))
     )
-    raw = await _chat(question, system)
+    raw = await _follow_chat(question, system)
     trace["restate_raw"] = raw
     return parse_restate(raw)
 
@@ -1101,7 +1102,7 @@ async def _checked(
         .replace("{READ}", read_text(res))
     )
     try:
-        raw = await _chat(question, system)
+        raw = await _follow_chat(question, system)
     except Exception:
         logger.exception("이어 묻기 검사 실패 → 기존 답 그대로")
         flow.add("이어 묻기 검사", "실패", "호출 실패 → 기존 답 그대로")
@@ -1191,6 +1192,22 @@ def indicator_names(conditions: dict) -> list[str]:
     if conditions.get("dynamic_spec") and current and current not in names:
         names.append(current)
     return names
+
+
+async def _follow_chat(prompt: str, system: str) -> str:
+    """이어 묻기 복원 · 검사 LLM (FOLLOW_LLM). hcx 는 변경 추출과 같은 _chat, gemma 는
+    재계획 · 판정과 같은 GemmaClient. gemma 실패를 HCX 로 넘기지 않는다
+    (부른 쪽이 실패로 처리한다)"""
+    if get_settings().follow_llm != "gemma":
+        return await _chat(prompt, system)
+    result = await search_llm.GemmaClient(retry_waits=()).chat(
+        qa.MODEL,
+        [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
+        thinking={"effort": "none"},
+        maxCompletionTokens=FOLLOW_MAX_TOKENS,
+        temperature=0,
+    )
+    return result.content
 
 
 @llm_calls.staged("follow_up")

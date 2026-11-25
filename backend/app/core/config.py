@@ -47,6 +47,10 @@ class Settings(BaseSettings):
     # 다시 계산한다. FOLLOW_RESTATE 가 복원으로 처리한 턴에는 걸리지 않는다.
     # 기본은 끔 (FOLLOW_CHECK=true 로 켠다)
     follow_check: bool = False
+    # 이어 묻기 복원(FOLLOW_RESTATE) · 검사(FOLLOW_CHECK)에 쓸 LLM. gemma 는 GEMMA_BASE_URL 필요.
+    # gemma 가 실패해도 HCX 로 넘기지 않는다 (비교 실험이 섞이지 않게): 복원은 기존 경로로,
+    # 검사는 기존 답 그대로 가고 흐름에 "실패"가 남는다. 기본은 hcx
+    follow_llm: Literal["hcx", "gemma"] = "hcx"
     # 조건 → 칸 잇기 1단계 (app/services/binding.py, docs/cell_binding_design_2026-11-23.md).
     # true: 바로 계산이 표 하나를 계산할 때 같은 표로 잇기를 돌려 처리 기록에만 남긴다
     # (답은 그대로).

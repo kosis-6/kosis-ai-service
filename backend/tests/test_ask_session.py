@@ -2254,3 +2254,26 @@ def test_follow_check_unreadable_keeps_rule_answer(talk: Talk, check_on: dict) -
     res = talk.say("2022년만", request_type="change", changes={"year": 2022})
     assert talk.asked == ["부산 출생아 최근 5년 보여 줘"]
     assert res["parsed"]["year"] == 2022
+
+
+def test_follow_llm_gemma_uses_gemma_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    """FOLLOW_LLM=gemma: 복원 · 검사 LLM 을 GemmaClient 로 부른다 (HCX _chat 은 부르지 않는다)"""
+    monkeypatch.setattr(s.get_settings(), "follow_llm", "gemma")
+    sent: list = []
+
+    class Fake:
+        def __init__(self, **kw):
+            pass
+
+        async def chat(self, model, messages, **options):
+            sent.append(messages)
+            return type("R", (), {"content": '{"verdict": "ok"}'})()
+
+    async def no_hcx(prompt, system):
+        pytest.fail("FOLLOW_LLM=gemma 인데 HCX 를 불렀습니다")
+
+    monkeypatch.setattr(s.search_llm, "GemmaClient", Fake)
+    monkeypatch.setattr(s, "_chat", no_hcx)
+    assert asyncio.run(s._follow_chat("대구는?", "SYS")) == '{"verdict": "ok"}'
+    assert sent[0][0] == {"role": "system", "content": "SYS"}
+    assert sent[0][1]["content"] == "대구는?"
