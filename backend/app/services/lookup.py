@@ -732,6 +732,12 @@ def rank(
     """,
         [*params, year, year],
     )
+    if not regs:
+        return {
+            "status": "missing_data",
+            "indicator": spec["name"],
+            "reason": f"{year}년 {scope or level} 순위를 매길 지역이 없습니다.",
+        }
     vals = _fetch(src, [r["region_code"] for r in regs], year, year, age_codes)
     items = []
     for reg in regs:

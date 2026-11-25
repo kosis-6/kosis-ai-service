@@ -1564,8 +1564,27 @@ def _ground_regions(question, parsed, fix):
                     "짧은 이름이 여러 지역 → 되묻기",
                 )
             continue
+        if named and reg.get("sido_code") in named and (m := RANK_WITHIN.search(question)):
+            sido = next(
+                indicators.resolve_region(n)["region_name"]
+                for n in indicators.find_regions(question)
+                if indicators.resolve_region(n).get("region_code") == reg.get("sido_code")
+            )
+            fix("regions", [sido], "질문에 없는 시군구 대신 그 시도 안의 순위")
+            fix("type", "rank", "시도 안에서 가장 큰 곳을 물음")
+            parsed["level"] = "시군구"
+            if top := next((int(g) for g in m.groups() if g), None):
+                parsed["top"] = top
+            return
         parsed["ungrounded_region"] = r
         return
+
+
+RANK_WITHIN = re.compile(
+    r"(?:가장|제일)\s*(?:\S+\s*){0,2}?(?:큰|많|높|작|적|낮)\S*\s*(?:\S+\s*){0,2}?(\d+)\s*(?:개|곳|군데)"
+    r"|(?:상위|top\s*)(\d+)"
+    r"|(?:가장|제일)\s*(?:큰|많|높|작|적|낮)"
+)
 
 
 def _full_region_names(question, parsed, fix):
