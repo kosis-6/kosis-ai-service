@@ -315,3 +315,17 @@ def test_relative_year_beside_count() -> None:
     out = _slots("작년 인구가 2000명 이하인 지역")
     assert out["time_ref"]["expr"] == "작년"
     assert out["conditions"]["year"] == out["time_ref"]["year"]
+
+
+@pytest.mark.parametrize(
+    ("question", "sex_class"),
+    [
+        ("작년에 한국 남자가 베트남 여자랑 결혼한 거 몇 건이야?", False),
+        ("농사나 고기잡이 하는 남자가 외국인 여자랑 결혼한 거 몇 건이야?", False),
+        ("남자랑 여자 처음 결혼하는 나이 몇 살 차이 나?", True),
+        ("2010년에 결혼 안 한 사람 남자랑 여자 중 누가 얼마나 더 많았어?", True),
+    ],
+)
+def test_spouse_pair_is_not_a_sex_condition(question: str, sex_class: bool) -> None:
+    c = sl.correct(question, sl.empty_slots(question))["conditions"]
+    assert c["sex"] is None and ("성별" in c["classes"]) is sex_class

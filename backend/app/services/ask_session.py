@@ -2437,6 +2437,14 @@ def ungrounded(res: dict) -> bool:
     )
 
 
+def _monthly_scope(result: dict) -> set[tuple]:
+    return {
+        (tuple(r["months"]), r.get("year"), r.get("sex") or "계")
+        for r in qa._leaves(result)
+        if r.get("months")
+    }
+
+
 async def _dynamic_instead(res: dict, state: dict | None, asked: str, user_id: int | None) -> bool:
     sid = (state or {}).get("search_session") or table_guide.new_search_session()
     trace = res.get("trace") or {}
@@ -2462,7 +2470,12 @@ async def _dynamic_instead(res: dict, state: dict | None, asked: str, user_id: i
         return False
     if computed is None and found is None:
         return False
-    if res.get("status") == "ok" and (same := _same_dictionary_table(parsed, computed, found)):
+    handed_off = bool(parsed.get("gate_reasons"))
+    if (
+        res.get("status") == "ok"
+        and not handed_off
+        and (same := _same_dictionary_table(parsed, computed, found))
+    ):
         trace["dynamic_kept"] = {"indicator": parsed.get("indicator"), "tbl_id": same}
         return False
     if res.get("status") == "ok" and same_number(res.get("result"), (computed or {}).get("result")):
@@ -2474,15 +2487,13 @@ async def _dynamic_instead(res: dict, state: dict | None, asked: str, user_id: i
             "same_value": (res.get("result") or {}).get("value"),
         }
         return False
-    months = (res.get("result") or {}).get("months")
+    months = _monthly_scope(res.get("result") or {})
     if (
         res.get("status") == "ok"
         and months
-        and not ((computed or {}).get("result") or {}).get("months")
+        and not months <= _monthly_scope((computed or {}).get("result") or {})
     ):
-        # 사전이 달 묶음 합(월별 자료)으로 답했는데 바로 계산은 월을 못 읽어 연간 값을 냈다 (11/24):
-        # 상반기 혼인 6,255건을 연간 12,802건으로 바꿔 버렸다. 달 합은 사전 답을 둔다
-        trace["dynamic_kept"] = {"indicator": parsed.get("indicator"), "months": months}
+        trace["dynamic_kept"] = {"indicator": parsed.get("indicator"), "months": list(months)}
         return False
     # 바꾼 원래 답 (요청 기록·회귀 평가에서 사전 지표 답과 비교한다)
     trace["replaced"] = {

@@ -12,6 +12,13 @@ from app.services import indicators, plan_cache
 from app.services.memory_cache import MISSING, MemoryCache
 
 
+@pytest.fixture(autouse=True)
+def plan_cache_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "plan_cache", True)
+
+
 class Clock:
     def __init__(self) -> None:
         self.now = 0.0

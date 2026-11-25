@@ -44,3 +44,16 @@ def test_everyday_age_words_2(q, lo, hi):
 )
 def test_not_age_group_2(q):
     assert agegroup.resolve(q) is None, q
+
+
+@pytest.mark.parametrize(
+    ("text", "want"),
+    [
+        ("미성년 자녀 셋 이상 키우는 집", "미성년 자녀 셋 이상 키우는 집"),
+        ("아이 3명 이상 낳은 여성", "아이 3명 이상 낳은 여성"),
+        ("미성년 자녀 넷 키우는 집", "미성년 4자녀 키우는 집"),
+        ("자녀가 딱 셋인 집", "자녀가 딱 3인 집"),
+    ],
+)
+def test_count_words_keep_ranges_for_binding(text: str, want: str) -> None:
+    assert agegroup.count_digits(text) == want
