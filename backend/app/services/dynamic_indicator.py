@@ -851,7 +851,8 @@ def uncovered(
         for c in cond.get("classes") or []
         if _norm(c) not in skip and not _class_narrowed(c, plan, dims, said)
     ]
-    if classes and parsed.get("type") not in ("composition", "rank", "trend"):
+    split = bool(slots.get("cells_by_binding") and plan.multi and plan.multi[2] in SPLIT_OPS)
+    if classes and not split and parsed.get("type") not in ("composition", "rank", "trend"):
         return f"나눠 보기({', '.join(classes)}별)는 값 하나로 답할 수 없음"
     return None
 
@@ -1635,8 +1636,13 @@ def _age_check(key: str, parsed: dict) -> bool:
 MAX_ATTEMPTS = 5
 MAX_FETCH_AT_ONCE = 3
 MAX_CELL_LLM = 3
+MAX_RECELL = 1
+SPLIT_OPS = ("rank", "compare")
 _cell_llm_budget: contextvars.ContextVar[list[int] | None] = contextvars.ContextVar(
     "cell_llm_budget", default=None
+)
+_recell_budget: contextvars.ContextVar[list[int] | None] = contextvars.ContextVar(
+    "recell_budget", default=None
 )
 HANDOFF_STATUSES = ("ok", "partial_match")
 WHOLE_COUNTRY = {"전국", "우리나라", "한국", "대한민국", "국내"}
@@ -1798,6 +1804,7 @@ async def compute_from_handoff(
     if h.get("status") not in HANDOFF_STATUSES or not h.get("targets"):
         return None
     _cell_llm_budget.set([MAX_CELL_LLM])
+    _recell_budget.set([MAX_RECELL])
     targets = h["targets"]
     target = targets[0]
     if len(targets) > 1:
@@ -1935,6 +1942,13 @@ async def _compute_target(
         except Exception:
             logger.exception("잇기로 다시 계산할 칸 만들기 실패: %s", tbl_id)
             return None, None
+        by = "binding"
+        if plan is None and b.status == binding.PARTIAL:
+            fixed = await with_recell(entry, sub["dynamic"][-1], b)
+            if fixed is not None:
+                b, by = fixed.binding, "binding+recell"
+                plan = await run_in_threadpool(binding.retry_plan, b, question, q_used, True)
+                notice = ". ".join(n for n in (notice, fixed.notice) if n) or None
         if plan is None:
             sub["dynamic"][-1]["binding_skip"] = (
                 b.status if b.status != binding.BOUND else "연산 둘"
@@ -1957,12 +1971,32 @@ async def _compute_target(
             notice,
             sem,
         )
-        sub["dynamic"][-1]["by"] = "binding"
+        sub["dynamic"][-1]["by"] = by
         sub["dynamic"][-1]["binding_plan"] = plan.to_dict()
         said_sex = q_used.get("sex")
         if res is not None and said_sex in ("남", "여") and plan.parsed.get("sex") != said_sex:
             res["parsed"] = {**(res.get("parsed") or {}), "sex": said_sex}
         return res, ask
+
+    async def with_recell(entry: dict, step: dict, b):
+        from app.core.config import get_settings
+        from app.services import recell
+
+        if not get_settings().binding_recell:
+            return None
+        left = _recell_budget.get()
+        if left is None:
+            left = [MAX_RECELL]
+            _recell_budget.set(left)
+        if left[0] <= 0:
+            step["recell_skip"] = f"질문당 recell 상한({MAX_RECELL}회)"
+            return None
+        left[0] -= 1
+        try:
+            return await recell.fix(question, entry.get("tbl_nm"), b, u.get("topic"), step)
+        except Exception:
+            logger.exception("recell 실패: %s", entry["tbl_id"])
+            return None
 
     async def llm_then_binding(entry, q_used, sub, slots_llm, lines, picked):
         from app.services import binding
