@@ -104,6 +104,8 @@ def _record(trace: dict, targets: list[dict], outcomes) -> None:
 
 
 def _missed_note(target: dict) -> str:
+    if message := target.get("failure_message"):
+        return f"{_span(target)} 항목은 {message}"
     cands = target.get("candidates") or []
     where = f" ('{cands[0].get('tbl_nm')}' 표에서 확인할 수 있습니다)" if cands else ""
     return f"{josa(_span(target), '은는')} 통계표에서 바로 계산하지 못했습니다{where}"
@@ -155,7 +157,15 @@ def side_by_side(
             ok.append(({"span": span}, res))
         elif allow_partial:
             tables = (res or {}).get("tables") or {}
-            failed.append({"span": span, "candidates": tables.get("recommendations") or []})
+            failed.append(
+                {
+                    "span": span,
+                    "candidates": tables.get("recommendations") or [],
+                    "failure_message": res.get("answer")
+                    if res.get("status") == "rate_limited"
+                    else None,
+                }
+            )
     if not ok or (len(ok) < 2 and not allow_partial):
         return None
 

@@ -48,12 +48,16 @@ const STATUS: Record<string, Label> = {
   band_mismatch: { text: "맞는 구간 없음", tone: "bad" },
   data_loading: { text: "자료 준비 중", tone: "bad" },
   parse_error: { text: "해석 실패", tone: "bad" },
+  error: { text: "계산 오류", tone: "bad" },
+  unknown_indicator: { text: "사전에 없는 지표", tone: "bad" },
+  not_supported_question: { text: "지원하지 않는 질문", tone: "bad" },
+  rate_limited: { text: "요청 한도 초과", tone: "bad" },
 };
 
 export function statusLabel(status: string | null | undefined, search = false): Label {
   if (!status) return { text: "기록 없음", tone: "plain" };
   if (search && status === "ok") return { text: "찾음", tone: "good" };
-  return STATUS[status] ?? { text: status, tone: "plain" };
+  return STATUS[status] ?? { text: "분류되지 않은 상태", tone: "plain" };
 }
 
 const REQUEST: Record<string, string> = {
@@ -82,11 +86,10 @@ const FLOW_RESULT: Record<string, Label> = {
   no_cell: { text: "맞는 칸 없음", tone: "bad" },
   not_count: { text: "건수가 아닌 값", tone: "bad" },
   "-": { text: "결과 없음", tone: "plain" },
-  unknown_indicator: { text: "사전에 없는 지표", tone: "bad" },
 };
 
 export function flowLabel(result: string): Label {
-  return FLOW_RESULT[result] ?? STATUS[result] ?? { text: result, tone: "bad" };
+  return FLOW_RESULT[result] ?? STATUS[result] ?? { text: "분류되지 않은 결과", tone: "bad" };
 }
 
 type Step = { stage: string; result: string; detail?: string };

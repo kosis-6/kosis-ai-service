@@ -106,5 +106,8 @@ jobs:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
         run: ssh -i ~/.ssh/deploy -o BatchMode=yes -o StrictHostKeyChecking=yes "$DEPLOY_USER@$DEPLOY_HOST"
-      - name: 확인 (HTTPS 로 서버가 응답하는지)
-        run: curl -fsS --retry 30 --retry-all-errors --retry-delay 5 https://like-snake.kro.kr/health
+      - name: 확인 (HTTPS로 서버와 통계표 검색이 준비됐는지)
+        run: |
+          for path in health health/search; do
+            curl -fsS --max-time 10 --retry 30 --retry-all-errors --retry-delay 5 "https://like-snake.kro.kr/$path"
+          done

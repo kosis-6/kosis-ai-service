@@ -2,6 +2,7 @@ import asyncio
 import copy
 import json
 import logging
+import math
 import re
 import time
 from contextvars import ContextVar
@@ -38,7 +39,7 @@ from app.services import (
     timeref,
     understand_merged,
 )
-from app.services.hcx_client import HcxClient
+from app.services.hcx_client import HcxClient, HcxError
 from app.services.josa import josa
 from app.services.log_redaction import mask, redact
 from app.services.memory_cache import MISSING, MemoryCache
@@ -132,6 +133,8 @@ def sources_of(question: str, parsed: dict) -> dict[str, str]:
 
 def period_text(c: dict) -> str | None:
     start, end = c.get("start_year"), c.get("end_year")
+    if c.get("dated_months") and start and end and (months := c.get("months")):
+        return f"{start}년 {months[0]}월~{end}년 {months[1]}월"
     if c.get("type") == "trend" and start and end:
         return f"{start}~{end}년" if start != end else f"{start}년"
     return f"{c['year']}년" if c.get("year") else None
@@ -166,6 +169,11 @@ def _clear_period_questions(conditions: dict) -> None:
         conditions["asked"] = asked
     else:
         conditions.pop("asked", None)
+
+
+def _clear_dated_months(conditions: dict) -> None:
+    if conditions.pop("dated_months", False):
+        conditions.pop("months", None)
 
 
 def effective(parsed: dict, result: dict) -> dict:
@@ -277,7 +285,11 @@ def apply_changes(conditions: dict, changes: dict) -> tuple[dict, set[str]]:
         changed.add("period")
     if "period" in changed:
         _clear_period_questions(c)
+        _clear_dated_months(c)
         c.pop("time_refs", None)
+    if "indicator" in changed or "regions" in changed:
+        for key in ("movement_route", "movement_reason", "movement_ratio"):
+            c.pop(key, None)
 
     if changes.get("sex") in ("계", "남", "여"):
         old_sex = c.get("sex")
@@ -365,6 +377,7 @@ def with_recent(conditions: dict, changed: set[str], n: int) -> tuple[dict, set[
     c = copy.deepcopy(conditions)
     c["asked"] = {**(c.get("asked") or {}), "recent": n}
     c.pop("time_refs", None)
+    _clear_dated_months(c)
     c["start_year"] = c["end_year"] = None
     if c.get("type") in ("value", "compare"):
         c["type"] = "trend"
@@ -1285,7 +1298,14 @@ async def _separate_measures(question, measures, state, user_id):
                 raise outcome
             logger.error("묶음 질문 계산 실패: %s", name, exc_info=outcome)
             errors.append(outcome)
-            answers.append((name, {}))
+            failure = {}
+            if isinstance(outcome, HcxError) and outcome.is_rate_limit:
+                wait = f" (약 {math.ceil(outcome.retry_after)}초 뒤)" if outcome.retry_after else ""
+                failure = {
+                    "status": "rate_limited",
+                    "answer": "요청 한도에 도달했습니다. 잠시 후 다시 질문해 주세요." + wait,
+                }
+            answers.append((name, failure))
             continue
         res, sources = outcome
         answers.append((name, res))

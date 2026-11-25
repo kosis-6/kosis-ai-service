@@ -1291,6 +1291,8 @@ def rank(
             available_years=[lo, hi],
         )
 
+    if sido and (gap := not_yet_founded(resolve_region(sido), year, name)):
+        return gap
     cond = rank_where(level, sido)
     if isinstance(cond, dict):
         return {**cond, "indicator": name}
@@ -1315,6 +1317,14 @@ def rank(
             order by r.region_code
         """,
             [year, *params],
+        )
+    if not regs:
+        return _base(
+            name,
+            ind,
+            "missing_data",
+            year=year,
+            reason=f"{year}년에는 해당 지역 단위의 순위 자료가 없습니다.",
         )
     comps = _components(
         [r["region_code"] for r in regs], year, year, sex, ind.get("band"), ind.get("area"), ind

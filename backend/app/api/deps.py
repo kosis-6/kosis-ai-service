@@ -14,7 +14,6 @@ from app.services import auth_sessions, users
 
 logger = logging.getLogger(__name__)
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token")
 optional_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token", auto_error=False)
 
 Session = Annotated[AsyncSession, Depends(get_session)]
@@ -24,6 +23,12 @@ UNAUTHORIZED = HTTPException(
     detail="로그인이 필요합니다.",
     headers={"WWW-Authenticate": "Bearer"},
 )
+
+
+async def oauth2_scheme(token: Annotated[str | None, Depends(optional_scheme)]) -> str:
+    if not token:
+        raise UNAUTHORIZED
+    return token
 
 
 async def user_from_token(token: str, session: AsyncSession) -> User | None:

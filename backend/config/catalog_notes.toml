@@ -12,6 +12,18 @@
 # series_breaks    : 통계 기준이 바뀐 해. 그 해를 포함하는 추이에 주의사항을 붙인다
 # region_notes     : 특정 지역(코드)에만 해당하는 주의사항. year가 있으면 그 해에만
 
+[bootstrap]
+# 공유 ZIP 바깥의 표다. 카탈로그에서 항목을 검증한 뒤 기존 적재 대기열에 넣는다.
+deferred_tables = [
+  "DT_110025_A045_A",
+  "DT_1B040A9C",
+  "DT_1B040B3",
+  "DT_1B26001",
+  "DT_1B81A24",
+  "DT_1JC1502",
+  "TX_11025_A001_A",
+]
+
 # ---------------------------------------------------------------------------
 # 비교 그룹
 #   measure = "stock" : 특정 시점의 인구 수 (저량)
@@ -560,6 +572,14 @@ sources = [
   { table = "INH_1B8000F_01", item_id = "T1", level = "전국", national_only = true, filters = { c1_id = "11" } },
 ]
 monthly_sources = [{ table = "DT_1B8000G", item_id = "T1", level = "시도", filters = { c2_id = "10" } }]
+
+[[indicators]]
+name = "삼태아 이상 출생아 수"
+definition = "한 번에 세 명 이상 태어난 경우에 해당하는 출생아 수입니다"
+aliases = ["세쌍둥이 이상", "세 쌍둥이 이상", "삼태아 이상", "세쌍둥이 이상 태어난 아기", "세쌍둥이 이상 태어난 아이"]
+unit = "명"
+method = "lookup"
+sources = [{ table = "DT_1B81A24", item_id = "T4", level = "전국" }]
 
 [[indicators]]
 name = "합계출산율"
