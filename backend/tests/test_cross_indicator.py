@@ -240,10 +240,11 @@ def no_db(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.mark.parametrize(
     ("question", "num", "den", "scale", "dynamic"),
     [
-        ("2020년 서울 인구 1,000명당 1인 가구 수는?", "1인 가구 수", "총인구", 1000, "num"),
-        ("2020년 서울 세대당 1인 가구 수", "1인 가구 수", "세대수", 1, "num"),
+        # 사전에 없는 쪽의 예문은 다문화가구 (1인 가구는 11/25 사전에 들어갔다)
+        ("2020년 서울 인구 1,000명당 다문화가구 수는?", "다문화가구 수", "총인구", 1000, "num"),
+        ("2020년 서울 세대당 다문화가구 수", "다문화가구 수", "세대수", 1, "num"),
         ("2020년 서울 인구 천 명당 통근 인구는 몇 명이야?", "통근 인구", "총인구", 1000, "num"),
-        ("2020년 서울 1인 가구 대비 출생아 수", "출생아 수", "1인 가구", 1, "den"),
+        ("2020년 서울 다문화가구 대비 출생아 수", "출생아 수", "다문화가구", 1, "den"),
     ],
 )
 def test_detect_partial(no_db, question, num, den, scale, dynamic) -> None:
@@ -394,10 +395,12 @@ def test_side_question_by_kind() -> None:
 
 @pytest.mark.needs_data
 def test_detect_both_unknown_only_on_request() -> None:
-    q = "2020년 서울 1인 가구 중 통근하는 사람 비율"
+    # 두 값 모두 사전에 없는 나누기: 질문 해석(qa)에서는 잡지 않고, 한 표 안의 비율을 먼저 찾은 뒤
+    # 안 되면 ask_session이 both=True로 잡는다
+    q = "2020년 서울 다문화가구 중 통근하는 사람 비율"
     assert x.detect_partial(q) is None
     c = x.detect_partial(q, both=True)
-    assert (c.num, c.den, c.scale, c.dynamic) == ("통근하는 사람", "1인 가구", 100, "both")
+    assert (c.num, c.den, c.scale, c.dynamic) == ("통근하는 사람", "다문화가구", 100, "both")
 
 
 def test_bare_per_people_means_population() -> None:
@@ -680,3 +683,20 @@ def test_change_gives_cagr_from_unrounded_values():
     change = x._change(series, c, raw=raw)
     assert change["rate"] == -27.27
     assert change["cagr"] == -3.1
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "전체 가구 중 1인 가구 비율은?",  # B 비율이 사전의 비율 지표 (1인 가구 비율)
+        "가구 전체 중에 혼자 사는 집 비율은?",
+        "모든 가구 중 1인 가구 비중은?",
+    ],
+)
+def test_within_form_keeps_dictionary_ratio_indicator(no_db, question) -> None:
+    # 'A 중 B 비율'의 A가 사전 지표가 아니고 B 비율이 사전의 비율 지표면 나누지 않는다 (정의대로)
+    assert x.detect_partial(question) is None
+    assert x._names_ratio("혼자 사는 집 비율") and not x._names_ratio("여성 비율")
+    # 분모를 사전 지표로 말하면 그 분모로 나눈다 ("인구 중 외국인주민 비율": 총인구가 분모)
+    c = x.detect_partial("2024년 서울 인구 중 외국인 주민 비율은?")
+    assert c is not None and (c.num, c.den) == ("외국인주민 수", "총인구")

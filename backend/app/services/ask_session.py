@@ -3,6 +3,8 @@ import copy
 import json
 import logging
 import re
+import time
+from contextvars import ContextVar
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from uuid import uuid4
@@ -11,9 +13,12 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.concurrency import run_in_threadpool
 
+from app.agent import replan
 from app.prompts.qa import FOLLOW_SYSTEM
 from app.services import (
     agegroup,
+    agent_action,
+    answer_judge,
     answer_summary,
     ask_followup,
     charts,
@@ -771,6 +776,8 @@ GROUP_NOUN_BEFORE_RATIO = (
     r"(?=비율|비중|(?:몇\s*)?(?:%|퍼센트|프로))"
 )
 GENERIC_GROUP_RATIO = re.compile(rf"^(?:남성|여성|남자|여자)?\s*{GROUP_NOUN_BEFORE_RATIO}")
+# 질문이 분모를 스스로 말하는 것 ("전체 가구 중", "서울 인구 중"): 직전 대상 안의 비율이 아니다
+OWN_BASE = re.compile(r"[가-힣]\s*(?:중에?서?|가운데)\s")
 
 
 def _with_demographics(term: str, conditions: dict) -> str:
@@ -799,6 +806,12 @@ def ratio_followup(question: str, state: dict) -> str | None:
     if c.get("type") not in ("value", "compare", "trend"):
         return None
     rest = AMONG.sub("", q).strip()
+    if OWN_BASE.search(rest):
+        # "전체 가구 중 혼자 사는 집 비율은?": 분모를 질문이 말하므로 직전 대상(인구)을 붙이면
+        # "총인구 중 전체 가구 중 … 비율"이 되어 분모를 잘못 읽었다 (11/25). 변경 추출(HCX)에 맡긴다
+        return None
+    # "그중 65세 이상 비율"의 연령은 직전 집단을 나누는 조건이다.
+    # 연령을 빼고도 지표 이름이 남으면 새 지표로 처리한다.
     indicator_text = q
     if rest != q:
         rest = qa.agegroup.native_to_digits(rest)
@@ -1777,7 +1790,7 @@ async def _attach_tables(res: dict, state: dict | None, question: str, user_id: 
             await _attach_cards(res, asked)
             return
         try:
-            found = await table_guide.find_tables(searched, sid, None, user_id)
+            found = _keep(await table_guide.find_tables(searched, sid, None, user_id))
         except Exception:
             logger.exception("통계표 찾기 실패")
             return
@@ -1877,7 +1890,7 @@ async def _search_after(
     trace = res.setdefault("trace", {})
     parsed = res.get("parsed") or {}
     try:
-        found = await table_guide.find_tables(searched or asked, sid, None, user_id)
+        found = _keep(await table_guide.find_tables(searched or asked, sid, None, user_id))
         computed = await dynamic_indicator.compute_from_handoff(
             searched or asked, parsed, found, trace
         )
@@ -2146,6 +2159,274 @@ DICTIONARY_ANSWERED = (
 )
 
 
+# 이 턴의 통계표 찾기 결과 (답 판정이 다시 계산할 때 다시 찾지 않게). handle 이 턴마다 비운다
+_found_now: ContextVar[dict | None] = ContextVar("ask_found_now", default=None)
+
+
+def _keep(found: dict) -> dict:
+    _found_now.set(found)
+    return found
+
+
+def judgeable(res: dict) -> bool:
+    """판정할 답: 새 질문(또는 되묻기에 답해 완성된 질문)에 값으로 답한 것.
+    조건만 바꾼 이어 묻기는 그 말만으로는 질문 전체를 알 수 없어 판정하지 않는다"""
+    return (
+        res.get("status") == "ok"
+        and res.get("request_type") in (NEW, REPLY)
+        and not res.get("clarification")
+        and (res.get("result") or {}).get("status") == "ok"
+    )
+
+
+def without_tables(found: dict, used: set[str]) -> dict | None:
+    """찾은 후보에서 이미 답에 쓴 표를 뺀 꾸러미 (다음 후보로 다시 계산할 때).
+    지표가 여럿인 질문이거나, 쓴 표가 후보에 없거나, 남는 후보가 없으면 None"""
+    targets = (found.get("handoff") or {}).get("targets") or []
+    if len(targets) != 1:
+        return None
+    cands = targets[0].get("candidates") or []
+    rest = [{**c, "picked": False, "review": None} for c in cands if c.get("tbl_id") not in used]
+    if not rest or len(rest) == len(cands):
+        return None
+    out = copy.deepcopy(found)
+    out["handoff"]["targets"][0]["candidates"] = rest
+    return out
+
+
+async def _recompute(
+    res: dict, state: dict | None, asked: str, user_id: int | None
+) -> tuple[dict | None, str]:
+    """판정이 틀렸다고 본 답을 다른 방법으로 한 번 다시 계산한 답 → (답, 방법). 못 하면 (None, 방법)
+    통계표에서 계산한 답   그 표를 빼고 다음 후보로
+    사전 지표로 답한 답    원래 질문 그대로 통계표 찾기로 (검색어를 새로 쓰지 않는다:
+                          11/22 Gemma 가 새로 쓴 검색어는 정답 표 1위를 42 → 29로 줄였다)"""
+    parsed = res.get("parsed") or {}
+    sid = res.get("search_session") or (state or {}).get("search_session")
+    sid = sid or table_guide.new_search_session()
+    found = _found_now.get()
+    trace: dict = {}
+    if parsed.get("dynamic_spec"):
+        how = "다음 후보 표"
+        used = {s.get("tbl_id") for s in res.get("sources") or [] if s.get("tbl_id")}
+        if found is None:
+            found = _keep(await table_guide.find_tables(asked, sid, None, user_id))
+        found = without_tables(found, used)
+        if found is None:
+            return None, how
+    elif indicators.spec(parsed.get("indicator") or ""):
+        how = "통계표 찾기로"
+        if found is None:
+            found = _keep(await table_guide.find_tables(asked, sid, None, user_id))
+    else:
+        return None, "다시 계산할 방법 없음"
+    base = {**parsed, "dynamic_spec": None}
+    computed = await dynamic_indicator.compute_from_handoff(asked, base, found, trace)
+    if not computed or computed.get("status") != "ok" or computed.get("clarification"):
+        return None, how
+    again = dict(computed)
+    again.setdefault("trace", trace)
+    again["search_session"] = sid
+    return again, how
+
+
+async def _replan_compute(
+    res: dict, verdict: dict, asked: str, user_id: int | None
+) -> tuple[dict | None, str]:
+    """replan: 처음 계획 + 판정의 지적으로 계산 계획을 다시 세워(Gemma 1회) 그 계획으로 표를 찾고
+    계산한 답 → (답, 방법). 새 계획을 못 세웠거나 계산하지 못하면 (None, 방법).
+    이유는 res["trace"]["answer_judge"]["replan"] 에 남는다 (agent/replan.py)"""
+    parsed = res.get("parsed") or {}
+    found = _found_now.get()
+    first = replan.first_plan_of(found, parsed)
+    tried = list(
+        dict.fromkeys(s.get("tbl_id") for s in res.get("sources") or [] if s.get("tbl_id"))
+    )
+    record = res.setdefault("trace", {}).setdefault("answer_judge", {})
+    new_plan = await replan.call(asked, first, verdict, parsed, tried, record)
+    how = "계획 다시"
+    if new_plan is None:
+        return None, how
+    if (new_plan.get("combine") or {}).get("op") == replan.NOT_COMPUTABLE:
+        # 공표되지 않고 만들 수도 없는 값: 숫자를 만들지 않고 답변 불가 사유로 (설계서 B-1 예외)
+        return _refusal_answer(res, replan.REFUSAL_CODE, new_plan.get("changed") or ""), how
+    sid = table_guide.new_search_session()  # 새 계획은 새 질문처럼 찾는다 (되묻기 상태를 잇지 않음)
+    found2 = await table_guide.find_tables(asked, sid, None, user_id, plan=new_plan)
+    trace: dict = {}
+    base = replan.apply_to_parsed(new_plan, {**parsed, "dynamic_spec": None}, asked)
+    computed = None
+    if base.get("rank_axis") and base["rank_axis"] != parsed.get("rank_axis"):
+        # 지역이 아닌 분류의 순위(rank axis): 사전 지표의 표에서 (_dynamic_instead와 같은 길).
+        # 원래 해석에 축('나라')이 있었어도 재계획이 다른 축('국적')을 적었으면 그 축으로 (11/24)
+        computed = await _axis_rank(asked, base, trace)
+    targets = (found2.get("handoff") or {}).get("targets") or []
+    live = [i for i in new_plan.get("indicators") or [] if i.get("scope") != "out"]
+    if computed is None and len(live) == 1 and not targets and live[0].get("dict"):
+        # 표 찾기가 후보를 못 냈어도(꾸러미 비어 있음) 계획이 사전 지표를 적었으면 사전으로 계산한다
+        targets = [{"span": live[0].get("span"), "dict": live[0]["dict"], "candidates": []}]
+    if computed is None and len(live) == 1 and len(targets) == 1:
+        # 지표 하나: 사전에 있으면 사전으로(sido · aggregate · months 같은 해석 칸을 qa 가 읽는다),
+        # 없으면 표로. compute_from_handoff 의 지표 하나 길은 표로만 가서 사전 지표의 시도 안 순위를
+        # 놓쳤다. 지표 하나짜리 꾸러미(single)에는 계획의 dict · span 이 없어 여기서 붙인다
+        target = {**targets[0], "span": live[0].get("span"), "dict": live[0].get("dict")}
+        computed, sub = await multi_indicator._one(asked, base, found2, target)
+        trace["dynamic"] = sub.get("dynamic") or []
+        trace["by"] = sub.get("by")
+    if computed is None:
+        computed = await dynamic_indicator.compute_from_handoff(asked, base, found2, trace)
+    if not computed or computed.get("status") != "ok" or computed.get("clarification"):
+        record["replan"]["computed"] = {
+            "via": trace.get("by") or ("handoff" if targets else "none"),
+            "targets": len(targets),
+            "indicator": base.get("indicator"),
+            "status": (computed or {}).get("status"),
+            "reason": str((computed or {}).get("reason") or (computed or {}).get("answer") or "")[
+                :160
+            ],
+            "clarification": bool((computed or {}).get("clarification")),
+            "dynamic": [d.get("skip") or d.get("reason") for d in trace.get("dynamic") or []][-3:],
+        }
+        return None, how
+    again = dict(computed)
+    again.setdefault("trace", trace)
+    again["search_session"] = sid
+    return again, how
+
+
+def _refusal_answer(res: dict, code: str, why: str) -> dict:
+    """다시 계산 대신 답변 불가 사유로 끝낸 답 (refusal.TEMPLATES 의 문장, 숫자 없음)"""
+    return {
+        "status": code,
+        "answer": refusal.TEMPLATES[code],
+        "parsed": dict(res.get("parsed") or {}),
+        "result": {"status": code, "refusal": code, "why": why},
+        "sources": [],
+        "trace": {"refusal": {"from": res.get("status"), "to": code, "why": why}},
+    }
+
+
+async def _retry(
+    action,
+    res: dict,
+    verdict: dict,
+    state: dict | None,
+    asked: str,
+    user_id: int | None,
+    done: set[str] | None = None,
+) -> tuple[dict | None, str]:
+    """행동대로 한 번 다시 계산. replan 이 새 계획을 못 내면 대체 행동(표 · 경로)으로 떨어진다.
+    requery · recell 은 호출부가 아직 없어 바로 대체 행동으로 간다. done: 쓴 행동 (대체도 적는다)"""
+    if action.name == agent_action.REPLAN:
+        again, how = await _replan_compute(res, verdict, asked, user_id)
+        if again is not None or action.fallback is None:
+            return again, how
+        flow.add("다시 계산", "대체", f"{how}: 새 계획 없음 → {action.fallback}")
+    if done is not None and action.fallback:
+        done.add(action.fallback)  # 대체 행동으로 떨어졌다: 그 행동도 쓴 것으로
+    return await _recompute(res, state, asked, user_id)
+
+
+async def _judged(res: dict, state: dict | None, question: str, user_id: int | None) -> None:
+    """답 판정 (ANSWER_JUDGE=true): 이 답이 질문에 맞는지 Gemma 가 보고, 틀렸다고 보면 한 번 다시
+    계산한다. 다시 한 답이 판정을 통과할 때만 바꾸고, 아니면 처음 답을 그대로 낸다 (11/22 판정은
+    맞는 답 107 중 12를 잘못 막았다. 그때 잃는 것을 줄인다). '답할 수 없는 질문' 판정은 기록만
+    한다 (답변 불가는 따로 구현한다). 판정 내용은 trace["answer_judge"]"""
+    if not answer_judge.enabled() or not judgeable(res):
+        return
+    asked = res.get("question") or question
+    first = await answer_judge.verdict(asked, res.get("parsed"), res.get("result"))
+    if first is None:
+        return
+    record: dict = {"first": first}
+    res.setdefault("trace", {})["answer_judge"] = record
+    flow.add("답 판정", first["verdict"], f"{first['reason']} · {first['missing']}")
+    if first["verdict"] != "retry":
+        return
+    # 행동 고르기 (N9, 코드 규칙): 판정 이유 · 답의 경로 · 1위 후보의 ✔/✘로 다음 행동을 정한다.
+    # 호출부가 있는 행동은 replan(_replan_compute) · reroute · retable(둘 다 _recompute) · give_up.
+    # requery · recell은 이름만 기록하고 fallback으로 떨어진다 (게이트 · 연결 단계가 들어오면)
+    # 행동 고리 (N9 → 다시 계산 → 판정, 설계서 4-1 · 4-5): 첫 행동이 실패하거나 다시 한 답도
+    # 판정에 걸리면 다음 행동으로 이어 간다. 상한은 agent_action(다시 2회 · LLM 1회)과 60초.
+    # 호출부가 있는 행동은 replan(_replan_compute) · reroute · retable(둘 다 _recompute) · give_up.
+    # requery · recell은 이름만 기록하고 fallback으로 떨어진다 (게이트 · 연결 단계가 들어오면)
+    verdict = first
+    tried = llm_tried = 0
+    done: set[str] = set()
+    attempts: list[dict] = []
+    record["attempts"] = attempts
+    started = time.monotonic()
+    while True:
+        action = agent_action.choose(
+            verdict, res, _found_now.get(), tried, llm_tried, frozenset(done)
+        )
+        attempt: dict = {"action": action.as_trace()}
+        attempts.append(attempt)
+        if len(attempts) == 1:
+            record["action"] = action.as_trace()  # 첫 시도는 전처럼 action · retry · second 칸에도
+        flow.add("행동 고르기", action.name, action.why)
+        if action.name == agent_action.GIVE_UP:
+            attempt["how"], attempt["computed"] = "give_up", False
+            record.setdefault("retry", {"how": "give_up", "computed": False})
+            return
+        if time.monotonic() - started > agent_action.MAX_SECONDS:
+            flow.add("다시 계산", "중단", f"{agent_action.MAX_SECONDS}초 넘음 → 처음 답 그대로")
+            attempt["how"], attempt["computed"] = "timeout", False
+            return
+        done.add(action.name)
+        tried += 1
+        if action.name in agent_action.LLM_ACTIONS:
+            llm_tried += 1
+        try:
+            again, how = await _retry(action, res, verdict, state, asked, user_id, done)
+        except Exception:
+            logger.exception("답 판정 뒤 다시 계산 실패 → 처음 답 그대로")
+            attempt["error"] = True
+            record.setdefault("retry", {"error": True})
+            return
+        attempt.update(how=how, computed=again is not None)
+        if again is not None:  # 버려도 무엇이었는지 · 판정이 무엇을 봤는지 남긴다
+            attempt["answer"] = lead(again.get("answer") or "")[:200]
+            attempt["summary"] = answer_judge.describe(again.get("result"), again.get("parsed"))
+        if len(attempts) == 1:
+            record["retry"] = {k: v for k, v in attempt.items() if k != "action"}
+        if again is None:
+            flow.add("다시 계산", "실패", f"{how}: 계산하지 못함 → 다음 행동")
+            continue
+        if again.get("status") in refusal.TEMPLATES:
+            # 다시 계산이 답변 불가 사유로 끝남: 판정 없이 그 사유로 바꾼다 (설계서 4절 B-1 예외)
+            flow.add(
+                "답변 불가 사유", again["status"], f"{how}: {refusal.NAMES.get(again['status'])}"
+            )
+            second = None
+        else:
+            second = await answer_judge.verdict(asked, again.get("parsed"), again.get("result"))
+            attempt["second"] = second
+            if len(attempts) == 1:
+                record["second"] = second
+            if not second or second["verdict"] != "ok":
+                why = f"{second['reason']} · {second['missing']}" if second else "판정하지 못함"
+                flow.add(
+                    "다시 계산", "버림", f"{how}: 다시 한 답도 판정에 걸림 ({why}) → 다음 행동"
+                )
+                if second:
+                    verdict = second  # 새 판정 이유로 다음 행동을 고른다
+                continue
+        record["replaced"] = {
+            "indicator": (res.get("parsed") or {}).get("indicator"),
+            "answer": lead(res.get("answer") or ""),
+            "attempt": len(attempts),
+        }
+        flow.add("다시 계산", "ok", f"{how}: {lead(again.get('answer') or '')}")
+        kind = res.get("request_type")
+        res.clear()
+        res.update(again)
+        res["trace"]["answer_judge"] = record
+        res["chart"] = charts.build(res.get("result"))
+        await _attach_cards(res, asked)
+        res["request_type"], res["question"] = kind, asked
+        return
+
+
 def ungrounded(res: dict) -> bool:
     parsed = res.get("parsed") or {}
     return (
@@ -2174,7 +2455,7 @@ async def _dynamic_instead(res: dict, state: dict | None, asked: str, user_id: i
     try:
         computed = await dynamic_indicator.cached_answer(asked, parsed, trace)
         if computed is None:
-            found = await table_guide.find_tables(asked, sid, None, user_id)
+            found = _keep(await table_guide.find_tables(asked, sid, None, user_id))
             computed = await dynamic_indicator.compute_from_handoff(asked, parsed, found, trace)
     except Exception:
         logger.exception("근거 없는 지표의 바로 계산 실패")
@@ -2184,6 +2465,26 @@ async def _dynamic_instead(res: dict, state: dict | None, asked: str, user_id: i
     if res.get("status") == "ok" and (same := _same_dictionary_table(parsed, computed, found)):
         trace["dynamic_kept"] = {"indicator": parsed.get("indicator"), "tbl_id": same}
         return False
+    if res.get("status") == "ok" and same_number(res.get("result"), (computed or {}).get("result")):
+        # 바로 계산이 다른 표에서 같은 값 · 단위 · 연도를 다시 냈다: 사전 답을 둔다 (이름이 깔끔하고
+        # 부부 단위 같은 안내가 붙는다). 11/24 평가: 혼인 건수를 부부 혼인종류 표의 남편 · 아내
+        # 총계로 다시 내고, 판정이 그 요약을 막아 51초를 썼다. 값이 다르면 전처럼 바꾼다
+        trace["dynamic_kept"] = {
+            "indicator": parsed.get("indicator"),
+            "same_value": (res.get("result") or {}).get("value"),
+        }
+        return False
+    months = (res.get("result") or {}).get("months")
+    if (
+        res.get("status") == "ok"
+        and months
+        and not ((computed or {}).get("result") or {}).get("months")
+    ):
+        # 사전이 달 묶음 합(월별 자료)으로 답했는데 바로 계산은 월을 못 읽어 연간 값을 냈다 (11/24):
+        # 상반기 혼인 6,255건을 연간 12,802건으로 바꿔 버렸다. 달 합은 사전 답을 둔다
+        trace["dynamic_kept"] = {"indicator": parsed.get("indicator"), "months": months}
+        return False
+    # 바꾼 원래 답 (요청 기록·회귀 평가에서 사전 지표 답과 비교한다)
     trace["replaced"] = {
         "indicator": parsed.get("indicator"),
         "answer": lead(res.get("answer") or ""),
@@ -2290,6 +2591,18 @@ async def _axis_rank(asked: str, parsed: dict, trace: dict) -> dict | None:
     return None
 
 
+def same_number(a: dict | None, b: dict | None) -> bool:
+    """두 결과가 값 하나짜리이고 값 · 단위 · 연도가 같은가 (사전 답과 표 경로 답이 같은 숫자인지)"""
+    if not a or not b or a.get("status") != "ok" or b.get("status") != "ok":
+        return False
+    va, vb = a.get("value"), b.get("value")
+    if not isinstance(va, (int, float)) or not isinstance(vb, (int, float)):
+        return False
+    if a.get("unit") != b.get("unit") or a.get("year") != b.get("year"):
+        return False
+    return abs(float(va) - float(vb)) <= max(1e-9, 1e-6 * abs(float(va)))
+
+
 def _one_indicator(computed: dict | None) -> bool:
     return bool(
         computed
@@ -2339,10 +2652,12 @@ async def handle(
             sid = new_id()
         if moved:
             sid, state, expired = new_id(), None, False
+        _found_now.set(None)
         res, sources, notice = await _turn(state, question, selections, user_id)
         await _attach_tables(res, state, question, user_id)
         await refusal.finalize(res, question)
-        if "summary" not in res:
+        await _judged(res, state, question, user_id)
+        if "summary" not in res:  # 직전 답을 다시 쓴 응답(_reuse)은 그 요약을 이미 들고 있다
             res["summary"] = _summary(res.get("result"))
         if sex_not_split(res.get("parsed") or {}, res.get("result") or {}):
             word = "남자" if res["parsed"]["sex"] == "남" else "여자"

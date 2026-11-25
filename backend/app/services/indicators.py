@@ -284,7 +284,50 @@ def _exclusions():
 
 def excluded_phrase(name, text):
     s = _norm(text)
-    return next((n for n in map(_norm, _exclusions().get(name, [])) if n in s), None)
+    spans, gaps = _exclusion_spans(text)
+    aliases = [
+        (m.start(), m.end())
+        for n in {_norm(x) for x in [name, *_alias_map().get(name, [])]}
+        for m in re.finditer(re.escape(n), s)
+    ]
+    for ex in spans:
+        if ex[2] != name:
+            continue
+        hit = [al for al in aliases if al[0] < ex[1] and ex[0] < al[1]]
+        if not hit or any(not _separated(ex, al, gaps) for al in hit):
+            return ex[3]
+    return None
+
+
+def _exclusion_spans(text):
+    s = _norm(text)
+    found = [
+        (m.start(), m.end(), name, n, bool(re.search(r"\s", raw)))
+        for name, phrases in _exclusions().items()
+        for raw in phrases
+        for n in [_norm(raw)]
+        for m in re.finditer(re.escape(n), s)
+    ]
+    if not found:
+        return [], set()
+    gaps, k = set(), 0
+    for i, ch in enumerate(str(text)):
+        if ch.isspace():
+            continue
+        if i and str(text)[i - 1].isspace():
+            gaps.add(k)
+        k += 1
+    try:
+        gaps |= {k for a, b, _ in _region_matches(s) for k in (a, b)}
+    except StatsTableMissing:
+        pass
+    return list(dict.fromkeys(found)), gaps
+
+
+def _separated(ex, alias, gaps):
+    if ex[4]:
+        return False
+    return any(ex[0] < g < ex[1] and not (alias[0] < g < alias[1]) for g in gaps)
 
 
 def canonical_name(indicator):
@@ -344,14 +387,14 @@ def find_in_text(text):
                 for m in re.finditer(re.escape(n), s)
                 if one_word(m.start(), m.end())
             ]
-    blocked = [
-        (m.start(), m.end(), name)
-        for name, phrases in _exclusions().items()
-        for n in map(_norm, phrases)
-        for m in re.finditer(re.escape(n), s)
-    ]
+    blocked, gaps = _exclusion_spans(text)
     spans = [
-        a for a in spans if not any(b[2] == a[2] and b[0] < a[1] and a[0] < b[1] for b in blocked)
+        a
+        for a in spans
+        if not any(
+            b[2] == a[2] and b[0] < a[1] and a[0] < b[1] and not _separated(b, a, gaps)
+            for b in blocked
+        )
     ]
     return [
         a

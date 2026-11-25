@@ -41,7 +41,9 @@ def without_unsaid_age(parsed: dict, phrase: str) -> dict:
 
 def target_parsed(parsed: dict, target: dict, kind: str | None = None) -> dict:
     span = target.get("span") or target.get("question") or ""
-    name = indicators.canonical_name(span) or span
+    # 계획의 dict(사전 지표 이름)가 있으면 그것으로. "젊은 사람 대비 노인 부담"처럼 구절로는
+    # 사전에 못 잇지만 계획이 search를 '노년부양비'로 쓴 경우 (11/24 재계획 시험)
+    name = target.get("dict") or indicators.canonical_name(span) or span
     q = {
         **parsed,
         "indicator": name,
@@ -50,6 +52,9 @@ def target_parsed(parsed: dict, target: dict, kind: str | None = None) -> dict:
         "cross": None,
         "dynamic_spec": None,
         "grounded": None,
+        # 질문 전체 해석이 '지원하지 않는 지표'로 끝났어도(unsupported) 이 지표는 따로 본다: 그대로
+        # 두면 qa._compute 가 사전 지표(총인구)를 무시하고 unknown_indicator 를 냈다 (11/25)
+        "unsupported": None,
     }
     if target.get("unsaid_age"):
         q.update(ages=None, age_group=None, age_note=None)
@@ -129,6 +134,10 @@ def _side_by_side(question, parsed, ok, failed, trace, notes=()):
     if len(parts) == 1:
         result = parts[0]
     notes = [*notes, *(_missed_note(t) for t in failed)]
+    if len(parts) > 1:
+        # 비교 한 줄("A가 B보다 N명 많습니다") · 기준 차이 안내를 결과에도 남긴다: 답 판정은 결과만
+        # 보므로 답 글에만 있으면 "비교해야 함"으로 막았다 (11/24 replan 손 확인)
+        result["notes"] = [n for n in notes if n]
     return _response(question, parsed, result, trace, notes, [_span(t) for t, _ in ok])
 
 
@@ -164,7 +173,8 @@ def _value(res: dict) -> dict | None:
     return r if "value" in r and r.get("value") is not None else None
 
 
-ALIGN_OPS = ("none", "compare", "diff", "ratio")
+# 값을 나란히 놓거나 서로 계산하는 합치기 (시점을 먼저 맞춘다)
+ALIGN_OPS = ("none", "compare", "diff", "ratio", "sum", "which_larger")
 
 
 def common_year(question: str, parsed: dict, ok) -> int | None:
@@ -203,6 +213,31 @@ def _basis_gap(ok) -> str | None:
             if gap:
                 return gap
     return None
+
+
+def _larger(ok) -> dict | None:
+    """which_larger: 두 값 중 큰 쪽 · 차이 · 몇 배 (단위 · 연도가 같을 때만)"""
+    if len(ok) != 2:
+        return None
+    (ta, ra), (tb, rb) = ok
+    a, b = _value(ra), _value(rb)
+    if not a or not b or a.get("unit") != b.get("unit") or a.get("year") != b.get("year"):
+        return None
+    if a["value"] == b["value"]:
+        return {"larger": None, "gap": 0, "line": f"{_span(ta)}와 {_span(tb)}가 같습니다"}
+    (big, hi), (small, lo) = ((ta, a), (tb, b)) if a["value"] > b["value"] else ((tb, b), (ta, a))
+    gap = hi["value"] - lo["value"]
+    gap_text = f"{gap:,}" if float(gap).is_integer() else f"{round(gap, 2):,}"
+    ratio = round(hi["value"] / lo["value"], 2) if lo["value"] else None
+    times = f", {ratio}배" if ratio else ""
+    return {
+        "larger": _span(big),
+        "smaller": _span(small),
+        "gap": gap,
+        "ratio": ratio,
+        "line": f"{josa(_span(big), '이가')} {_span(small)}보다 많습니다 "
+        f"(차이 {gap_text}{hi.get('unit') or ''}{times})",
+    }
 
 
 def _compare_line(ok) -> str | None:
@@ -355,6 +390,64 @@ async def _intersect(question, parsed, found, targets, trace) -> dict | None:
     return out
 
 
+JOINT_MAX = 3  # 한 표 비율로 시도할 표 수
+
+
+def joint_candidates(h: dict, targets: list[dict]) -> list[dict]:
+    """비율의 분자 · 분모를 한 표에서 낼 후보: 두 지표의 후보에 모두 있는 표 + 질문 전체 상위 표
+    (조건 확인에 ✘가 없는 것). 탐색이 고른 표가 앞에 온다"""
+    if len(targets) < 2:
+        return []
+    per = [{c.get("tbl_id"): c for c in t.get("candidates") or []} for t in targets[:2]]
+    both = [per[0][i] for i in per[0] if i in per[1]]
+    whole = [
+        c
+        for c in h.get("whole") or []
+        if not any(v is False for v in (c.get("checks") or {}).values())
+    ]
+    out: list[dict] = []
+    for c in sorted(both, key=lambda c: not c.get("picked")) + whole:
+        if c.get("tbl_id") and c["tbl_id"] not in {o["tbl_id"] for o in out}:
+            out.append({**c, "picked": False, "review": c.get("review")})
+    if out:
+        out[0] = {
+            **out[0],
+            "picked": True,
+        }  # 첫 표는 검토가 고른 표처럼 잇기 · 칸 고르기 LLM 을 쓴다
+    return out[:JOINT_MAX]
+
+
+async def _one_table_ratio(
+    question: str, parsed: dict, found: dict, cands: list[dict], trace: dict
+):
+    """한 표에서 분자 ÷ 분모: 원래 질문 문장으로 dynamic_indicator 를 부른다 (표 안의 비율 계산은
+    질문에 비율 · 비중 · % 가 있을 때 돈다). 비율 값이 나오면 그 답, 아니면 None"""
+    target = {"span": question, "question": question, "conditions": {}, "candidates": cands}
+    sub: dict = {"dynamic": []}
+    try:
+        res = await dynamic_indicator._compute_target(question, parsed, found, target, sub)
+    except Exception:
+        logger.exception("한 표 비율 계산 실패")
+        res = None
+    trace["multi"]["one_table"] = {
+        "tables": [c.get("tbl_id") for c in cands],
+        "status": (res or {}).get("status"),
+        "kind": ((res or {}).get("result") or {}).get("kind"),
+    }
+    trace.setdefault("dynamic", []).extend(sub.get("dynamic") or [])
+    r = (res or {}).get("result") or {}
+    if (
+        res
+        and res.get("status") == "ok"
+        and not res.get("clarification")
+        and r.get("kind") == "ratio"
+    ):
+        res.setdefault("trace", {})
+        r.setdefault("notes", []).append("분자와 분모를 한 통계표에서 계산했습니다")
+        return res
+    return None
+
+
 async def answer(question: str, parsed: dict, found: dict, trace: dict) -> dict | None:
     h = found["handoff"]
     op = (h.get("combine") or {}).get("op") or "none"
@@ -371,6 +464,12 @@ async def answer(question: str, parsed: dict, found: dict, trace: dict) -> dict 
         return await _intersect(question, parsed, found, targets, trace)
     if op == "ratio":
         targets = [{**t, "unsaid_age": not says_age(_span(t))} for t in targets]
+        if joint := joint_candidates(h, targets):
+            # 분자 · 분모가 한 표에 다 있으면 그 표에서 원래 질문 그대로 분자 ÷ 분모 (11/25):
+            # 지표마다 다시 쓴 문장("시도별 1인 가구")에는 '비율'이 없어 표 안의 비율 계산이 돌지
+            # 않았고, 질문 전체 1위 표는 지표별 후보에 없었다 ("전체 가구 중 혼자 사는 집 비율")
+            if one := await _one_table_ratio(question, parsed, found, joint, trace):
+                return one
     outcomes = await _all(question, parsed, found, targets)
     _record(trace, targets, outcomes)
     ok = [(t, r) for t, (r, _) in zip(targets, outcomes, strict=True) if _ok(r)]
@@ -393,9 +492,22 @@ async def answer(question: str, parsed: dict, found: dict, trace: dict) -> dict 
         ):
             return combined
         notes.append("두 값의 단위나 기준이 달라 직접 계산하지 않고 나란히 보여 드립니다")
-    if op == "compare" and not gap and (line := _compare_line(ok)):
+    if op == "sum" and not failed and not gap:
+        # 더하기 (재계획 A_10): 같은 시점 · 같은 단위의 건수만. 사전 경로의 합계와 같은 모양
+        # (members 가 있어 답 판정 요약에 "합계 — A, B를 더한 값"으로 보인다)
+        if total := qa._sum_indicators([r["result"] for _, r in ok], parsed):
+            return _response(question, parsed, total, trace, notes, [_span(t) for t, _ in ok])
+        notes.append("두 값의 단위나 기준이 달라 더하지 않고 나란히 보여 드립니다")
+    verdict = None
+    if op in ("compare", "which_larger") and not gap and (line := _compare_line(ok)):
         notes.append(line)
+        if op == "which_larger":
+            verdict = _larger(ok)
     out = _side_by_side(question, parsed, ok, failed, trace, notes)
+    if verdict:
+        # 큰 쪽 판정: 결과에 남겨 답 판정이 "비교해야 함"으로 보지 않게 하고, 답 첫 줄로 올린다
+        out["result"]["verdict"] = verdict
+        out["answer"] = f"{verdict['line']}\n{out['answer']}"
     if gap:
         out["result"]["basis_gap"] = gap
     return out

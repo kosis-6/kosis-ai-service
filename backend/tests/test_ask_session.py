@@ -1638,6 +1638,21 @@ def test_ratio_follow_up_respects_a_named_indicator(question: str) -> None:
     assert s.ratio_followup(question, state) is None
 
 
+@pytest.mark.parametrize(
+    "question",
+    [
+        "전체 가구 중 나홀로 가구 비율은?",
+        "서울 인구 중 노인 비율은?",
+        "그중 여성 가운데 취업자 비율은?",
+    ],
+)
+def test_ratio_follow_up_leaves_questions_that_name_their_own_base(question: str) -> None:
+    # 분모를 질문이 말하면 직전 대상 안의 비율이 아니다: 직전 조건을 붙이지 않고 변경 추출에 맡긴다
+    conditions = {"type": "value", "indicator": "총인구", "regions": ["서울특별시"], "year": 2025}
+    state = {"conditions": conditions}
+    assert s.ratio_followup(question, state) is None
+
+
 def test_ratio_follow_up_after_ratio_is_left_to_change_extraction(talk: Talk) -> None:
     talk.parsed = {**ONE_PERSON, "indicator": RATIO_SPEC["name"], "dynamic_spec": RATIO_SPEC}
     talk.say("2020년 서울 1인 가구 중 70세 이상 비율은?")
@@ -1898,6 +1913,17 @@ def test_switching_to_all_sexes_removes_stale_filter_from_search(term):
     changed, _ = s.apply_changes(prev, {"sex": "여"})
     assert "남성" not in s.inherited_question(changed)
     assert "여성" in s.inherited_question(changed)
+
+
+def test_same_number_matches_value_unit_and_year_only() -> None:
+    # '사전 근거 없음' 규칙이 표 경로로 다시 계산했는데 같은 숫자면 사전 답을 둔다 (11/24 평가)
+    a = {"status": "ok", "value": 12802, "unit": "건", "year": 2025}
+    assert s.same_number(a, {**a, "indicator": "다른 이름"})
+    assert not s.same_number(a, {**a, "value": 12803})
+    assert not s.same_number(a, {**a, "unit": "명"})
+    assert not s.same_number(a, {**a, "year": 2024})
+    assert not s.same_number(a, {"status": "ok", "values": [1, 2]})  # 값 하나가 아니다
+    assert not s.same_number(a, None)
 
 
 @pytest.mark.parametrize(

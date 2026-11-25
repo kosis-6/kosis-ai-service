@@ -61,12 +61,24 @@ async def find_tables(
     session_id: str,
     selections: dict[str, Any] | None,
     user_id: int | None,
+    plan: dict[str, Any] | None = None,
 ) -> dict:
+    """통계표 찾기 한 턴. 되묻기 중이면 이어서 처리한다.
+    plan: 재계획(agent/replan.py)이 세운 계획. 있으면 계획 LLM 없이 그 계획으로 지표를 찾는다
+
+    /search(dialog.handle)와 같은 처리를 LangGraph 흐름(app/agent)으로 돌린다.
+    새 질문이면 계획이 질문을 지표로 나누고, 지표가 여럿이면 지표마다 찾은 표를
+    응답의 multi에 덧붙인다 (SEARCH_PLAN=false면 계획 없이 기존과 같은 결과만)"""
     trace: dict = {}
     result, response, error = None, None, None
     handle = multi.handle if get_settings().search_plan else graph.handle
     try:
-        result = await handle(question, session_id, selections, trace, user_id=user_id)
+        if plan and handle is multi.handle:
+            result = await handle(
+                question, session_id, selections, trace, user_id=user_id, plan=plan
+            )
+        else:
+            result = await handle(question, session_id, selections, trace, user_id=user_id)
         session_id = trace.get("search_session_id", session_id)
         tables = await search.load_tables()
         response = search_answer.respond(result, tables, session_id, TOP_K, trace)
@@ -323,6 +335,7 @@ def build_handoff(
     understanding = _understanding(slots)
 
     targets: list[dict[str, Any]] = []
+    whole: list[dict[str, Any]] = []
     if status in COMPUTABLE and (result.get("table") or {}).get("tbl_id") in by_id:
         picked_id = result["table"]["tbl_id"]
         if multi_result.get("mode") == "multi":
@@ -330,6 +343,9 @@ def build_handoff(
                 _indicator_target(ind, understanding, by_id, families, picked_id)
                 for ind in multi_result.get("indicators") or []
             ]
+            # 질문 전체 검색 상위 표: 지표를 둘로 나눈 비율 질문에서 분자 · 분모가 한 표에 다 있는
+            # 표(1인 가구와 전체 가구)는 지표별 후보 어디에도 없었다 (11/25, 한 표 비율)
+            whole = _whole_candidates(result, by_id, families, slots, picked_id)
         else:
             targets = [_single_target(result, understanding, by_id, families, slots)]
 
@@ -341,12 +357,21 @@ def build_handoff(
         "status": status,
         "understanding": understanding,
         "targets": targets,
+        "whole": whole,  # 지표가 여럿일 때 질문 전체로 찾은 상위 표 (한 표 비율 후보)
+        # 계획 전체 (shared · indicators · combine · given). 재계획이 처음 계획으로 쓴다
+        "plan": {k: plan.get(k) for k in ("shared", "indicators", "combine", "given") if k in plan},
         "combine": {
             "op": combine.get("op") or "none",
             "note": combine.get("note"),
             "num": combine.get("num") or None,
             "den": combine.get("den") or None,
             "out_of_scope": list(plan.get("out_of_scope") or []),
+            # 재계획(agent/replan.py)이 내는 칸: which_larger의 pair, sum의 over, rank의 within·axis
+            **{
+                k: combine.get(k)
+                for k in ("pair", "over", "within", "axis", "scale", "by_change")
+                if combine.get(k) not in (None, "", False)
+            },
         },
         "clarify": response.get("clarify"),
         "llm": _llm_used(multi_result, pick),
@@ -458,6 +483,49 @@ def _review_of(
     return {"match": raw.get("match"), "reason": raw.get("reason"), "llm": pick.get("llm")}
 
 
+def _whole_candidates(
+    result: dict[str, Any],
+    by_id: dict[str, dict[str, Any]],
+    families: dict[str, list[dict[str, Any]]],
+    slots: dict[str, Any],
+    picked_id: str,
+) -> list[dict[str, Any]]:
+    """질문 전체 검색의 상위 표(탐색이 고른 표 먼저, 그 뒤 다른 묶음)를 후보 모양으로"""
+    chosen = by_id[picked_id]
+    out = [
+        _candidate(
+            1,
+            chosen,
+            families.get(chosen["family_id"], [chosen]),
+            by_id,
+            result["table"].get("checks") or {},
+            result.get("score"),
+            slots,
+            "whole",
+            True,
+            _review_of(result, chosen, by_id),
+        )
+    ]
+    seen = {chosen["family_id"]}
+    for c in (result.get("multi") or {}).get("whole") or []:
+        t = by_id.get(c["tbl_id"])
+        if t is None or t["family_id"] in seen:
+            continue
+        seen.add(t["family_id"])
+        checks = c.get("checks")
+        if checks is None:
+            checks = search.check(t, slots) if slots.get("conditions") else {}
+        out.append(
+            _candidate(
+                len(out) + 1, t, families.get(t["family_id"], [t]), by_id, checks,
+                c.get("score"), slots, "whole", False, None,
+            )
+        )  # fmt: skip
+        if len(out) >= MAX_CANDIDATES:
+            break
+    return out
+
+
 def _single_target(
     result: dict[str, Any],
     understanding: dict[str, Any],
@@ -553,6 +621,7 @@ def _indicator_target(
         "merged_spans": list(ind.get("merged_spans") or []),
         "scope": ind.get("scope") or "in",
         "role": ind.get("role"),
+        "dict": ind.get("dict"),  # 계획이 적은(또는 plan.fill_dict가 채운) 사전 지표 이름
         "conditions": _plan_conditions(ind.get("conditions") or {}, understanding["conditions"]),
         "question": question,
         "candidates": out,

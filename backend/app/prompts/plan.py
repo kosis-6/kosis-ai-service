@@ -125,6 +125,9 @@ SCHEMA = {
                         "diff",
                     ],
                 },
+                # ratio일 때 분자 · 분모 지표의 span (규칙 7-1). 필수가 아니다: 빠지면 코드가 '없음'으로 읽는다
+                # 자유 문자열이면 칸 이름("den")을 값으로 적는 일이 있었다 (11/24 재계획 시험).
+                # 호출할 때 schema_for(spans)로 indicators[].span 중 하나로 좁힌다
                 "num": {"anyOf": [{"type": "null"}, {"type": "string"}]},
                 "den": {"anyOf": [{"type": "null"}, {"type": "string"}]},
                 "note": {"type": "string"},
@@ -133,3 +136,16 @@ SCHEMA = {
     },
     "required": ["shared", "indicators", "combine"],
 }
+
+
+def schema_for(spans: list[str]) -> dict:
+    """combine.num · den을 indicators[].span 중 하나로 좁힌 스키마. 재계획처럼 지표 구절을 미리 알 때
+    쓴다. 자유 문자열이면 LLM이 칸 이름("den")을 값으로 적었다 (11/24 재계획 시험)"""
+    import copy
+
+    s = copy.deepcopy(SCHEMA)
+    if spans:
+        pick = {"anyOf": [{"type": "null"}, {"type": "string", "enum": list(dict.fromkeys(spans))}]}
+        s["properties"]["combine"]["properties"]["num"] = pick
+        s["properties"]["combine"]["properties"]["den"] = pick
+    return s

@@ -259,6 +259,9 @@ AGE_OVER_UNDER = re.compile(
 )
 
 
+AGE_NOT_YET = re.compile(r"(\d+)\s*(?:세|살)\s*(?:가|이)?\s*(?:안|못)\s*(?:된|됐|되는|돼)")
+
+
 def lower_age(age: str, bound: str) -> int:
     return int(age) + (bound == "초과")
 
@@ -274,6 +277,8 @@ AGE_SPANS = [
     (AGE_OVER, lambda m: (lower_age(m[1], m[2]), None)),
     (re.compile(r"(\d+)\s*[~\-]\s*(\d+)\s*세"), lambda m: (int(m[1]), int(m[2]))),
     (re.compile(r"(\d+)\s*세\s*미만"), lambda m: (0, int(m[1]) - 1)),
+    # "스무 살 안 됐는데" · "열 살이 못 된": 그 나이 미만 (11/25, 사전이 연령 없이 답하던 것)
+    (AGE_NOT_YET, lambda m: (0, int(m[1]) - 1)),
     (re.compile(r"(\d+)\s*세\s*이하"), lambda m: (0, int(m[1]))),
 ]
 

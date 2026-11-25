@@ -73,7 +73,8 @@ def test_value_picks_item_by_name_and_totals_elsewhere() -> None:
         "남": {"item_id": "T10"},
         "여": {"item_id": "T20"},
     }
-    assert spec["dynamic"] and d.NOTE == spec["note"]
+    # 1인 가구 수는 사전 지표(11/25, 가구원수별 가구 표)라 이 표는 '같은 통계의 다른 표'다
+    assert spec["dynamic"] and d.OTHER_TABLE_NOTE == spec["note"]
 
 
 def test_ratio_of_sex_within_table() -> None:
@@ -2371,4 +2372,33 @@ def test_cell_llm_still_called_when_binding_retry_fails(cell_llm, monkeypatch) -
     trace: dict = {}
     res = asyncio.run(d.compute_from_handoff(Q1, BASE, _found(cands, u), trace))
     assert res is not None and res["status"] == "ok"
-    assert cell_llm["groups"] is not None
+    assert cell_llm["groups"] is not None  # LLM을 불렀다
+
+
+def test_rank_dim_matches_axis_by_synonym_and_stops_when_unmatched() -> None:
+    # 질문 이해가 '나라'를, 재계획이 '학력'을 축으로 적어도 표 분류 이름(국적 · 교육정도)에 잇는다
+    nat = d.Dim(3, "국적(지역)별", {"0": "계", "1": "베트남", "2": "중국"})
+    edu = d.Dim(2, "교육정도별", {"0": "계", "1": "초졸", "2": "대졸"})
+    items = d.Dim(0, "항목", {"T": "등록외국인"})
+    assert (
+        d._rank_dim("어느 나라 사람이 제일 많아?", [items, nat, edu], None, "", axis="나라") is nat
+    )
+    assert d._rank_dim("q", [items, nat, edu], None, "", axis="학력") is edu
+    assert d._rank_dim("q", [items, nat, edu], None, "", axis="국적별") is nat  # '별'은 떼고 본다
+    # 축에 맞는 분류가 없으면 None: 질문 글자 매칭으로도 떨어지지 않는다
+    assert d._rank_dim("국적별로 많은 순서", [items, nat], None, "", axis="종교") is None
+
+
+def test_choose_does_not_fall_back_to_region_rank_when_axis_is_unmatched() -> None:
+    region = d.Dim(1, "행정구역별", {"00": "전국", "11": "서울특별시", "21": "부산광역시"})
+    nat = d.Dim(2, "국적(지역)별", {"0": "계", "1": "베트남", "2": "중국"})
+    items = d.Dim(0, "항목", {"T": "등록외국인"})
+    p = {**BASE, "regions": ["전국"], "type": "rank", "top": 3}
+    plan, why = d.choose(
+        "어느 종교가 제일 많아?", {**p, "rank_axis": "종교"}, [items, region, nat], 1
+    )
+    assert plan is None and why == d.AXIS_UNMATCHED.format(axis="종교")
+    plan, why = d.choose(
+        "어느 나라 사람이 제일 많아?", {**p, "rank_axis": "나라"}, [items, region, nat], 1
+    )
+    assert plan is not None and plan.multi and plan.multi[0] == nat.no

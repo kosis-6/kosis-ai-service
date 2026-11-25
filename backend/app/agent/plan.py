@@ -11,6 +11,8 @@ MODEL = "HCX-007"
 MAX_TOKENS = 512
 
 Plan = dict[str, Any]
+# 지표 한 칸의 내용 (계획 → 꾸러미 → 재계획으로 그대로 옮기는 칸)
+IND_KEYS = ("span", "search", "dict", "scope", "role", "override", "no_inherit")
 
 
 @llm_calls.staged("plan")
@@ -48,7 +50,47 @@ def parse(content: str) -> Plan:
 def correct(question: str, p: Plan, today: date | None = None) -> Plan:
     p["_dropped"] = ground_plan(question, p)
     p["_fixed"] = fix_periods_and_level(question, p, today) + fix_indicators(question, p)
+    fill_dict(p)
     return p
+
+
+# search 앞의 지역 단위 말과 분류 축 말 ("시도별 노년부양비", "국적별 결혼이민자 수"): 사전 이름을
+# 찾을 때 뗀다
+_LEVEL_PREFIX = re.compile(
+    r"^(?:전국|지역별|시도별|시군구별|읍면동별|행정구역별/?|시도|시군구|구별|시별)\s*"
+)
+_AXIS_PREFIX = re.compile(r"^[가-힣]{2,6}별\s+")
+
+
+def dict_name(text: str | None) -> str | None:
+    """search · span → 사전 지표 이름. 글자 그대로, 지역 단위 말을 뗀 것, 괄호 밖 · 안, 분류 축 말을
+    뗀 것 순으로 맞춘다 (11/24: 재계획의 지표 구절 41개 중 글자 그대로는 21개만 닿았다 → 27개).
+    포함 매칭은 하지 않는다 ("다문화가정 출생아 수"가 출생아 수로 붙는 위험)"""
+    from app.services import indicators
+
+    if not text:
+        return None
+    base = _LEVEL_PREFIX.sub("", text).strip()
+    tries = [text, base, re.sub(r"\(.*?\)", "", base).strip(), _AXIS_PREFIX.sub("", base)]
+    tries += re.findall(r"\((.*?)\)", base)
+    for t in tries:
+        if t and (name := indicators.canonical_name(t)):
+            return name
+    return None
+
+
+def fill_dict(p: Plan) -> None:
+    """지표마다 search · span이 지표 사전의 이름 · 별칭이면 dict 칸에 사전 이름을 적는다.
+    계획 LLM이 '노년부양비'처럼 공표 지표 이름을 search에 써도 dict를 비워 두는 일이 잦았다
+    (11/24 재계획 시험 32건 모두 null). 사전 목록을 프롬프트에 넣는 대신 코드가 맞춘다.
+    받는 쪽(multi_indicator._one)은 dict가 있으면 사전으로 바로 계산한다"""
+    for ind in p.get("indicators") or []:
+        if ind.get("dict"):
+            continue
+        for text in (ind.get("search"), ind.get("span")):
+            if name := dict_name(text):
+                ind["dict"] = name
+                break
 
 
 def _conditions(p: Plan) -> list[dict[str, Any]]:
