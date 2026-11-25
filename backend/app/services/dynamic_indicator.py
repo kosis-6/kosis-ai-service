@@ -474,7 +474,62 @@ def _leaf_codes(d: Dim) -> list[str]:
     return [c for c, n in d.codes.items() if c != d.total() and not is_subtotal(n)]
 
 
-def _rank_dim(question: str, dims: list[Dim], region_dim: int | None, tbl_nm: str) -> Dim | None:
+# 순위 축으로 말한 일상어 → 표 분류 이름의 어간 (11/24, 적재된 표의 분류 이름에서 고름).
+# 글자가 겹치는 말(국적 · 직업 · 산업 · 종교 · 전입지 · 사유 …)은 포함 매칭으로 맞으니 적지 않는다.
+# 여기 없는 말이 들어오면 _rank_dim 이 "축에 맞는 분류 없음"을 남기고 지역 순위로 떨어지지 않는다
+AXIS_SYNONYMS = {
+    "나라": "국적",
+    "국가": "국적",
+    "어느나라": "국적",
+    "이동사유": "전입사유",
+    "이사이유": "전입사유",
+    "이사한이유": "전입사유",
+    "이혼이유": "이혼사유",
+    "학력": "교육정도",
+    "학벌": "교육정도",
+    "교육수준": "교육정도",
+    "직종": "직업",
+    "일자리종류": "직업",
+    "업종": "산업",
+    "식구수": "가구원수",
+    "가족수": "가구원수",
+    "집종류": "거처의종류",
+    "사는집형태": "거처의종류",
+    "집형태": "거처의종류",
+    "비자": "체류자격",
+    "체류자격": "체류자격",
+    "결혼상태": "혼인상태",
+    "혼인여부": "혼인상태",
+    "몇째": "출산순위",
+    "출산순서": "출산순위",
+    "자녀수": "출생자녀수",
+    "아이수": "출생자녀수",
+    "집소유": "점유형태",
+    "자가전세": "점유형태",
+}
+AXIS_UNMATCHED = "축 '{axis}'에 맞는 분류가 표에 없음"
+
+
+def _axis_words(axis: str) -> set[str]:
+    """축 말 자체와 동의어 표의 어간 (띄어쓰기 · '별' 제거)"""
+    a = _norm(re.sub(r"(별|구분)$", "", axis))
+    return {a, _norm(AXIS_SYNONYMS.get(a, a))}
+
+
+def _rank_dim(
+    question: str, dims: list[Dim], region_dim: int | None, tbl_nm: str, axis: str | None = None
+) -> Dim | None:
+    """분류 안의 순위를 묻는가: 그 분류. 지역 순위("가장 많은 시도")는 아니다.
+    axis: 질문 이해(rank_axis) · 재계획(combine.axis)이 정한 분류 이름. 있으면 그 이름과 동의어로
+    고른다 ("어느 나라 사람이 제일 많아" → '나라' → 국적(지역)별). 못 찾으면 None 을 돌려주고,
+    choose 가 지역 순위로 떨어지는 대신 AXIS_UNMATCHED 로 계산을 멈춘다"""
+    if axis:
+        words = _axis_words(axis)
+        for d in dims:
+            stem = _norm(re.sub(r"(별|구분)$", "", re.sub(r"\(.*?\)", "", d.name)))
+            if d.no not in (0, region_dim) and stem and any(w in stem or stem in w for w in words):
+                return d
+        return None
     if not RANK_PARTS.search(question) or REGION_RANK.search(question):
         return None
     q = _norm(question)
@@ -533,7 +588,12 @@ def choose(
     hits = _drop_region_words(question, _text_hits(question, dims, skip), dims, region_dim)
     household_table = HOUSEHOLD_CELL.search(_table_target(tbl_nm))
     asks: list[Ask] = []
-    ranked = _rank_dim(question, dims, region_dim, tbl_nm)
+    axis = parsed.get("rank_axis")
+    ranked = _rank_dim(question, dims, region_dim, tbl_nm, axis)
+    if axis and ranked is None:
+        # 지역이 아닌 분류의 순위를 물었는데 이 표에 그 분류가 없다: 지역 순위로 조용히 떨어지지
+        # 않고 멈춘다 (다음 출처 표 · 재계획 · 표 안내로). 11/24: '나라' 축 → 시군구 순위를 냈다
+        return None, AXIS_UNMATCHED.format(axis=axis)
     if ranked is not None and len(leaves := _leaf_codes(ranked)) >= 2:
         plan.multi, plan.multi_dim = (ranked.no, leaves, "rank"), ranked
         plan.pick[ranked.no] = plan.matched[ranked.no] = leaves[0]

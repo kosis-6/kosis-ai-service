@@ -25,6 +25,7 @@ from app.services import (
     llm_json,
     load_queue,
     lookup,
+    monthref,
     search_llm,
     slots,
     table_cache,
@@ -629,6 +630,8 @@ def age_spans(question):
         add(m, [agegroup.lower_age(m[1], m[2]), None])
     for m in AGE_UNDER.finditer(question):
         add(m, [0, int(m[1]) - 1])
+    for m in agegroup.AGE_NOT_YET.finditer(question):  # "스무 살 안 됐는데": 20세 미만
+        add(m, [0, int(m[1]) - 1])
     for m in AGE_UNDER_EQ.finditer(question):
         add(m, [0, int(m[1])])
     for m in AGE_DECADE_RANGE.finditer(question):
@@ -751,7 +754,26 @@ YEAR_ARITH = re.compile(r":\s*(?:19|20)\d{2}\s*[-+]\s*\d{1,3}(?=\s*[,}])")
 PERIOD_KINDS = ("recent", "span", "compare_ago", "span_from", "until_now")
 
 
+def _word_years(parsed):
+    """_apply_time 이 푼 낱말 시점(작년 · 재작년 …)의 연도들 (중복 없이)"""
+    return {
+        r["year"]
+        for r in parsed.get("time_refs") or []
+        if r.get("kind") == "word" and r.get("year")
+    }
+
+
 def _apply_time(question, parsed, fix, today):
+    """상대 기간은 코드가 질문에서 직접 알아보고(timeref.find: 표현 · 종류 · N) 연도도
+    규칙표(timeref.period)가 센다. LLM은 오늘이 언제인지 모르고 산수도 틀린다:
+    "2020년이랑 작년"의 작년을 2024로, "10년 동안"의 끝을 2024로, '최근 5년'을 6개 해로 적었다.
+    여기서 고치는 것은 지금까지 코드가 풀지 못한 모양뿐이다.
+      기간(최근 N년 · N년 동안 · N년 전보다 · ○년부터 N년 동안 · 지금까지): 시작 · 끝
+      숫자 연도 + 낱말 시점인 추이("2018년이랑 작년"): 두 해를 시작 · 끝으로
+      낱말 시점 둘("작년이랑 재작년"): 두 해를 시작 · 끝으로 (추이 2점)
+      N년 뒤: 그 해
+    작년 · N년 전 한 시점은 아래 timeref.resolve 가 지금처럼 푼다.
+    상대 기간을 풀었는데 질문에 숫자 연도가 없으면, HCX가 직접 채운 시작 · 끝은 버린다"""
     refs = timeref.find(question)
     if not refs:
         _drop_unsaid_years(question, parsed, fix, set())
@@ -781,7 +803,15 @@ def _apply_time(question, parsed, fix, today):
             put("end_year", hi, f"{why} = {got['year']}년 (올해 {today.year} 기준)")
         elif ref["kind"] == "later" and not said and kind_now != "trend":
             put("year", got["year"], f"{why} = {got['year']}년 (올해 {today.year} 기준)")
-    if not said and not slots.short_years(question):
+    words = sorted({r["year"] for r in resolved if r.get("kind") == "word" and r.get("year")})
+    if len(words) >= 2 and not said:
+        # "작년이랑 재작년 비교": 낱말 시점이 둘이면 두 해를 시작 · 끝으로 (추이 2점). 전에는
+        # 두 해를 다 풀어 놓고도 쓰지 않아 HCX의 year 하나만 남고 추이 기본 창으로 답했다 (11/24)
+        put("start_year", words[0], f"낱말 시점 {len(words)}개 = {words[0]}년부터")
+        put("end_year", words[-1], f"낱말 시점 {len(words)}개 = {words[-1]}년까지")
+        if kind_now == "value":
+            fix("type", "trend", "두 시점을 견줌")
+    if not said and not slots.short_years(question):  # "22년"처럼 두 자리로 말한 연도는 둔다
         keys = ["start_year", "end_year"]
         if kind_now == "trend" and any(r["kind"] in PERIOD_KINDS for r in refs):
             keys.append("year")
@@ -956,6 +986,9 @@ def correct(question, parsed, today=None):
     kind = parsed.get("type")
 
     _apply_time(question, parsed, fix, today)
+    if (mref := monthref.find(question)) and kind in (None, "value", "other"):
+        # "1월부터 3월까지" · "상반기": 달 묶음은 코드가 읽는다 (lookup.month_sum). 값 질문만
+        fix("months", [mref["m0"], mref["m1"]], f"'{mref['expr']}' = 달 묶음 합")
     _read_question(question, parsed, fix)
 
     gender_question = HOUSEHOLD_MEMBER_GENDER.sub("가구", question)
@@ -1003,7 +1036,15 @@ def correct(question, parsed, today=None):
                 kind = "trend"
         elif kind not in ("trend", "other", "parse_error") and parsed.get("year") != ref.year:
             fix("year", ref.year, ref.describe(today))
-        elif kind == "trend" and not CHANGE_ASK.search(question) and not SPAN.search(question):
+        elif (
+            kind == "trend"
+            and not CHANGE_ASK.search(question)
+            and not SPAN.search(question)
+            and len(_word_years(parsed)) < 2
+        ):
+            # 한 시점('작년에')만 말하고 변화를 묻지 않았는데 HCX가 추이로 읽었다
+            # ("작년에 이사 들어온 사람이 나간 사람보다 많아?" → 2019~2024 추이, D-123 11/24).
+            # 낱말 시점이 둘("작년에 … 재작년이랑 비교하면")이면 _apply_time 의 시작 · 끝을 둔다
             fix("type", "value", "한 시점만 물음 (변화를 묻는 말 없음)")
             kind = "value"
             if parsed.get("year") != ref.year:
@@ -2454,6 +2495,17 @@ def _compute_lookup(q, sp, kind, regions, year, sex, ages):
         return _sum_regions(lookup.compare(sp, regions, year, sex, ages), q)
     if kind == "value" and q.get("share_of"):
         return _share_of(lookup.value(sp, regions[0], year, sex, ages), sp, year, sex, ages)
+    if kind == "value" and q.get("months") and len(regions) == 1:
+        # 달 묶음 합: 월별 출처가 있는 지표는 월별 값을 더한다. 없으면 연간 값에 그 사실을 적는다
+        m0, m1 = q["months"][:2]
+        if (r := lookup.month_sum(sp, regions[0], year, m0, m1, sex)) is not None:
+            return r
+        r = lookup.value(sp, regions[0], year, sex, ages)
+        if r.get("status") == "ok":
+            r.setdefault("notes", []).append(
+                f"{josa(sp['name'], '은는')} 월별 자료가 없어 {year}년 연간 값으로 답했습니다"
+            )
+        return r
     if kind == "value":
         return lookup.value(sp, regions[0], year, sex, ages)
     if kind == "trend":

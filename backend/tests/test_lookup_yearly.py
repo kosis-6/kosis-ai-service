@@ -23,9 +23,12 @@ def test_item_years_reads_yearly_rows_only(monkeypatch) -> None:
 
 
 def test_every_stat_value_query_filters_period_type() -> None:
+    # stat_value를 읽는 쿼리를 새로 만들 때 시점 종류 조건(YEARLY, 달 묶음 합은 MONTHLY)을
+    # 빠뜨리지 않게 한다
     source = inspect.getsource(lookup)
     queries = len(re.findall(r"from stat_value", source))
-    assert queries == len(re.findall(r"\{YEARLY\}", source)) >= 3
+    filtered = re.findall(r"\{(?:YEARLY|MONTHLY|MONTHLY if monthly else YEARLY)\}", source)
+    assert queries == len(filtered) >= 3
 
 
 @pytest.mark.parametrize(
