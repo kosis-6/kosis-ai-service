@@ -14,7 +14,8 @@ from sqlalchemy.exc import SQLAlchemyError
 from starlette.concurrency import run_in_threadpool
 
 from app.agent import replan
-from app.prompts.qa import FOLLOW_SYSTEM
+from app.core.config import get_settings
+from app.prompts.qa import FOLLOW_SYSTEM, RESTATE_SYSTEM
 from app.services import (
     agent_action,
     answer_judge,
@@ -971,6 +972,99 @@ def parse_delta(raw: str) -> dict:
     }
 
 
+RESTATE_RELATIONS = ("followup", "new", "unclear")
+RELATIVE_WORD = re.compile(r"(?:작년|지난해|재작년|올해|금년)(?:에|의|은|는)?\s*")
+
+
+async def restate(state: dict, question: str, trace: dict) -> dict:
+    """이어 묻기 LLM 복원 (FOLLOW_RESTATE, A_16): 직전 질문 · 조건 · 답을 주고 relation 과
+    혼자 서는 완전한 질문을 받는다 → {"relation", "question", "why"}. 못 읽으면 relation 은 빈 글"""
+    recent = state.get("recent") or []
+    system = (
+        RESTATE_SYSTEM.replace("{PREV_QUESTION}", recent[-1] if recent else "(없음)")
+        .replace("{STATE}", state_text(state["conditions"], state["sources"]))
+        .replace("{LAST}", last_text(state.get("last")))
+    )
+    raw = await _chat(question, system)
+    trace["restate_raw"] = raw
+    return parse_restate(raw)
+
+
+def parse_restate(raw: str) -> dict:
+    objects = qa._json_objects(raw)
+    data = objects[0] if objects else {}
+    relation = str(data.get("relation") or "").strip().lower()
+    return {
+        "relation": relation if relation in RESTATE_RELATIONS else "",
+        "question": " ".join(str(data.get("question") or "").split()),
+        "why": str(data.get("why") or "").strip(),
+    }
+
+
+def verify_restate(r: dict, conditions: dict, question: str) -> tuple[str, str, str]:
+    """LLM 결정의 코드 확인 (뜻 판단은 하지 않는다) → (relation, 쓸 질문, 확인 메모).
+    · 읽지 못했거나 문장이 비면 새 말 그대로 새 질문
+    · followup 인데 복원 문장에 직전 지표(이름 · 별칭 · 말)가 없으면 새 질문으로
+    · followup 인데 연도가 빠졌고 직전에 연도가 있으면 직전 기간을 앞에 붙인다 (상대 시점 그대로)"""
+    relation, restored = r.get("relation") or "", r.get("question") or ""
+    if relation == "unclear":
+        return relation, "", ""
+    if not relation or not restored:
+        return "new", question, "복원 못 읽음 → 새 말 그대로"
+    if (n := recent_years(question)) and not names_indicator(question, {}):
+        # "최근 5년은?"의 기간도 코드가 센다: HCX가 "2023년부터 2020년까지"처럼 거꾸로 적었다 (C08).
+        # 숫자 연도를 지우고 '최근 N년'을 앞에 두면 새 질문 경로가 자료 마지막 해까지 N개 해로 푼다
+        bare = re.sub(r"\d{4}\s*년\s*(?:부터|에서|~|까지|과|와|이랑|에)?\s*", "", restored)
+        bare = re.sub(r"\s{2,}", " ", bare).strip()
+        return relation, f"최근 {n}년 {bare}", f"상대 기간은 코드로 최근 {n}년"
+    if year := follow_year(question, conditions):
+        # 새 말의 상대 시점("작년은?")은 코드가 오늘 기준으로 센다 (상대 연도 원칙). HCX는 직전
+        # 연도에서 1을 빼 2023년의 작년을 2022년으로 썼다 (11/25 대화 셋 C06 · C25)
+        if re.search(r"\d{4}\s*년", restored):
+            restored = re.sub(r"\d{4}(\s*년)", lambda m: f"{year}{m[1]}", restored, count=1)
+        else:
+            bare = RELATIVE_WORD.sub("", restored).strip()
+            restored = f"{year}년 {bare}"
+        return relation, restored, f"상대 시점은 코드로 {year}년"
+    if relation == "followup":
+        prev = str(conditions.get("indicator") or conditions.get("term") or "")
+        names = {n for *_, n in indicators.find_in_text(restored) or []}
+        compact = restored.replace(" ", "")
+        if prev and prev not in names and prev.replace(" ", "") not in compact:
+            return "new", restored, f"복원 문장에 직전 지표({prev})가 없음 → 새 질문"
+        if not re.search(
+            r"\d{4}\s*년|작년|지난해|재작년|올해|금년|최근|년\s*전|년간|년\s*동안", restored
+        ):
+            if period := period_text(conditions):
+                return relation, f"{period} {restored}", f"직전 기간 {period} 붙임"
+    return relation, restored, ""
+
+
+async def _restated(
+    state: dict, question: str, user_id: int | None
+) -> tuple[dict, dict, str | None]:
+    """FOLLOW_RESTATE: LLM 복원 → 코드 확인 → 복원 문장을 새 질문 경로로"""
+    trace: dict = {}
+    try:
+        r = await restate(state, question, trace)
+    except Exception:
+        logger.exception("이어 묻기 복원 실패")
+        r = {"relation": "", "question": "", "why": "호출 실패"}
+    relation, restored, note = verify_restate(r, state["conditions"], question)
+    flow.add("이어 묻기 판단", relation, " · ".join(x for x in (restored, r.get("why"), note) if x))
+    if relation == "unclear":
+        why = r.get("why") or "직전 답에서 무엇을 가리키는지 알 수 없습니다."
+        res = _unclear(state, why)
+        res["trace"] = {"restate": {**r, "note": note, **trace}}
+        return res, state["sources"], None
+    res, sources, notice = await _new(restored, state)
+    res["request_type"] = CHANGE if relation == "followup" else NEW
+    res["question"] = restored
+    if isinstance(res.get("trace"), dict):
+        res["trace"]["restate"] = {**r, "note": note, "asked": question, **trace}
+    return res, sources, notice
+
+
 async def extract(state: dict, question: str, trace: dict) -> dict:
     system = (
         FOLLOW_SYSTEM.replace("{STATE}", state_text(state["conditions"], state["sources"]))
@@ -1456,6 +1550,14 @@ async def _turn(
     if asked_why and state["last"].get("summary"):
         text = f"{NO_CAUSE}\n{answer_summary.text(state['last']['summary'])}"
         return _reuse(state, text, state["last"].get("chart"), SUMMARY), state["sources"], None
+    if (
+        view is None
+        and get_settings().follow_restate
+        and not (has_last and summary_request(question))
+    ):
+        # 이어 묻기 LLM 복원 (A_16): 아래 코드 규칙(비율 후속 · 구별로 · 지역만 · 구성비 · 사람 수)
+        # 과 변경 추출(FOLLOW_SYSTEM) 대신 LLM이 완전한 질문으로 복원하고 새 질문 경로로 간다
+        return await _restated(state, question, user_id)
     if view is None and (asked := await asyncio.to_thread(ratio_followup, question, state)):
         flow.add("비율 후속 질문", "새 질문으로", asked)
         res, sources, notice = await _new(

@@ -1990,3 +1990,67 @@ def test_recent_years_follow_up_sends_recent_to_the_calculation(talk: Talk) -> N
     asked = talk.answered[0]  # 첫 질문은 해석(qa.ask)으로 답하므로 조건으로 계산한 첫 번째가 이 턴
     assert asked["type"] == "trend" and asked["asked"]["recent"] == 5
     assert asked["start_year"] is None and asked["end_year"] is None  # HCX가 적은 기간은 버린다
+
+
+def test_parse_restate_reads_relation_and_question() -> None:
+    raw = (
+        '{"relation": "Followup", "question": " 2024년  대구 출생아 수는? ", "why": "지역만 바꿈"}'
+    )
+    assert s.parse_restate(raw) == {
+        "relation": "followup",
+        "question": "2024년 대구 출생아 수는?",
+        "why": "지역만 바꿈",
+    }
+    assert s.parse_restate("말로 답함")["relation"] == ""
+    assert s.parse_restate('{"relation": "maybe", "question": "x"}')["relation"] == ""
+
+
+def test_verify_restate_falls_back_and_checks_indicator_and_period() -> None:
+    cond = {"type": "value", "indicator": "출생아 수", "regions": ["부산광역시"], "year": 2024}
+    # 못 읽음 → 새 말 그대로 새 질문
+    assert s.verify_restate({"relation": "", "question": ""}, cond, "대구는?") == (
+        "new",
+        "대구는?",
+        "복원 못 읽음 → 새 말 그대로",
+    )
+    # followup 인데 직전 지표가 없음 → 새 질문
+    rel, q, note = s.verify_restate(
+        {"relation": "followup", "question": "2024년 대구 혼인 건수는?"}, cond, "대구는?"
+    )
+    assert rel == "new" and q == "2024년 대구 혼인 건수는?" and "직전 지표" in note
+    # followup 에 연도가 빠짐 → 직전 기간을 앞에 붙임
+    assert s.verify_restate(
+        {"relation": "followup", "question": "대구 출생아 수는?"}, cond, "대구는?"
+    ) == ("followup", "2024년 대구 출생아 수는?", "직전 기간 2024년 붙임")
+    # 상대 시점은 코드가 센 연도로 (test_verify_restate_replaces_llm_year_with_code_relative_year)
+    assert (
+        s.verify_restate({"relation": "unclear", "question": ""}, cond, "거기는?")[0] == "unclear"
+    )
+
+
+def test_verify_restate_replaces_llm_year_with_code_relative_year(monkeypatch) -> None:
+    # "작년은?"의 연도는 코드가 센다: LLM이 적은 2022년을 버리고 follow_year 의 값으로
+    monkeypatch.setattr(s, "follow_year", lambda q, c: 2025)
+    cond = {"type": "value", "indicator": "혼인 건수", "regions": ["서울특별시"], "year": 2023}
+    assert s.verify_restate(
+        {"relation": "followup", "question": "2022년 서울 혼인 건수는?"}, cond, "작년은?"
+    ) == ("followup", "2025년 서울 혼인 건수는?", "상대 시점은 코드로 2025년")
+    assert s.verify_restate(
+        {"relation": "new", "question": "서울 인구는?"}, cond, "작년 인구는?"
+    ) == ("new", "2025년 서울 인구는?", "상대 시점은 코드로 2025년")
+
+
+def test_verify_restate_keeps_recent_years_for_code(monkeypatch) -> None:
+    # "최근 5년은?"의 기간은 코드가 센다: LLM이 적은 연도를 지우고 '최근 5년'을 앞에
+    monkeypatch.setattr(s, "recent_years", lambda q: 5)
+    cond = {"type": "value", "indicator": "고령인구 비율", "regions": ["전국"], "year": 2024}
+    rel, q, note = s.verify_restate(
+        {"relation": "followup", "question": "2023년부터 2020년까지 전국 고령인구 비율은?"},
+        cond,
+        "최근 5년은 어떻게 변했어?",
+    )
+    assert (rel, q, note) == (
+        "followup",
+        "최근 5년 전국 고령인구 비율은?",
+        "상대 기간은 코드로 최근 5년",
+    )
