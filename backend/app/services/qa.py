@@ -1347,6 +1347,48 @@ MEASURE_JOIN = re.compile(
 )
 MEASURE_TAIL = re.compile(r"(?:수|율|비율|비중|인구|가구|건수|세대)$")
 ASK_TAIL = re.compile(r"\s+(?:알려|보여|얼마|몇|각각|비교|궁금|어때|좀|같이|함께).*$")
+MEASURE_LIST = re.compile(r"각각|둘\s*다|두\s*지표")
+MEASURE_RELATION = re.compile(r"비교|차이|대비|몇\s*배|나누|합쳐|더해|합산")
+
+
+def _measure_text(part):
+    return re.sub(r"(?:은|는|이|가|을|를|도)$", "", ASK_TAIL.sub("", part).strip(" ?.!"))
+
+
+def _measure_phrase(part):
+    text = _measure_text(part)
+    return " ".join(
+        w for w in text.split() if not YEAR.search(w) and not indicators.find_regions(w)
+    )
+
+
+def separate_measures(question):
+    parts = [p.strip() for p in MEASURE_JOIN.split(question.strip()) if p.strip()]
+    if len(parts) != 2 or MEASURE_RELATION.search(question):
+        return None
+    scoped_age = any(_says_age(p) for p in parts)
+    if not scoped_age and (not MEASURE_LIST.search(question) or asked_indicators(question)):
+        return None
+    names = [_measure_phrase(part) for part in parts]
+    if names[0] == names[1] or not all(
+        name and (MEASURE_TAIL.search(name) or indicators.find_in_text(name)) for name in names
+    ):
+        return None
+
+    first, second = map(_measure_text, parts)
+    shared = []
+    if not _says_year(second):
+        if explicit := SPAN.search(first) or YEAR.search(first):
+            shared.append(explicit[0])
+        elif len(refs := timeref.find(first)) == 1:
+            shared.append(refs[0]["expr"])
+    if not (NATIONWIDE.search(second) or indicators.find_regions(second)):
+        if NATIONWIDE.search(first):
+            shared.append("전국")
+        elif len(places := indicators.find_regions(first)) == 1:
+            shared.append(places[0])
+    questions = (f"{first} 알려줘", " ".join([*shared, second, "알려줘"]))
+    return list(zip(names, questions, strict=True))
 
 
 def unlisted_measure(question):
@@ -1359,9 +1401,7 @@ def unlisted_measure(question):
     for part, has in zip(parts, listed, strict=True):
         if has:
             continue
-        phrase = re.sub(r"(?:은|는|이|가|을|를|도)$", "", ASK_TAIL.sub("", part).strip(" ?.!"))
-        words = [w for w in phrase.split() if not YEAR.search(w) and not indicators.find_regions(w)]
-        phrase = " ".join(words)
+        phrase = _measure_phrase(part)
         if len(indicators._norm(phrase)) >= 2 and MEASURE_TAIL.search(indicators._norm(phrase)):
             return phrase
     return None
@@ -2094,10 +2134,16 @@ def _compute(q):
 
     names = q.get("indicators") or []
     if len(names) > 1 and kind in ("value", "trend", "compare"):
+        measures = q.get("measure_conditions") or {}
 
         def each(extra=None):
             return [
-                compute({**q, "indicators": None, "indicator": n, "term": n, **(extra or {})})
+                compute(
+                    {
+                        **measures.get(n, {**q, "indicators": None, "indicator": n, "term": n}),
+                        **(extra or {}),
+                    }
+                )
                 for n in names
             ]
 
@@ -2105,7 +2151,7 @@ def _compute(q):
         ok = [p for p in parts if p.get("status") == "ok"]
         if not ok:
             return parts[0]
-        if kind == "value" and not q.get("year") and (year := _common_year(ok)):
+        if not measures and kind == "value" and not q.get("year") and (year := _common_year(ok)):
             asked = {**(q.get("asked") or {}), "latest": False}
             parts = each({"year": year, "asked": asked})
             ok = [p for p in parts if p.get("status") == "ok"]

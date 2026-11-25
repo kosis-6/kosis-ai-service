@@ -239,6 +239,7 @@ def apply_changes(conditions: dict, changes: dict) -> tuple[dict, set[str]]:
             "group",
             "by",
             "indicators",
+            "measure_conditions",
         ):
             c.pop(key, None)
         changed.add("indicator")
@@ -300,6 +301,10 @@ def apply_changes(conditions: dict, changes: dict) -> tuple[dict, set[str]]:
 
     if changed and "type" not in changes:
         _retype(c, changed)
+    if changed and (measures := c.get("measure_conditions")):
+        c["measure_conditions"] = {
+            name: apply_changes(measure, changes)[0] for name, measure in measures.items()
+        }
     return c, changed
 
 
@@ -358,11 +363,15 @@ def with_recent(conditions: dict, changed: set[str], n: int) -> tuple[dict, set[
     c["start_year"] = c["end_year"] = None
     if c.get("type") in ("value", "compare"):
         c["type"] = "trend"
+    if measures := c.get("measure_conditions"):
+        c["measure_conditions"] = {
+            name: with_recent(measure, set(), n)[0] for name, measure in measures.items()
+        }
     return c, changed | {"period"}
 
 
 AGE_REPLY_TAIL = re.compile(
-    r"\s*(?:사람(?:들)?|인구)?\s*(?:으로|로)?\s*(?:은|는|도|만|이?요)?\s*"
+    r"\s*(?:까지\s*)?(?:사람(?:들)?|인구)?\s*(?:으로|로)?\s*(?:은|는|도|만|이?요)?\s*"
     r"(?:(?:보여|알려|바꿔)\s*(?:줘요?|주세요)|어때요?)?"
     r"\s*[?.!~]*"
 )
@@ -509,6 +518,8 @@ def survey_switch(question: str, conditions: dict) -> dict | None:
         return None
     switched = qa.set_survey(question, copy.deepcopy(conditions))
     asked = switched.get("asked") or {}
+    for measure in (switched.get("measure_conditions") or {}).values():
+        qa.set_survey(question, measure)
     return switched if asked.get("survey") or asked.get("survey_missing") else None
 
 
@@ -1237,6 +1248,62 @@ async def _new(
     return res, sources, notice
 
 
+async def _separate_measures(question, measures, state, user_id):
+    if refused := await table_guide.off_domain_early(question):
+        flow.add("범위 검사", refused.get("status"), "인구 통계에 없는 주제 (질문 이해 전에 거절)")
+        refused.update(request_type=NEW, question=question)
+        return refused, {}, None
+
+    async def answer_measure(asked):
+        res, sources, _ = await _new(asked, state)
+        await _attach_tables(res, None, asked, user_id)
+        return res, sources
+
+    outcomes = await asyncio.gather(
+        *(answer_measure(asked) for _, asked in measures), return_exceptions=True
+    )
+    answers = []
+    primary = None
+    measure_conditions = {}
+    errors = []
+    for (name, _), outcome in zip(measures, outcomes, strict=True):
+        if isinstance(outcome, BaseException):
+            if not isinstance(outcome, Exception):
+                raise outcome
+            logger.error("묶음 질문 계산 실패: %s", name, exc_info=outcome)
+            errors.append(outcome)
+            answers.append((name, {}))
+            continue
+        res, sources = outcome
+        answers.append((name, res))
+        if res.get("status") == "ok" and res.get("result") and not res.get("clarification"):
+            if primary is None:
+                primary = res, sources
+            measure_conditions[name] = effective(res.get("parsed") or {}, res["result"])
+
+    if primary is None:
+        first = next((out for out in outcomes if not isinstance(out, BaseException)), None)
+        if first is None:
+            raise errors[0]
+        res, sources = first
+        if not res.get("clarification"):
+            res["answer"] = "\n\n".join(
+                f"{name}\n{sub.get('answer') or '계산하지 못했습니다.'}" for name, sub in answers
+            )
+            res["question"] = question
+        return res, sources, None
+
+    res, sources = primary
+    parsed = {**res["parsed"], "grounded": True}
+    if len(measure_conditions) > 1:
+        parsed["measure_conditions"] = measure_conditions
+    combined = multi_indicator.side_by_side(
+        question, parsed, answers, res.get("trace") or {}, allow_partial=True
+    )
+    combined.update(question=question, request_type=NEW, chart=charts.build(combined["result"]))
+    return combined, sources, None
+
+
 def _clarification_answer(question: str, clarification: dict) -> dict:
     return {
         "status": "clarify_question",
@@ -1437,6 +1504,8 @@ async def _turn(
             return _chat_answer(state, early["answer"]), {}, None
         early["request_type"], early["question"] = NEW, question
         return early, {}, None
+    if measures := await asyncio.to_thread(qa.separate_measures, question):
+        return await _separate_measures(question, measures, state, user_id)
     usable = bool(state and (state.get("conditions") or {}).get("type") not in NO_CONDITIONS)
     region_only = None
     if usable and (state.get("last") or {}).get("status") == TABLES:
