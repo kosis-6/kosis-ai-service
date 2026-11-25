@@ -149,8 +149,12 @@ def empty_slots(question: str) -> dict[str, Any]:
     }
 
 
+# 다시 물을 때 같은 값이면 같은 답이 나와서 올림
+TEMPERATURES = (0.1, 0.5)
+
+
 @llm_calls.staged("slots")
-async def _chat(question: str) -> str:
+async def _chat(question: str, temperature: float = TEMPERATURES[0]) -> str:
 
     def request(llm: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         system = SLOT_SYSTEM_GEMMA if llm == "gemma" else SLOT_SYSTEM
@@ -160,7 +164,7 @@ async def _chat(question: str) -> str:
             "topP": 0.8,
             "topK": 0,
             "maxCompletionTokens": 512,
-            "temperature": 0.1,
+            "temperature": temperature,
             "repetitionPenalty": 1.1,
         }
 
@@ -190,8 +194,8 @@ async def extract(question: str, trace: dict[str, Any] | None = None) -> dict[st
     raws = []
     parsed = None
     try:
-        for _ in range(2):
-            raws.append(await _chat(question))
+        for temperature in TEMPERATURES:
+            raws.append(await _chat(question, temperature))
             parsed = _json_object(raws[-1])
             if parsed is not None:
                 break

@@ -72,14 +72,14 @@ def test_classes_and_items_cleanup() -> None:
 def test_extract_retries_then_falls_back(monkeypatch) -> None:
     calls = []
 
-    async def fake_chat(question: str) -> str:
-        calls.append(question)
+    async def fake_chat(question: str, temperature: float) -> str:
+        calls.append(temperature)
         return "JSON을 만들 수 없습니다"
 
     monkeypatch.setattr(sl, "_chat", fake_chat)
     trace: dict = {}
     s = asyncio.run(sl.extract("2024년 서울 시군구별 여성 인구", trace))
-    assert len(calls) == 2
+    assert calls == list(sl.TEMPERATURES)
     assert s["parse_error"] is True
     c = s["conditions"]
     assert (c["year"], c["sex"], c["region_level"]) == (2024, "여", "시군구")
@@ -87,7 +87,7 @@ def test_extract_retries_then_falls_back(monkeypatch) -> None:
 
 
 def test_extract_reads_json_in_code_block(monkeypatch) -> None:
-    async def fake_chat(question: str) -> str:
+    async def fake_chat(question: str, temperature: float) -> str:
         return '```json\n{"topic": "귀화자 수", "target": "혼인 귀화자", "conditions": {}}\n```'
 
     monkeypatch.setattr(sl, "_chat", fake_chat)
