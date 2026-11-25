@@ -173,6 +173,12 @@ def _years(src):
     if src.get("years"):
         lo, hi = src["years"]
         return lo, hi
+    if (months := MONTHS.get()) is not None:
+        lo, hi = _month_range(src["table"], _items(src))
+        if lo is None:
+            return None, None
+        last = hi // 100 if hi % 100 >= months[1] else hi // 100 - 1
+        return lo // 100, last
     return _item_years(src["table"], _items(src))
 
 
@@ -236,6 +242,18 @@ def _conds(src, item_key, filters, age_codes):
 
 
 EMPTY_FLAGS: ContextVar[list | None] = ContextVar("empty_flags", default=None)
+MONTHS: ContextVar[tuple[int, int] | None] = ContextVar("months", default=None)
+
+
+def _period_where(y0, y1, monthly=False):
+    params, year_sql, extra = [y0, y1], "v.period", ""
+    if not monthly and (months := MONTHS.get()) is not None:
+        m0, m1 = months
+        monthly = True
+        params = [y0 * 100 + m0, y1 * 100 + m1, m0, m1]
+        year_sql, extra = "(v.period / 100)", " and v.period % 100 between ? and ?"
+    sql = f"v.{MONTHLY if monthly else YEARLY} and v.period between ? and ?{extra}"
+    return sql, year_sql, params
 
 
 def _sum(src, codes, y0, y1, item_key, filters, age_codes, group_dim=None, monthly=False):
@@ -274,17 +292,18 @@ def _sum(src, codes, y0, y1, item_key, filters, age_codes, group_dim=None, month
     groups = "1, 2, 3" if group_dim else "1, 2"
     flags = EMPTY_FLAGS.get()
     flag_sql = ", max(v.flag) filter (where v.value is null) as flag" if flags is not None else ""
+    period_sql, year_sql, period_params = _period_where(y0, y1, monthly)
     rows = _rows(
         f"""
-        select v.period as year, {rc} as rc{part}, sum(v.value)::float8 as v, count(v.value) as n
+        select {year_sql} as year, {rc} as rc{part}, sum(v.value)::float8 as v, count(v.value) as n
                {flag_sql}
         from stat_value v{region_sql}
-        where v.tbl_key = ? and v.{MONTHLY if monthly else YEARLY} and v.period between ? and ?
+        where v.tbl_key = ? and {period_sql}
               and {" and ".join(conds)}
         group by {groups}
         order by {groups}
     """,
-        [*region_params, _tbl_key(tbl), y0, y1, *params],
+        [*region_params, _tbl_key(tbl), *period_params, *params],
     )
     if group_dim:
         code_of = {key: code for code, (key, _) in _codes(tbl, _dim_no(group_dim)).items()}

@@ -474,6 +474,9 @@ def _leaf_codes(d: Dim) -> list[str]:
     return [c for c, n in d.codes.items() if c != d.total() and not is_subtotal(n)]
 
 
+RANK_AXIS_WORDS = {"국적": re.compile(r"어느\s*(?:나라|국가)|무슨\s*나라|나라\s*별|국가\s*별")}
+
+
 # 순위 축으로 말한 일상어 → 표 분류 이름의 어간 (11/24, 적재된 표의 분류 이름에서 고름).
 # 글자가 겹치는 말(국적 · 직업 · 산업 · 종교 · 전입지 · 사유 …)은 포함 매칭으로 맞으니 적지 않는다.
 # 여기 없는 말이 들어오면 _rank_dim 이 "축에 맞는 분류 없음"을 남기고 지역 순위로 떨어지지 않는다
@@ -537,6 +540,11 @@ def _rank_dim(
         stem = _norm(re.sub(r"(별|구분)$", "", re.sub(r"\(.*?\)", "", d.name)))
         if d.no not in (0, region_dim) and len(stem) >= 2 and stem in q:
             return d
+    for axis, pattern in RANK_AXIS_WORDS.items():
+        if pattern.search(question):
+            hit = [d for d in dims if d.no not in (0, region_dim) and axis in _norm(d.name)]
+            if len(hit) == 1:
+                return hit[0]
     names = [_norm(d.name) for d in dims]
     words = re.findall(r"([가-힣]+\s[가-힣]+)별", tbl_nm) + re.findall(r"([가-힣]{2,})별", tbl_nm)
     for word in words:
@@ -1396,6 +1404,9 @@ def _ratio(spec, src, plan, dims, parsed, tbl_nm="", *, question=""):
                 parts.append((d.col, [code], whole, d.codes[code]))
     if len(parts) != 1:
         return None, "비율의 분자·분모를 정하지 못함"
+    _, num_codes, den_code, _ = parts[0]
+    if isinstance(den_code, str) and [den_code] == list(num_codes):
+        return None, "비율의 분자와 분모가 같은 칸"
     col, num, den, part = parts[0]
     if why := part_within_whole(src, col, num, den):
         return None, why
@@ -2203,6 +2214,10 @@ async def answer_choice(question: str, context: dict, code: str, trace: dict) ->
 
 
 async def cached_answer(question: str, parsed: dict, trace: dict) -> dict | None:
+    from app.core.config import get_settings
+
+    if not get_settings().plan_cache:
+        return None
     try:
         found = await run_in_threadpool(plan_cache.key_of, parsed)
         plans = await plan_cache.find(found[0]) if found else []
@@ -2277,7 +2292,9 @@ def reusable_forced(
 
 async def _remember(parsed: dict, tbl_id: str, forced: dict, res: dict, words=()) -> None:
     spec = (res.get("parsed") or {}).get("dynamic_spec")
-    if res.get("status") != "ok" or not spec:
+    from app.core.config import get_settings
+
+    if res.get("status") != "ok" or not spec or not get_settings().plan_cache:
         return
     try:
         found = await run_in_threadpool(plan_cache.key_of, parsed)
@@ -2397,6 +2414,9 @@ def parts_answer(parsed: dict, spec: dict, question: str) -> dict:
         total_of_code = 0
         for y in years:
             r = lookup.value(_set_code(spec, op["col"], code), region, y, sex)
+            if r.get("status") != "ok" and op["op"] == "rank":
+                total_of_code = None
+                break
             if r.get("status") != "ok":
                 return {"status": r.get("status"), "answer": r.get("reason") or "", "result": r}
             first = first or r
@@ -2405,6 +2425,8 @@ def parts_answer(parsed: dict, spec: dict, question: str) -> dict:
                 break
             total_of_code += r["value"]
         rows.append({"label": label, "value": total_of_code})
+    if first is None:
+        return {"status": "missing_data", "answer": "", "result": {"status": "missing_data"}}
     unit, name = first.get("unit") or "", spec["name"]
     when = f"{years[0]}~{years[-1]}년" if len(years) > 1 else f"{year}년"
     where = f"{when} {first.get('region') or region}"

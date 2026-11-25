@@ -609,7 +609,7 @@ sources = [
 # 달 묶음 합("1~3월 사망자")에 쓰는 월별 표 (prd_se = M 행, lookup.month_sum). 연간 답에는 쓰지 않는다
 monthly_sources = [
   { table = "DT_1B8000G", item_id = "T1", level = "시도", filters = { c2_id = "15" } },
-  { table = "DT_1B82A01", item_id = "T1", level = "시군구" },
+  { table = "DT_1B82A01", item_id = "T1", level = "시군구", filters = { c2_id = "0" } },
 ]
 
 [[indicators]]
