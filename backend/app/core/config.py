@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     hcx_max_concurrency: int = 3
     hcx_retry_budget_seconds: float = 15.0
     question_cache: bool = True
+    plan_cache: bool = True
     understand_merged: Literal["off", "gemma"] = "off"
     binding_shadow: bool = False
     binding_use: bool = True

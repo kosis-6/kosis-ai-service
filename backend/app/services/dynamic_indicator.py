@@ -2151,6 +2151,10 @@ async def answer_choice(question: str, context: dict, code: str, trace: dict) ->
 
 
 async def cached_answer(question: str, parsed: dict, trace: dict) -> dict | None:
+    from app.core.config import get_settings
+
+    if not get_settings().plan_cache:
+        return None
     try:
         found = await run_in_threadpool(plan_cache.key_of, parsed)
         plans = await plan_cache.find(found[0]) if found else []
@@ -2225,7 +2229,9 @@ def reusable_forced(
 
 async def _remember(parsed: dict, tbl_id: str, forced: dict, res: dict, words=()) -> None:
     spec = (res.get("parsed") or {}).get("dynamic_spec")
-    if res.get("status") != "ok" or not spec:
+    from app.core.config import get_settings
+
+    if res.get("status") != "ok" or not spec or not get_settings().plan_cache:
         return
     try:
         found = await run_in_threadpool(plan_cache.key_of, parsed)
