@@ -25,6 +25,9 @@ def test_question_patterns(question: str, sub_year: bool, from_to: bool) -> None
 
 
 def _run(monkeypatch, question, parsed, result, dims, understanding):
+    monkeypatch.setattr(dict_binding.indicators, "find_in_text", lambda text: [])
+    monkeypatch.setattr(binding.lookup, "_table", lambda tbl_id: {"tbl_nm": "가상 표"})
+    monkeypatch.setattr(binding.di, "couple_counted", lambda tbl_id: False)
     monkeypatch.setattr(d, "schema", lambda tbl_id: (dims, None, "시도"))
     monkeypatch.setattr(binding.di, "schema", lambda tbl_id: (dims, None, "시도"))
 
