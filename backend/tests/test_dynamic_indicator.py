@@ -31,6 +31,7 @@ def binding_off(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.core.config import get_settings
 
     monkeypatch.setattr(get_settings(), "binding_use", False)
+    monkeypatch.setattr(get_settings(), "plan_cache", True)
 
 
 @pytest.fixture(autouse=True)

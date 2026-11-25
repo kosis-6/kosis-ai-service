@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     hcx_max_concurrency: int = 3
     hcx_retry_budget_seconds: float = 15.0
     question_cache: bool = True
-    plan_cache: bool = True
+    plan_cache: bool = False
     understand_merged: Literal["off", "gemma"] = "off"
     # 답이 나간 뒤 Gemma 1회가 그 답이 질문에 맞는지 판정하고, 틀렸다고 보면 한 번 다시 계산한다
     # (app/services/answer_judge.py, ask_session._judged). 사전 지표로 답했으면 통계표 찾기로,
@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     binding_shadow: bool = False
     binding_use: bool = True
     binding_dict_shadow: bool = False
-    binding_dict_gate: bool = False
+    binding_dict_gate: bool = True
 
     search_llm: Literal["auto", "hcx", "gemma"] = "auto"
     gemma_base_url: str = ""
