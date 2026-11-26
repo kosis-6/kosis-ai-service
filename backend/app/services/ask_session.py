@@ -36,6 +36,7 @@ from app.services import (
     qa,
     question_clarify,
     refusal,
+    reports,
     search_llm,
     slots,
     table_guide,
@@ -59,13 +60,14 @@ FOLLOW_MAX_TOKENS = 512
 DETAIL = "detail"
 SOURCE = "source"
 CHAT = "chat"
-NEW, CHANGE, CHART, SUMMARY, REPLY, UNCLEAR = (
+NEW, CHANGE, CHART, SUMMARY, REPLY, UNCLEAR, REPORT = (
     "new",
     "change",
     "chart",
     "summary",
     "reply",
     "unclear",
+    "report",
 )
 TABLES = "tables"
 ASK_INDICATOR = "asked_place"
@@ -1212,7 +1214,7 @@ def parse_delta(raw: str) -> dict:
     changes = data.get("changes") if isinstance(data.get("changes"), dict) else {}
     unclear = data.get("unclear")
     unclear = unclear.strip() if isinstance(unclear, str) and unclear.strip() else None
-    if kind not in (CHANGE, CHART, SUMMARY, NEW):
+    if kind not in (CHANGE, CHART, SUMMARY, NEW, REPORT):
         kind = NEW
     if kind == CHANGE and not changes and not unclear:
         kind = NEW
@@ -1224,7 +1226,7 @@ def parse_delta(raw: str) -> dict:
     }
 
 
-RESTATE_RELATIONS = ("followup", "new", "unclear")
+RESTATE_RELATIONS = ("followup", "new", "unclear", REPORT)
 RELATIVE_WORD = re.compile(r"(?:작년|지난해|재작년|올해|금년)(?:에|의|은|는)?\s*")
 
 
@@ -1306,6 +1308,8 @@ def restate_outcome(r: dict, raw: str | None) -> str:
       (11/25 대화 셋 C25 "거기는 작년에?": why "새로 언급한 대상이 없음", 문장 비움)"""
     if not qa._json_objects(raw or ""):
         return "failed"
+    if r.get("relation") == REPORT:  # 지금까지의 답을 묶어 달라는 말: 문장이 없는 게 정상
+        return REPORT
     if r.get("relation") == "unclear" or not r.get("question"):
         return "unclear"
     return "ok" if r.get("relation") else "failed"
@@ -1361,6 +1365,9 @@ async def _restated(
         said = f"원문: {raw}" if raw else r.get("why") or "응답 없음"
         flow.add("이어 묻기 판단", "실패", f"{said} → 기존 경로")
         return None
+    if outcome == REPORT:
+        flow.add("이어 묻기 판단", REPORT, r.get("why") or "지금까지의 답을 묶어 달라는 말")
+        return await _report_turn(state, question, user_id)
     if outcome == "unclear":
         r = {**r, "relation": "unclear"}
     relation, restored, note = verify_restate(r, state["conditions"], question)
@@ -2082,6 +2089,9 @@ async def _turn(
             delta = {"request_type": CHANGE, "changes": region_only, "chart": None, "unclear": None}
         else:
             delta = await extract(state, question, trace)
+            if delta["request_type"] == REPORT and has_last:
+                flow.add("후속 질문", REPORT, "지금까지의 답을 묶어 달라는 말")
+                return await _report_turn(state, question, user_id)
             if (
                 delta["request_type"] == CHANGE
                 and "indicator" not in delta["changes"]
@@ -2169,6 +2179,104 @@ def other_subject_question(question: str, conditions: dict) -> str | None:
         where = conditions.get("sido") or ""
     lead = " ".join(x for x in (period_text(conditions), where) if x)
     return f"{lead} {question.strip()}" if lead else None
+
+
+REPORT_NO_TURNS = (
+    "이 대화에는 아직 보고서로 묶을 수 있는 답이 없습니다."
+    " 통계 수치를 물어본 뒤 다시 말씀해 주세요."
+)
+REPORT_LOGIN = "로그인하면 이 내용을 보고서로 저장하고 분석 문장까지 만들 수 있습니다."
+
+
+async def _session_turns(session_id: str, user_id: int | None) -> list[dict]:
+    """이 대화에서 보고서에 담을 수 있는 답(reportable · figure) → [{id, question, response}].
+    순서대로, 최근 reports.MAX_ITEMS 개"""
+    from app.core.db import engine
+
+    owner = "user_id = :uid" if user_id is not None else "user_id is null"
+    async with engine.begin() as conn:
+        rows = await conn.execute(
+            text(
+                "select id, message as question, response from app.chat_turns"
+                f" where session_id = :sid and {owner} order by turn_no, id"
+            ),
+            {"sid": session_id, "uid": user_id},
+        )
+        turns = [dict(r) for r in rows.mappings()]
+    kept = [
+        t for t in turns if (t["response"] or {}).get("reportable") and t["response"].get("figure")
+    ]
+    return kept[-reports.MAX_ITEMS :]
+
+
+def report_text(content: dict) -> str:
+    """보고서 content(report_writer.write)를 답 글로"""
+    lines = [content.get("title") or reports.DEFAULT_TITLE]
+    for name, key in (("요약", "summary"), ("분석", "analysis")):
+        if said := [s["text"] for s in content.get(key) or [] if s.get("text")]:
+            lines += ["", name, *[f"- {t}" for t in said]]
+    if limits := [x for x in content.get("limits") or [] if x]:
+        lines += ["", "한계", *[f"- {x}" for x in limits]]
+    lines += [f"※ {w}" for w in content.get("warnings") or []]
+    return "\n".join(lines)
+
+
+def headlines_text(turns: list[dict]) -> str:
+    """로그인하지 않은 대화: 각 답의 요약 첫 문장을 차례로 (코드가 만든 문장이라 숫자가 그대로)"""
+    lines = ["지금까지의 답을 정리했습니다."]
+    for t in turns:
+        response = t["response"] or {}
+        head = ((response.get("summary") or {}).get("headline") or "").strip()
+        lines.append(f"- {head or lead(response.get('answer') or '')}")
+    return "\n".join([*lines, "", REPORT_LOGIN])
+
+
+async def _report_turn(
+    state: dict, question: str, user_id: int | None
+) -> tuple[dict, dict, str | None]:
+    """'지금까지 물어본 거 정리해줘': 이 대화의 답을 모아 보고서로 (변경 추출 · 이어 묻기 복원의
+    report 선택지). 로그인 사용자는 보고서를 만들어 저장하고 문장을 만든다(reports.create ·
+    generate, 화면 [보고서] 버튼과 같은 함수). 로그인하지 않았으면 저장 없이 요약 문장을 모은다"""
+    sid = _session_now.get()
+    turns = await _session_turns(sid, user_id) if sid else []
+    res = {
+        "status": "ok",
+        "answer": REPORT_NO_TURNS,
+        "parsed": state["conditions"],
+        "result": {"status": "ok", "reused": True, "report": None},
+        "sources": [],
+        "chart": None,
+        "summary": None,
+        "request_type": REPORT,
+        "trace": {},
+    }
+    if not turns:
+        flow.add("대화 보고서", "담을 답 없음", "")
+        return res, state["sources"], None
+    if user_id is None:
+        res["answer"] = headlines_text(turns)
+        flow.add("대화 보고서", "요약 모음", f"답 {len(turns)}개 (로그인 안 함)")
+        return res, state["sources"], None
+    try:
+        made = await reports.create(user_id, turn_ids=[t["id"] for t in turns], session_id=sid)
+        done = await asyncio.wait_for(
+            reports.generate(user_id, made["id"]), timeout=get_settings().report_timeout
+        )
+    except reports.ReportError as e:
+        res["answer"] = e.message
+        flow.add("대화 보고서", "실패", e.message)
+        return res, state["sources"], None
+    except TimeoutError:
+        res["answer"] = headlines_text(turns).replace(
+            REPORT_LOGIN, "보고서 문장을 만드는 데 시간이 오래 걸려 각 답의 요약만 보여 드립니다."
+        )
+        res["result"]["report"] = {"id": made["id"], "status": "draft"}
+        flow.add("대화 보고서", "시간 초과", f"보고서 {made['id']} 초안만 저장")
+        return res, state["sources"], None
+    res["answer"] = report_text(done.get("content") or {})
+    res["result"]["report"] = {"id": done["id"], "status": done.get("status")}
+    flow.add("대화 보고서", done.get("status"), f"보고서 {done['id']} · 답 {len(turns)}개")
+    return res, state["sources"], None
 
 
 def next_state(state: dict | None, question: str, res: dict, sources: dict) -> dict:
@@ -2268,6 +2376,7 @@ async def _attach_tables(res: dict, state: dict | None, question: str, user_id: 
     if res.get("tables") is not None or res.get("request_type") in (
         CHART,
         SUMMARY,
+        REPORT,
         DETAIL,
         SOURCE,
         UNCLEAR,
@@ -2664,6 +2773,8 @@ DICTIONARY_ANSWERED = (
 
 # 이 턴의 통계표 찾기 결과 (답 판정이 다시 계산할 때 다시 찾지 않게). handle 이 턴마다 비운다
 _found_now: ContextVar[dict | None] = ContextVar("ask_found_now", default=None)
+# 지금 대화의 session_id: 대화 보고서(_report_turn)가 이 대화의 답을 모을 때 쓴다
+_session_now: ContextVar[str | None] = ContextVar("ask_session_now", default=None)
 # 다시 계산이 값을 못 냈을 때 그 이유 (status · 되묻기).
 # _recompute · _replan_compute 가 두고 _judged 가 읽는다
 _retry_outcome: ContextVar[dict | None] = ContextVar("ask_retry_outcome", default=None)
@@ -3247,6 +3358,7 @@ async def handle(
         if moved:
             sid, state, expired = new_id(), None, False
         _found_now.set(None)
+        _session_now.set(sid)
         res, sources, notice = await _turn(state, question, selections, user_id)
         await _attach_tables(res, state, question, user_id)
         await refusal.finalize(res, question)

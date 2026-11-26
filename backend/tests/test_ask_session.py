@@ -2585,3 +2585,113 @@ def test_inherit_judges_subject_by_what_was_said_alone() -> None:
     parsed = {"type": "value", "regions": ["서울"], "year": 2025}
     p, _ = s.inherit(parsed, {}, prev, {}, "2025년 서울 혼인도 알려줘", "혼인도 알려줘")
     assert p.get("indicator") != "출생아 수" and p.get("term") == "혼인"
+
+
+# --- 대화 보고서: 변경 추출 · 이어 묻기 복원의 report 선택지 ---
+
+
+def test_parse_delta_reads_report() -> None:
+    d = s.parse_delta('{"request_type": "report", "changes": {}, "chart": null, "unclear": null}')
+    assert d["request_type"] == s.REPORT
+
+
+def test_restate_report_needs_no_question() -> None:
+    raw = '{"relation": "report", "question": "", "why": "지금까지 정리"}'
+    r = s.parse_restate(raw)
+    assert r["relation"] == s.REPORT
+    assert s.restate_outcome(r, raw) == s.REPORT
+
+
+REPORT_STATE = {
+    "conditions": {"type": "value", "indicator": "출생아 수", "regions": ["서울"], "year": 2025},
+    "sources": {},
+    "last": {"status": "ok"},
+}
+TURNS = [
+    {"id": 11, "question": "2025년 서울 출생아 수", "response": {
+        "reportable": True, "figure": {"kind": "value"},
+        "summary": {"headline": "2025년 서울 출생아 수는 45,516명입니다."}}},
+    {"id": 12, "question": "사망자도", "response": {
+        "reportable": True, "figure": {"kind": "value"},
+        "answer": "2025년 서울 사망자 수는 52,535명입니다.\n출처 …"}},
+]  # fmt: skip
+
+
+def _report_env(monkeypatch, turns):
+    monkeypatch.setattr(s, "_session_turns", lambda sid, uid: _async(turns))
+    s._session_now.set("sid-1")
+
+
+async def _async(value):
+    return value
+
+
+def test_report_turn_without_answers_says_so(monkeypatch) -> None:
+    _report_env(monkeypatch, [])
+    res, _, _ = asyncio.run(s._report_turn(REPORT_STATE, "지금까지 정리해줘", 7))
+    assert res["answer"] == s.REPORT_NO_TURNS and res["request_type"] == s.REPORT
+
+
+def test_report_turn_logged_out_lists_headlines(monkeypatch) -> None:
+    _report_env(monkeypatch, TURNS)
+    res, _, _ = asyncio.run(s._report_turn(REPORT_STATE, "지금까지 정리해줘", None))
+    assert "- 2025년 서울 출생아 수는 45,516명입니다." in res["answer"]
+    assert "- 2025년 서울 사망자 수는 52,535명입니다." in res["answer"]
+    assert s.REPORT_LOGIN in res["answer"] and res["result"]["report"] is None
+
+
+def test_report_turn_logged_in_makes_and_writes_report(monkeypatch) -> None:
+    _report_env(monkeypatch, TURNS)
+    made = {}
+
+    async def create(user_id, turn_ids=None, session_id=None, **_):
+        made.update(user_id=user_id, turn_ids=turn_ids, session_id=session_id)
+        return {"id": 5}
+
+    async def generate(user_id, report_id):
+        content = {
+            "title": "통계 분석 보고서",
+            "summary": [{"text": "서울 출생아 수는 45,516명입니다."}],
+            "analysis": [{"text": "사망자 수가 출생아 수보다 많습니다."}],
+            "limits": [],
+            "warnings": [],
+        }
+        return {"id": report_id, "status": "ready", "content": content}
+
+    monkeypatch.setattr(s.reports, "create", create)
+    monkeypatch.setattr(s.reports, "generate", generate)
+    res, _, _ = asyncio.run(s._report_turn(REPORT_STATE, "보고서로 만들어줘", 7))
+    assert made == {"user_id": 7, "turn_ids": [11, 12], "session_id": "sid-1"}
+    assert res["result"]["report"] == {"id": 5, "status": "ready"}
+    assert res["answer"].splitlines()[:3] == ["통계 분석 보고서", "", "요약"]
+    assert "- 사망자 수가 출생아 수보다 많습니다." in res["answer"]
+
+
+def test_report_turn_shows_report_error(monkeypatch) -> None:
+    _report_env(monkeypatch, TURNS)
+
+    async def create(*a, **k):
+        raise s.reports.ReportError("not_reportable", "검증된 수치로 답한 결과만 담을 수 있습니다.")
+
+    monkeypatch.setattr(s.reports, "create", create)
+    res, _, _ = asyncio.run(s._report_turn(REPORT_STATE, "보고서로 만들어줘", 7))
+    assert res["answer"] == "검증된 수치로 답한 결과만 담을 수 있습니다."
+
+
+def test_report_choice_from_change_extraction_goes_to_report(monkeypatch) -> None:
+    # 끔(변경 추출)에서 LLM이 report 를 고르면 대화 보고서로 간다
+    state = {
+        **REPORT_STATE,
+        "last": {"status": "ok", "answer": "…"},
+        "recent": ["2025년 서울 출생아 수"],
+    }
+    monkeypatch.setattr(s, "_chat", lambda prompt, system: _async('{"request_type": "report"}'))
+    called = {}
+
+    async def report_turn(st, q, uid):
+        called["q"] = q
+        return {"status": "ok", "answer": "보고서", "request_type": s.REPORT}, {}, None
+
+    monkeypatch.setattr(s, "_report_turn", report_turn)
+    res, _, _ = asyncio.run(s._turn(state, "앞에서 본 결과들 묶어서 정리해줘", None, 7))
+    assert called["q"] == "앞에서 본 결과들 묶어서 정리해줘" and res["request_type"] == s.REPORT
