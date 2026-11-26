@@ -297,6 +297,7 @@ class Talk:
         monkeypatch.setattr(s, "extract", self._extract)
         monkeypatch.setattr(s, "load", self._load)
         monkeypatch.setattr(s, "save", self._save)
+        monkeypatch.setattr(s, "state_saved", self._state_saved)
         monkeypatch.setattr(s, "log_turn", self._log)
         monkeypatch.setattr(s, "now", lambda: self.at)
         monkeypatch.setattr(table_guide, "find_tables", self._find)
@@ -377,6 +378,9 @@ class Talk:
     async def _save(self, session_id, state):
         self.store[session_id] = (state, self.at)
 
+    async def _state_saved(self, session_id):
+        return session_id in self.store
+
     async def _log(self, session_id, user_id, turn_no, question, res, before, after):
         self.turns.append((turn_no, res.get("request_type"), question))
 
@@ -392,6 +396,32 @@ class Talk:
 @pytest.fixture
 def talk(monkeypatch: pytest.MonkeyPatch) -> Talk:
     return Talk(monkeypatch)
+
+
+def test_conversation_deleted_while_answering_is_not_saved_again(
+    talk: Talk, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """이어 묻는 답을 만드는 사이 대화를 지우면 상태 · 기록 · 목록을 다시 만들지 않는다.
+    그대로 저장하면 같은 ID로 다시 생겨 지운 대화가 되살아났다 (11/26 리뷰)"""
+    talk.say("부산 출생아 최근 5년 보여 줘")
+    touched: list[str] = []
+
+    async def touch(session_id, user_id, question):
+        touched.append(question)
+
+    monkeypatch.setattr(s.conversations, "touch", touch)
+    turn = s._turn
+
+    async def deleted_while_answering(*args, **kwargs):
+        out = await turn(*args, **kwargs)
+        talk.store.clear()  # conversations.delete가 상태까지 지운다
+        return out
+
+    monkeypatch.setattr(s, "_turn", deleted_while_answering)
+    res = talk.say("서울은?")
+    assert res["status"] == "ok"  # 보낸 요청에는 답한다
+    assert talk.store == {} and touched == []
+    assert [q for *_, q in talk.turns] == ["부산 출생아 최근 5년 보여 줘"]
 
 
 def test_first_question_starts_a_session(talk: Talk) -> None:

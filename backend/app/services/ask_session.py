@@ -3264,6 +3264,11 @@ async def _save(
     sid: str, after: dict, res: dict, before: dict | None, question: str, user_id
 ) -> None:
     try:
+        if user_id is not None and before is not None and not await state_saved(sid):
+            # 이어 가는 대화를 답을 만드는 사이 사용자가 지웠다 (conversations.delete가 상태까지
+            # 지운다). 그대로 저장하면 같은 ID로 다시 생겨 지운 대화가 목록에 되살아났다
+            logger.info("답을 만드는 사이 지운 대화라 저장하지 않음")
+            return
         await save(sid, after)
         await log_turn(sid, user_id, after.get("turn_no") or 1, question, res, before, after)
         if user_id is not None:
@@ -3299,6 +3304,20 @@ async def load(session_id: str, at: datetime) -> tuple[dict | None, bool]:
     if at - updated_at > keeps_for(slots):
         return None, True
     return copy.deepcopy(slots), False
+
+
+async def state_saved(session_id: str) -> bool:
+    """대화 상태가 DB에 아직 있는가. 캐시는 보지 않는다: 지우기는 다른 프로세스에서도 온다"""
+    from app.core.db import engine
+
+    async with engine.begin() as conn:
+        row = (
+            await conn.execute(
+                text("select 1 from app.chat_sessions where session_id = :k"),
+                {"k": _key(session_id)},
+            )
+        ).first()
+    return row is not None
 
 
 async def save(session_id: str, state: dict) -> None:
