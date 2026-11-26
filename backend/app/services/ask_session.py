@@ -94,7 +94,7 @@ CHART_MAX_CHARS = 40
 # 목록에 없는 조건을 버리고 그림만 바꿨다)
 _CHART_FILLER = (
     r"그럼|그러면|그렇다면|혹시|이거|그거|이걸|그걸|이것|그것|이건|그건|지금|이번엔|이번에는"
-    r"|다시|한\s*번|좀|형태|모양|말고|대신|아니고|아니라"
+    r"|(?:이|그|위|앞선|직전)?\s*결과|다시|한\s*번|좀|형태|모양|말고|대신|아니고|아니라"
 )
 _CHART_VERB = (
     r"보여(?:줘요?|주세요|줄래요?|줄|주라|봐)?|바꿔(?:서|줘요?|주세요|줄래요?|줄|봐)?|바꿀|바꾸어"
@@ -1785,7 +1785,8 @@ async def _composite(question: str, res: dict, state: dict | None) -> dict | Non
     if res.get("clarification") or res.get("status") in table_guide.REFUSED:
         return None
     trace = res.get("trace") or {}
-    if not await composite.is_composite(question, trace):
+    ranked_scope = composite.RANKED_SCOPE.search(question)
+    if not ranked_scope and not await composite.is_composite(question, trace):
         return None
     flow.add("복합 판별", "복합", str((trace.get("composite_gate") or {}).get("why") or "")[:120])
     sid = (state or {}).get("search_session") or table_guide.new_search_session()
@@ -1794,9 +1795,19 @@ async def _composite(question: str, res: dict, state: dict | None) -> dict | Non
         alt = await composite.answer(question, parsed, found, trace)
     except Exception:
         logger.exception("복합 질문 계산 실패")
-        return None
+        alt = None
     if alt is None:
-        return None
+        if not ranked_scope:
+            return None
+        flow.add("복합 계산", "답변 불가", "요청한 순위에 해당하는 지역의 값을 확인하지 못함")
+        return {
+            "status": "partial_match",
+            "answer": "요청하신 순위에 해당하는 지역을 골라 해당 통계를 계산하지 못했습니다.",
+            "parsed": parsed,
+            "result": {"status": "partial_match", "final": True},
+            "sources": [],
+            "trace": trace,
+        }
     alt["search_session"] = sid
     alt["trace"] = trace
     return alt

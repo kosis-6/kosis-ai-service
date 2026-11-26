@@ -500,7 +500,7 @@ def test_adding_region_to_trend_keeps_the_period(talk: Talk) -> None:
 
 def test_chart_and_summary_reuse_last_answer(talk: Talk) -> None:
     first = talk.say("부산 출생아 최근 5년 보여 줘")
-    res = talk.say("막대그래프로 보여줘")
+    res = talk.say("이 결과를 막대그래프로 변경해줘.")
     assert res["request_type"] == "chart" and res["chart"]["view"] == "bar"
     assert res["chart"]["rows"] == first["chart"]["rows"] and res["sources"] == first["sources"]
     assert talk.extracted == [] and talk.answered == []

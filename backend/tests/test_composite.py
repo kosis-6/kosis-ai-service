@@ -39,6 +39,23 @@ def test_simple_plan_goes_back_to_the_usual_path() -> None:
     assert composite.simple_plan(back) is False
 
 
+def test_plan_retries_years_not_in_question(monkeypatch) -> None:
+    prompts = []
+
+    async def plan(text):
+        prompts.append(text)
+        years = ["2019", "2024"] if len(prompts) == 1 else ["latest-4", "latest"]
+        return {
+            "steps": [{"op": "get", "indicator": 0, "years": years}],
+            "answer": {"step": 0, "with": []},
+        }
+
+    monkeypatch.setattr(composite, "_plan", plan)
+    out = asyncio.run(composite.plan("최근 5년간 얼마나 변했어?", ["출생아 수"], {}))
+    assert out["steps"][0]["years"] == ["latest-4", "latest"]
+    assert "질문에 없는 연도: 2019, 2024" in prompts[1]
+
+
 def test_result_shapes_render_with_the_existing_summary() -> None:
     class G:
         sources = [{"source": "A", "basis": "B", "tbl_id": "DT_1", "url": "u"}]
@@ -122,7 +139,7 @@ def test_answer_runs_plan_and_falls_back_to_none_on_failure(monkeypatch) -> None
     monkeypatch.setattr(composite, "plan", fake_plan)
     monkeypatch.setattr(composite, "Getter", FakeGetter)
     trace = {}
-    out = asyncio.run(composite.answer("질문", {"level": "시도"}, found, trace))
+    out = asyncio.run(composite.answer("상위 1개 시도의 B 비중", {"level": "시도"}, found, trace))
     assert (
         out["status"] == "ok"
         and out["result"]["value"] == 1.0
@@ -131,6 +148,7 @@ def test_answer_runs_plan_and_falls_back_to_none_on_failure(monkeypatch) -> None
     assert "상위 1: 서울" in out["answer"] and out["parsed"]["composite"] is True
     assert [s["tbl_id"] for s in out["sources"]] == ["DT_0", "DT_1"]
     assert trace["composite"]["gets"] == 2
+    assert asyncio.run(composite.answer("하위 1개 시도의 B 비중", {}, found, {})) is None
 
     async def no_plan(question, spans, record):
         record["problems"] = [["연도 아님"]]

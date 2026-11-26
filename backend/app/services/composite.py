@@ -29,21 +29,29 @@ NATION = "전국"
 # 지표 질문 글에 통계표 찾기가 붙인 연도("2019~2024년 …"). get 이 시점을 정해 다시 붙인다
 RATIO_WORD = re.compile(r"비율|비중|%|집중도|(?<![가-힣])률|율(?![가-힣])")
 YEARS_IN_TEXT = re.compile(r"(?:19|20)\d{2}\s*(?:~\s*(?:19|20)\d{2})?\s*년\s*")
+RANKED_SCOPE = re.compile(
+    r"(상위|하위)\s*(\d+)\s*(?:개\s*)?(?:시군구|시\s*도|지역|곳)\s*(?:의|에서)\s*\S"
+)
+ABSOLUTE_YEAR = re.compile(r"(?<!\d)(?:19|20)\d{2}(?!\d)")
 
 
-# ---------------------------------------------------------------- 복합 판별 (Gemma)
+# ---------------------------------------------------------------- 복합 판별
 @llm_calls.staged("composite_gate")
 async def _gate(question: str) -> dict | None:
-    result = await search_llm.GemmaClient(retry_waits=()).chat(
+    result, _ = await search_llm.ask(
         MODEL,
-        [
-            {"role": "system", "content": prompt.GATE_SYSTEM},
-            {"role": "user", "content": f"질문: {question}"},
-        ],
-        thinking={"effort": "none"},
-        maxCompletionTokens=120,
-        temperature=0,
-        responseFormat={"type": "json", "schema": prompt.GATE_SCHEMA},
+        lambda _: (
+            [
+                {"role": "system", "content": prompt.GATE_SYSTEM},
+                {"role": "user", "content": f"질문: {question}"},
+            ],
+            {
+                "thinking": {"effort": "none"},
+                "maxCompletionTokens": 120,
+                "temperature": 0,
+                "responseFormat": {"type": "json", "schema": prompt.GATE_SCHEMA},
+            },
+        ),
     )
     try:
         out = json.loads(result.content)
@@ -84,13 +92,17 @@ def user_text(question: str, spans: list[str], problems: list[str] | None = None
 
 @llm_calls.staged("composite_plan")
 async def _plan(text: str) -> dict | None:
-    result = await search_llm.GemmaClient(retry_waits=()).chat(
+    result, _ = await search_llm.ask(
         MODEL,
-        [{"role": "system", "content": prompt.SYSTEM}, {"role": "user", "content": text}],
-        thinking={"effort": "none"},
-        maxCompletionTokens=MAX_TOKENS,
-        temperature=0,
-        responseFormat={"type": "json", "schema": prompt.SCHEMA},
+        lambda _: (
+            [{"role": "system", "content": prompt.SYSTEM}, {"role": "user", "content": text}],
+            {
+                "thinking": {"effort": "none"},
+                "maxCompletionTokens": MAX_TOKENS,
+                "temperature": 0,
+                "responseFormat": {"type": "json", "schema": prompt.SCHEMA},
+            },
+        ),
     )
     try:
         out = json.loads(result.content)
@@ -110,7 +122,15 @@ async def plan(question: str, spans: list[str], record: dict) -> dict | None:
             continue
         steps, problems = plan_steps.normalize(raw.get("steps"), len(spans), raw.get("answer"))
         if steps is not None:
-            return {"steps": steps, "answer": raw.get("answer") or {}}
+            years = {
+                str(year)
+                for step in steps
+                for year in [*(step.get("years") or []), step.get("from"), step.get("to")]
+                if isinstance(year, (str, int)) and ABSOLUTE_YEAR.fullmatch(str(year))
+            }
+            if not (extra := years - set(ABSOLUTE_YEAR.findall(question))):
+                return {"steps": steps, "answer": raw.get("answer") or {}}
+            problems = [f"질문에 없는 연도: {', '.join(sorted(extra))}. latest-N을 사용하세요."]
         record.setdefault("problems", []).append(problems)
     return None
 
@@ -319,6 +339,18 @@ async def answer(question: str, parsed: dict, found: dict, trace: dict) -> dict 
         logger.exception("복합 계산 실패")
         return None
     record["gets"] = getter.calls
+    if scope := RANKED_SCOPE.search(question):
+        steps = p["steps"]
+        candidates = [
+            set(t.regions())
+            for step, t in zip(steps, all_, strict=True)
+            if step["op"] == "rank"
+            and step.get("top") == int(scope[2])
+            and bool(step.get("ascending")) == (scope[1] == "하위")
+        ]
+        if not any(set(out.regions()) == regions for regions in candidates):
+            flow.add("복합 계산", "실패", "계산 결과의 지역과 요청한 순위의 지역이 다름")
+            return None
     level = getter._level()
     result = _result(out, getter, level)
     leads = _lead(all_, p["steps"], (p.get("answer") or {}).get("with") or [])

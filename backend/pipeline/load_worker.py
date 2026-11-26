@@ -17,6 +17,7 @@ from pipeline import population_mart
 from pipeline.load_raw import load_table
 from pipeline.region_map import map_table
 from pipeline.stats_build import conninfo
+from scripts.collect_kosis import KosisError
 
 ROOT = Path(__file__).resolve().parent.parent
 TABLE_DIR = ROOT / os.environ.get("KOSIS_TABLE_DIR", "data/tables")
@@ -74,7 +75,8 @@ def finish(pg: psycopg.Connection, job: Job) -> None:
 
 
 def retry_delay(error: BaseException, attempts: int) -> timedelta | None:
-    if not isinstance(error, TRANSIENT) or attempts >= MAX_ATTEMPTS:
+    rate_limited = isinstance(error, KosisError) and error.code == "40"
+    if attempts >= MAX_ATTEMPTS or not (rate_limited or isinstance(error, TRANSIENT)):
         return None
     return RETRY_AFTER[min(attempts, len(RETRY_AFTER)) - 1]
 

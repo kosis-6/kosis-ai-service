@@ -1,7 +1,7 @@
 """보고서에 담은 결과끼리 비교할 수 있는지 검사하고, 비교할 수 있는 쌍만 코드가 계산한다
 (명세서 5.1)
 
-LLM은 이 결과의 이름 · 조건 · 방향만 보고 문장을 쓴다. 수치는 여기서만 만든다.
+LLM은 이 결과의 이름 · 조건 · 방향만 보고 문장을 쓴다. 시점 간 비교는 코드가 문장까지 만든다.
 
   R1 모집단     conditions.population 이 서로 다르면 비교 · 계산 안 함
   R2 단위       단위가 다르면 차이 · 배율 계산 안 함 (나란히 보여 주기만)
@@ -19,6 +19,7 @@ from app.services import qa
 
 SPACES = re.compile(r"\s+")
 COUNT_TAIL = re.compile(r"(수|건수)$")
+POINT_PERIOD = re.compile(r"(\d{4})\s*년(?:\s*(1[0-2]|0?[1-9])\s*월(?:\s*말)?)?")
 
 
 def _norm(name: str | None) -> str:
@@ -82,6 +83,12 @@ def _fmt(v: float | None, unit: str) -> str:
     return qa._val(v, unit)
 
 
+def _period_key(period: str | None) -> tuple[int, int] | None:
+    if match := POINT_PERIOD.fullmatch((period or "").strip()):
+        return int(match[1]), int(match[2] or 0)
+    return None
+
+
 def _derive(a: dict, b: dict) -> dict | None:
     """비교할 수 있는 쌍의 차이 · 변화. 값이 하나라도 없거나 의미 있는 비교가 아니면 None"""
     fa, fb = a["figure"], b["figure"]
@@ -90,12 +97,16 @@ def _derive(a: dict, b: dict) -> dict | None:
         return None
     unit = fa.get("unit") or ""
     pct = unit == "%"
-    if _same_series(a, b) and _cond(a, "period") != _cond(b, "period"):
+    pa, pb = _cond(a, "period"), _cond(b, "period")
+    if _same_series(a, b) and pa and pb and pa != pb:
+        ka, kb = _period_key(pa), _period_key(pb)
+        if ka is not None and kb is not None and ka > kb:
+            a, b, va, vb, pa, pb = b, a, vb, va, pb, pa
         diff = vb - va
         out = {
             "kind": "change",
             "of": [a["id"], b["id"]],
-            "meaning": f"{_cond(a, 'period')} → {_cond(b, 'period')} {fa.get('indicator')} 변화",
+            "meaning": f"{pa} → {pb} {a['figure'].get('indicator')} 변화",
             "value": round(diff, 2),
             "unit": "%p" if pct else unit,
             "direction": "증가" if diff > 0 else "감소" if diff < 0 else "같음",

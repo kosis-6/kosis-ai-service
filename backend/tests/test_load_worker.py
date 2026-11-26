@@ -9,6 +9,7 @@ import psycopg
 import pytest
 
 from pipeline import load_worker as w
+from scripts import collect_kosis
 
 CSV = "tbl_id,org_id,period,prd_se,item_id,item_nm,value,value_flag,unit,last_changed\n"
 
@@ -184,6 +185,20 @@ def test_fail_requeues_transient_and_fails_others() -> None:
     assert "run_after = now() + %s" in pg.sql[-1][0]
     assert w.fail(pg, _job(attempts=1), ValueError("합계가 다릅니다")) == "failed"
     assert pg.sql[-1][1][0] == "ValueError: 합계가 다릅니다"
+
+
+def test_kosis_rate_limit_response_requeues_until_retry_limit() -> None:
+    class LimitedClient:
+        async def get(self, path, params):
+            return {"err": "40", "errMsg": "호출 제한"}
+
+    with pytest.raises(collect_kosis.KosisError) as error:
+        asyncio.run(collect_kosis.call(LimitedClient(), "/statisticsData.do", {}, pause=0))
+
+    pg = FakePg()
+    assert w.fail(pg, _job(attempts=1), error.value) == "queued"
+    assert pg.sql[-1][1][0] == timedelta(minutes=10)
+    assert w.fail(pg, _job(attempts=3), error.value) == "failed"
 
 
 def test_error_message_hides_kosis_key() -> None:
