@@ -1208,4 +1208,48 @@ kind = "composition"
 formula = "항목별 값 ÷ 합계 × 100"
 method = "lookup"
 desc = "한국 국적을 취득한 사람의 이전 국적별 인원·비중"
-sources = [{ table = "TX_11025_A017_A", item_id = "16110AAA5", level = "시군구", parts_dim = "c2", parts_total = "15110AA200", leaf_only = true, exclude_labels = ["기타", "미상"] }]
+sources = [{ table = "TX_11025_A017_A", item_id = "16110AAA5", level = "시군구", parts_dim = "c2", parts_total = "15110AA200", leaf_only = true, exclude_labels = ["기타", "미상"] }]# ---------------------------------------------------------------------------
+# 정의어 → 숫자 구간 (app/services/band.py, 11/26)
+#   통계 표준 정의가 있는 말을 표의 구간 칸(여러 개의 합)으로 잇는다. dim 은 분류 이름에 들어 있어야
+#   하는 말, range 는 숫자 범위. 연령 구간(세)은 그 분류가 연령 축일 때만 (사람 연령은 지표 사전 몫)
+# ---------------------------------------------------------------------------
+[[band_words]]
+word = "고령산모"
+dim = "모의 연령"
+range = "35세 이상"
+note = "통계청 출생통계: 35세 이상 산모"
+
+[[band_words]]
+word = "고령 산모"
+dim = "모의 연령"
+range = "35세 이상"
+
+[[band_words]]
+word = "저체중아"
+dim = "체중"
+range = "2.5kg 미만"
+note = "출생 시 체중 2.5kg 미만"
+
+[[band_words]]
+word = "저체중"
+dim = "체중"
+range = "2.5kg 미만"
+
+[[band_words]]
+word = "거대아"
+dim = "체중"
+range = "4kg 이상"
+note = "출생 시 체중 4.0kg 이상"
+
+[[band_words]]
+word = "황혼이혼"
+dim = "결혼생활기간"
+range = "20년 이상"
+note = "결혼생활 20년 이상 부부의 이혼 (언론 · 통계청 보도 기준)"
+
+[[band_words]]
+word = "황혼 이혼"
+dim = "결혼생활기간"
+range = "20년 이상"
+
+

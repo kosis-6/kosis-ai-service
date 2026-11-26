@@ -140,6 +140,12 @@ def describe(result: dict[str, Any] | None, parsed: dict[str, Any] | None = None
     parts = leaves(result)
     top = (parsed or {}).get("top")
     lines = [_part(p, top) for p in parts[:MAX_PARTS]]
+    if result.get("kind") == "composite" and result.get("steps_text"):
+        # 복합 질문(계산 계획)은 걸러내기 · 변화량 · 순위를 코드가 차례로 계산한 답이다. 마지막
+        # 값만 보면 "앞 단계가 빠졌다"고 틀리게 걸므로 계산 순서와 앞 단계 결과를 먼저 보인다
+        lines.insert(0, f"계산 순서(코드가 차례로 계산함): {result['steps_text']}")
+        for n in [str(x) for x in result.get("notes") or []][:3]:
+            lines.insert(1, f"앞 단계 결과: {n}")
     if len(parts) > 1:
         if len({p.get("sex") for p in parts}) > 1:
             how = "남 · 여 따로"

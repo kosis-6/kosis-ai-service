@@ -35,6 +35,17 @@ def no_cell_llm(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def no_composite_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    """복합 판별(Gemma)은 테스트에서 늘 '단순' (네트워크 없이). 복합 경로는 test_composite 몫"""
+    from app.services import composite
+
+    async def gate(question):
+        return {"composite": False, "why": "테스트"}
+
+    monkeypatch.setattr(composite, "_gate", gate)
+
+
+@pytest.fixture(autouse=True)
 def no_recell_llm(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.services import recell
 

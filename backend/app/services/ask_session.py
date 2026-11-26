@@ -1243,6 +1243,8 @@ async def _new(
         refused["request_type"], refused["question"] = NEW, question
         return refused, {}, None
     res = await qa.ask(question, adjust=adjust)
+    if alt := await _composite(question, res, state):
+        res = alt
     parsed = res.get("parsed") or {}
     sources = kept.get("sources") or sources_of(question, parsed)
     notice = inherited_notice(parsed, sources)
@@ -1278,6 +1280,32 @@ async def _new(
     res["chart"] = charts.build(res.get("result"))
     res["request_type"] = NEW
     return res, sources, notice
+
+
+async def _composite(question: str, res: dict, state: dict | None) -> dict | None:
+    """복합 질문(A_20): Gemma 판별이 복합이라 하면 통계표를 찾아 계산 계획(steps)으로 답한다.
+    계획이 단순하거나(연산 하나) 못 세우거나 값을 못 내면 None (사전 답이 그대로)"""
+    from app.services import composite
+
+    parsed = res.get("parsed") or {}
+    if res.get("clarification") or res.get("status") in table_guide.REFUSED:
+        return None
+    trace = res.get("trace") or {}
+    if not await composite.is_composite(question, trace):
+        return None
+    flow.add("복합 판별", "복합", str((trace.get("composite_gate") or {}).get("why") or "")[:120])
+    sid = (state or {}).get("search_session") or table_guide.new_search_session()
+    try:
+        found = _keep(await table_guide.find_tables(question, sid, None, None))
+        alt = await composite.answer(question, parsed, found, trace)
+    except Exception:
+        logger.exception("복합 질문 계산 실패")
+        return None
+    if alt is None:
+        return None
+    alt["search_session"] = sid
+    alt["trace"] = trace
+    return alt
 
 
 async def _separate_measures(question, measures, state, user_id):
@@ -2216,6 +2244,11 @@ DICTIONARY_ANSWERED = (
 
 # 이 턴의 통계표 찾기 결과 (답 판정이 다시 계산할 때 다시 찾지 않게). handle 이 턴마다 비운다
 _found_now: ContextVar[dict | None] = ContextVar("ask_found_now", default=None)
+# 다시 계산이 값을 못 냈을 때 그 이유 (status · 되묻기).
+# _recompute · _replan_compute 가 두고 _judged 가 읽는다
+_retry_outcome: ContextVar[dict | None] = ContextVar("ask_retry_outcome", default=None)
+# 고리 끝 경우 1 (값은 냈는데 판정이 거절, 처음 답 유지)에 붙이는 한 줄 — 11/25 세진 확정 문구
+CAUTION = "※ 이 답은 질문의 조건과 다를 수 있습니다."
 
 
 def _keep(found: dict) -> dict:
@@ -2278,6 +2311,7 @@ async def _recompute(
     base = {**parsed, "dynamic_spec": None}
     computed = await dynamic_indicator.compute_from_handoff(asked, base, found, trace)
     if not computed or computed.get("status") != "ok" or computed.get("clarification"):
+        _retry_outcome.set(_outcome_of(computed))
         return None, how
     again = dict(computed)
     again.setdefault("trace", trace)
@@ -2330,6 +2364,7 @@ async def _replan_compute(
     if computed is None:
         computed = await dynamic_indicator.compute_from_handoff(asked, base, found2, trace)
     if not computed or computed.get("status") != "ok" or computed.get("clarification"):
+        _retry_outcome.set(_outcome_of(computed))
         record["replan"]["computed"] = {
             "via": trace.get("by") or ("handoff" if targets else "none"),
             "targets": len(targets),
@@ -2346,6 +2381,58 @@ async def _replan_compute(
     again.setdefault("trace", trace)
     again["search_session"] = sid
     return again, how
+
+
+def _outcome_of(computed: dict | None) -> dict:
+    """다시 계산이 값을 못 낸 결과의 요약: 실패 사유 코드와, 되묻기였으면 그 답 전체"""
+    if not computed:
+        return {"status": None, "clarification": None}
+    return {
+        "status": computed.get("status"),
+        "clarification": computed if computed.get("clarification") else None,
+    }
+
+
+def _loop_end(res: dict, record: dict, how: str, asked_back: dict | None, asked: str) -> None:
+    """고리가 답을 바꾸지 못하고 끝났을 때(give_up · timeout) 처음 답을 어떻게 낼지 (11/25 확정).
+    A1 판정 '다시' 71건에서 고리가 못 고친 60건을 셋으로 갈랐다:
+      경우 3  다시 계산이 되묻기를 냈다           → 그 되묻기를 전달 (5건, 첫 답 정답 0)
+      경우 2  어느 시도도 대신 낼 값을 못 냈다    → 답변 불가 (마지막 실패 사유, 없으면
+                                                 partial_match) (20건, 첫 답 정답 0 → 잃는 것 없다)
+      경우 1  값은 냈는데 그 값도 판정에 걸렸다   → 처음 답 그대로 + 주의 한 줄 (35건, 첫 답 정답
+                                                 11이라 지우면 잃는다. 11/22에 맞는 답 12를 막았음)
+    시도가 하나도 없었으면(첫 행동이 give_up) 경우 1처럼 둔다. 예외로 끝난 고리는 부르지 않는다."""
+    attempts = record.get("attempts") or []
+    real = [a for a in attempts if a.get("how") not in (None, "give_up", "timeout")]
+    kind = res.get("request_type")
+    if asked_back is not None:
+        record["end"] = {"how": how, "case": "되묻기"}
+        flow.add("고리 끝", "되묻기", f"{how}: 다시 계산이 낸 되묻기를 전달")
+        res.clear()
+        res.update(asked_back)
+        res["request_type"], res["question"] = kind, asked
+        res.setdefault("trace", {})["answer_judge"] = record
+        return
+    if real and not any(a.get("computed") for a in real):
+        last = next((a.get("fail_status") for a in reversed(real) if a.get("fail_status")), None)
+        code = last if last in refusal.TEMPLATES else "partial_match"
+        record["end"] = {"how": how, "case": "답변 불가", "code": code, "last_status": last}
+        flow.add(
+            "고리 끝", "답변 불가",
+            f"{how}: 판정이 틀렸다 했고 대신 낼 값이 없음 → {refusal.NAMES.get(code, code)}",
+        )  # fmt: skip
+        why = f"답 판정 뒤 다시 계산 {len(real)}회 모두 값 없음 ({how}, 마지막 {last or '-'})"
+        again = _refusal_answer(res, code, why)
+        res.clear()
+        res.update(again)
+        res["request_type"], res["question"] = kind, asked
+        res["trace"]["answer_judge"] = record
+        return
+    record["end"] = {"how": how, "case": "처음 답 + 주의"}
+    flow.add("고리 끝", "처음 답 + 주의", f"{how}: 다시 한 답이 판정을 통과하지 못함")
+    answer = res.get("answer") or ""
+    if CAUTION not in answer:
+        res["answer"] = f"{answer}\n\n{CAUTION}".strip()
 
 
 def _refusal_answer(res: dict, code: str, why: str) -> dict:
@@ -2409,6 +2496,7 @@ async def _judged(res: dict, state: dict | None, question: str, user_id: int | N
     done: set[str] = set()
     attempts: list[dict] = []
     record["attempts"] = attempts
+    asked_back: dict | None = None  # 다시 계산이 낸 되묻기 (고리 끝 경우 3)
     started = time.monotonic()
     while True:
         action = agent_action.choose(
@@ -2422,15 +2510,16 @@ async def _judged(res: dict, state: dict | None, question: str, user_id: int | N
         if action.name == agent_action.GIVE_UP:
             attempt["how"], attempt["computed"] = "give_up", False
             record.setdefault("retry", {"how": "give_up", "computed": False})
-            return
+            return _loop_end(res, record, "give_up", asked_back, asked)
         if time.monotonic() - started > agent_action.MAX_SECONDS:
-            flow.add("다시 계산", "중단", f"{agent_action.MAX_SECONDS}초 넘음 → 처음 답 그대로")
+            flow.add("다시 계산", "중단", f"{agent_action.MAX_SECONDS}초 넘음")
             attempt["how"], attempt["computed"] = "timeout", False
-            return
+            return _loop_end(res, record, "timeout", asked_back, asked)
         done.add(action.name)
         tried += 1
         if action.name in agent_action.LLM_ACTIONS:
             llm_tried += 1
+        _retry_outcome.set(None)
         try:
             again, how = await _retry(action, res, verdict, state, asked, user_id, done)
         except Exception:
@@ -2445,6 +2534,14 @@ async def _judged(res: dict, state: dict | None, question: str, user_id: int | N
         if len(attempts) == 1:
             record["retry"] = {k: v for k, v in attempt.items() if k != "action"}
         if again is None:
+            outcome = _retry_outcome.get() or {}
+            if outcome.get("status"):
+                attempt["fail_status"] = outcome["status"]
+            if outcome.get("clarification"):
+                asked_back = outcome["clarification"]  # 뒤에 성공한 답이 없으면 이 되묻기를 낸다
+                attempt["clarification"] = True
+                flow.add("다시 계산", "되묻기", f"{how}: 되물어야 함 → 다음 행동, 없으면 전달")
+                continue
             flow.add("다시 계산", "실패", f"{how}: 계산하지 못함 → 다음 행동")
             continue
         if again.get("status") in refusal.TEMPLATES:
