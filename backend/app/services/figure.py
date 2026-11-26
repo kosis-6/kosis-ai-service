@@ -68,7 +68,8 @@ def _operands(r: dict) -> list[dict]:
             "value": o.get("value"),
             "unit": str(o.get("unit") or ""),
             "conditions": None,  # 단계 2: 각 값의 지역 · 연도 · 모집단
-            "tbl_id": r.get("tbl_id"),
+            # 두 표를 엮은 계산은 값마다 자기 표가 있다. 없으면(한 표의 두 칸) 결과의 표
+            "tbl_id": o.get("tbl_id") or r.get("tbl_id"),
         }
         for o in r.get("operands") or []
     ]

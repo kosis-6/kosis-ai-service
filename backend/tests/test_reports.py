@@ -211,6 +211,20 @@ def test_draft_is_reused_then_new_after_generation(db):
     assert third["id"] != first["id"]
 
 
+def test_concurrent_first_adds_make_one_draft(db):
+    """초안이 없을 때 같은 답을 동시에 두 번 담아도 초안은 하나 (#245 리뷰)"""
+
+    async def both():
+        return await asyncio.gather(
+            r.add_to_draft(db.a, db.t["ok1"]), r.add_to_draft(db.a, db.t["ok1"])
+        )
+
+    first, second = run(both())
+    assert first["id"] == second["id"]
+    assert run(r.listing(db.a))["total"] == 1
+    assert len(run(r.detail(db.a, first["id"]))["items"]) == 1
+
+
 def test_draft_not_created_for_unreportable(db):
     with pytest.raises(ReportError):
         run(r.add_to_draft(db.a, db.t["bad"]))

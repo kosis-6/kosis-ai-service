@@ -267,6 +267,11 @@ async def add_to_draft(user_id: int, turn_id: int, session_id: str | None = None
     from app.core.db import engine
 
     async with engine.begin() as conn:
+        # 초안이 없을 때 두 요청이 동시에 오면 둘 다 새 초안을 만든다.
+        # 사용자 행을 잠가 같은 사용자의 담기를 하나씩 처리한다
+        await conn.execute(
+            text("select id from app.users where id = :uid for update"), {"uid": user_id}
+        )
         row = await conn.execute(
             text(
                 "select id from app.reports where user_id = :uid and status = 'draft'"
