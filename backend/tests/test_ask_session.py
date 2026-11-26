@@ -208,21 +208,50 @@ def test_pick_region_reply() -> None:
         ("막대그래프로 보여줘", "bar"),
         ("표로", "table"),
         ("꺾은선으로 바꿔줘", "line"),
+        ("그래프로 보여줘", "chart"),
+        ("차트로 그려줘", "chart"),
+        ("시각화해줘", "chart"),
+        ("막대그래프는?", "bar"),
+        ("테이블로 보여줘", "table"),
+        ("선으로 보여줘", "line"),
+        ("원그래프로 보여줘", "pie"),
+        ("표 말고 그래프로", "chart"),
+        ("그래프 말고 표로 보여줘", "table"),
+        ("이거 막대그래프로 바꿔서 보여줄 수 있어?", "bar"),
         ("부산 출생아 수 막대그래프로", None),
         ("2020년 막대그래프로 보여줘", None),
         ("막대한 영향이 있나요", None),
+        ("서울도 막대로 보여줘", None),
+        ("추이를 막대그래프로 보여줘", None),
+        ("통계표 보여줘", None),
     ],
 )
 def test_chart_request(question, view) -> None:
     assert s.chart_request(question) == view
 
 
+@pytest.mark.parametrize(
+    ("kind", "view", "shown", "text"),
+    [
+        ("line", "bar", "bar", "막대그래프로 바꿨습니다."),
+        ("line", "table", "table", "표로 바꿨습니다."),
+        ("line", "chart", "line", "꺾은선 그래프로 보여 드립니다."),
+        ("bar", "bar", "bar", "막대그래프로 바꿨습니다."),
+        ("bar", "line", "bar", "꺾은선은 연도별 추이에만 씁니다. 막대그래프로 보여 드립니다."),
+        ("parts", "bar", None, "구성비 막대그래프로 바꿨습니다."),
+        ("parts", "chart", None, "구성비 막대그래프로 보여 드립니다."),
+        ("parts", "pie", None, "원그래프는 지원하지 않습니다. 구성비 막대그래프로 보여 드립니다."),
+    ],
+)
+def test_redraw_shows_a_drawable_view(kind, view, shown, text) -> None:
+    chart, said = s.redraw({"type": kind, "rows": [], "view": "table"}, view, "ok")
+    assert chart["view"] == shown and said == text
+
+
 def test_chart_view_and_summary() -> None:
-    line = {"type": "line", "rows": []}
-    assert s.chart_with_view(line, "bar")["view"] == "bar"
-    assert s.chart_with_view(line, "table")["view"] == "table"
-    assert s.chart_with_view({"type": "parts", "rows": []}, "line") is None
-    assert s.chart_with_view(None, "bar") is None
+    chart, said = s.redraw(None, "bar", "ok")
+    assert chart is None and said.startswith("직전 답은 값이 하나라 그래프로 그릴 수 없습니다.")
+    assert s.redraw(None, "chart", "tables") == (None, "직전 답에는 그래프로 그릴 수치가 없습니다.")
     assert s.summary_request("요약해줘") and s.summary_request("한 줄로 정리해 줘")
     for said in (
         "요약",
@@ -430,12 +459,25 @@ def test_summary_of_an_answer_without_numbers_repeats_its_lead(talk: Talk) -> No
     assert res["answer"] == "value ['부산'] 2022년"
 
 
-def test_chart_that_cannot_be_drawn_is_asked_back(talk: Talk) -> None:
+def test_chart_of_a_single_value_says_why_instead_of_asking_back(talk: Talk) -> None:
     talk.parsed = {**BASE, "type": "value", "start_year": None, "end_year": None}
     talk.say("2024년 부산 출생아 수")
     res = talk.say("막대그래프로 보여줘")
-    assert res["status"] == "unclear" and res["chart"] is None
+    assert res["request_type"] == "chart" and res["status"] == "ok" and res["chart"] is None
+    assert res["answer"].startswith("직전 답은 값이 하나라 그래프로 그릴 수 없습니다.")
+    assert talk.extracted == []
     assert talk.say("2022년만", request_type="change", changes={"year": 2022})["status"] == "ok"
+
+
+def test_chart_without_a_shape_uses_the_last_chart(talk: Talk) -> None:
+    first = talk.say("부산 출생아 최근 5년 보여 줘")
+    res = talk.say("그래프로 보여줘")
+    assert res["request_type"] == "chart" and res["chart"]["view"] == "line"
+    assert res["chart"]["rows"] == first["chart"]["rows"] and talk.extracted == []
+    res = talk.say("그림 좀 바꿔봐", request_type="chart", chart=None)
+    assert talk.extracted == ["그림 좀 바꿔봐"]
+    assert res["request_type"] == "chart" and res["chart"]["rows"] == first["chart"]["rows"]
+    assert res["answer"] == "꺾은선 그래프로 보여 드립니다."
 
 
 def test_new_question_inherits_and_tells(talk: Talk) -> None:
@@ -1039,6 +1081,132 @@ def test_region_reply_without_suffix_and_ambiguous_name(talk: Talk):
     res = talk.say("고성")
     assert res["status"] == "clarify_question"
     assert {"강원특별자치도 고성군", "경상남도 고성군"} <= set(res["clarification"]["options"])
+
+
+def test_local_region_reply_with_comma_and_sigungu_first(
+    talk: Talk, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """변형셋 P-121: '영도구, 부산이요'를 지역 답으로 못 읽어 같은 되묻기를 되풀이했다 (11/25)"""
+    monkeypatch.setattr(
+        indicators, "find_regions", lambda t: [r for r in ("영도구", "부산") if r in t]
+    )
+    monkeypatch.setattr(
+        indicators,
+        "resolve_region",
+        lambda name, year=None, sigungu=False: (
+            {"status": "ok", "display": "부산광역시 영도구"}
+            if name == "부산 영도구"
+            else {"status": "unknown_region", "region": name}
+        ),
+    )
+    assert talk.say("요새 우리 동네 사람 줄어드는 중이야?")["status"] == "clarify_question"
+    talk.parsed = {**BASE, "regions": ["부산 영도구"]}
+    res = talk.say("영도구, 부산이요")
+    assert res["request_type"] == "reply" and res["status"] == "ok"
+    assert talk.asked[-1] == "요새 부산 영도구 사람 줄어드는 중이야?"
+
+
+def test_follow_up_rules_for_region_order_scope_and_period() -> None:
+    """후속 질문이 새 질문(new)으로 읽혀 앞 조건을 잃던 것 (11/25 멀티턴 평가 조건 변경)"""
+    value = {**BASE, "type": "value", "start_year": None, "end_year": None}
+    rank = {**BASE, "type": "rank", "regions": [], "start_year": None, "end_year": None}
+    assert s.region_only_changes("그럼 부산은 어때?", value) == {
+        "regions": {"op": "set", "value": ["부산"]}
+    }
+    assert s.region_only_changes("그러면 서울도?", value)["regions"]["op"] == "add"
+    assert s.rank_scope_changes("서울 안에서는?", rank) == {"sido": "서울", "level": "시군구"}
+    assert s.rank_scope_changes("그럼 부산 내에서 순위는?", rank)["sido"] == "부산"
+    assert s.rank_scope_changes("서울 안에서는?", value) is None
+    assert s.rank_scope_changes("그 안에서는?", rank) is None
+    assert s.order_changes("낮은 순으로", rank) == {"ascending": True}
+    assert s.order_changes("그럼 많은 순서로 보여줘", rank) == {"ascending": False}
+    assert s.order_changes("낮은 순으로", value) is None
+    for said, n in (
+        ("10년으로 늘려줘", 10),
+        ("기간을 3년으로", 3),
+        ("그럼 5년으로 줄여줘", 5),
+        ("7년치로", 7),
+    ):
+        assert s.period_length_reply(said) and s.recent_years(said) == n, said
+    # 기간을 말하는 낱말이 없으면 줄여 말한 연도일 수 있다 ('24년으로 바꿔줘'는 2024년)
+    for said in (
+        "2015년으로",
+        "10년 전은?",
+        "3년으로 나눠서 보여줘",
+        "24년으로 바꿔줘",
+        "그럼 20년으로 보여줘",
+        "그럼 7년으로",
+    ):
+        assert not s.period_length_reply(said), said
+        assert s.recent_years(said) is None, said
+    for said, word in (("혼인도 알려줘", "혼인"), ("그럼 이혼은?", "이혼"), ("사망자도", "사망자")):
+        assert s.said_other_subject(said) == word, said
+    for said in (
+        "부산은?",
+        "작년은?",
+        "남자는?",
+        "노인은?",
+        "추이는?",
+        "비율은?",
+        "거기는?",
+        "요약해줘",
+        "서울 혼인 건수는?",
+        "전국은?",
+        "월별은?",
+        "여아는?",
+        "상위는?",
+        "몇명이야?",
+        "그럼 얼마야?",
+        "어때?",
+        "몇건이야?",
+    ):
+        assert s.said_other_subject(said) is None, said
+    assert not s.names_indicator("부산은?", {"indicator": "출생아 수"})
+
+
+def test_follow_up_naming_another_word_does_not_inherit_the_indicator(talk: Talk) -> None:
+    """출생아 수 뒤 '사망자도 알려줘': HCX가 지표를 비우면 앞 지표 출생아 수로 답했다 (11/26)"""
+    talk.say("부산 출생아 최근 5년 보여 줘")
+    talk.parsed = {**BASE, "indicator": None, "term": None}
+    res = talk.say("혼인도 알려줘")
+    assert res["parsed"].get("indicator") is None and res["parsed"]["term"] == "혼인"
+    talk.parsed = dict(BASE)
+    talk.say("부산 출생아 최근 5년 보여 줘")
+    talk.parsed = {**BASE, "indicator": None, "term": None}
+    res = talk.say("2020년부터 보여줘")
+    assert res["parsed"]["indicator"] == "출생아 수"
+
+
+def test_rank_follow_ups_change_scope_and_order_without_llm(talk: Talk) -> None:
+    talk.parsed = {**BASE, "type": "rank", "regions": [], "start_year": None, "end_year": None}
+    talk.say("2024년 시도별 출생아 수 순위")
+    res = talk.say("서울 안에서는?")
+    assert res["request_type"] == "change" and talk.extracted == []
+    assert (talk.answered[-1]["sido"], talk.answered[-1]["level"]) == ("서울", "시군구")
+    talk.say("낮은 순으로")
+    assert talk.extracted == [] and talk.answered[-1]["ascending"] is True
+    assert talk.answered[-1]["sido"] == "서울" and talk.answered[-1].get("top") is None
+
+
+def test_period_length_follow_up_keeps_conditions_without_llm(talk: Talk) -> None:
+    talk.say("부산 출생아 최근 5년 보여 줘")
+    talk.fail_when = lambda p: bool((p.get("asked") or {}).get("recent"))
+    res = talk.say("10년으로 늘려줘")
+    assert res["request_type"] == "change" and talk.extracted == []
+    asked = talk.answered[-1]
+    assert asked["asked"]["recent"] == 10 and asked["regions"] == ["부산"]
+    assert asked["indicator"] == "출생아 수" and asked["type"] == "trend"
+
+
+def test_short_year_follow_up_is_not_read_as_period_length(talk: Talk) -> None:
+    """'24년으로 바꿔줘'는 2024년: 기간 길이 규칙이 24년치 추이로 바꾸거나
+    변경 추출이 읽은 연도를 덮지 않는다 (11/26 리뷰)"""
+    talk.say("부산 출생아 최근 5년 보여 줘")
+    res = talk.say("24년으로 바꿔줘", request_type="change", changes={"year": 2024})
+    assert res["request_type"] == "change" and talk.extracted
+    asked = talk.answered[-1]
+    assert not (asked.get("asked") or {}).get("recent")
+    assert 2024 in (asked.get("year"), asked.get("end_year"))
 
 
 def test_scope_pending_does_not_swallow_unsupported_new_question(talk: Talk):

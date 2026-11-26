@@ -116,9 +116,21 @@ def region_reply(reply: str, regions: list[str], has_indicator: bool) -> str | N
     for region in sorted(regions, key=len, reverse=True):
         rest = rest.replace(re.sub(r"\s+", "", region), " ")
     rest = re.sub(
-        r"입니다|이에요|예요|이요|으로|에서|기준|지역|해주세요|해줘|보여줘|로|요|[\s.!?]", "", rest
+        r"입니다|이에요|예요|이요|으로|에서|기준|지역|해주세요|해줘|보여줘|로|요|[\s.!?,/·]",
+        "",
+        rest,
     )
     return " ".join(regions) if not rest else None
+
+
+def place_order(regions: list[str], resolves) -> str | None:
+    """'수성구, 대구'처럼 시군구를 먼저 말해도 '대구 수성구'로. resolves(이름)이 한 곳이면 참"""
+    if len(regions) != 2:
+        return None
+    for pair in (regions, regions[::-1]):
+        if resolves(" ".join(pair)):
+            return " ".join(pair)
+    return None
 
 
 def bare_region(reply: str) -> str | None:

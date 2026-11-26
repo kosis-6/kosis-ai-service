@@ -549,18 +549,30 @@ BIRTH_RATIO_OPPOSITE = {
 BIRTH_SEX_RATIO_WORDS = re.compile(r"(?:태어|출생|신생아|아기|아이)\S*\s*(?:\S+\s*){0,2}성비")
 MALE_BIRTH_WORDS = r"남아|남자|아들"
 FEMALE_BIRTH_WORDS = r"여아|여자|딸"
-BIRTH_RATIO_COUNTS = {
-    **agegroup.NATIVE_UNITS,
-    **agegroup.NATIVE_TENS,
-    "십": 10,
-    "백": 100,
-    "천": 1000,
-    "만": 10000,
-}
-BIRTH_RATIO_COUNT = rf"[+-]?(?:\d{{1,3}}(?:,\d{{3}})+|\d+)|{'|'.join(BIRTH_RATIO_COUNTS)}"
+SINO_DIGITS = {"일": 1, "이": 2, "삼": 3, "사": 4, "오": 5, "육": 6, "칠": 7, "팔": 8, "구": 9}
+SMALL_UNITS = {"십": 10, "백": 100, "천": 1000}
+BIG_UNITS = {"만": 10**4, "억": 10**8, "조": 10**12}
+_SINO_DIGIT = f"[{''.join(SINO_DIGITS)}]"
+_DIGIT_CHUNK = r"(?:\d{1,3}(?:,\d{3})+|\d+)[십백천]?"
+_SINO_CHUNK = rf"(?:{_SINO_DIGIT}?천)?(?:{_SINO_DIGIT}?백)?(?:{_SINO_DIGIT}?십)?{_SINO_DIGIT}?"
+_CHUNK = rf"(?:{_DIGIT_CHUNK}|{_SINO_CHUNK})"
+_NUMBER_CHARS = f"\\d,{''.join(SINO_DIGITS)}{''.join(SMALL_UNITS)}{''.join(BIG_UNITS)}"
+# 1,000 · 2천 · 이백오십 · 1억 5천만 · 삼조
+# 숫자나 십 · 백 · 천 · 만 · 억 · 조 중 하나는 있어야 한다 ('이' 한 글자는 조사일 수 있음)
+KOREAN_NUMBER = (
+    rf"(?=[{_NUMBER_CHARS}\s]*[\d{''.join(SMALL_UNITS)}{''.join(BIG_UNITS)}])"
+    + "".join(rf"(?:{_CHUNK}\s*{unit}\s*)?" for unit in reversed(BIG_UNITS))
+    + _CHUNK
+)
+_NATIVE_TENS = "|".join(sorted(agegroup.NATIVE_TENS, key=len, reverse=True))
+_NATIVE_UNITS = "|".join(sorted(agegroup.NATIVE_UNITS, key=len, reverse=True))
+NATIVE_NUMBER = rf"(?:{_NATIVE_TENS})\s*(?:{_NATIVE_UNITS})?|(?:{_NATIVE_UNITS})"
+NATIVE_PARTS = re.compile(rf"(?P<tens>{_NATIVE_TENS})?(?P<units>{_NATIVE_UNITS})?")
+BIRTH_RATIO_COUNT = rf"[+-]?{KOREAN_NUMBER}|{NATIVE_NUMBER}"
 BIRTH_RATIO_REFERENCE = re.compile(
     rf"(?<![가-힣])(?P<sex>{MALE_BIRTH_WORDS}|{FEMALE_BIRTH_WORDS})"
-    rf"\s*(?P<child>아기|아이|애기|애)?\s*[이가]?\s*(?P<count>{BIRTH_RATIO_COUNT})\s*명\s*"
+    # 조사 '이'는 수를 먼저 읽어 본 뒤에만 뗀다 ('남아 이백 명'의 '이'는 이백의 이)
+    rf"\s*(?P<child>아기|아이|애기|애)?\s*[이가]??\s*(?P<count>{BIRTH_RATIO_COUNT})\s*명\s*"
     r"(?:당|[을를]?\s*기준(?:으로)?|[이가]?\s*(?:정도\s*)?"
     r"(?:태어날\s*(?:때|경우)|태어나면|출생할\s*(?:때|경우)|출생하면))"
 )
@@ -722,9 +734,26 @@ def age_spans(question):
 
 
 def birth_ratio_count(text: str) -> int:
-    if text in BIRTH_RATIO_COUNTS:
-        return BIRTH_RATIO_COUNTS[text]
-    return int(text.replace(",", ""))
+    text = re.sub(r"[\s,]", "", text)
+    sign = -1 if text.startswith("-") else 1
+    text = text.lstrip("+-")
+    if (native := NATIVE_PARTS.fullmatch(text)) and text:
+        return agegroup.NATIVE_TENS.get(native["tens"], 0) + agegroup.NATIVE_UNITS.get(
+            native["units"], 0
+        )
+    total = part = digit = 0
+    for token in re.findall(r"\d+|\D", text):
+        if token.isdigit():
+            digit = int(token)
+        elif token in SINO_DIGITS:
+            digit = SINO_DIGITS[token]
+        elif token in SMALL_UNITS:
+            part += (digit or 1) * SMALL_UNITS[token]
+            digit = 0
+        else:
+            total += ((part + digit) or 1) * BIG_UNITS[token]
+            part = digit = 0
+    return sign * (total + part + digit)
 
 
 def birth_sex_ratio_reference(question: str) -> tuple[str, int] | None:

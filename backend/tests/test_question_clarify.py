@@ -90,6 +90,18 @@ def test_region_reply_and_rewrite_keep_original_conditions():
     assert c.merge_region("2024년 우리 동네 여성 인구는?", "수원시") == "2024년 수원시 여성 인구는?"
 
 
+def test_region_reply_with_comma_puts_sido_first():
+    assert c.region_reply("수성구, 대구요", ["수성구", "대구"], False) == "수성구 대구"
+    assert c.region_reply("순천시요, 전남", ["순천시", "전남"], False) == "순천시 전남"
+    assert c.region_reply("수원시/경기도", ["수원시", "경기도"], False) == "수원시 경기도"
+    known = {"대구 수성구", "전남 순천시", "서울 중구"}
+    assert c.place_order(["수성구", "대구"], known.__contains__) == "대구 수성구"
+    assert c.place_order(["순천시", "전남"], known.__contains__) == "전남 순천시"
+    assert c.place_order(["서울", "중구"], known.__contains__) == "서울 중구"
+    assert c.place_order(["서울", "부산"], known.__contains__) is None
+    assert c.place_order(["수성구"], known.__contains__) is None
+
+
 def test_selected_scope_is_preserved_in_search_question():
     original = "2024년 수원에서 이사한 건수"
     assert c.merge_scope(original, "include").startswith(original)

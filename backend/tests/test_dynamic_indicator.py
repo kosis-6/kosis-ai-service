@@ -889,6 +889,85 @@ def test_count_queries_allow_the_tables_survey_age(table, question) -> None:
 
 
 @pytest.mark.parametrize(
+    ("question", "limit"),
+    [
+        ("2010년 통근·통학 인구 중 승용차 이용 비율은?", None),
+        ("통근 인구 중 버스 비율", None),
+        ("여성 인구 중 통근 비율", "12세 이상"),
+        ("전체 인구 중 통근하는 사람 비율", "12세 이상"),
+        ("승용차로 통근하는 사람 비율은?", "12세 이상"),
+    ],
+)
+def test_ratio_within_the_tables_own_population_is_not_a_band_mismatch(question, limit) -> None:
+    """변형셋 P-095: 통근 · 통학 인구는 12세 이상으로 정의되므로 그 안의 비율은 계산한다 (11/25)"""
+    table = "성, 연령 및 이용 교통 수단별 통근 통학 인구(12세 이상)-시군구"
+    assert d.age_limit(table, question) == limit
+
+
+@pytest.mark.parametrize(
+    ("table", "question", "limit"),
+    [
+        ("시군구별 외국인주민 현황(15세 이상)", "외국인 중 여성 비율", "15세 이상"),
+        ("직업별 여성인구(15세이상)-시도", "여성 인구 중 취업 비율", "15세이상"),
+    ],
+)
+def test_population_word_must_be_a_whole_word_of_the_table_name(table, question, limit) -> None:
+    """'외국인'은 '외국인주민'의, '여성'은 '여성인구'의 글자 일부일 뿐이다:
+    표의 연령 제한이 질문의 모집단을 줄이므로 거절한다 (11/26 리뷰)"""
+    assert d.age_limit(table, question) == limit
+
+
+def test_table_topic_words_do_not_pick_a_cell_by_partial_name() -> None:
+    """변형셋 P-017 · 085 · 019: '외국인 주민'이 '외국인근로자' · '주민등록인구'를,
+    '한국에서'가 '중국(한국계)'를 골랐다고 보고 되물었다 (11/25)"""
+    kinds = d.Dim(
+        2,
+        "거주외국인별",
+        {"A0": "합계", "A1": "외국인근로자", "A2": "국적취득자", "A3": "주민등록인구"},
+    )
+    topic = "시도별 외국인주민 현황(2006)"
+    assert d._word_hits("2006년 경기도 외국인 주민 수", kinds) == ["A1", "A3"]
+    assert d._word_hits("2006년 경기도 외국인 주민 수", kinds, topic) == []
+    assert d._word_hits("외국인 근로자 몇 명", kinds, topic) == ["A1"]
+    assert d._word_hits("국적취득자 몇 명", kinds, topic) == ["A2"]
+    nations = d.Dim(2, "국적별", {"B0": "계", "B1": "중국(한국계)", "B2": "러시아(한국계)"})
+    student = "한국국적을 가지지 않은 자-유학생(계)(2008~2015)"
+    assert d._word_hits("2009년 한국에서 공부하던 외국 유학생", nations, student) == []
+
+
+def test_table_topic_word_on_items_counts_only_when_it_names_one_item() -> None:
+    """변형셋 P-015: '통근'이 '통근·통학 인구' · '통근·통학버스'에 걸려 '전철 지하철'과 합쳤다.
+    항목 하나에만 걸리면('다문화가구' → '다문화가구 현황') 그 항목을 말한 것이다"""
+    items = d.Dim(
+        0, "항목", {"T1": "통근·통학 인구(12세 이상)", "T2": "통근·통학버스", "T3": "전철 지하철"}
+    )
+    commute = "성, 연령 및 이용 교통 수단별 통근 통학 인구(12세 이상)-시군구"
+    assert d._word_hits("2010년 전철로 통근이나 통학한 사람", items) == ["T3", "T1", "T2"]
+    assert d._word_hits("2010년 전철로 통근이나 통학한 사람", items, commute) == ["T3"]
+    one = d.Dim(0, "항목", {"T001": "다문화가구 현황"})
+    assert d._word_hits("2020년 서울 다문화가구 수는?", one, "읍면동별 다문화가구 현황") == ["T001"]
+    vital = d.Dim(
+        0, "항목", {"T1": "출생건수", "T2": "사망건수", "T3": "혼인건수", "T4": "이혼건수"}
+    )
+    title = "읍면동/성별/인구동태건수(출생,사망,혼인,이혼)"
+    assert d._word_hits("2020년 서울 이혼 몇 건이야", vital, title) == ["T4"]
+
+
+def test_table_topic_word_still_picks_a_cell_named_by_it() -> None:
+    """표 이름에 분류가 나열된 표: 질문이 그중 하나를 말하면 그 칸이다
+    (전체 표 검사에서 찾은 경계)"""
+    change = d.Dim(2, "특성별", {"0": "전체", "1": "미혼→혼인 변화", "2": "미출산→출산 변화"})
+    title = "성별, 소득수준별 혼인·출산 변화 비율(1년 단위)"
+    assert d._word_hits("소득별 혼인 변화 비율", change, title) == ["1"]
+    nations = d.Dim(2, "국적(지역)별", {"0": "계", "1": "중국", "2": "무국적"})
+    assert (
+        d._word_hits("국적별 등록외국인", nations, "시군구별 및 국적(지역)별 등록외국인 현황") == []
+    )
+    ages = d.Dim(2, "연령별", {"0": "계", "1": "20~24세", "2": "연령미상"})
+    assert d._word_hits("연령별 사망자", ages, "시도/성/연령(각세)별 사망자수") == []
+
+
+@pytest.mark.parametrize(
     ("question", "band"),
     [
         ("2010년에 15살 넘은 사람 중에 결혼 안 한 사람 비율 몇 퍼센트였어?", [15, None]),

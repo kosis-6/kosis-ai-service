@@ -72,12 +72,22 @@ REGION_RETRY_STATUSES = ("missing_data", "no_region_level")
 TYPES = {"value", "trend", "compare", "rank", "composition"}
 NO_CONDITIONS = {"other", "parse_error", None}
 
+# 순서대로 본다: '막대그래프'는 bar, 모양을 말하지 않은 '그래프로'는 chart(직전 차트의 기본 모양)
 CHART_WORDS = {
-    "table": re.compile(r"표\s*로|표\s*형태|표로\s*정리"),
-    "bar": re.compile(r"막대"),
-    "line": re.compile(r"꺾은\s*선|선\s*그래프|라인"),
+    "table": re.compile(r"표\s*로|표\s*형태|표로\s*정리|테이블"),
+    "bar": re.compile(r"막대(?![하한])"),
+    "line": re.compile(r"꺾은\s*선|선\s*그래프|라인|(?<![가-힣])선\s*으로"),
+    "pie": re.compile(r"원\s*그래프|원형|파이|도넛"),
+    "chart": re.compile(r"그래프|차트|시각화|그림\s*으로|그려"),
 }
-CHART_REQUEST = re.compile(r"(보여|바꿔|그려|볼래|보고|줘|주세요|로$|으로$)")
+CHART_REQUEST = re.compile(
+    r"보여|바꿔|바꾸|그려|볼래|보고|줘|주세요|시각화"
+    r"|(?:로|으로|그래프|차트|표|막대)\s*(?:는|은|도|요|가능)?\s*[?.!~]*$"
+)
+CHART_INSTEAD = re.compile(r"말고|대신|아니고|아니라")
+CHART_MAX_CHARS = 40
+CHART_NAMES = {"line": "꺾은선 그래프", "bar": "막대그래프", "parts": "구성비 막대그래프"}
+CHART_CANNOT = {"line": "꺾은선은 연도별 추이에만 씁니다", "pie": "원그래프는 지원하지 않습니다"}
 SUMMARY_REQUEST = re.compile(
     r"^\s*((한|두|세)\s*줄로|짧게|간단히|간단하게|간략히)?\s*(요약|정리)\s*"
     r"(좀\s*)?(해\s*(줘요?|주세요|줄래요?|봐요?|주라)?|부탁\s*(해요?|합니다|드려요)?)?\s*[.!?~]*$"
@@ -392,6 +402,9 @@ def recent_years(question: str) -> int | None:
     for ref in timeref.find(question):
         if ref["kind"] in ("recent", "span") and ref.get("n"):
             return ref["n"]
+    span = SPAN_TO.search(question)
+    if span and PERIOD_CUE.search(question) and 1 < int(span[1]) <= 50:
+        return int(span[1])
     return None
 
 
@@ -482,6 +495,50 @@ def _says_word(word: Any, compact: str) -> bool:
     return word.replace(" ", "") in compact
 
 
+# '혼인도 알려줘' · '그럼 이혼은?'처럼 낱말 하나만 말한 후속 질문
+SUBJECT_ONLY = re.compile(
+    r"\s*(?:그럼|그러면|그렇다면|그리고|혹시)?\s*(?P<word>[가-힣]{2,}?)\s*"
+    r"(?:은|는|도|이|가|만|이요|요)?\s*"
+    r"(?:(?:알려|보여|해)\s*(?:줘요?|주세요|줄래요?)|어때요?|몇\s*(?:명|건)(?:이야|이에요|인가요)?|얼마야)?"
+    r"\s*[?.!~]*\s*"
+)
+# 낱말 하나로 물어도 볼 통계가 아닌 말 (지역 · 기간 · 성별 · 연령 · 보는 방식은 따로 본다)
+NOT_SUBJECT = {
+    "거기", "여기", "그곳", "이곳", "그거", "이거", "전체", "합계", "평균", "비율", "비중",
+    "증가율", "감소율", "증감률", "변화율", "결과", "요즘", "최근", "작년", "올해", "재작년",
+    "내년", "남녀", "성별", "연령", "나이", "지역", "시도", "시군구", "요약", "정리", "출처",
+    "근거", "기준", "이유", "원인", "숫자", "단위", "자세히", "전국", "우리나라", "한국", "국내",
+    "읍면동", "상위", "하위", "꼴찌", "최고", "최저", "최대", "최소", "남아", "여아", "아들",
+}  # fmt: skip
+# '몇명이야?' · '얼마야?' · '어때?'는 볼 통계가 아니라 묻는 말 (붙여 쓰면 통째로 낱말로 잡힌다)
+ASKING_WORD = re.compile(r"^(?:몇|얼마|어때|어떻|어떤|어느|어디|언제|누구|뭐|무엇|무슨|왜)")
+
+
+def said_other_subject(question: str, regions: list[str] | None = None) -> str | None:
+    """사전이 모르는 낱말 하나만 말한 후속 질문이면 그 낱말 ('혼인도 알려줘' → '혼인').
+    그 낱말이 볼 통계라 앞 지표를 몰래 이어받지 않는다: HCX가 지표를 비웠을 때
+    출생아 수 뒤 '사망자도 알려줘'를 출생아 수로 답했다 (11/26).
+    regions: HCX가 지역으로 읽은 이름 ('서울은?'의 '서울'은 지역)"""
+    if not (said := SUBJECT_ONLY.fullmatch(question.strip())):
+        return None
+    word = said["word"]
+    if (
+        word in NOT_SUBJECT
+        or ASKING_WORD.match(word)
+        or word in VIEW_WORDS
+        or word.endswith("별")
+        or any(pattern.search(word) for pattern in CHART_WORDS.values())
+        or NEW_VIEW.search(word)
+        or SEX_WORDS.search(word)
+        or qa.resolved_ages(word)
+        or timeref.find(word)
+        or indicators.find_regions(word)
+        or any(word in str(r) or str(r) in word for r in regions or [])
+    ):
+        return None
+    return word
+
+
 def complete_question(question: str) -> bool:
     if re.search(r"같이|추가|빼|빼고|제외|대신|그대로|거기|거기에|보다|도\s", question):
         return False
@@ -499,7 +556,13 @@ def inherit(
     kind = p.get("type")
     if kind in NO_CONDITIONS or prev.get("type") in NO_CONDITIONS:
         return p, s
-    if question and prev.get("indicator") and not names_indicator(question, p):
+    word = said_other_subject(question, p.get("regions")) if question else None
+    if word and not names_indicator(question, p):
+        # 앞 지표 대신 말한 낱말로: 지표가 없으면 계산 단계가 그 낱말로 표를 찾는다
+        if not p.get("indicator") and not p.get("term"):
+            p["term"] = word
+        flow.add("지표 이어받기", "안 함", "질문이 " + josa(f"'{word}'", "을를") + " 물음")
+    elif question and prev.get("indicator") and not names_indicator(question, p):
         keys = [
             "indicator",
             "term",
@@ -701,11 +764,21 @@ def replace_region(conditions: dict, asked: str | None, picked: str) -> dict:
 
 
 def chart_request(question: str) -> str | None:
+    """직전 답의 그림만 바꾸는 말이면 모양 (table · bar · line · pie · chart), 아니면 None.
+    연도 · 지표 · 지역 · 보는 방식(추이 · 비교 …)을 함께 말하면 조건 변경이라 변경 추출에 맡긴다"""
     q = question.strip()
-    if len(q) > REPLY_MAX_CHARS or ask_followup.has_explicit_year(q) or indicators.find_in_text(q):
+    if (
+        len(q) > CHART_MAX_CHARS
+        or not CHART_REQUEST.search(q)
+        or ask_followup.has_explicit_year(q)
+        or indicators.find_in_text(q)
+        or indicators.find_regions(q)
+        or NEW_VIEW.search(q)
+    ):
         return None
+    asked = CHART_INSTEAD.split(q)[-1]  # '표 말고 그래프로' → '그래프로'
     for view, pattern in CHART_WORDS.items():
-        if pattern.search(q) and CHART_REQUEST.search(q):
+        if pattern.search(asked):
             return view
     return None
 
@@ -754,12 +827,37 @@ def region_split_changes(question: str, conditions: dict) -> dict | None:
     return None
 
 
+FOLLOW_LEAD = r"(?:그럼|그러면|그렇다면|그리고|혹시)?\s*"
 REGION_ONLY_REST = re.compile(
+    rf"\s*{FOLLOW_LEAD}"
     r"(?:이랑|[\s,·와과랑하고및])*(?:광역시|특별시|특별자치시|특별자치도|시|도|군|구)?\s*"
     r"(?:의\s*경우(?:에)?|쪽|에서|에선)?\s*(?:은|는|도|이면|면)?\s*요?\s*"
-    r"(?:어때요?|어떤가요?|어떻게\s*돼요?)?\s*[?.!~]*\s*"
+    r"(?:어때요?|어떤가요?|어떤데요?|어떻게\s*(?:돼요?|되나요?|돼\?))?\s*[?.!~]*\s*"
 )
-ALSO = re.compile(r"^\s*도\s*요?\s*(?:어때요?)?\s*[?.!~]*\s*$")
+# 순위 뒤 '경기도 안에서는?': 그 시도 안의 시군구 순위로
+IN_SIDO_REPLY = re.compile(
+    rf"\s*{FOLLOW_LEAD}(?P<place>[가-힣]+?)\s*(?:안에서|안에선|내에서|내에선|안|내)\s*"
+    r"(?:만|는|은|도)?\s*(?:순위|순위는|순위로)?\s*(?:어때요?|보여\s*줘요?|알려\s*줘요?)?\s*[?.!~]*\s*"
+)
+# 순위 뒤 '낮은 순으로' · '많은 순서로' · '오름차순'
+ORDER_REPLY = re.compile(
+    rf"\s*{FOLLOW_LEAD}(?:(?P<low>낮은|적은|작은)\s*(?:순|순서|쪽)|(?P<high>높은|많은|큰)\s*(?:순|순서|쪽)"
+    r"|(?P<asc>오름차순|꼴찌부터)|(?P<desc>내림차순))\s*(?:부터|으로|로)?\s*(?:정렬)?\s*"
+    r"(?:해|보여|바꿔)?\s*(?:줘요?|주세요)?\s*[?.!~]*\s*"
+)
+# 추이 뒤 '10년으로 늘려줘' · '기간을 3년으로': 기간 길이만 바꿈
+SPAN_TO = re.compile(
+    r"(?<![\d.])(\d{1,2})\s*년\s*(?:치|간|동안)?\s*(?:으로|로)(?=\s|$|[?.!~]|는|도|만)"
+    r"(?!\s*(?:나눠|나누|나눈|묶어|묶은|끊어|단위))"
+)
+# 'N년으로'만으로는 기간 길이인지 줄여 말한 연도인지 모른다: '24년으로 바꿔줘'는 2024년이다.
+# 기간을 말하는 낱말이 함께 있을 때만 길이로 본다 (나머지는 변경 추출이 읽는다)
+PERIOD_CUE = re.compile(r"늘려|늘리|줄여|줄이|기간|최근|동안|\d\s*년\s*(?:치|간)")
+PERIOD_LENGTH_REPLY = re.compile(
+    rf"\s*{FOLLOW_LEAD}(?:기간을?\s*)?(?:최근\s*)?\d{{1,2}}\s*년\s*(?:치|간|동안)?\s*(?:으로|로)?\s*"
+    r"(?:만|은|는|도)?\s*(?:늘려|줄여|바꿔|보여|해|봐)?\s*(?:줘요?|주세요|줄래요?|봐요?)?\s*[?.!~]*\s*"
+)
+ALSO = re.compile(rf"^\s*{FOLLOW_LEAD}도\s*요?\s*(?:어때요?)?\s*[?.!~]*\s*$")
 
 
 def only_regions(question: str) -> tuple[list[str], str] | None:
@@ -792,6 +890,31 @@ def region_only_changes(question: str, conditions: dict) -> dict | None:
     if len(regions) > 1 and not _several_places(regions, rest):
         return None
     return {"regions": {"op": "add" if ALSO.match(rest) else "set", "value": regions}}
+
+
+def rank_scope_changes(question: str, conditions: dict) -> dict | None:
+    """순위 뒤 '경기도 안에서는?': 그 시도 안의 시군구 순위로"""
+    if conditions.get("type") != "rank" or not (said := IN_SIDO_REPLY.fullmatch(question)):
+        return None
+    regions = indicators.find_regions(said["place"])
+    if len(regions) != 1:
+        return None
+    found = indicators.resolve_region(regions[0])
+    if found.get("status") != "ok" or found.get("kind") != "시도":
+        return None
+    return {"sido": regions[0], "level": "시군구"}
+
+
+def order_changes(question: str, conditions: dict) -> dict | None:
+    """순위 뒤 '낮은 순으로': 순서만 바꾸고 개수 · 단위는 그대로"""
+    if conditions.get("type") != "rank" or not (said := ORDER_REPLY.fullmatch(question)):
+        return None
+    return {"ascending": bool(said["low"] or said["asc"])}
+
+
+def period_length_reply(question: str) -> bool:
+    """'10년으로 늘려줘' · '기간을 3년으로'처럼 기간 길이만 말한 후속 질문"""
+    return bool(PERIOD_LENGTH_REPLY.fullmatch(question) and recent_years(question))
 
 
 def _ask_indicator(regions: list[str], rest: str) -> dict:
@@ -912,12 +1035,29 @@ def summary_request(question: str) -> bool:
     return len(question.strip()) <= REPLY_MAX_CHARS and bool(SUMMARY_REQUEST.search(question))
 
 
-def chart_with_view(chart: dict | None, view: str) -> dict | None:
+def redraw(chart: dict | None, view: str, status: str | None) -> tuple[dict | None, str]:
+    """직전 차트를 view 모양으로. 그 모양으로 못 그리면 그릴 수 있는 기본 모양과 이유를 준다.
+    되묻지 않는다: 무엇을 원하는지(그림 바꾸기)는 분명하다"""
     if not chart:
-        return None
-    if view == "table" or view == chart["type"] or (chart["type"] == "line" and view == "bar"):
-        return {**chart, "view": view}
-    return None
+        if status == "ok":
+            return None, (
+                "직전 답은 값이 하나라 그래프로 그릴 수 없습니다. '최근 5년 추이로'처럼 기간을 "
+                "넓히거나 '서울도 같이'처럼 지역을 더하면 그래프로 보여 드립니다."
+            )
+        return None, "직전 답에는 그래프로 그릴 수치가 없습니다."
+    kind = chart["type"]
+    if view == "table":
+        return {**chart, "view": "table"}, "표로 바꿨습니다."
+    if view == "bar" and kind == "line":
+        return {**chart, "view": "bar"}, "막대그래프로 바꿨습니다."
+    # parts(구성비)는 화면이 view 없이 기본 차트로 그린다
+    shown = {**chart, "view": None if kind == "parts" else kind}
+    name = CHART_NAMES[kind]
+    if view == kind or (view == "bar" and kind == "parts"):
+        return shown, f"{name}로 바꿨습니다."
+    if view == "chart":
+        return shown, f"{name}로 보여 드립니다."
+    return shown, f"{CHART_CANNOT[view]}. {name}로 보여 드립니다."
 
 
 def lead(answer: str) -> str:
@@ -1597,6 +1737,10 @@ async def _clarified(question: str, state: dict):
     return res, sources, notice
 
 
+def _one_place(name: str) -> bool:
+    return indicators.resolve_region(name)["status"] == "ok"
+
+
 def _gave_up_asking(pending: dict) -> bool:
     return (pending.get("count") or 1) >= question_clarify.MAX_ASKS
 
@@ -1690,6 +1834,11 @@ async def _turn(
             regions = await asyncio.to_thread(indicators.find_regions, choice)
             has_indicator = bool(indicators.find_in_text(choice))
             region = question_clarify.region_reply(choice, regions, has_indicator)
+            if region:
+                region = (
+                    await asyncio.to_thread(question_clarify.place_order, regions, _one_place)
+                    or region
+                )
             name = None if region or has_indicator else question_clarify.bare_region(choice)
             if name:
                 found = await asyncio.to_thread(indicators.resolve_region, name)
@@ -1898,6 +2047,16 @@ async def _turn(
                 "unclear": None,
             }
             flow.add("후속 질문", "연도 변경", f"{year_reply[1]}년")
+        elif period_length_reply(question):
+            # 기간 길이는 아래 recent_years가 읽어 '자료 마지막 해까지 N년'으로 바꾼다
+            delta = {"request_type": CHANGE, "changes": {}, "chart": None, "unclear": None}
+            flow.add("후속 질문", "기간 길이 변경", f"{recent_years(question)}년")
+        elif order := order_changes(question, state["conditions"]):
+            delta = {"request_type": CHANGE, "changes": order, "chart": None, "unclear": None}
+            flow.add("후속 질문", "순위 순서 변경", "낮은 순" if order["ascending"] else "높은 순")
+        elif scope := await asyncio.to_thread(rank_scope_changes, question, state["conditions"]):
+            delta = {"request_type": CHANGE, "changes": scope, "chart": None, "unclear": None}
+            flow.add("후속 질문", "시도 안 순위", scope["sido"])
         elif composition_request(question):
             delta = parse_delta('{"request_type": "change", "changes": {"type": "composition"}}')
         elif split := await asyncio.to_thread(region_split_changes, question, state["conditions"]):
@@ -1963,16 +2122,10 @@ async def _turn(
             view = delta["chart"]
 
     if has_last and (view or (delta and delta["request_type"] == CHART)):
-        chart = chart_with_view(state["last"].get("chart"), view) if view else None
-        if chart is None:
-            reason = (
-                "직전 답은 그 모양으로 그릴 수 없습니다."
-                if view
-                else "어떤 모양으로 바꿀지 알 수 없습니다."
-            )
-            return _unclear(state, reason), state["sources"], None
-        words = {"line": "꺾은선 그래프", "bar": "막대그래프", "table": "표"}
-        return _reuse(state, f"{words[view]}로 바꿨습니다.", chart, CHART), state["sources"], None
+        last = state["last"]
+        # 변경 추출이 모양을 비워 두면('그림 바꿔줘') 직전 차트의 기본 모양
+        chart, text = redraw(last.get("chart"), view or "chart", last.get("status"))
+        return _reuse(state, text, chart, CHART), state["sources"], None
     if has_last and (delta is None or delta["request_type"] == SUMMARY):
         last = state["last"]
         return (
