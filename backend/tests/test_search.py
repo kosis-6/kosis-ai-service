@@ -506,7 +506,7 @@ def test_llm_pick_mode_follows_the_search_llm_unless_set(monkeypatch) -> None:
     assert lp.pick_mode() == "resolve"
 
 
-def test_llm_pick_asks_gemma_with_its_own_prompt_at_temperature_zero(monkeypatch) -> None:
+def test_llm_pick_asks_each_llm_with_its_own_prompt_at_temperature_zero(monkeypatch) -> None:
     import asyncio
 
     from app.services import llm_pick as lp
@@ -525,7 +525,7 @@ def test_llm_pick_asks_gemma_with_its_own_prompt_at_temperature_zero(monkeypatch
     for name in ("hcx", "gemma"):
         monkeypatch.setattr(lp.get_settings(), "search_llm", name, raising=False)
         asyncio.run(lp._ask("인구", cands))
-    assert seen == [(lp.SYSTEM, None), (lp.SYSTEM_GEMMA, 0)]
+    assert seen == [(lp.SYSTEM, 0), (lp.SYSTEM_GEMMA, 0)]
 
 
 def test_scope_by_llm_skips_threshold_rejection() -> None:
@@ -1221,7 +1221,7 @@ def test_llm_pick_uses_hcx_rules_when_gemma_is_down(monkeypatch) -> None:
     trace = {}
     out = asyncio.run(lp.review("혼인", dict(base), tables, trace))
     assert out["table"]["tbl_id"] == "A1" and trace["llm_pick"]["llm"] == "hcx"
-    assert seen == [(lp.SYSTEM, None)]
+    assert seen == [(lp.SYSTEM, 0)]
 
 
 def test_age_class_needs_an_age_axis() -> None:

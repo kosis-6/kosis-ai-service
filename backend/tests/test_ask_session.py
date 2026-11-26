@@ -1,6 +1,6 @@
 import asyncio
 import copy
-from datetime import timedelta
+from datetime import date, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -1926,7 +1926,16 @@ def test_same_number_matches_value_unit_and_year_only() -> None:
     assert not s.same_number(a, None)
 
 
-def test_age_only_follow_up_keeps_the_indicator() -> None:
+@pytest.mark.parametrize(
+    ("question", "term"),
+    [
+        ("20~24세로 보여줘", "20~24세"),
+        ("스무 살부터 스물네 살까지로 보여줘", "20~24세"),
+        ("스무 살부터 스물네 살까지로 보여줘", "스무 살부터 스물네 살까지"),
+        ("스무 살부터 스물네 살까지로 보여줘", "스무 살부터 스물네 살까지로"),
+    ],
+)
+def test_age_only_follow_up_keeps_the_indicator(question, term) -> None:
     """ "서울 청년 미혼 비율" 뒤 "20~24세로 보여줘": HCX가 '20~24세'를 지표로 적어도 연령만 바꾸고
     미혼 비율을 이어받는다 (11/24 S-45, 전에는 연앙인구 표로 564,693.5명이라 답했다)"""
     youth = {"expr": "청년", "range": "19~34세", "basis": "청년기본법 19~34세"}
@@ -1946,18 +1955,19 @@ def test_age_only_follow_up_keeps_the_indicator() -> None:
     parsed = {
         "type": "value",
         "indicator": "20대 인구",
-        "term": "20~24세",
+        "term": term,
         "regions": [],
-        "ages": [[20, 24]],
+        "ages": qa.extract_ages(question),
         "sex": "계",
         "grounded": None,
     }
-    question = "20~24세로 보여줘"
     assert not s.names_indicator(question, parsed)
     p, src = s.inherit(parsed, s.sources_of(question, parsed), prev, {**USER}, question)
     assert p["indicator"] == "미혼 비율" and src["indicator"] == "inherited"
     assert p["ages"] == [[20, 24]] and "age_group" not in p and p["term"] == "미혼 비율"
     assert p["regions"] == ["서울"] and p["grounded"] is True
+    rebuilt = s.inherited_question(p)
+    assert "20~24세" in rebuilt and "청년" not in rebuilt
 
 
 def test_term_with_age_and_other_words_still_names_an_indicator() -> None:
@@ -2076,19 +2086,28 @@ def restate_on(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(s.get_settings(), "follow_restate", True)
 
 
+def _has_step(res: dict, stage: str, result: str) -> bool:
+    return any(x["stage"] == stage and x["result"] == result for x in res["trace"]["flow"])
+
+
 def test_follow_restate_call_failure_goes_back_to_existing_path(
     talk: Talk, restate_on: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """복원 호출이 실패하면 새 말만 새 질문으로 보내지 않고 기존 경로(규칙 + 변경 추출)로 이어 간다
-    (11/25 HCX 42901: "2020년은?"이 직전 대화 없이 새 질문으로 갔다)"""
+    (11/25 HCX 42901: "2020년은?"이 직전 대화 없이 새 질문으로 갔다).
+    "2022년만"은 기존 경로의 연도만 규칙(YEAR_ONLY_REPLY)이 변경 추출보다 먼저 잡는다"""
+    tried: list[str] = []
 
     async def broken(state, question, trace):
+        tried.append(question)
         raise RuntimeError("HCX 42901")
 
     monkeypatch.setattr(s, "restate", broken)
     talk.say("부산 출생아 최근 5년 보여 줘")
     res = talk.say("2022년만", request_type="change", changes={"year": 2022})
-    assert talk.extracted == ["2022년만"]  # 기존 변경 추출을 탔다
+    assert tried == ["2022년만"]  # 복원을 한 번 시도했다
+    assert _has_step(res, "이어 묻기 판단", "실패")
+    assert _has_step(res, "후속 질문", "연도 변경")  # 기존 경로의 연도만 규칙을 탔다
     assert res["request_type"] == "change"
     assert res["parsed"]["year"] == 2022 and res["parsed"]["regions"] == ["부산"]
     assert talk.asked == ["부산 출생아 최근 5년 보여 줘"]  # 새 말만으로 새 질문을 하지 않았다
@@ -2097,14 +2116,20 @@ def test_follow_restate_call_failure_goes_back_to_existing_path(
 def test_follow_restate_unreadable_answer_goes_back_to_existing_path(
     talk: Talk, restate_on: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    tried: list[str] = []
+
     async def prose(question, system):
+        tried.append(question)
         return "죄송하지만 이해하지 못했습니다"
 
     monkeypatch.setattr(s, "_chat", prose)
     talk.say("부산 출생아 최근 5년 보여 줘")
     res = talk.say("2022년만", request_type="change", changes={"year": 2022})
-    assert talk.extracted == ["2022년만"]
+    assert tried == ["2022년만"]  # 복원 LLM 을 한 번 불렀다
+    assert _has_step(res, "이어 묻기 판단", "실패")
+    assert _has_step(res, "후속 질문", "연도 변경")  # 기존 경로의 연도만 규칙을 탔다
     assert res["parsed"]["year"] == 2022 and res["parsed"]["regions"] == ["부산"]
+    assert talk.asked == ["부산 출생아 최근 5년 보여 줘"]
 
 
 def test_follow_restate_unclear_shows_fixed_sentence_not_llm_note(
@@ -2225,3 +2250,32 @@ def test_follow_llm_gemma_uses_gemma_client(monkeypatch: pytest.MonkeyPatch) -> 
     assert asyncio.run(s._follow_chat("대구는?", "SYS")) == '{"verdict": "ok"}'
     assert sent[0][0] == {"role": "system", "content": "SYS"}
     assert sent[0][1]["content"] == "대구는?"
+
+
+@pytest.mark.parametrize("question", ["재작년까지 5년간은?", "2024년까지 최근 5년은?"])
+def test_follow_up_keeps_user_specified_end_year(talk: Talk, monkeypatch, question):
+    class FixedDate(date):
+        @classmethod
+        def today(cls):
+            return cls(2026, 11, 24)
+
+    monkeypatch.setattr(s, "date", FixedDate)
+    monkeypatch.setattr(s.timeref, "date", FixedDate)
+    talk.parsed = {
+        **BASE,
+        "type": "value",
+        "regions": ["서울"],
+        "year": 2025,
+        "start_year": None,
+        "end_year": None,
+    }
+    talk.say("서울 출생아 수")
+    talk.fail_when = lambda p: bool((p.get("asked") or {}).get("recent"))
+    result = talk.say(
+        question,
+        request_type="change",
+        changes={"type": "trend", "start_year": 2021, "end_year": 2025},
+    )
+    assert result["status"] == "ok"
+    assert [p["year"] for p in result["result"]["series"]] == list(range(2020, 2025))
+    assert {"name": "기간", "value": "2020~2024년", "source": "user"} in result["applied"]

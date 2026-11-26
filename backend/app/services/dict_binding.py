@@ -15,6 +15,16 @@ SUB_YEAR = re.compile(r"\d{1,2}\s*월|상반기|하반기|\d\s*분기|분기별|
 SEX_CLASS = re.compile(r"^(성별?|남녀|성\s*별)$")
 MONTHLY = re.compile(r"월\s*말|월별")
 FROM_TO = re.compile(r"\S+에서\s*\S+?(?:으로|로)\s*(?:이사|이동|옮|간|가|온|오|빠져)")
+# '다른 시도에서 경기도로 이사 오는 사람'은 특정 경로가 아니라 전입자 수(밖에서 들어온 사람 전체)다
+GENERIC_ORIGIN = re.compile(
+    r"(?:다른|타|여타|외부|딴)\s*(?:시도|지역|시군구|도시|곳|데)\s*에서|밖에서"
+)
+
+
+def specific_route(question: str) -> bool:
+    return bool(FROM_TO.search(question)) and not GENERIC_ORIGIN.search(question)
+
+
 FILTER_KEY = re.compile(r"c(\d+)_id")
 PERIOD_CONDS = ("year", "period")
 
@@ -25,9 +35,13 @@ def _norm(text: str) -> str:
 
 def _spec_for(parsed: dict, tbl_id: str) -> dict:
     name = parsed.get("indicator") or ""
+    survey = (parsed.get("asked") or {}).get("survey")
     names = [name, *(n for *_, n in indicators.find_in_text(name))]
     for n in names:
         sp = indicators.spec(n)
+        if sp and survey and (alt := indicators.alt_spec(sp, survey)):
+            if any(s.get("table") == tbl_id for s in alt["sources"]):
+                return alt
         if sp and any(s.get("table") == tbl_id for s in sp.get("sources") or []):
             return sp
     return indicators.spec(name) or {}
@@ -36,20 +50,26 @@ def _spec_for(parsed: dict, tbl_id: str) -> dict:
 def _source(
     result: dict, parsed: dict
 ) -> tuple[str | None, dict[int, str], dict[int, set[str]], dict]:
-    from app.services import qa
+    from app.services import lookup, qa
 
     src = qa.sources(result)
     tbl_id = src[0]["tbl_id"] if src else None
     if not tbl_id:
         return None, {}, {}, {}
     sp = _spec_for(parsed, tbl_id)
-    used = next((s for s in sp.get("sources") or [] if s.get("table") == tbl_id), {})
+    source = next((s for s in sp.get("sources") or [] if s.get("table") == tbl_id), {})
+    sex = result.get("sex") or parsed.get("sex") or "계"
+    used = lookup._effective(source, sex) or {}
     forced: dict[int, str] = {}
     if used.get("item_id"):
-        forced[0] = used["item_id"]
+        items = used["item_id"]
+        if isinstance(items, str):
+            forced[0] = items
     elif tbl_id == indicators.POP_TABLE:
         forced[0] = POP_ITEMS.get(parsed.get("sex") or "계", POP_ITEMS["계"])
     decided: dict[int, set[str]] = {no: {code} for no, code in forced.items()}
+    if isinstance(used.get("item_id"), list):
+        decided[0] = set(used["item_id"])
     for key, value in (used.get("filters") or {}).items():
         if m := FILTER_KEY.fullmatch(key):
             codes = [value] if isinstance(value, str) else list(value)
@@ -123,11 +143,18 @@ async def _conditions(question: str) -> dict[str, Any]:
 
 
 def judge(question: str, parsed: dict, result: dict, u: dict) -> dict[str, Any] | None:
+    from app.services import qa
+
     tbl_id, forced, decided, sp = _source(result, parsed)
     if not tbl_id:
         return None
     cond = dict(u.get("conditions") or {})
     cond["classes"] = [c for c in cond.get("classes") or [] if not SEX_CLASS.match(c)]
+    if survey := sp.get("survey"):
+        question = qa.without_survey(question)
+        cond["classes"] = [c for c in cond["classes"] if qa.survey_said(c) != survey]
+    if parsed.get("level") == "시" and result.get("ranking") is not None:
+        cond["classes"] = [c for c in cond["classes"] if _norm(c) not in {"도시", "도시별"}]
     slots = {
         "conditions": cond,
         "target": u.get("target"),
@@ -138,10 +165,11 @@ def judge(question: str, parsed: dict, result: dict, u: dict) -> dict[str, Any] 
     b = binding.bind(tbl_id, question, {**parsed, "sex": None}, slots, forced)
     words = _indicator_words(sp, parsed)
     reasons = _unbound_reasons(b, parsed, words) + _ignored(b, tbl_id, decided, words)
-    basis = str(result.get("basis") or "")
-    if SUB_YEAR.search(question) and not result.get("as_of") and not MONTHLY.search(basis):
+    if SUB_YEAR.search(question) and any(
+        not (r.get("as_of") or MONTHLY.search(r.get("basis") or "")) for r in qa._leaves(result)
+    ):
         reasons.append("월 · 분기 단위를 물었는데 연간 값")
-    if FROM_TO.search(question):
+    if specific_route(question):
         reasons.append("'○○에서 ○○로' 옮긴 사람 (전출지 → 전입지)")
     out = b.to_dict()
     out.update(

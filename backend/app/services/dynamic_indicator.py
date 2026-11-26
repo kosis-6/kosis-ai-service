@@ -15,6 +15,7 @@ from app.core.stats_db import rows as _rows
 from app.services import (
     agegroup,
     alternative,
+    band,
     cell_pick,
     flow,
     indicators,
@@ -146,6 +147,9 @@ class Plan:
     multi_dim: Dim | None = None
     couple: bool = False
     split_sex: dict[str, str] | None = None
+    # 숫자 구간 축의 구간 합 (band.py): 분류 번호 → (칸 코드들, 답에 쓰는 말).
+    # 건수면 합, 비율이면 합 ÷ 합계
+    bands: dict[int, tuple[list[str], str]] = field(default_factory=dict)
 
 
 def schema(tbl_id: str) -> tuple[list[Dim], int | None, str]:
@@ -579,11 +583,20 @@ def choose(
     couple: bool = False,
     multi: tuple[int, list[str], str] | None = None,
     quiet: dict[int, str] | None = None,
+    bands: dict[int, tuple[list[str], str]] | None = None,
 ):
     forced = forced or {}
     plan = Plan()
     sex = parsed.get("sex") or "계"
+    # 숫자 구간 축의 구간 합(band.find): 그 축은 질문 조건을 이미 이은 것으로 본다
+    for no, (codes, label) in (bands or {}).items():
+        d = next((x for x in dims if x.no == no), None)
+        if d is not None and codes and all(c in d.codes for c in codes):
+            plan.bands[no] = (list(codes), label)
+            plan.pick[no] = plan.matched[no] = codes[0]
     for d in dims:
+        if d.no in plan.bands:
+            continue
         if d.no != region_dim and d.sex_codes():
             plan.sex_dim = d
         elif d.no not in (0, region_dim) and d.is_age() and d.total():
@@ -592,7 +605,7 @@ def choose(
         return None, "표에 성별 구분이 없음"
     if plan.age_dim is None and parsed.get("ages"):
         return None, "표에 연령 구분이 없음"
-    skip = {region_dim} | ({plan.age_dim.no} if plan.age_dim else set())
+    skip = {region_dim} | ({plan.age_dim.no} if plan.age_dim else set()) | set(plan.bands)
     hits = _drop_region_words(question, _text_hits(question, dims, skip), dims, region_dim)
     household_table = HOUSEHOLD_CELL.search(_table_target(tbl_nm))
     asks: list[Ask] = []
@@ -797,6 +810,10 @@ def _unit_norm(text: str) -> str:
     return unicodedata.normalize("NFKC", re.sub(r"\s+", "", str(text))).lower()
 
 
+def _band_unions(plan: Plan) -> list[band.Union]:
+    return [band.Union(no, tuple(codes), label) for no, (codes, label) in plan.bands.items()]
+
+
 def _band_miss(texts: list[str], dims: list[Dim], region_dim: int | None) -> BandMiss | None:
     for text in texts:
         for m in MEASURE_UNIT.finditer(_unit_norm(text)):
@@ -835,6 +852,8 @@ def uncovered(
             continue
         if not _item_left(item, names, read, plan, parsed, question):
             continue
+        if any(u.label and _norm(item) in _norm(u.label) for u in _band_unions(plan)):
+            continue  # 구간 합으로 이미 이었다 ("저체중아" → 2.5kg 미만 칸들)
         if miss := _band_miss([item], dims, region_dim):
             return miss
         return f"질문의 조건 '{item}'을 표의 칸에 반영할 수 없음"
@@ -851,7 +870,8 @@ def uncovered(
         for c in cond.get("classes") or []
         if _norm(c) not in skip and not _class_narrowed(c, plan, dims, said)
     ]
-    if classes and parsed.get("type") not in ("composition", "rank", "trend"):
+    split = bool(slots.get("cells_by_binding") and plan.multi and plan.multi[2] in SPLIT_OPS)
+    if classes and not split and parsed.get("type") not in ("composition", "rank", "trend"):
         return f"나눠 보기({', '.join(classes)}별)는 값 하나로 답할 수 없음"
     return None
 
@@ -987,9 +1007,13 @@ def _has_age_dim(dims: list[Dim], region_dim: int | None) -> bool:
 
 
 def _filters(plan: Plan, dims: list[Dim], region_dim: int | None) -> dict:
-    return {
+    out = {
         d.col: plan.pick[d.no] for d in dims if d.no not in (0, region_dim) and d.no in plan.pick
     }
+    for d in dims:
+        if d.no in plan.bands and d.no not in (0, region_dim):
+            out[d.col] = list(plan.bands[d.no][0])  # 칸 여러 개 → lookup 이 더한다
+    return out
 
 
 def _sex_override(plan: Plan, sex: str) -> dict:
@@ -1014,7 +1038,7 @@ def _name(
     unit: str = "",
     target: str = "",
 ) -> str:
-    named = [d for d in dims if d.no in plan.matched]
+    named = [d for d in dims if d.no in plan.matched and d.no not in plan.bands]
     named = [d for d in named if len(d.codes) > 1] or named
     words = [d.codes[plan.matched[d.no]] for d in named]
     words = words or [dims[0].codes[plan.pick[0]]]
@@ -1081,6 +1105,11 @@ def build(
     except Exception:
         tbl_nm = ""
     target = _table_target(tbl_nm)
+    housing = qa.housing_population_condition(question) or parsed.get("housing_condition")
+    if housing and "고령자" in target:
+        ages = qa.resolved_ages(question)
+        if not ages or any(lo < 60 for lo, _ in ages):
+            return None, "이 통계표의 집계 대상은 고령자로 한정됨"
     household_asked = HOUSEHOLD_ASK.search(question) and not PERSON_ASK.search(question)
     if household_asked and POPULATION_TARGET.search(target):
         return None, "가구 수를 물었는데 이 통계표의 집계 대상은 사람 수"
@@ -1090,7 +1119,7 @@ def build(
     if birthplaces and not birthplace_axes:
         return None, "질문의 출생지 조건을 적용할 분류가 이 통계표에 없음"
     if (
-        not birthplaces
+        not (birthplaces or housing)
         and PER_AVERAGE.search(question)
         and (avg := _per_average(tbl_id, dims, region_dim, level))
     ):
@@ -1102,7 +1131,19 @@ def build(
         couple = False
     multi = (slots or {}).get("binding_multi")
     quiet = (slots or {}).get("binding_quiet")
-    plan, why = choose(question, parsed, dims, region_dim, forced, tbl_nm, couple, multi, quiet)
+    # 숫자 구간 축의 구간 합: "2.5kg 미만" · "고령산모(35세 이상)"가 덮는 칸들을 그 축에 잇는다
+    items = list(((slots or {}).get("conditions") or {}).get("items") or [])
+    literal = set(
+        _text_hits(question, dims, {region_dim})
+    )  # 칸 이름이 글자로 있으면 그 매칭이 맡는다
+    bands = {
+        u.dim_no: (list(u.codes), u.label)
+        for u in band.find([question, *items], dims, region_dim)
+        if u.dim_no not in literal
+    }
+    plan, why = choose(
+        question, parsed, dims, region_dim, forced, tbl_nm, couple, multi, quiet, bands or None
+    )
     if (seen := (slots or {}).get("seen")) is not None:
         seen["plan"] = plan
     _report_cells(slots, plan, dims, parsed, region_dim)
@@ -1126,7 +1167,7 @@ def build(
     if why := uncovered(slots, plan, dims, parsed, region_dim, question):
         return None, why
     miss = _band_miss([question], dims, region_dim)
-    if miss and miss.dim_no not in plan.matched:
+    if miss and miss.dim_no not in plan.matched and miss.dim_no not in plan.bands:
         return None, miss
     src = {"table": tbl_id, "level": level, "item_id": plan.pick[0]}
     if level == "전국":
@@ -1153,6 +1194,15 @@ def build(
             display_unit = household_unit
         elif household_asked:
             return None, "가구 수를 물었는데 고른 칸은 사람 수(단위 명)를 센 칸"
+    if housing:
+        if not counted or display_unit not in ("명", "천명"):
+            return None, "거주 인원을 물었는데 고른 칸은 사람 수를 집계하지 않음"
+        if not any(
+            _norm(housing) in _norm(d.codes[plan.pick[d.no]])
+            for d in dims
+            if d.no != region_dim and d.no in plan.pick
+        ):
+            return None, f"'{housing}' 조건이 선택한 칸에 반영되지 않음"
     strip_age = bool(
         plan.age_dim
         and parsed.get("ages")
@@ -1396,7 +1446,10 @@ def _ratio(spec, src, plan, dims, parsed, tbl_nm="", *, question=""):
         parts.append((age_dim.col, codes, den, "·".join(map(indicators.age_label, ages))))
     for d in dims:
         whole = d.total() or _item_whole(d, tbl_nm)
-        if d.no in plan.matched and whole and plan.matched[d.no] != whole:
+        if d.no in plan.bands and whole:
+            codes, label = plan.bands[d.no]
+            parts.append((d.col, list(codes), whole, label))
+        elif d.no in plan.matched and whole and plan.matched[d.no] != whole:
             if d is not plan.sex_dim:
                 code = plan.matched[d.no]
                 if indicators.find_regions(d.codes[code]):
@@ -1420,6 +1473,12 @@ def _ratio(spec, src, plan, dims, parsed, tbl_nm="", *, question=""):
         num_src["filters"] = {**filters, col: num if len(num) > 1 else num[0]}
         num_src["den_item_id"] = src["item_id"]
         num_src["den_filters"] = {**filters, col: den}
+    if plan.sex_dim is not None and plan.sex_dim.no != 0 and sex == "계" and not population_sex:
+        # 성별 '계' 칸을 분자 · 분모 조회에 붙인다. 건수 경로는 by_sex 로 붙지만 비율 경로는 빠져
+        # 계 + 남 + 여가 합산됐다 (값은 같은 비율이라 맞았지만 보이는 분자 · 분모가 2배, 11/26)
+        whole_sex = {plan.sex_dim.col: plan.pick[plan.sex_dim.no]}
+        num_src["filters"] = {**whole_sex, **num_src.get("filters", {})}
+        num_src["den_filters"] = {**whole_sex, **num_src.get("den_filters", {})}
     whole = next(d.codes for d in dims if d.col == col)
     name = spec["name"]
     if population_label:
@@ -1621,8 +1680,13 @@ def _age_check(key: str, parsed: dict) -> bool:
 MAX_ATTEMPTS = 5
 MAX_FETCH_AT_ONCE = 3
 MAX_CELL_LLM = 3
+MAX_RECELL = 1
+SPLIT_OPS = ("rank", "compare")
 _cell_llm_budget: contextvars.ContextVar[list[int] | None] = contextvars.ContextVar(
     "cell_llm_budget", default=None
+)
+_recell_budget: contextvars.ContextVar[list[int] | None] = contextvars.ContextVar(
+    "recell_budget", default=None
 )
 HANDOFF_STATUSES = ("ok", "partial_match")
 WHOLE_COUNTRY = {"전국", "우리나라", "한국", "대한민국", "국내"}
@@ -1784,6 +1848,7 @@ async def compute_from_handoff(
     if h.get("status") not in HANDOFF_STATUSES or not h.get("targets"):
         return None
     _cell_llm_budget.set([MAX_CELL_LLM])
+    _recell_budget.set([MAX_RECELL])
     targets = h["targets"]
     target = targets[0]
     if len(targets) > 1:
@@ -1925,7 +1990,12 @@ async def _compute_target(
             sub["dynamic"][-1]["binding_skip"] = (
                 b.status if b.status != binding.BOUND else "연산 둘"
             )
+            if b.status == binding.PARTIAL:
+                sub["_partial"] = (b, sub["dynamic"][-1])
             return None, None
+        return await run_binding(entry, plan, q_used, sub, slots, notice, "binding")
+
+    async def run_binding(entry, plan, q_used, sub, slots, notice, by):
         slots_b = {
             **slots,
             "cells_by_binding": True,
@@ -1933,7 +2003,7 @@ async def _compute_target(
             "binding_quiet": plan.quiet,
         }
         res, ask = await _try(
-            tbl_id,
+            entry["tbl_id"],
             entry.get("org_id"),
             question,
             plan.parsed,
@@ -1943,12 +2013,43 @@ async def _compute_target(
             notice,
             sem,
         )
-        sub["dynamic"][-1]["by"] = "binding"
+        sub["dynamic"][-1]["by"] = by
         sub["dynamic"][-1]["binding_plan"] = plan.to_dict()
         said_sex = q_used.get("sex")
         if res is not None and said_sex in ("남", "여") and plan.parsed.get("sex") != said_sex:
             res["parsed"] = {**(res.get("parsed") or {}), "sex": said_sex}
         return res, ask
+
+    async def with_recell(entry: dict, q_used: dict, sub: dict, slots: dict, notice):
+        from app.core.config import get_settings
+        from app.services import binding, recell
+
+        partial = sub.pop("_partial", None)
+        if partial is None or not get_settings().binding_recell:
+            return None, None
+        b, step = partial
+        left = _recell_budget.get()
+        if left is None:
+            left = [MAX_RECELL]
+            _recell_budget.set(left)
+        if left[0] <= 0:
+            step["recell_skip"] = f"질문당 recell 상한({MAX_RECELL}회)"
+            return None, None
+        left[0] -= 1
+        try:
+            fixed = await recell.fix(question, entry.get("tbl_nm"), b, u.get("topic"), step)
+            plan = None
+            if fixed is not None:
+                plan = await run_in_threadpool(
+                    binding.retry_plan, fixed.binding, question, q_used, True
+                )
+        except Exception:
+            logger.exception("recell 실패: %s", entry["tbl_id"])
+            return None, None
+        if plan is None:
+            return None, None
+        notice = ". ".join(n for n in (notice, fixed.notice) if n) or None
+        return await run_binding(entry, plan, q_used, sub, slots, notice, "binding+recell")
 
     async def llm_then_binding(entry, q_used, sub, slots_llm, lines, picked):
         from app.services import binding
@@ -2097,6 +2198,14 @@ async def _compute_target(
                 outs[k] = (res, ask, sub)
                 if is_ok(res):
                     break
+            if not any(is_ok(res) for res, _, _ in outs):
+                for k, (_res, ask, sub) in enumerate(outs):
+                    if ask is None and sub.get("_partial"):
+                        slots, notice = context(entries[idx[k]])
+                        got = await with_recell(entries[idx[k]], q, sub, slots, notice)
+                        if got[0] is not None or got[1] is not None:
+                            outs[k] = (got[0], got[1], sub)
+                        break
         return outs
 
     outcomes = await run_round(list(range(len(entries))), picked_exact)

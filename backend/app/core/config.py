@@ -54,6 +54,7 @@ class Settings(BaseSettings):
     binding_use: bool = True
     binding_dict_shadow: bool = False
     binding_dict_gate: bool = True
+    binding_recell: bool = True
 
     search_llm: Literal["auto", "hcx", "gemma"] = "auto"
     gemma_base_url: str = ""

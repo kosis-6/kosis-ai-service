@@ -11,8 +11,8 @@ def _title(*parts: Any) -> str:
 
 
 def _when(result: dict) -> str | None:
-    if result.get("as_of"):
-        return result["as_of"]
+    if period := result.get("period_label") or result.get("as_of"):
+        return period
     return f"{result['year']}년" if result.get("year") else None
 
 

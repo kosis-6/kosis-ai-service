@@ -93,7 +93,8 @@ def _shape(p: dict[str, Any], top: int | None) -> list[str]:
         if p.get("months"):
             # 달 묶음 합 (lookup.month_sum): 달 이름을 넷만 적으면 판정이 "1~4월만 더함"으로 봤다
             m0, m1 = p["months"][:2]
-            return [f"형태: 합계 — {m0}~{m1}월 {len(members)}개 달의 값을 모두 더한 값"]
+            period = p.get("period_label") or f"{m0}~{m1}월"
+            return [f"형태: 합계 — {period} {len(members)}개 달의 값을 모두 더한 값"]
         names = ", ".join(str(m.get("region")) for m in members[:6])
         more = f" 외 {len(members) - 6}개" if len(members) > 6 else ""
         return [f"형태: 합계 — {names}{more}를 더한 값 ({len(members)}개)"]
@@ -139,6 +140,12 @@ def describe(result: dict[str, Any] | None, parsed: dict[str, Any] | None = None
     parts = leaves(result)
     top = (parsed or {}).get("top")
     lines = [_part(p, top) for p in parts[:MAX_PARTS]]
+    if result.get("kind") == "composite" and result.get("steps_text"):
+        # 복합 질문(계산 계획)은 걸러내기 · 변화량 · 순위를 코드가 차례로 계산한 답이다. 마지막
+        # 값만 보면 "앞 단계가 빠졌다"고 틀리게 걸므로 계산 순서와 앞 단계 결과를 먼저 보인다
+        lines.insert(0, f"계산 순서(코드가 차례로 계산함): {result['steps_text']}")
+        for n in [str(x) for x in result.get("notes") or []][:3]:
+            lines.insert(1, f"앞 단계 결과: {n}")
     if len(parts) > 1:
         if len({p.get("sex") for p in parts}) > 1:
             how = "남 · 여 따로"

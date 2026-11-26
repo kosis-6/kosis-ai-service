@@ -78,7 +78,7 @@ def test_keep_and_take_are_per_question() -> None:
 
 
 def test_extract_uses_kept_slots_without_llm(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def no_call(question):
+    async def no_call(question, temperature=None):
         raise AssertionError("조건 추출 LLM을 부르면 안 된다")
 
     monkeypatch.setattr(slots, "_chat", no_call)

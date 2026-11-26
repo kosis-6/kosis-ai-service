@@ -31,6 +31,31 @@ NAMES = {
 
 EXAMPLES = "예) 2025년 서울 출생아 수 / 최근 5년 부산 인구 추이 / 합계출산율이 가장 높은 시도"
 
+INTERNAL_INSTRUCTIONS = re.compile(
+    r"(?:시스템|개발자|내부)\s*(?:프롬프트|메시지|지시(?:문|사항)?|규칙)"
+    r"|\b(?:system|developer|internal|hidden)\s+(?:prompts?|messages?|instructions?|rules)\b",
+    re.IGNORECASE,
+)
+INSTRUCTION_ACTION = re.compile(
+    r"보여|출력|공개|알려|제공|무시|인용|복사|그대로"
+    r"|\b(?:show|reveal|print|display|list|repeat|disclose|ignore|override|copy|quote)\b",
+    re.IGNORECASE,
+)
+OVERRIDE_INSTRUCTIONS = re.compile(
+    r"(?:이전|기존|앞서\s*받은)\s*(?:지시(?:문|사항)?|명령|규칙|프롬프트).{0,24}(?:무시|잊어)"
+    r"|\b(?:ignore|disregard|override|forget)\b.{0,32}"
+    r"\b(?:previous|prior|earlier|above)\s+(?:instructions?|prompts?|rules)\b",
+    re.IGNORECASE | re.DOTALL,
+)
+INSTRUCTION_REFUSAL = "인구 분야 통계를 조회할 수 있습니다. 조회할 지표와 지역을 입력해 주세요."
+
+
+def instruction_request(question: str) -> bool:
+    return bool(
+        OVERRIDE_INSTRUCTIONS.search(question)
+        or (INTERNAL_INSTRUCTIONS.search(question) and INSTRUCTION_ACTION.search(question))
+    )
+
 
 ASKS_NUMBER = re.compile(
     r"몇|얼마|건수|비율|비중|순위|추이|통계|많아|적어|늘었|줄었|증가|감소|평균|인구\s*(?:는|가|수)"
@@ -167,7 +192,7 @@ async def _ask(question: str, reason: str) -> dict[str, Any] | None:
         return messages, {
             "thinking": {"effort": "none"},
             "maxCompletionTokens": MAX_TOKENS,
-            **({"temperature": 0} if llm == "gemma" else {}),
+            "temperature": 0,
             "responseFormat": {"type": "json", "schema": prompt.SCHEMA},
         }
 
