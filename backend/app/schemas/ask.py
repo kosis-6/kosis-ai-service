@@ -56,6 +56,11 @@ class Chart(BaseModel):
         default=None,
         description="처음 보여 줄 모양. '막대그래프로', '표로'라고 했을 때 (없으면 type대로)",
     )
+    crowded: bool = Field(
+        default=False,
+        description="꺾은선이 많아(6개 넘음) 겹쳐 그리지 않는다: 지역별 작은 꺾은선으로 그리고 "
+        "막대 보기는 두지 않는다. 서버가 정하고 화면은 이 값을 따른다",
+    )
 
 
 class Applied(BaseModel):

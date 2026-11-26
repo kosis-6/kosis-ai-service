@@ -95,13 +95,26 @@ def test_region_trends_are_several_lines() -> None:
     assert chart["type"] == "line" and chart["series"] == ["서울특별시", "부산광역시"]
     assert chart["title"] == "합계출산율 2022~2024년" and chart["unit"] == "가임여성 1명당 명"
     assert [r["values"] for r in chart["rows"]] == [[0.59, None], [0.55, 0.66], [None, 0.68]]
+    assert chart["crowded"] is False
     Chart(**chart)
     names = [f"지역{i}" for i in range(charts.MAX_LINES + 2)]
     many = {"status": "ok", "split_by": "region",
             "split": [{**seoul, "region": n} for n in names]}  # fmt: skip
-    assert charts.build(many)["series"] == names
+    crowded = charts.build(many)
+    assert crowded["series"] == names
+    # 겹쳐 그릴지는 서버가 정해 싣는다: 화면은 이 값을 따른다 (11/26 리뷰: 서버는 막대로
+    # 바꿨다고 하고 화면은 지역별 꺾은선을 그렸다)
+    assert crowded["crowded"] is True and Chart(**crowded).crowded is True
     nested = {"status": "ok", "split_by": "region", "split": [{"split": [seoul]}, busan]}
     assert charts.build(nested) is None
+
+
+def test_crowded_follows_the_flag_and_counts_only_old_charts() -> None:
+    assert charts.crowded({"type": "line", "series": ["가", "나"], "crowded": True})
+    assert not charts.crowded({"type": "line", "series": list("가나다라마바사"), "crowded": False})
+    # 이 값이 생기기 전에 저장된 대화의 차트는 선 수로 센다
+    assert charts.crowded({"type": "line", "series": list("가나다라마바사")})
+    assert not charts.crowded({"type": "bar", "series": None})
 
 
 def test_region_trends_require_comparable_indicators_units_and_sexes():
