@@ -551,13 +551,21 @@ def complete_question(question: str) -> bool:
 
 
 def inherit(
-    parsed: dict, sources: dict, prev: dict, prev_sources: dict, question: str = ""
+    parsed: dict,
+    sources: dict,
+    prev: dict,
+    prev_sources: dict,
+    question: str = "",
+    said_alone: str = "",
 ) -> tuple[dict, dict]:
+    """said_alone: 직전 지역 · 기간을 붙이기 전 사용자가 한 말 ('혼인도 알려줘').
+    붙인 질문('2025년 서울 혼인도 알려줘')에서는 낱말 하나만 말했는지 알 수 없어 이 말로 본다"""
     p, s = copy.deepcopy(parsed), dict(sources)
     kind = p.get("type")
     if kind in NO_CONDITIONS or prev.get("type") in NO_CONDITIONS:
         return p, s
-    word = said_other_subject(question, p.get("regions")) if question else None
+    alone = said_alone or question
+    word = said_other_subject(alone, p.get("regions")) if alone else None
     if word and not names_indicator(question, p):
         # 앞 지표 대신 말한 낱말로: 지표가 없으면 계산 단계가 그 낱말로 표를 찾는다
         if not p.get("indicator") and not p.get("term"):
@@ -1259,6 +1267,8 @@ def verify_restate(r: dict, conditions: dict, question: str) -> tuple[str, str, 
         # "최근 5년은?"의 기간도 코드가 센다: HCX가 "2023년부터 2020년까지"처럼 거꾸로 적었다 (C08).
         # 숫자 연도를 지우고 '최근 N년'을 앞에 두면 새 질문 경로가 자료 마지막 해까지 N개 해로 푼다
         bare = re.sub(r"\d{4}\s*년\s*(?:부터|에서|~|까지|과|와|이랑|에)?\s*", "", restored)
+        # LLM이 이미 쓴 '최근 N년(간)'도 지운다: 앞에 다시 붙이면 '최근 10년 최근 10년간'이 된다
+        bare = re.sub(r"최근\s*\d{1,2}\s*년\s*(?:간|동안|치)?\s*", "", bare)
         bare = re.sub(r"\s{2,}", " ", bare).strip()
         return relation, f"최근 {n}년 {bare}", f"상대 기간은 코드로 최근 {n}년"
     if year := follow_year(question, conditions):
@@ -1558,7 +1568,11 @@ async def _household_age_ratio(question: str) -> dict | None:
 
 
 async def _new(
-    question: str, state: dict | None, *, scoped_age_ratio: bool = False
+    question: str,
+    state: dict | None,
+    *,
+    scoped_age_ratio: bool = False,
+    said_alone: str = "",
 ) -> tuple[dict, dict, str | None]:
     kept: dict[str, Any] = {}
     prev = state["conditions"] if state and state.get("conditions") else None
@@ -1572,7 +1586,7 @@ async def _new(
         kept["sources"] = sources_of(question, parsed)
         if prev:
             parsed, kept["sources"] = inherit(
-                parsed, kept["sources"], prev, state["sources"], question
+                parsed, kept["sources"], prev, state["sources"], question, said_alone
             )
         if scoped_age_ratio:
             parsed.update(unsupported=True, cross=None, indicators=None, dynamic_spec=None)
@@ -2135,7 +2149,26 @@ async def _turn(
             None,
         )
 
+    if asked := other_subject_question(question, state["conditions"]):
+        flow.add("다른 지표 후속 질문", "직전 지역 · 기간을 붙임", asked)
+        return await _new(asked, state, said_alone=question)
     return await _new(question, state)
+
+
+def other_subject_question(question: str, conditions: dict) -> str | None:
+    """'혼인도 알려줘'처럼 사전이 모르는 낱말 하나만 말한 후속 질문이면 직전 지역 · 기간을 앞에 붙인
+    질문 ('2025년 서울 혼인도 알려줘'). 무엇을 물었는지(혼인 → 혼인 건수)는 질문 이해가 읽는다.
+    낱말만 표 검색어로 넣으면 사전 지표('혼인 건수')를 두고 표 안내 · 칸 되묻기로 끝났다 (11/26).
+    낱말이 지역 이름이면('강남은?') 지역을 바꾼 말이라 붙이지 않는다"""
+    if not (word := said_other_subject(question)) or names_indicator(question, {}):
+        return None
+    if indicators.resolve_region(word).get("status") == "ok":
+        return None
+    where = " ".join(conditions.get("regions") or [])
+    if not where and conditions.get("type") == "rank":
+        where = conditions.get("sido") or ""
+    lead = " ".join(x for x in (period_text(conditions), where) if x)
+    return f"{lead} {question.strip()}" if lead else None
 
 
 def next_state(state: dict | None, question: str, res: dict, sources: dict) -> dict:

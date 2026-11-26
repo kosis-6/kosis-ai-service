@@ -2262,6 +2262,18 @@ def _read_question(question, parsed, fix):
     if parsed.get("type") == "rank":
         if LEVEL_CITY.search(question) and parsed.get("level") != "시":
             fix("level", "시", "전국 시 중 순위")
+        rank_regions = parsed.get("regions") or []
+        if (
+            parsed.get("level") in ("시군구", "시")
+            and not parsed.get("sido")
+            and len(rank_regions) == 1
+            and not re.search(r"몇\s*(?:위|등)|등수", question)
+            and indicators.resolve_region(rank_regions[0]).get("kind") == "시도"
+        ):
+            # 시군구 순위인데 시도 하나가 범위(sido)가 아닌 지역(regions)에만 들어온 모양:
+            # '경기도 내 시군구 인구 순위' · '… 낮은 순'이 전국 229곳으로 나갔다 (11/26)
+            fix("sido", rank_regions[0], "시도 안의 순위 범위")
+            fix("regions", [], "시도 안의 지역 순위")
         if ASCENDING.search(question) and not parsed.get("ascending"):
             fix("ascending", True, "가장 낮은 순위")
         elif (

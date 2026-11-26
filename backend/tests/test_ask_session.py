@@ -2547,3 +2547,41 @@ def test_follow_up_keeps_user_specified_end_year(talk: Talk, monkeypatch, questi
     assert result["status"] == "ok"
     assert [p["year"] for p in result["result"]["series"]] == list(range(2020, 2025))
     assert {"name": "기간", "value": "2020~2024년", "source": "user"} in result["applied"]
+
+
+def test_verify_restate_does_not_repeat_recent_years(monkeypatch) -> None:
+    # LLM이 이미 '최근 10년간'을 썼으면 앞에 다시 붙인 '최근 10년'과 겹치지 않게 지운다
+    monkeypatch.setattr(s, "recent_years", lambda q: 10)
+    cond = {"type": "trend", "indicator": "출생아 수", "regions": ["서울"]}
+    rel, q, _ = s.verify_restate(
+        {"relation": "followup", "question": "최근 10년간 서울 출생아 수 추이는?"},
+        cond,
+        "10년으로 늘려줘",
+    )
+    assert (rel, q) == ("followup", "최근 10년 서울 출생아 수 추이는?")
+
+
+def test_other_subject_question_puts_previous_region_and_period(monkeypatch) -> None:
+    # '혼인도 알려줘': 낱말만 표 검색어로 넣지 않고 직전 지역 · 기간을 붙여 질문 이해에 맡긴다
+    monkeypatch.setattr(
+        s.indicators,
+        "resolve_region",
+        lambda name: {"status": "ok" if name == "강남" else "unknown_region"},
+    )
+    value = {"type": "value", "indicator": "출생아 수", "regions": ["서울"], "year": 2025}
+    assert s.other_subject_question("혼인도 알려줘", value) == "2025년 서울 혼인도 알려줘"
+    rank = {"type": "rank", "indicator": "총인구", "level": "시군구", "sido": "경기도"}
+    rank["year"] = 2025
+    assert s.other_subject_question("이혼은?", rank) == "2025년 경기도 이혼은?"
+    # 지역 이름 · 지표 이름 · 묻는 말은 붙이지 않는다
+    assert s.other_subject_question("강남은?", value) is None
+    assert s.other_subject_question("사망자 수도 알려줘", value) is None
+    assert s.other_subject_question("몇명이야?", value) is None
+
+
+def test_inherit_judges_subject_by_what_was_said_alone() -> None:
+    # 붙인 질문에서도 사용자가 한 말('혼인도 알려줘')로 보고 앞 지표를 이어받지 않는다
+    prev = {"type": "value", "indicator": "출생아 수", "regions": ["서울"], "year": 2025}
+    parsed = {"type": "value", "regions": ["서울"], "year": 2025}
+    p, _ = s.inherit(parsed, {}, prev, {}, "2025년 서울 혼인도 알려줘", "혼인도 알려줘")
+    assert p.get("indicator") != "출생아 수" and p.get("term") == "혼인"
