@@ -9,6 +9,7 @@ from app import main
 from app.core import stats_db
 from app.services import ask_session as s
 from app.services import dynamic_indicator, indicators, lookup, qa, table_guide
+from tests.conftest import memory_turn_writer
 
 BASE = {
     "type": "trend",
@@ -224,10 +225,49 @@ def test_pick_region_reply() -> None:
         ("서울도 막대로 보여줘", None),
         ("추이를 막대그래프로 보여줘", None),
         ("통계표 보여줘", None),
+        # 요청 말 · 채움말만 더한 그림 바꾸기
+        ("막대그래프로 다시 보여줘", "bar"),
+        ("막대그래프로 좀 볼 수 있을까요?", "bar"),
+        ("그래프 형태로 바꿔 주세요", "chart"),
+        ("이번엔 표로", "table"),
+        ("막대그래프가 보고 싶어", "bar"),
+        ("그래프로 그려줄래?", "chart"),
+        ("그림으로 보여줘", "chart"),
+        # 조건이 남으면 조건 변경 (11/26 리뷰: 빼는 말 목록에 없는 조건은 버리고 그림만 바꿨다)
+        ("남자만 막대그래프로 보여줘", None),
+        ("여자는 그래프로", None),
+        ("65세 이상만 막대로", None),
+        ("내국인만 막대그래프로", None),
+        ("상위 5개만 막대로", None),
+        ("많은 순으로 막대그래프", None),
+        ("10개만 막대그래프로 보여줘", None),
+        ("비율로 막대그래프 보여줘", None),
+        ("증가율로 그래프", None),
+        ("평균으로 막대그래프", None),
+        ("합계만 표로", None),
     ],
 )
 def test_chart_request(question, view) -> None:
     assert s.chart_request(question) == view
+
+
+def test_chart_shape_is_read_with_a_condition_change() -> None:
+    assert s.chart_shape("남자만 막대그래프로 보여줘") == "bar"
+    assert s.chart_shape("65세 이상만 표로") == "table"
+    assert s.chart_shape("남자만 보여줘") is None
+
+
+def test_crowded_line_chart_is_not_said_to_be_bars() -> None:
+    """지역이 6개를 넘는 추이는 화면이 막대 없이 지역별 꺾은선으로 그린다: 막대로 바꿨다고
+    답하면 화면과 어긋났다 (11/26 리뷰)"""
+    seven = {"type": "line", "rows": [], "series": [f"지역{i}" for i in range(7)]}
+    chart, said = s.redraw(seven, "bar", "ok")
+    assert chart["view"] == "line"
+    assert said == (
+        "7개 지역을 막대로 그리면 겹쳐 읽기 어렵습니다. 지역별 꺾은선 그래프로 보여 드립니다."
+    )
+    six = {**seven, "series": seven["series"][:6]}
+    assert s.redraw(six, "bar", "ok") == ({**six, "view": "bar"}, "막대그래프로 바꿨습니다.")
 
 
 @pytest.mark.parametrize(
@@ -297,6 +337,7 @@ class Talk:
         monkeypatch.setattr(s, "extract", self._extract)
         monkeypatch.setattr(s, "load", self._load)
         monkeypatch.setattr(s, "save", self._save)
+        monkeypatch.setattr(s, "turn_writer", memory_turn_writer(self.store))
         monkeypatch.setattr(s, "log_turn", self._log)
         monkeypatch.setattr(s, "now", lambda: self.at)
         monkeypatch.setattr(table_guide, "find_tables", self._find)
@@ -374,10 +415,10 @@ class Talk:
             return None, False
         return (None, True) if at - row[1] > s.SESSION_FOR else (row[0], False)
 
-    async def _save(self, session_id, state):
+    async def _save(self, session_id, state, conn=None):
         self.store[session_id] = (state, self.at)
 
-    async def _log(self, session_id, user_id, turn_no, question, res, before, after):
+    async def _log(self, session_id, user_id, turn_no, question, res, before, after, conn=None):
         self.turns.append((turn_no, res.get("request_type"), question))
 
     user_id: int | None = 7
@@ -392,6 +433,32 @@ class Talk:
 @pytest.fixture
 def talk(monkeypatch: pytest.MonkeyPatch) -> Talk:
     return Talk(monkeypatch)
+
+
+def test_conversation_deleted_while_answering_is_not_saved_again(
+    talk: Talk, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """이어 묻는 답을 만드는 사이 대화를 지우면 상태 · 기록 · 목록을 다시 만들지 않는다.
+    그대로 저장하면 같은 ID로 다시 생겨 지운 대화가 되살아났다 (11/26 리뷰)"""
+    talk.say("부산 출생아 최근 5년 보여 줘")
+    touched: list[str] = []
+
+    async def touch(session_id, user_id, question, conn=None):
+        touched.append(question)
+
+    monkeypatch.setattr(s.conversations, "touch", touch)
+    turn = s._turn
+
+    async def deleted_while_answering(*args, **kwargs):
+        out = await turn(*args, **kwargs)
+        talk.store.clear()  # conversations.delete가 상태까지 지운다
+        return out
+
+    monkeypatch.setattr(s, "_turn", deleted_while_answering)
+    res = talk.say("서울은?")
+    assert res["status"] == "ok"  # 보낸 요청에는 답한다
+    assert talk.store == {} and touched == []
+    assert [q for *_, q in talk.turns] == ["부산 출생아 최근 5년 보여 줘"]
 
 
 def test_first_question_starts_a_session(talk: Talk) -> None:
@@ -467,6 +534,162 @@ def test_chart_of_a_single_value_says_why_instead_of_asking_back(talk: Talk) -> 
     assert res["answer"].startswith("직전 답은 값이 하나라 그래프로 그릴 수 없습니다.")
     assert talk.extracted == []
     assert talk.say("2022년만", request_type="change", changes={"year": 2022})["status"] == "ok"
+
+
+@pytest.mark.parametrize(
+    ("said", "changes"),
+    [
+        ("65세 이상만", {"ages": [[65, None]]}),
+        ("65세 이상만 막대그래프로 보여줘", {"ages": [[65, None]]}),
+        ("노인은?", {"ages": [[65, None]]}),
+        ("그럼 30대는 어때?", {"ages": [[30, 39]]}),
+        ("20대 여자만", {"ages": [[20, 29]], "sex": "여"}),
+        ("서울 65세 이상만", None),  # 지역도 바꾼다: 변경 추출에
+        ("2023년 65세 이상만", None),
+        ("65세 이상 비율은?", None),  # 비율 후속 질문
+        ("남자만", None),
+    ],
+)
+def test_age_only_follow_up(said: str, changes: dict | None) -> None:
+    """변경 추출 형식에 연령이 없어 '65세 이상만'을 HCX가 지표('고령인구')로 바꾸거나 새 질문으로
+    읽어 앞 조건을 잃었다 (11/26 점검)"""
+    assert s.age_only_changes(said, {"indicator": "총인구", "type": "trend"}) == changes
+
+
+def test_age_change_is_applied_like_inheritance() -> None:
+    before = {"indicator": "총인구", "term": "총인구", "type": "trend", "age_group": "고령"}
+    after, changed = s.apply_changes(before, {"ages": [[65, None]]})
+    assert after["ages"] == [[65, None]] and "age_group" not in after
+    assert after["term"] == "총인구" and after["type"] == "trend" and changed == {"ages"}
+
+
+def test_age_only_follow_up_keeps_conditions_without_llm(talk: Talk) -> None:
+    talk.say("부산 출생아 최근 5년 보여 줘")
+    res = talk.say("65세 이상만 막대그래프로 보여줘")
+    assert res["request_type"] == "change" and talk.extracted == []
+    asked = talk.answered[-1]
+    assert asked["ages"] == [[65, None]] and asked["regions"] == ["부산"]
+    assert asked["type"] == "trend" and res["chart"]["view"] == "bar"
+
+
+def test_whole_talk_summary_request() -> None:
+    for said in (
+        "지금까지 분석한 내용을 요약해줘",
+        "앞에서 본 거 정리해줘",
+        "대화 내용 요약해 줘",
+        # 범위를 가리키는 다른 말 (11/26 점검: 몇 낱말만 잡아 직전 답만 요약했다)
+        "전체 내용 요약해줘",
+        "다 정리해줘",
+        "처음부터 요약해줘",
+        "전부 요약해 줘",
+        "모두 정리해줘",
+        "물어본 것들 정리해줘",
+        "이제까지 나온 결과 요약",
+    ):
+        assert s.whole_talk_summary_request(said), said
+    for said in (
+        "요약해줘",
+        "다시 요약해줘",
+        "한 줄로 요약해줘",
+        "전체적으로 요약해줘",
+        "서울 전체 인구 요약 통계 알려줘",
+        "지금까지 서울 인구 정리해줘",
+    ):
+        assert not s.whole_talk_summary_request(said), said
+
+
+def test_whole_talk_summary_lists_every_answer(talk: Talk) -> None:
+    """'지금까지 분석한 내용을 요약해줘'가 요약으로 분류돼도 직전 답만 요약했다 (11/26 리뷰)"""
+    first = talk.say("부산 출생아 최근 5년 보여 줘")
+    second = talk.say("서울은?")
+    talk.say("막대그래프로 보여줘")  # 차트만 바꾼 턴은 새 답이 아니다
+    res = talk.say("지금까지 분석한 내용을 요약해줘")
+    assert res["request_type"] == "summary" and talk.extracted == []
+    lines = res["answer"].split("\n")
+    assert lines[0] == "지금까지 본 내용 2가지입니다."
+    assert lines[1:] == [f"- {first['summary']['headline']}", f"- {second['summary']['headline']}"]
+
+
+@pytest.mark.parametrize(
+    ("said", "kind", "expected"),
+    [
+        ("최근 5년간 추이를 보여줘", "value", True),
+        ("그럼 지난 10년 변화는?", "trend", True),
+        ("최근 3년은 어때?", "compare", True),
+        ("최근 5년간 추이를 보여줘", "rank", False),
+        ("최근 5년 서울은?", "value", False),
+    ],
+)
+def test_recent_trend_reply(said: str, kind: str, expected: bool) -> None:
+    assert s.recent_trend_reply(said, {"type": kind}) is expected
+
+
+def test_recent_trend_follow_up_does_not_depend_on_llm(talk: Talk) -> None:
+    """'최근 5년간 추이를 보여줘'는 변경 추출(HCX) 분류에 따라 결과가 달랐다 (11/26 리뷰)"""
+    talk.parsed = {**BASE, "type": "value", "year": 2024, "start_year": None, "end_year": None}
+    talk.say("2024년 부산 출생아 수")
+    # 가짜 계산은 N년을 연도로 풀지 못한다: 조건만 본다
+    talk.fail_when = lambda p: bool((p.get("asked") or {}).get("recent"))
+    res = talk.say("최근 5년간 추이를 보여줘")
+    assert res["request_type"] == "change" and talk.extracted == []
+    asked = talk.answered[-1]
+    assert asked["asked"]["recent"] == 5 and asked["type"] == "trend"
+    assert asked["regions"] == ["부산"]
+
+
+def test_chart_with_a_sex_change_recomputes_and_keeps_the_shape(talk: Talk) -> None:
+    """'남자만 막대그래프로'가 성별을 다시 계산하지 않고 전체 값의 차트 모양만 바꿨다
+    (11/26 리뷰)"""
+    talk.say("부산 출생아 최근 5년 보여 줘")
+    res = talk.say("남자만 막대그래프로 보여줘", request_type="change", changes={"sex": "남"})
+    # 변경 추출에는 조건 부분만: 차트 말이 섞이면 HCX가 '그림 바꾸기'로 읽어 조건을 버렸다
+    assert talk.extracted == ["남자만 보여줘"]
+    assert res["request_type"] == "change" and talk.answered[-1]["sex"] == "남"
+    assert res["chart"]["view"] == "bar"
+    # 질문의 모양 말이 '차트'뿐이면 변경 추출이 읽은 모양
+    res = talk.say("여자만 바 차트로", request_type="change", changes={"sex": "여"}, chart="bar")
+    assert talk.answered[-1]["sex"] == "여" and res["chart"]["view"] == "bar"
+
+
+def test_new_question_with_a_chart_shape_keeps_the_shape(talk: Talk) -> None:
+    """차트 말과 함께 새 질문을 하면 새 질문 경로가 말한 모양을 버렸다 (11/26 점검)"""
+    first = talk.say("부산 출생아 최근 5년 막대그래프로 보여 줘")  # 첫 질문
+    assert first["request_type"] == "new" and first["chart"]["view"] == "bar"
+    res = talk.say("대구 출생아 수 최근 5년 막대그래프로", request_type="new")  # 이어 묻는 새 질문
+    assert res["request_type"] == "new" and res["chart"]["view"] == "bar"
+    plain = talk.say("부산 출생아 최근 5년 보여 줘", request_type="new")
+    assert plain["chart"].get("view") is None  # 모양을 말하지 않으면 기본 차트 그대로
+
+
+@pytest.mark.parametrize(
+    ("said", "condition"),
+    [
+        ("남자만 막대그래프로 보여줘", "남자만 보여줘"),
+        ("10개만 막대로 보여줘", "10개만 보여줘"),
+        ("여자만 표로 바꿔줘", "여자만 바꿔줘"),
+        ("부산도 같이 꺾은선으로", "부산도 같이"),
+        ("2023년만 그래프 형태로 보여줘", "2023년만 보여줘"),
+        ("여성 인구 표 말고 그래프로", "여성 인구"),
+    ],
+)
+def test_condition_part_drops_only_the_chart_words(said: str, condition: str) -> None:
+    assert s.condition_part(said) == condition
+
+
+def test_parse_delta_moves_a_chart_shape_out_of_the_changes() -> None:
+    """HCX가 그림 모양을 조건에 넣었다 ("type": "table"). 맞지 않는 type이 남으면 보는 방식을
+    다시 맞추는 단계를 건너뛴다 (11/26 점검)"""
+    raw = '{"request_type": "change", "changes": {"sex": "여", "type": "table"}}'
+    assert s.parse_delta(raw) == {
+        "request_type": "change",
+        "changes": {"sex": "여"},
+        "chart": "table",
+        "unclear": None,
+    }
+    only_shape = s.parse_delta('{"request_type": "change", "changes": {"chart": "bar"}}')
+    assert only_shape["request_type"] == "chart" and only_shape["chart"] == "bar"
+    kept = s.parse_delta('{"request_type": "change", "changes": {"type": "trend"}}')
+    assert kept["changes"] == {"type": "trend"} and kept["chart"] is None
 
 
 def test_chart_without_a_shape_uses_the_last_chart(talk: Talk) -> None:
