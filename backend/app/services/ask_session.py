@@ -1465,6 +1465,10 @@ async def _clarified(question: str, state: dict):
     return res, sources, notice
 
 
+def _one_place(name: str) -> bool:
+    return indicators.resolve_region(name)["status"] == "ok"
+
+
 def _gave_up_asking(pending: dict) -> bool:
     return (pending.get("count") or 1) >= question_clarify.MAX_ASKS
 
@@ -1558,6 +1562,11 @@ async def _turn(
             regions = await asyncio.to_thread(indicators.find_regions, choice)
             has_indicator = bool(indicators.find_in_text(choice))
             region = question_clarify.region_reply(choice, regions, has_indicator)
+            if region:
+                region = (
+                    await asyncio.to_thread(question_clarify.place_order, regions, _one_place)
+                    or region
+                )
             name = None if region or has_indicator else question_clarify.bare_region(choice)
             if name:
                 found = await asyncio.to_thread(indicators.resolve_region, name)

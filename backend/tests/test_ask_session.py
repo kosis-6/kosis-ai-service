@@ -210,7 +210,7 @@ def test_pick_region_reply() -> None:
         ("부산 출생아 수 막대그래프로", None),
         ("2020년 막대그래프로 보여줘", None),
         ("막대한 영향이 있나요", None),
-        pytest.param("서울도 막대로 보여줘", None, marks=pytest.mark.needs_data),
+        ("서울도 막대로 보여줘", None),
         ("추이를 막대그래프로 보여줘", None),
         ("통계표 보여줘", None),
     ],
@@ -1070,6 +1070,29 @@ def test_region_reply_without_suffix_and_ambiguous_name(talk: Talk):
     res = talk.say("고성")
     assert res["status"] == "clarify_question"
     assert {"강원특별자치도 고성군", "경상남도 고성군"} <= set(res["clarification"]["options"])
+
+
+def test_local_region_reply_with_comma_and_sigungu_first(
+    talk: Talk, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """변형셋 P-121: '영도구, 부산이요'를 지역 답으로 못 읽어 같은 되묻기를 되풀이했다 (11/25)"""
+    monkeypatch.setattr(
+        indicators, "find_regions", lambda t: [r for r in ("영도구", "부산") if r in t]
+    )
+    monkeypatch.setattr(
+        indicators,
+        "resolve_region",
+        lambda name, year=None, sigungu=False: (
+            {"status": "ok", "display": "부산광역시 영도구"}
+            if name == "부산 영도구"
+            else {"status": "unknown_region", "region": name}
+        ),
+    )
+    assert talk.say("요새 우리 동네 사람 줄어드는 중이야?")["status"] == "clarify_question"
+    talk.parsed = {**BASE, "regions": ["부산 영도구"]}
+    res = talk.say("영도구, 부산이요")
+    assert res["request_type"] == "reply" and res["status"] == "ok"
+    assert talk.asked[-1] == "요새 부산 영도구 사람 줄어드는 중이야?"
 
 
 def test_scope_pending_does_not_swallow_unsupported_new_question(talk: Talk):
