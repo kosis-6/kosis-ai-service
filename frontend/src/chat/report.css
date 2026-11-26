@@ -1,26 +1,234 @@
-body { max-width: 960px; margin: 40px auto; padding: 0 24px; font: 16px/1.7 system-ui, sans-serif; color: #172d24; background: #fff; }
-h1 { font-size: 26px; }
-h2 { margin-top: 32px; }
-pre { white-space: pre-wrap; font: inherit; }
-table { border-collapse: collapse; width: 100%; margin: 16px 0; }
-th, td { border: 1px solid #bbb; padding: 8px; text-align: left; }
-svg { width: 100%; height: auto; }
-figure { margin: 24px 0; }
-a { color: #17653d; }
-footer { margin-top: 40px; border-top: 1px solid #bbb; }
-button { padding: 10px 18px; cursor: pointer; font: inherit; }
-.report-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 12px 0; border-bottom: 1px solid #bbb; }
-.report-toolbar .primary { background: #17653d; color: #fff; border: 1px solid #17653d; border-radius: 6px; }
-.report-toolbar button:not(.primary) { background: #fff; color: #17653d; border: 1px solid #17653d; border-radius: 6px; }
-.report-toolbar p { margin: 0; font-size: 14px; color: #555; }
-.report-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; }
-.report-cell { padding: 8px 10px; border: 1px solid #ddd; border-radius: 8px; break-inside: avoid; }
-.report-cell h4 { margin: 0; font-size: 14px; }
-.report-cell p { margin: 0; font-size: 12px; color: #555; }
+/* 통계 보고서 (새 탭 미리보기 · 저장한 HTML 파일 · 인쇄/PDF 공용).
+   파일은 인터넷 없이도 열려야 해서 서비스 CSS를 불러오지 않고 같은 토큰 값을 여기에 둔다 (styles/base.css) */
+:root {
+  color-scheme: light;
+  --ink: #173b2e;
+  --muted: #5f7265;
+  --sage: #5f8970;
+  --line: #e1e9df;
+  --accent: #192e27;
+  --accent-hover: #245941;
+  --accent-soft: #e7f1e5;
+  --paper: #ffffff;
+  --desk: #eaf0e6;
+  --font: "Noto Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+html { background: var(--desk); }
+
+body {
+  max-width: 880px;
+  margin: 32px auto 64px;
+  padding: 48px 56px 40px;
+  border-radius: 6px;
+  background: var(--paper);
+  box-shadow: 0 1px 2px rgb(23 59 46 / 0.06), 0 16px 40px rgb(23 59 46 / 0.08);
+  color: var(--ink);
+  font: 15px/1.7 var(--font);
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+
+::selection { background: var(--accent-soft); color: var(--accent); }
+:focus-visible { outline: 2px solid var(--sage); outline-offset: 2px; }
+
+h1, h2, h3, h4, p, ul, dl, dd, figure { margin: 0; }
+
+h1 {
+  margin-top: 28px;
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+  text-wrap: balance;
+}
+h2 {
+  margin: 44px 0 16px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line);
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1.4;
+  break-after: avoid;
+}
+h3 { margin-bottom: 10px; font-size: 16px; font-weight: 700; line-height: 1.5; break-after: avoid; }
+p { margin-bottom: 12px; }
+ul { margin-bottom: 12px; padding-left: 20px; }
+li + li { margin-top: 4px; }
+li::marker { color: var(--sage); }
+
+a {
+  color: var(--accent-hover);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+a:hover { color: var(--accent); }
+
+pre { margin-bottom: 12px; white-space: pre-wrap; font: inherit; }
+
+/* 머리글: 서비스 이름 · 자료 기준 */
+.masthead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 16px;
+  padding-bottom: 12px;
+  border-bottom: 2px solid var(--accent);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.masthead p { margin: 0; }
+.masthead strong { margin-right: 8px; color: var(--accent); font-weight: 700; letter-spacing: 0.04em; }
+
+.meta { margin-top: 6px; color: var(--muted); font-size: 13px; }
+.purpose { max-width: 68ch; margin-top: 12px; }
+
+/* 핵심 수치: 결과마다 이름과 값 (카드가 아니라 굵은 선으로 나눈 줄) */
+.figures {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 0 28px;
+  margin-top: 28px;
+}
+.figures div { padding: 12px 0 16px; border-top: 2px solid var(--accent); break-inside: avoid; }
+.figures dt { color: var(--muted); font-size: 13px; line-height: 1.5; }
+.figures dd {
+  margin-top: 6px;
+  color: var(--accent);
+  font-size: 26px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+}
+
+.lines li { max-width: 68ch; }
+
+/* 결과별 내용 */
+.result { padding-bottom: 28px; }
+.result + .result { padding-top: 28px; border-top: 1px solid var(--line); }
+
+.conditions { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; padding: 0; list-style: none; }
+.conditions li {
+  margin: 0;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 12px;
+  line-height: 20px;
+}
+.conditions span { margin-right: 6px; color: var(--muted); }
+.conditions em { margin-left: 6px; color: var(--muted); font-style: normal; }
+
+.sources { margin: 12px 0 0; padding: 0; list-style: none; color: var(--muted); font-size: 13px; line-height: 1.6; }
+
+.notes {
+  padding: 16px 20px 16px 36px;
+  border-radius: 8px;
+  background: var(--accent-soft);
+  font-size: 14px;
+}
+
+/* 표: 세로선 없이 가로선만, 숫자는 자릿수를 맞춰 오른쪽 */
+table {
+  width: 100%;
+  margin: 4px 0 16px;
+  border-collapse: collapse;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+th, td { padding: 8px 12px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+th {
+  border-bottom-color: var(--sage);
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+}
+th:first-child, td:first-child { padding-left: 0; }
+th:last-child, td:last-child { padding-right: 0; }
+.num { text-align: right; white-space: nowrap; }
+tbody tr:last-child td { border-bottom-color: var(--ink); }
+
+/* 차트 */
+figure { margin: 8px 0 16px; break-inside: avoid; }
+figure h3 { margin-bottom: 2px; font-size: 14px; }
+figure > p { margin-bottom: 8px; color: var(--muted); font-size: 13px; }
+svg { display: block; width: 100%; height: auto; }
+svg text:not([fill]) { fill: var(--muted); }
+svg text { font-family: var(--font); }
+.report-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
+.report-cell { padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; break-inside: avoid; }
+.report-cell h4 { font-size: 13px; }
+.report-cell p { margin: 0; color: var(--muted); font-size: 12px; }
+
+footer {
+  margin-top: 44px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+/* 화면에서만: 저장 · 인쇄 */
+.report-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin: -48px -56px 32px;
+  padding: 14px 56px;
+  border-bottom: 1px solid var(--line);
+  border-radius: 6px 6px 0 0;
+  background: rgb(255 255 255 / 0.96);
+}
+.report-toolbar p { margin: 0; color: var(--muted); font-size: 13px; }
+.report-toolbar button {
+  height: 40px;
+  padding: 0 18px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--paper);
+  color: var(--accent);
+  font: 500 14px/1 var(--font);
+  cursor: pointer;
+  transition: background-color 160ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.report-toolbar button:hover { background: var(--accent-soft); }
+.report-toolbar button.primary { border-color: var(--accent); background: var(--accent); color: var(--paper); }
+.report-toolbar button.primary:hover { border-color: var(--accent-hover); background: var(--accent-hover); }
+
+@media (max-width: 640px) {
+  html { background: var(--paper); }
+  body { margin: 0; padding: 24px 20px 32px; border-radius: 0; box-shadow: none; font-size: 14px; }
+  .report-toolbar { margin: -24px -20px 24px; padding: 12px 20px; border-radius: 0; }
+  h1 { margin-top: 20px; font-size: 23px; }
+  h2 { margin-top: 36px; font-size: 17px; }
+  .figures { grid-template-columns: 1fr 1fr; gap: 0 16px; }
+  .figures dd { font-size: 21px; }
+  table { font-size: 13px; }
+  th, td { padding: 7px 8px; }
+  /* 차트는 폭에 맞춰 줄어 글자가 7px까지 작아졌다: 그림 좌표 단위로 키운다 */
+  figure svg text { font-size: 19px; }
+}
+
+@page { size: A4; margin: 16mm 14mm; }
+
 @media print {
+  html { background: none; }
+  body { max-width: none; margin: 0; padding: 0; border-radius: 0; box-shadow: none; font-size: 10.5pt; }
+  * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   .report-toolbar { display: none; }
-  body { margin: 0; max-width: none; }
+  a { color: inherit; text-decoration: none; }
   tr { break-inside: avoid; }
   thead { display: table-header-group; }
-  a { color: inherit; }
 }

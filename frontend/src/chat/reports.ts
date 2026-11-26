@@ -1,4 +1,4 @@
-import type { AskResponse, Chart, Source } from "../api/types";
+import type { Applied, AskResponse, Chart, Source } from "../api/types";
 import { postJson } from "./api";
 
 // 보고서 하나에 담을 수 있는 답 수 (서버 app/services/reports.py MAX_ITEMS와 같다)
@@ -12,6 +12,7 @@ export type ReportResult = {
   question?: string | null;
   label?: string | null;
   value_text?: string | null;
+  figure?: Figure | null;
   sources?: Source[];
   chart?: Chart | null;
 };
@@ -25,6 +26,18 @@ export type ReportContent = {
   items?: ReportResult[];
   error?: string;
 };
+// 대표 수치 (app/services/figure.py): 값 하나면 value, 추이 · 비교 · 순위 · 구성비면 rows
+export type FigureRow = { label: string; value: number | null; rank?: number | null; count?: number | null };
+export type Figure = {
+  kind?: string;
+  label?: string;
+  value?: number | null;
+  unit?: string;
+  rows?: FigureRow[];
+  operands?: { label: string; value: number | null; unit: string }[];
+};
+// 담을 때 복사한 답 화면 내용 중 보고서가 쓰는 것
+export type ReportSnapshot = { applied?: Applied[]; figure?: Figure | null };
 export type Report = {
   id: number;
   session_id: string | null;
@@ -32,7 +45,7 @@ export type Report = {
   purpose: string | null;
   status: "draft" | "ready" | "failed";
   content: ReportContent | null;
-  items: { turn_id: number }[];
+  items: { turn_id: number; snapshot?: ReportSnapshot }[];
 };
 
 export type Pick = { turnId: number | null; question: string; answer: string; reason: string | null };
