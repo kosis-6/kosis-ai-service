@@ -26,6 +26,17 @@ USER = {"indicator": "user", "regions": "user", "period": "user", "sex": "defaul
 
 
 @pytest.fixture(autouse=True)
+def follow_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    """이어 묻기 설정을 기본값으로 고정한다: .env 에 FOLLOW_RESTATE=true · FOLLOW_LLM=gemma 가
+    있어도 테스트는 기존 경로 · HCX 로 시작한다. 켜야 하는 테스트는 restate_on · sure_on 처럼
+    그 테스트 안에서 다시 켠다 (autouse 가 먼저 돌고 그 뒤에 켜진다)"""
+    settings = s.get_settings()
+    monkeypatch.setattr(settings, "follow_restate", False)
+    monkeypatch.setattr(settings, "follow_sure_rules", False)
+    monkeypatch.setattr(settings, "follow_llm", "hcx")
+
+
+@pytest.fixture(autouse=True)
 def names(monkeypatch: pytest.MonkeyPatch) -> None:
     def no_db():
         pytest.fail("대화 단위 테스트에서 실제 통계 DB를 호출했습니다")
