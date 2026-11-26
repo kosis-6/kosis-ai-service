@@ -416,8 +416,23 @@ def merge_into(pg: psycopg.Connection, tbl_key: int, rows, scan: Scan, name: str
 
 
 def sync_period_meta(pg: psycopg.Connection, tbl_key: int) -> None:
+    meta, families = pg.execute(
+        "SELECT to_regclass('catalog.table_meta'), to_regclass('catalog.table_families')"
+    ).fetchone()
+    if meta is None:
+        return
+    family_update = sql.SQL("")
+    if families is not None:
+        family_update = sql.SQL("""
+            , fam AS (
+                UPDATE catalog.table_families f
+                SET edition = m.new_start || '~' || m.new_end
+                FROM m
+                WHERE f.tbl_id = m.tbl_id AND f.edition = m.old_start || '~' || m.old_end
+            )
+        """)
     pg.execute(
-        """
+        sql.SQL("""
         WITH l AS (
             SELECT t.tbl_id,
                    CASE WHEN s.first_period > 9999 THEN s.first_period / 100
@@ -432,17 +447,12 @@ def sync_period_meta(pg: psycopg.Connection, tbl_key: int) -> None:
                    greatest(m.end_year, l.data_end) AS new_end
             FROM catalog.table_meta m JOIN l USING (tbl_id)
             WHERE l.data_start < m.start_year OR l.data_end > m.end_year
-        ), fam AS (
-            UPDATE catalog.table_families f
-            SET edition = m.new_start || '~' || m.new_end
-            FROM m
-            WHERE f.tbl_id = m.tbl_id AND f.edition = m.old_start || '~' || m.old_end
-        )
+        ){family_update}
         UPDATE catalog.table_meta t
         SET start_year = m.new_start, end_year = m.new_end
         FROM m
         WHERE t.tbl_id = m.tbl_id
-        """,
+        """).format(family_update=family_update),
         [tbl_key],
     )
 

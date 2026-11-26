@@ -46,6 +46,16 @@ def no_composite_gate(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def no_recell_llm(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services import recell
+
+    async def judge(text):
+        return {"picks": []}, "test"
+
+    monkeypatch.setattr(recell, "judge", judge)
+
+
+@pytest.fixture(autouse=True)
 def request_logs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(qa, "REQUEST_LOG", tmp_path / "requests.jsonl")
     monkeypatch.setattr(qa, "MISSING_LOG", tmp_path / "missing.jsonl")

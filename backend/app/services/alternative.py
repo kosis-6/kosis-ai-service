@@ -109,7 +109,7 @@ async def judge(question: str, failures: list[str], alts: list[dict]) -> tuple[d
         return messages, {
             "thinking": {"effort": "none"},
             "maxCompletionTokens": MAX_TOKENS,
-            **({"temperature": 0} if llm == "gemma" else {}),
+            "temperature": 0,
             "responseFormat": {"type": "json", "schema": prompt.schema(ids)},
         }
 

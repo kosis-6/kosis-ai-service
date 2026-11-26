@@ -1,15 +1,16 @@
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StringConstraints
+
+Question = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)]
+SessionId = Annotated[str, StringConstraints(max_length=64)]
 
 
 class AskRequest(BaseModel):
-    question: str = Field(
-        min_length=1,
-        max_length=500,
+    question: Question = Field(
         examples=["2025년 서울과 부산 중 고령인구 비율이 높은 지역은?"],
     )
-    session_id: str | None = Field(
+    session_id: SessionId | None = Field(
         default=None,
         description="대화를 이어 갈 때 앞 응답의 session_id를 그대로 보낸다. 그러면 '서울도 같이',"
         " '2022년만', '막대그래프로'처럼 바뀐 것만 말해도 앞 조건에 이어서 답한다."

@@ -6,7 +6,7 @@ from fastapi import APIRouter
 
 from app.api.deps import OptionalUser
 from app.schemas.search import SearchRequest, SearchResponse
-from app.services import dialog, search, search_answer, search_log
+from app.services import dialog, refusal, search, search_answer, search_log
 
 router = APIRouter(tags=["통계표 검색"])
 logger = logging.getLogger(__name__)
@@ -19,14 +19,26 @@ async def search_tables(body: SearchRequest, user: OptionalUser) -> SearchRespon
     trace: dict = {}
     result, response, error = None, None, None
     try:
-        result = await dialog.handle(
-            body.question, session_id, body.selections, trace, user_id=user.id if user else None
-        )
-        session_id = trace.get("search_session_id", session_id)
-        tables = await search.load_tables()
-        response = search_answer.respond(
-            result, tables, session_id, body.top_k, trace, debug=body.debug
-        )
+        if refusal.instruction_request(body.question):
+            response = {
+                "session_id": session_id,
+                "status": "not_statistics",
+                "answer": refusal.INSTRUCTION_REFUSAL,
+                "parsed": {},
+                "clarify": None,
+                "recommendations": [],
+                "notice": None,
+                "reason": "인구 분야 통계 질문이 아닙니다.",
+            }
+        else:
+            result = await dialog.handle(
+                body.question, session_id, body.selections, trace, user_id=user.id if user else None
+            )
+            session_id = trace.get("search_session_id", session_id)
+            tables = await search.load_tables()
+            response = search_answer.respond(
+                result, tables, session_id, body.top_k, trace, debug=body.debug
+            )
     except Exception as e:
         error = f"{type(e).__name__}: {e}"
         raise

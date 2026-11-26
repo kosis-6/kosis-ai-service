@@ -1,6 +1,6 @@
 import asyncio
 import copy
-from datetime import timedelta
+from datetime import date, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -1926,7 +1926,16 @@ def test_same_number_matches_value_unit_and_year_only() -> None:
     assert not s.same_number(a, None)
 
 
-def test_age_only_follow_up_keeps_the_indicator() -> None:
+@pytest.mark.parametrize(
+    ("question", "term"),
+    [
+        ("20~24세로 보여줘", "20~24세"),
+        ("스무 살부터 스물네 살까지로 보여줘", "20~24세"),
+        ("스무 살부터 스물네 살까지로 보여줘", "스무 살부터 스물네 살까지"),
+        ("스무 살부터 스물네 살까지로 보여줘", "스무 살부터 스물네 살까지로"),
+    ],
+)
+def test_age_only_follow_up_keeps_the_indicator(question, term) -> None:
     """ "서울 청년 미혼 비율" 뒤 "20~24세로 보여줘": HCX가 '20~24세'를 지표로 적어도 연령만 바꾸고
     미혼 비율을 이어받는다 (11/24 S-45, 전에는 연앙인구 표로 564,693.5명이라 답했다)"""
     youth = {"expr": "청년", "range": "19~34세", "basis": "청년기본법 19~34세"}
@@ -1946,18 +1955,19 @@ def test_age_only_follow_up_keeps_the_indicator() -> None:
     parsed = {
         "type": "value",
         "indicator": "20대 인구",
-        "term": "20~24세",
+        "term": term,
         "regions": [],
-        "ages": [[20, 24]],
+        "ages": qa.extract_ages(question),
         "sex": "계",
         "grounded": None,
     }
-    question = "20~24세로 보여줘"
     assert not s.names_indicator(question, parsed)
     p, src = s.inherit(parsed, s.sources_of(question, parsed), prev, {**USER}, question)
     assert p["indicator"] == "미혼 비율" and src["indicator"] == "inherited"
     assert p["ages"] == [[20, 24]] and "age_group" not in p and p["term"] == "미혼 비율"
     assert p["regions"] == ["서울"] and p["grounded"] is True
+    rebuilt = s.inherited_question(p)
+    assert "20~24세" in rebuilt and "청년" not in rebuilt
 
 
 def test_term_with_age_and_other_words_still_names_an_indicator() -> None:
@@ -1990,3 +2000,32 @@ def test_recent_years_follow_up_sends_recent_to_the_calculation(talk: Talk) -> N
     asked = talk.answered[0]  # 첫 질문은 해석(qa.ask)으로 답하므로 조건으로 계산한 첫 번째가 이 턴
     assert asked["type"] == "trend" and asked["asked"]["recent"] == 5
     assert asked["start_year"] is None and asked["end_year"] is None  # HCX가 적은 기간은 버린다
+
+
+@pytest.mark.parametrize("question", ["재작년까지 5년간은?", "2024년까지 최근 5년은?"])
+def test_follow_up_keeps_user_specified_end_year(talk: Talk, monkeypatch, question):
+    class FixedDate(date):
+        @classmethod
+        def today(cls):
+            return cls(2026, 11, 24)
+
+    monkeypatch.setattr(s, "date", FixedDate)
+    monkeypatch.setattr(s.timeref, "date", FixedDate)
+    talk.parsed = {
+        **BASE,
+        "type": "value",
+        "regions": ["서울"],
+        "year": 2025,
+        "start_year": None,
+        "end_year": None,
+    }
+    talk.say("서울 출생아 수")
+    talk.fail_when = lambda p: bool((p.get("asked") or {}).get("recent"))
+    result = talk.say(
+        question,
+        request_type="change",
+        changes={"type": "trend", "start_year": 2021, "end_year": 2025},
+    )
+    assert result["status"] == "ok"
+    assert [p["year"] for p in result["result"]["series"]] == list(range(2020, 2025))
+    assert {"name": "기간", "value": "2020~2024년", "source": "user"} in result["applied"]

@@ -7,6 +7,7 @@ import psycopg
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from pipeline.catalog import load_notes, missing_deferred  # noqa: E402
 from pipeline.stats_build import Build  # noqa: E402
 
 TOLERANCE = 0.01
@@ -133,20 +134,25 @@ CHECKS = [
     """,
     ),
     (
-        "카탈로그: 지표 사전이 가리키는 표가 데이터에 없음",
+        "카탈로그: 지표 사전 표가 원자료 또는 적재 가능한 카탈로그에 있음",
         """
         select s.indicator, s.tbl_id from indicator_sources s left join catalog c using (tbl_id)
-        where c.tbl_id is null
+        left join deferred_catalog d using (tbl_id)
+        where c.tbl_id is null and d.tbl_id is null
     """,
     ),
     (
-        "카탈로그: 지표 사전의 조회 항목이 facts에 없음",
+        "카탈로그: 지표 사전의 조회 항목이 원자료 또는 대기 표의 카탈로그에 있음",
         """
-        select s.indicator, s.tbl_id, s.item_ids
+        select s.indicator, s.tbl_id, i.item_id
         from indicator_sources s
-        where s.item_ids is not null and not exists (
-            select 1 from facts f
-            where f.tbl_id = s.tbl_id and f.item_id = any(string_to_array(s.item_ids, ',')))
+        left join deferred_catalog d using (tbl_id)
+        cross join lateral unnest(string_to_array(s.item_ids, ',')) as i(item_id)
+        where not exists (
+            select 1 from facts f where f.tbl_id = s.tbl_id and f.item_id = i.item_id
+        ) and not exists (
+            select 1 from jsonb_array_elements(d.items) as entry where entry->>'id' = i.item_id
+        )
     """,
     ),
 ]
@@ -195,6 +201,19 @@ def main():
     con = Build()
     if con.sql("select to_regclass('build.facts')").fetchall()[0][0] is None:
         raise SystemExit("먼저 pipeline/preprocess.py를 실행하세요.")
+
+    con.sql("create temp table deferred_catalog (tbl_id text primary key, items jsonb not null)")
+    deferred = missing_deferred(con, load_notes())
+    if deferred and con.sql("select to_regclass('catalog.table_meta')").fetchall()[0][0]:
+        rows = con.execute(
+            """
+            insert into deferred_catalog
+            select tbl_id, items from catalog.table_meta where tbl_id = any(?) and org_id <> ''
+            returning tbl_id
+            """,
+            [sorted(deferred)],
+        ).fetchall()
+        print("공유본 외 적재 대상: " + ", ".join(sorted(row[0] for row in rows)))
 
     results = []
 

@@ -5,8 +5,9 @@ from fastapi.testclient import TestClient
 
 from app.agent import multi
 from app.agent import plan as planner
+from app.core.db import get_session
 from app.main import app
-from app.services import indicators, qa, search, synonyms
+from app.services import indicators, qa, search, search_llm, synonyms
 from tests.test_qa import _region_trend
 
 TODAY = date(2026, 11, 13)
@@ -222,14 +223,27 @@ def test_without_kiwi_text_is_left_as_is(monkeypatch: pytest.MonkeyPatch) -> Non
     assert synonyms.kiwi_clean("시도별로 혼자 사는 1인가구") == "시도별로 혼자 사는 1인가구"
 
 
+class CatalogReady:
+    async def scalar(self, _statement: object) -> bool:
+        return True
+
+
 @pytest.mark.parametrize(("kiwi", "expected"), [(object(), "kiwi"), (None, "regex")])
 def test_health_search_reports_morph_analyzer(
     monkeypatch: pytest.MonkeyPatch, kiwi: object, expected: str
 ) -> None:
-    async def no_load() -> list:
-        return []
+    async def one_table() -> list:
+        return [{"tbl_id": "DT_TEST"}]
 
-    monkeypatch.setattr(search, "load_tables", no_load)
+    async def gemma_not_used() -> str:
+        return "not_used"
+
+    monkeypatch.setattr(search, "load_tables", one_table)
+    monkeypatch.setattr(search_llm, "connection", gemma_not_used)
     monkeypatch.setattr(synonyms, "_KIWI", kiwi)
-    body = TestClient(app).get("/health/search").json()
+    app.dependency_overrides[get_session] = CatalogReady
+    try:
+        body = TestClient(app).get("/health/search").json()
+    finally:
+        app.dependency_overrides.clear()
     assert body["morph"] == expected

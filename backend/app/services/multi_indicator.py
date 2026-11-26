@@ -104,6 +104,8 @@ def _record(trace: dict, targets: list[dict], outcomes) -> None:
 
 
 def _missed_note(target: dict) -> str:
+    if message := target.get("failure_message"):
+        return f"{_span(target)} 항목은 {message}"
     cands = target.get("candidates") or []
     where = f" ('{cands[0].get('tbl_nm')}' 표에서 확인할 수 있습니다)" if cands else ""
     return f"{josa(_span(target), '은는')} 통계표에서 바로 계산하지 못했습니다{where}"
@@ -141,9 +143,30 @@ def _side_by_side(question, parsed, ok, failed, trace, notes=()):
     return _response(question, parsed, result, trace, notes, [_span(t) for t, _ in ok])
 
 
-def side_by_side(question: str, parsed: dict, answers: list[tuple[str, dict]], trace: dict):
-    ok = [({"span": span}, res) for span, res in answers if _ok(res)]
-    if len(ok) < 2:
+def side_by_side(
+    question: str,
+    parsed: dict,
+    answers: list[tuple[str, dict]],
+    trace: dict,
+    *,
+    allow_partial=False,
+):
+    ok, failed = [], []
+    for span, res in answers:
+        if _ok(res):
+            ok.append(({"span": span}, res))
+        elif allow_partial:
+            tables = (res or {}).get("tables") or {}
+            failed.append(
+                {
+                    "span": span,
+                    "candidates": tables.get("recommendations") or [],
+                    "failure_message": res.get("answer")
+                    if res.get("status") == "rate_limited"
+                    else None,
+                }
+            )
+    if not ok or (len(ok) < 2 and not allow_partial):
         return None
 
     def place(item):
@@ -152,7 +175,7 @@ def side_by_side(question: str, parsed: dict, answers: list[tuple[str, dict]], t
 
     ok.sort(key=place)
     trace["multi"] = {"op": "none", "targets": [{"span": t["span"]} for t, _ in ok]}
-    return _side_by_side(question, parsed, ok, [], trace)
+    return _side_by_side(question, parsed, ok, failed, trace)
 
 
 def _value(res: dict) -> dict | None:

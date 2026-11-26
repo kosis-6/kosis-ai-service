@@ -2,6 +2,7 @@ import asyncio
 import copy
 import json
 import logging
+import math
 import re
 import time
 from contextvars import ContextVar
@@ -16,6 +17,7 @@ from starlette.concurrency import run_in_threadpool
 from app.agent import replan
 from app.prompts.qa import FOLLOW_SYSTEM
 from app.services import (
+    agegroup,
     agent_action,
     answer_judge,
     answer_summary,
@@ -37,7 +39,7 @@ from app.services import (
     timeref,
     understand_merged,
 )
-from app.services.hcx_client import HcxClient
+from app.services.hcx_client import HcxClient, HcxError
 from app.services.josa import josa
 from app.services.log_redaction import mask, redact
 from app.services.memory_cache import MISSING, MemoryCache
@@ -131,12 +133,16 @@ def sources_of(question: str, parsed: dict) -> dict[str, str]:
 
 def period_text(c: dict) -> str | None:
     start, end = c.get("start_year"), c.get("end_year")
+    if c.get("dated_months") and start and end and (months := c.get("months")):
+        return f"{start}년 {months[0]}월~{end}년 {months[1]}월"
     if c.get("type") == "trend" and start and end:
         return f"{start}~{end}년" if start != end else f"{start}년"
     return f"{c['year']}년" if c.get("year") else None
 
 
-def applied(conditions: dict, sources: dict[str, str]) -> list[dict[str, str]]:
+def applied(
+    conditions: dict, sources: dict[str, str], *, include_regions: bool = True
+) -> list[dict[str, str]]:
     if conditions.get("type") in NO_CONDITIONS:
         return []
     regions = conditions.get("regions") or []
@@ -144,7 +150,7 @@ def applied(conditions: dict, sources: dict[str, str]) -> list[dict[str, str]]:
         regions = [f"{conditions.get('sido') or '전국'} {conditions.get('level') or '시도'}별"]
     values = {
         "indicator": ", ".join(conditions.get("indicators") or []) or conditions.get("indicator"),
-        "regions": ", ".join(regions) or None,
+        "regions": ", ".join(regions) if include_regions else None,
         "period": period_text(conditions),
         "sex": conditions.get("sex"),
     }
@@ -165,6 +171,11 @@ def _clear_period_questions(conditions: dict) -> None:
         conditions["asked"] = asked
     else:
         conditions.pop("asked", None)
+
+
+def _clear_dated_months(conditions: dict) -> None:
+    if conditions.pop("dated_months", False):
+        conditions.pop("months", None)
 
 
 def effective(parsed: dict, result: dict) -> dict:
@@ -236,12 +247,14 @@ def apply_changes(conditions: dict, changes: dict) -> tuple[dict, set[str]]:
             "ages",
             "age_group",
             "age_note",
+            "housing_condition",
             "unsupported",
             "share_of",
             "aggregate",
             "group",
             "by",
             "indicators",
+            "measure_conditions",
         ):
             c.pop(key, None)
         changed.add("indicator")
@@ -274,6 +287,11 @@ def apply_changes(conditions: dict, changes: dict) -> tuple[dict, set[str]]:
         changed.add("period")
     if "period" in changed:
         _clear_period_questions(c)
+        _clear_dated_months(c)
+        c.pop("time_refs", None)
+    if "indicator" in changed or "regions" in changed:
+        for key in ("movement_route", "movement_reason", "movement_ratio"):
+            c.pop(key, None)
 
     if changes.get("sex") in ("계", "남", "여"):
         old_sex = c.get("sex")
@@ -302,6 +320,10 @@ def apply_changes(conditions: dict, changes: dict) -> tuple[dict, set[str]]:
 
     if changed and "type" not in changes:
         _retype(c, changed)
+    if changed and (measures := c.get("measure_conditions")):
+        c["measure_conditions"] = {
+            name: apply_changes(measure, changes)[0] for name, measure in measures.items()
+        }
     return c, changed
 
 
@@ -328,6 +350,10 @@ CONTEXT_YEAR = [
     (re.compile(r"다음\s*해|이듬해|다음\s*연도|익년|한\s*해\s*(?:뒤|후)"), 1),
 ]
 FULL_YEAR = re.compile(rf"(?:19|20)\d{{2}}{slots.NOT_YEAR_TAIL}")
+YEAR_ONLY_REPLY = re.compile(
+    rf"\s*{slots.YEAR.pattern}\s*(?:년도?\s*)?(?:(?:으로|로)\s*)?(?:은|는|도|만)?\s*(?:이?요)?"
+    r"(?:\s*(?:보여|알려|바꿔)\s*(?:줘요?|주세요))?\s*[?.!]*"
+)
 
 
 def follow_year(question: str, conditions: dict, today: date | None = None) -> int | None:
@@ -356,10 +382,51 @@ def with_recent(conditions: dict, changed: set[str], n: int) -> tuple[dict, set[
     """조건을 '자료 마지막 해를 포함한 N개 해' 추이로 (계산 단계가 asked.recent로 표마다 센다)"""
     c = copy.deepcopy(conditions)
     c["asked"] = {**(c.get("asked") or {}), "recent": n}
+    c.pop("time_refs", None)
+    _clear_dated_months(c)
     c["start_year"] = c["end_year"] = None
     if c.get("type") in ("value", "compare"):
         c["type"] = "trend"
+    if measures := c.get("measure_conditions"):
+        c["measure_conditions"] = {
+            name: with_recent(measure, set(), n)[0] for name, measure in measures.items()
+        }
     return c, changed | {"period"}
+
+
+AGE_REPLY_TAIL = re.compile(
+    r"\s*(?:까지\s*)?(?:사람(?:들)?|인구)?\s*(?:으로|로)?\s*(?:은|는|도|만|이?요)?\s*"
+    r"(?:(?:보여|알려|바꿔)\s*(?:줘요?|주세요)|어때요?)?"
+    r"\s*[?.!~]*"
+)
+
+
+def age_only_change(question: str, conditions: dict) -> dict | None:
+    if (
+        conditions.get("indicator") != "총인구"
+        or conditions.get("type") not in ("value", "trend", "compare", "rank")
+        or any(
+            conditions.get(k)
+            for k in ("cross", "indicators", "dynamic_spec", "unsupported", "housing_condition")
+        )
+    ):
+        return None
+    text = re.sub(r"^만\s*", "", agegroup.native_to_digits(question).strip())
+    spans = qa.age_spans(text)
+    if not spans and (single := agegroup.SINGLE_AGE.match(text)):
+        age = int(single[1])
+        spans = [(0, single.end(), [age, age])]
+    if len(spans) != 1:
+        return None
+    start, end, band = spans[0]
+    if start or not AGE_REPLY_TAIL.fullmatch(text[end:]):
+        return None
+    changed = {**conditions, "ages": [band], "term": "총인구"}
+    for key in ("age_group", "age_note", "born"):
+        changed.pop(key, None)
+    if note := qa.decade_part_note(question):
+        changed["age_note"] = note
+    return changed
 
 
 VIEW_WORDS = {
@@ -389,7 +456,7 @@ def names_indicator(question: str, parsed: dict) -> bool:
 def _says_word(word: Any, compact: str) -> bool:
     if not isinstance(word, str) or not word.strip() or word.strip() in VIEW_WORDS:
         return False
-    if not dynamic_indicator._without_age_words(word):
+    if dynamic_indicator._without_age_words(agegroup.native_to_digits(word)) in ("", "로", "으로"):
         return False
     return word.replace(" ", "") in compact
 
@@ -413,9 +480,9 @@ def inherit(
         return p, s
     if question and prev.get("indicator") and not names_indicator(question, p):
         keys = ["indicator", "term", "ages", "age_group", "age_note", "by", "dynamic_spec"]
-        said_ages = bool(p.get("ages")) and bool(qa.age_spans(question))
-        if said_ages:
+        if said_ages := qa.extract_ages(question):
             keys = [k for k in keys if k not in ("term", "ages", "age_group", "age_note")]
+            p["ages"] = said_ages
             p.pop("age_group", None)
             p["term"] = prev["indicator"]
         for key in keys:
@@ -475,6 +542,8 @@ def survey_switch(question: str, conditions: dict) -> dict | None:
         return None
     switched = qa.set_survey(question, copy.deepcopy(conditions))
     asked = switched.get("asked") or {}
+    for measure in (switched.get("measure_conditions") or {}).values():
+        qa.set_survey(question, measure)
     return switched if asked.get("survey") or asked.get("survey_missing") else None
 
 
@@ -1176,10 +1245,15 @@ async def _new(
     res = await qa.ask(question, adjust=adjust)
     if alt := await _composite(question, res, state):
         res = alt
-    sources = kept.get("sources") or sources_of(question, res.get("parsed") or {})
-    notice = inherited_notice(res.get("parsed") or {}, sources)
-    if sources.get("indicator") == "inherited" and not scoped_age_ratio:
-        res["search_question"] = inherited_question(res.get("parsed") or {})
+    parsed = res.get("parsed") or {}
+    sources = kept.get("sources") or sources_of(question, parsed)
+    notice = inherited_notice(parsed, sources)
+    if parsed.get("housing_condition"):
+        when = period_text(parsed) if sources.get("period") == "inherited" else None
+        regions = parsed.get("regions") or [] if sources.get("regions") == "inherited" else []
+        res["search_question"] = " ".join(filter(None, (when, ", ".join(regions), question)))
+    elif sources.get("indicator") == "inherited" and not scoped_age_ratio:
+        res["search_question"] = inherited_question(parsed)
     if res.get("status") in {
         "out_of_range",
         "region_not_in_year",
@@ -1232,6 +1306,69 @@ async def _composite(question: str, res: dict, state: dict | None) -> dict | Non
     alt["search_session"] = sid
     alt["trace"] = trace
     return alt
+
+
+async def _separate_measures(question, measures, state, user_id):
+    if refused := await table_guide.off_domain_early(question):
+        flow.add("범위 검사", refused.get("status"), "인구 통계에 없는 주제 (질문 이해 전에 거절)")
+        refused.update(request_type=NEW, question=question)
+        return refused, {}, None
+
+    async def answer_measure(asked):
+        res, sources, _ = await _new(asked, state)
+        await _attach_tables(res, None, asked, user_id)
+        return res, sources
+
+    outcomes = await asyncio.gather(
+        *(answer_measure(asked) for _, asked in measures), return_exceptions=True
+    )
+    answers = []
+    primary = None
+    measure_conditions = {}
+    errors = []
+    for (name, _), outcome in zip(measures, outcomes, strict=True):
+        if isinstance(outcome, BaseException):
+            if not isinstance(outcome, Exception):
+                raise outcome
+            logger.error("묶음 질문 계산 실패: %s", name, exc_info=outcome)
+            errors.append(outcome)
+            failure = {}
+            if isinstance(outcome, HcxError) and outcome.is_rate_limit:
+                wait = f" (약 {math.ceil(outcome.retry_after)}초 뒤)" if outcome.retry_after else ""
+                failure = {
+                    "status": "rate_limited",
+                    "answer": "요청 한도에 도달했습니다. 잠시 후 다시 질문해 주세요." + wait,
+                }
+            answers.append((name, failure))
+            continue
+        res, sources = outcome
+        answers.append((name, res))
+        if res.get("status") == "ok" and res.get("result") and not res.get("clarification"):
+            if primary is None:
+                primary = res, sources
+            measure_conditions[name] = effective(res.get("parsed") or {}, res["result"])
+
+    if primary is None:
+        first = next((out for out in outcomes if not isinstance(out, BaseException)), None)
+        if first is None:
+            raise errors[0]
+        res, sources = first
+        if not res.get("clarification"):
+            res["answer"] = "\n\n".join(
+                f"{name}\n{sub.get('answer') or '계산하지 못했습니다.'}" for name, sub in answers
+            )
+            res["question"] = question
+        return res, sources, None
+
+    res, sources = primary
+    parsed = {**res["parsed"], "grounded": True}
+    if len(measure_conditions) > 1:
+        parsed["measure_conditions"] = measure_conditions
+    combined = multi_indicator.side_by_side(
+        question, parsed, answers, res.get("trace") or {}, allow_partial=True
+    )
+    combined.update(question=question, request_type=NEW, chart=charts.build(combined["result"]))
+    return combined, sources, None
 
 
 def _clarification_answer(question: str, clarification: dict) -> dict:
@@ -1324,6 +1461,22 @@ async def _movement_tables(question: str, user_id: int | None, told: str | None 
 async def _turn(
     state: dict | None, question: str, selections: dict | None = None, user_id: int | None = None
 ) -> tuple[dict, dict, str | None]:
+    if refusal.instruction_request(question):
+        flow.add("통계 질문 검사", "not_statistics", "내부 지시 요청")
+        return (
+            {
+                "status": "not_statistics",
+                "answer": refusal.INSTRUCTION_REFUSAL,
+                "parsed": {},
+                "result": {"status": "not_statistics"},
+                "sources": [],
+                "chart": None,
+                "request_type": UNCLEAR,
+                "trace": {"instruction_request": True},
+            },
+            {},
+            None,
+        )
     pending = (state or {}).get("pending")
     if pending and pending.get("missing") == "question_clarification":
         original = pending["original_question"]
@@ -1434,6 +1587,8 @@ async def _turn(
             return _chat_answer(state, early["answer"]), {}, None
         early["request_type"], early["question"] = NEW, question
         return early, {}, None
+    if measures := await asyncio.to_thread(qa.separate_measures, question):
+        return await _separate_measures(question, measures, state, user_id)
     usable = bool(state and (state.get("conditions") or {}).get("type") not in NO_CONDITIONS)
     region_only = None
     if usable and (state.get("last") or {}).get("status") == TABLES:
@@ -1459,10 +1614,19 @@ async def _turn(
     if not usable:
         return await _new(question, None)
 
-    if HOUSEHOLD_AGE_RATIO.fullmatch(question) or await asyncio.to_thread(
-        complete_question, question
+    if (
+        HOUSEHOLD_AGE_RATIO.fullmatch(question)
+        or qa.housing_population_condition(question)
+        or await asyncio.to_thread(complete_question, question)
     ):
         return await _new(question, state)
+
+    if (state.get("last") or {}).get("status") == "ok" and (
+        aged := age_only_change(question, state["conditions"])
+    ):
+        res = await _answer(aged)
+        res["request_type"] = CHANGE
+        return res, state["sources"], None
 
     if switched := await asyncio.to_thread(survey_switch, question, state["conditions"]):
         res = await _answer(switched)
@@ -1493,15 +1657,21 @@ async def _turn(
         return res, sources, notice
     if view is None and not (has_last and summary_request(question)):
         trace: dict = {}
-        split = await asyncio.to_thread(region_split_changes, question, state["conditions"])
-        region_only = region_only or await asyncio.to_thread(
-            region_only_changes, question, state["conditions"]
-        )
-        if composition_request(question):
+        if year_reply := YEAR_ONLY_REPLY.fullmatch(question):
+            delta = {
+                "request_type": CHANGE,
+                "changes": {"year": int(year_reply[1])},
+                "chart": None,
+                "unclear": None,
+            }
+            flow.add("후속 질문", "연도 변경", f"{year_reply[1]}년")
+        elif composition_request(question):
             delta = parse_delta('{"request_type": "change", "changes": {"type": "composition"}}')
-        elif split:
+        elif split := await asyncio.to_thread(region_split_changes, question, state["conditions"]):
             delta = {"request_type": CHANGE, "changes": split, "chart": None, "unclear": None}
-        elif region_only:
+        elif region_only := region_only or await asyncio.to_thread(
+            region_only_changes, question, state["conditions"]
+        ):
             delta = {"request_type": CHANGE, "changes": region_only, "chart": None, "unclear": None}
         else:
             delta = await extract(state, question, trace)
@@ -1511,29 +1681,32 @@ async def _turn(
                 and await asyncio.to_thread(asks_other_people, question, state["conditions"])
             ):
                 delta["request_type"] = NEW
-        year = follow_year(question, state["conditions"])
-        if year and not names_indicator(question, {}) and delta["request_type"] != NEW:
-            changes = {
-                k: v
-                for k, v in (delta.get("changes") or {}).items()
-                if k not in ("year", "start_year", "end_year")
-            }
-            delta.update(request_type=CHANGE, unclear=None, changes={**changes, "year": year})
-        recent = recent_years(question)
-        if recent and not names_indicator(question, {}) and delta["request_type"] != NEW:
-            changes = {
-                k: v
-                for k, v in (delta.get("changes") or {}).items()
-                if k not in ("year", "start_year", "end_year")
-            }
-            delta.update(request_type=CHANGE, unclear=None, changes=changes)
+        recent = None
+        if delta["request_type"] != NEW and not names_indicator(question, {}):
+            anchor = next((r for r in timeref.find(question) if r["kind"] == "span_until"), None)
+            recent = recent_years(question) if not anchor else None
+            year = follow_year(question, state["conditions"]) if not (anchor or recent) else None
+            if anchor or recent or year:
+                changes = {
+                    k: v
+                    for k, v in (delta.get("changes") or {}).items()
+                    if k not in ("year", "start_year", "end_year")
+                }
+                if anchor:
+                    period = timeref.period(anchor, date.today())
+                    changes.update(start_year=period["start"], end_year=period["end"])
+                    if changes.get("type") in ("value", "compare"):
+                        changes["type"] = "trend"
+                elif year:
+                    changes["year"] = year
+                delta.update(request_type=CHANGE, unclear=None, changes=changes)
         if delta["unclear"]:
             return _unclear(state, delta["unclear"]), state["sources"], None
         if delta["request_type"] == SUMMARY and delta["changes"]:
             delta["request_type"] = CHANGE
         if delta["request_type"] == CHANGE:
             conditions, changed = apply_changes(state["conditions"], delta["changes"])
-            if recent and not names_indicator(question, {}):
+            if recent:
                 conditions, changed = with_recent(conditions, changed, recent)
             if changed:
                 res = None
@@ -1580,8 +1753,10 @@ async def _turn(
 
 def next_state(state: dict | None, question: str, res: dict, sources: dict) -> dict:
     prev = state or {}
-    recent = [*(prev.get("recent") or []), question][-RECENT:]
     turn_no = (prev.get("turn_no") or 0) + 1
+    if (res.get("trace") or {}).get("instruction_request"):
+        return {"conditions": {}, "sources": {}, **prev, "turn_no": turn_no}
+    recent = [*(prev.get("recent") or []), question][-RECENT:]
     if res.get("clarification"):
         before = prev.get("pending") or {}
         again = (
@@ -1647,8 +1822,13 @@ def next_state(state: dict | None, question: str, res: dict, sources: dict) -> d
             "turn_no": turn_no,
         }
     asked = res.get("question") or question
+    conditions = effective(res.get("parsed") or {}, res.get("result") or {})
+    if unconfirmed := conditions.pop("ungrounded_region", None):
+        conditions["regions"] = [r for r in conditions.get("regions") or [] if r != unconfirmed]
+        if conditions.get("sido") == unconfirmed:
+            conditions.pop("sido")
     return {
-        "conditions": effective(res.get("parsed") or {}, res.get("result") or {}),
+        "conditions": conditions,
         "sources": sources,
         "last": {
             "status": res.get("status"),
@@ -2409,6 +2589,14 @@ def ungrounded(res: dict) -> bool:
     )
 
 
+def _monthly_scope(result: dict) -> set[tuple]:
+    return {
+        (tuple(r["months"]), r.get("year"), r.get("sex") or "계")
+        for r in qa._leaves(result)
+        if r.get("months")
+    }
+
+
 async def _dynamic_instead(res: dict, state: dict | None, asked: str, user_id: int | None) -> bool:
     sid = (state or {}).get("search_session") or table_guide.new_search_session()
     trace = res.get("trace") or {}
@@ -2451,15 +2639,13 @@ async def _dynamic_instead(res: dict, state: dict | None, asked: str, user_id: i
             "same_value": (res.get("result") or {}).get("value"),
         }
         return False
-    months = (res.get("result") or {}).get("months")
+    months = _monthly_scope(res.get("result") or {})
     if (
         res.get("status") == "ok"
         and months
-        and not ((computed or {}).get("result") or {}).get("months")
+        and not months <= _monthly_scope((computed or {}).get("result") or {})
     ):
-        # 사전이 달 묶음 합(월별 자료)으로 답했는데 바로 계산은 월을 못 읽어 연간 값을 냈다 (11/24):
-        # 상반기 혼인 6,255건을 연간 12,802건으로 바꿔 버렸다. 달 합은 사전 답을 둔다
-        trace["dynamic_kept"] = {"indicator": parsed.get("indicator"), "months": months}
+        trace["dynamic_kept"] = {"indicator": parsed.get("indicator"), "months": list(months)}
         return False
     # 바꾼 원래 답 (요청 기록·회귀 평가에서 사전 지표 답과 비교한다)
     trace["replaced"] = {
@@ -2654,8 +2840,18 @@ async def handle(
         res["session_id"] = sid
         res["applied"] = (
             []
-            if res.get("status") == TABLES
-            else applied(after.get("conditions") or {}, after.get("sources") or {})
+            if res.get("status") in (TABLES, *table_guide.REFUSED)
+            else applied(
+                after.get("conditions") or {},
+                after.get("sources") or {},
+                include_regions=(res.get("result") or {}).get("status")
+                not in {
+                    "unknown_region",
+                    "ambiguous_region",
+                    "missing_region",
+                    "region_not_in_year",
+                },
+            )
         )
         res["notice"] = notice
         first_line = (res.get("answer") or "").strip().split("\n")[0][:80]

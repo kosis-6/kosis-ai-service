@@ -5,7 +5,8 @@ KOSIS 원본 통계표 20개를 전처리해 만든 DB의 구성과 사용법. �
 - 원본: `data/raw/kosis_zip/processed/*.csv` (+ 표마다 `.meta.json`). `--source collect`로 실행하면 수집기 출력 `data/processed/*.csv` (zip 안의 CSV와 같은 파일)
 - 결과: PostgreSQL 테이블 14개 (`raw.facts`, `mart.population` 등)
 - 만드는 코드: `pipeline/run_all.py` → `preprocess.py` → `catalog.py` → `validate.py` → `publish_stats.py`
-- `data/`는 git에 올리지 않는다. 받는 방법은 팀 공유 zip(`dist/`) 또는 원본 zip을 `data/kosis_processed.zip`에 두고 `python pipeline/run_all.py`
+- `data/`는 git에 올리지 않는다. 원본 zip을 `data/kosis_processed.zip`에 두고 `python pipeline/run_all.py`로 구축한다.
+- 지표 사전에서 공유본 외 적재 대상으로 지정한 표는 DB에 등록된 검색 카탈로그 또는 `data/catalog/population_table_catalog_with_meta.jsonl`로 표와 조회 항목을 확인한다. 검증과 배포용 데이터 교체를 마친 뒤 적재 대기열에 등록하고, 적재 워커가 값을 받는다.
 
 ---
 

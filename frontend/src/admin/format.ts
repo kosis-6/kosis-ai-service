@@ -48,12 +48,20 @@ const STATUS: Record<string, Label> = {
   band_mismatch: { text: "맞는 구간 없음", tone: "bad" },
   data_loading: { text: "자료 준비 중", tone: "bad" },
   parse_error: { text: "해석 실패", tone: "bad" },
+  error: { text: "계산 오류", tone: "bad" },
+  unknown_indicator: { text: "사전에 없는 지표", tone: "bad" },
+  not_supported_question: { text: "지원하지 않는 질문", tone: "bad" },
+  rate_limited: { text: "요청 한도 초과", tone: "bad" },
 };
 
-export function statusLabel(status: string | null | undefined, search = false): Label {
+export function statusLabel(
+  status: string | null | undefined,
+  search = false,
+  localizeUnknown = false,
+): Label {
   if (!status) return { text: "기록 없음", tone: "plain" };
   if (search && status === "ok") return { text: "찾음", tone: "good" };
-  return STATUS[status] ?? { text: status, tone: "plain" };
+  return STATUS[status] ?? { text: localizeUnknown ? "분류되지 않은 상태" : status, tone: "plain" };
 }
 
 const REQUEST: Record<string, string> = {
@@ -82,11 +90,10 @@ const FLOW_RESULT: Record<string, Label> = {
   no_cell: { text: "맞는 칸 없음", tone: "bad" },
   not_count: { text: "건수가 아닌 값", tone: "bad" },
   "-": { text: "결과 없음", tone: "plain" },
-  unknown_indicator: { text: "사전에 없는 지표", tone: "bad" },
 };
 
 export function flowLabel(result: string): Label {
-  return FLOW_RESULT[result] ?? STATUS[result] ?? { text: result, tone: "bad" };
+  return FLOW_RESULT[result] ?? STATUS[result] ?? { text: "분류되지 않은 결과", tone: "bad" };
 }
 
 type Step = { stage: string; result: string; detail?: string };
@@ -98,8 +105,8 @@ export function stuckStep<T extends Step>(flow: T[] | null | undefined): T | nul
   return steps.findLast((s) => s.stage !== "최종 답" && flowLabel(s.result).tone === "bad") ?? null;
 }
 
-export function requestLabel(type: string | null | undefined): string {
-  return type ? (REQUEST[type] ?? type) : "";
+export function requestLabel(type: string | null | undefined, localizeUnknown = false): string {
+  return type ? (REQUEST[type] ?? (localizeUnknown ? "분류되지 않은 요청" : type)) : "";
 }
 
 type Person = { user_id?: number | null; user_email?: string | null; user_nickname?: string | null };
@@ -132,12 +139,15 @@ const KIND: Record<string, string> = {
   compare: "비교",
   rank: "순위",
   composition: "구성",
+  causal: "원인 질문",
+  other: "통계 질문 이외",
+  parse_error: "해석 실패",
 };
 
 function show(key: string, value: unknown): string {
   if (value === null || value === undefined || value === "") return "없음";
   if (key === "ascending") return value ? "낮은 순" : "높은 순";
-  if (key === "type" && typeof value === "string") return KIND[value] ?? value;
+  if (key === "type" && typeof value === "string") return KIND[value] ?? "분류되지 않은 유형";
   if (Array.isArray(value)) return value.length ? value.map((v) => show("", v)).join(", ") : "없음";
   if (typeof value === "object") return JSON.stringify(value);
   return String(value);
