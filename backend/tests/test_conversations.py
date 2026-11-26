@@ -52,7 +52,7 @@ def test_save_touches_conversation_only_for_logged_in(monkeypatch: pytest.Monkey
     async def nothing(*args):
         return None
 
-    async def touch(sid, user_id, question):
+    async def touch(sid, user_id, question, conn=None):
         touched.append((sid, user_id, question))
 
     monkeypatch.setattr(s, "save", nothing)

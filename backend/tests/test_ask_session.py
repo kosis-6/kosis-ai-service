@@ -9,6 +9,7 @@ from app import main
 from app.core import stats_db
 from app.services import ask_session as s
 from app.services import dynamic_indicator, indicators, lookup, qa, table_guide
+from tests.conftest import memory_turn_writer
 
 BASE = {
     "type": "trend",
@@ -224,10 +225,26 @@ def test_pick_region_reply() -> None:
         ("서울도 막대로 보여줘", None),
         ("추이를 막대그래프로 보여줘", None),
         ("통계표 보여줘", None),
-        # 성별 · 연령을 함께 말하면 조건 변경 (11/26 리뷰)
+        # 요청 말 · 채움말만 더한 그림 바꾸기
+        ("막대그래프로 다시 보여줘", "bar"),
+        ("막대그래프로 좀 볼 수 있을까요?", "bar"),
+        ("그래프 형태로 바꿔 주세요", "chart"),
+        ("이번엔 표로", "table"),
+        ("막대그래프가 보고 싶어", "bar"),
+        ("그래프로 그려줄래?", "chart"),
+        ("그림으로 보여줘", "chart"),
+        # 조건이 남으면 조건 변경 (11/26 리뷰: 빼는 말 목록에 없는 조건은 버리고 그림만 바꿨다)
         ("남자만 막대그래프로 보여줘", None),
         ("여자는 그래프로", None),
         ("65세 이상만 막대로", None),
+        ("내국인만 막대그래프로", None),
+        ("상위 5개만 막대로", None),
+        ("많은 순으로 막대그래프", None),
+        ("10개만 막대그래프로 보여줘", None),
+        ("비율로 막대그래프 보여줘", None),
+        ("증가율로 그래프", None),
+        ("평균으로 막대그래프", None),
+        ("합계만 표로", None),
     ],
 )
 def test_chart_request(question, view) -> None:
@@ -320,7 +337,7 @@ class Talk:
         monkeypatch.setattr(s, "extract", self._extract)
         monkeypatch.setattr(s, "load", self._load)
         monkeypatch.setattr(s, "save", self._save)
-        monkeypatch.setattr(s, "state_saved", self._state_saved)
+        monkeypatch.setattr(s, "turn_writer", memory_turn_writer(self.store))
         monkeypatch.setattr(s, "log_turn", self._log)
         monkeypatch.setattr(s, "now", lambda: self.at)
         monkeypatch.setattr(table_guide, "find_tables", self._find)
@@ -398,13 +415,10 @@ class Talk:
             return None, False
         return (None, True) if at - row[1] > s.SESSION_FOR else (row[0], False)
 
-    async def _save(self, session_id, state):
+    async def _save(self, session_id, state, conn=None):
         self.store[session_id] = (state, self.at)
 
-    async def _state_saved(self, session_id):
-        return session_id in self.store
-
-    async def _log(self, session_id, user_id, turn_no, question, res, before, after):
+    async def _log(self, session_id, user_id, turn_no, question, res, before, after, conn=None):
         self.turns.append((turn_no, res.get("request_type"), question))
 
     user_id: int | None = 7
@@ -429,7 +443,7 @@ def test_conversation_deleted_while_answering_is_not_saved_again(
     talk.say("부산 출생아 최근 5년 보여 줘")
     touched: list[str] = []
 
-    async def touch(session_id, user_id, question):
+    async def touch(session_id, user_id, question, conn=None):
         touched.append(question)
 
     monkeypatch.setattr(s.conversations, "touch", touch)
@@ -576,6 +590,9 @@ def test_chart_with_a_sex_change_recomputes_and_keeps_the_shape(talk: Talk) -> N
     assert talk.extracted == ["남자만 막대그래프로 보여줘"]
     assert res["request_type"] == "change" and talk.answered[-1]["sex"] == "남"
     assert res["chart"]["view"] == "bar"
+    # 질문의 모양 말이 '차트'뿐이면 변경 추출이 읽은 모양 (조건 변경과 함께 chart를 준다)
+    res = talk.say("여자만 바 차트로", request_type="change", changes={"sex": "여"}, chart="bar")
+    assert talk.answered[-1]["sex"] == "여" and res["chart"]["view"] == "bar"
 
 
 def test_chart_without_a_shape_uses_the_last_chart(talk: Talk) -> None:

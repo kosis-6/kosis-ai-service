@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import copy
 import json
 import logging
@@ -81,11 +82,28 @@ CHART_WORDS = {
     "chart": re.compile(r"그래프|차트|시각화|그림\s*으로|그려"),
 }
 CHART_REQUEST = re.compile(
-    r"보여|바꿔|바꾸|그려|볼래|보고|줘|주세요|시각화"
+    r"보여|바꿔|바꾸|그려|볼래|볼\s*수|보고|줘|주세요|시각화"
     r"|(?:로|으로|그래프|차트|표|막대)\s*(?:는|은|도|요|가능)?\s*[?.!~]*$"
 )
 CHART_INSTEAD = re.compile(r"말고|대신|아니고|아니라")
 CHART_MAX_CHARS = 40
+# 차트 말을 지운 나머지가 이런 말뿐이어야 그림만 바꾸는 요청이다. 무엇이든 조건이 남으면
+# ('남자만' · '상위 5개만' · '비율로' …) 변경 추출에 맡긴다 (11/26 리뷰: 빼는 말 목록 방식은
+# 목록에 없는 조건을 버리고 그림만 바꿨다)
+_CHART_FILLER = (
+    r"그럼|그러면|그렇다면|혹시|이거|그거|이걸|그걸|이것|그것|이건|그건|지금|이번엔|이번에는"
+    r"|다시|한\s*번|좀|형태|모양|말고|대신|아니고|아니라"
+)
+_CHART_VERB = (
+    r"보여(?:줘요?|주세요|줄래요?|줄|주라|봐)?|바꿔(?:서|줘요?|주세요|줄래요?|줄|봐)?|바꿀|바꾸어"
+    r"|그려(?:서|줘요?|주세요|줄래요?|줄)?|볼래요?|볼|보고|싶어요?|싶은데|봐요?"
+    r"|해(?:서|줘요?|주세요|줄래요?|줄|봐)?|줘요?|주세요|줄래요?|주라"
+    r"|가능(?:해요?|할까요?|한가요?)?|수|있어요?|있나요|있을까요?|돼요?|되나요|될까요?|변경|전환"
+)
+_CHART_PARTICLE = r"으로|로|는|은|도|요|가|을|를|에|서|이"
+CHART_ONLY_REST = re.compile(rf"(?:{_CHART_FILLER}|{_CHART_VERB}|{_CHART_PARTICLE}|[\s?.!~,])*")
+# 모양을 정하지 않는 차트 말 ('표 말고 그래프로'의 '표'). '통계표'의 표는 아니다
+CHART_NOUN = re.compile(r"(?<![가-힣])표")
 CHART_NAMES = {"line": "꺾은선 그래프", "bar": "막대그래프", "parts": "구성비 막대그래프"}
 CHART_CANNOT = {"line": "꺾은선은 연도별 추이에만 씁니다", "pie": "원그래프는 지원하지 않습니다"}
 SUMMARY_REQUEST = re.compile(
@@ -765,21 +783,16 @@ def replace_region(conditions: dict, asked: str | None, picked: str) -> dict:
 
 def chart_request(question: str) -> str | None:
     """직전 답의 그림만 바꾸는 말이면 모양 (table · bar · line · pie · chart), 아니면 None.
-    연도 · 지표 · 지역 · 성별 · 연령 · 보는 방식(추이 · 비교 …)을 함께 말하면 조건 변경이라
-    변경 추출에 맡긴다: '남자만 막대그래프로'를 전체 값의 막대로만 바꿨다 (11/26 리뷰)"""
+    차트 말을 지운 나머지에 요청 말 · 조사만 남아야 한다. 연도 · 지표 · 지역 · 성별 · 순위 같은
+    조건이 남으면 조건 변경이라 변경 추출에 맡긴다 ('남자만 막대그래프로'를 전체 값의 막대로만
+    바꿨다)"""
     q = question.strip()
-    if (
-        len(q) > CHART_MAX_CHARS
-        or not CHART_REQUEST.search(q)
-        or ask_followup.has_explicit_year(q)
-        or indicators.find_in_text(q)
-        or indicators.find_regions(q)
-        or NEW_VIEW.search(q)
-        or SEX_WORDS.search(q)
-        or qa.resolved_ages(q)
-    ):
+    if len(q) > CHART_MAX_CHARS or not (view := chart_shape(q)):
         return None
-    return chart_shape(q)
+    rest = q
+    for pattern in [*CHART_WORDS.values(), CHART_NOUN]:
+        rest = pattern.sub(" ", rest)
+    return view if CHART_ONLY_REST.fullmatch(rest) else None
 
 
 def chart_shape(question: str) -> str | None:
@@ -2201,7 +2214,10 @@ async def _turn(
                     res["search_question"] = inherited_question(conditions)
                 sources = {**state["sources"], **{k: "user" for k in changed if k in LABELS}}
                 notice = None
-                if res.get("chart") and (shape := chart_shape(question)):
+                # 말한 모양이 '그래프 · 차트'처럼 정해지지 않았으면 변경 추출이 읽은 모양을 쓴다
+                said = chart_shape(question)
+                shape = said if said not in (None, "chart") else delta.get("chart") or said
+                if res.get("chart") and shape:
                     # 다시 계산한 답의 차트도 함께 말한 모양으로 ('남자만 막대그래프로')
                     res["chart"], cannot = reshape(res["chart"], shape)
                     if cannot:
@@ -3357,18 +3373,66 @@ async def _load(session_id: str) -> tuple[dict | None, bool]:
 async def _save(
     sid: str, after: dict, res: dict, before: dict | None, question: str, user_id
 ) -> None:
+    continuing = user_id is not None and before is not None
     try:
-        if user_id is not None and before is not None and not await state_saved(sid):
-            # 이어 가는 대화를 답을 만드는 사이 사용자가 지웠다 (conversations.delete가 상태까지
-            # 지운다). 그대로 저장하면 같은 ID로 다시 생겨 지운 대화가 목록에 되살아났다
-            logger.info("답을 만드는 사이 지운 대화라 저장하지 않음")
-            return
-        await save(sid, after)
-        await log_turn(sid, user_id, after.get("turn_no") or 1, question, res, before, after)
-        if user_id is not None:
-            await conversations.touch(sid, user_id, question)
+        async with turn_writer(sid, user_id, continuing) as conn:
+            if conn is None:
+                # 이어 가는 대화를 답을 만드는 사이 사용자가 지웠다. 그대로 저장하면 같은 ID로
+                # 다시 생겨 지운 대화가 목록에 되살아났다 (11/26 리뷰)
+                logger.info("답을 만드는 사이 지운 대화라 저장하지 않음")
+                return
+            await save(sid, after, conn)
+            turn_no = after.get("turn_no") or 1
+            await log_turn(sid, user_id, turn_no, question, res, before, after, conn)
+            if user_id is not None:
+                await conversations.touch(sid, user_id, question, conn)
     except (SQLAlchemyError, OSError):
+        STATE_CACHE.delete(sid)  # 되돌린 저장을 캐시에 남기지 않는다
         logger.exception("대화 상태 저장 실패")
+
+
+@contextlib.asynccontextmanager
+async def turn_writer(session_id: str, user_id: int | None, continuing: bool):
+    """한 턴의 저장(상태 · 턴 기록 · 대화 목록)을 트랜잭션 하나로 → 연결, 지운 대화면 None.
+    이어 가는 대화는 대화 행을 잠근다(for update). 지우기(conversations.delete)도 대화 행부터
+    지우므로 둘이 겹치면 한쪽이 끝날 때까지 기다린다: 지우기가 먼저면 행이 없어 저장하지 않고,
+    저장이 먼저면 지우기가 새 턴까지 함께 지운다"""
+    from app.core.db import engine
+
+    async with engine.begin() as conn:
+        if continuing and not await _conversation_held(conn, session_id, user_id):
+            yield None
+        else:
+            yield conn
+
+
+async def _conversation_held(conn, session_id: str, user_id: int | None) -> bool:
+    held = await conn.execute(
+        text(
+            "select 1 from app.conversations where session_id = :sid and user_id = :uid for update"
+        ),
+        {"sid": session_id, "uid": user_id},
+    )
+    if held.first():
+        return True
+    # 대화 행이 처음부터 없는 대화(첫 턴의 목록 저장이 실패함)는 상태가 남아 있으면 이어 간다.
+    # 지운 대화는 상태도 함께 지워졌다
+    state = await conn.execute(
+        text("select 1 from app.chat_sessions where session_id = :k"), {"k": _key(session_id)}
+    )
+    return state.first() is not None
+
+
+@contextlib.asynccontextmanager
+async def _within(conn=None):
+    """conn이 있으면 그 트랜잭션 안에서, 없으면 새 트랜잭션으로"""
+    if conn is not None:
+        yield conn
+        return
+    from app.core.db import engine
+
+    async with engine.begin() as own:
+        yield own
 
 
 def keeps_for(state: dict) -> timedelta:
@@ -3400,25 +3464,10 @@ async def load(session_id: str, at: datetime) -> tuple[dict | None, bool]:
     return copy.deepcopy(slots), False
 
 
-async def state_saved(session_id: str) -> bool:
-    """대화 상태가 DB에 아직 있는가. 캐시는 보지 않는다: 지우기는 다른 프로세스에서도 온다"""
-    from app.core.db import engine
-
-    async with engine.begin() as conn:
-        row = (
-            await conn.execute(
-                text("select 1 from app.chat_sessions where session_id = :k"),
-                {"k": _key(session_id)},
-            )
-        ).first()
-    return row is not None
-
-
-async def save(session_id: str, state: dict) -> None:
-    from app.core.db import engine
+async def save(session_id: str, state: dict, conn=None) -> None:
     from app.services import dialog
 
-    async with engine.begin() as conn:
+    async with _within(conn) as conn:
         await dialog._ensure(conn)
         await conn.execute(
             text(dialog.UPSERT),
@@ -3450,11 +3499,10 @@ async def log_turn(
     res: dict,
     before: dict | None,
     after: dict,
+    conn=None,
 ) -> None:
-    from app.core.db import engine
-
     result = res.get("result") or {}
-    async with engine.begin() as conn:
+    async with _within(conn) as conn:
         await conn.execute(
             text(
                 "insert into app.chat_turns (session_id, user_id, turn_no, message, request_type,"
