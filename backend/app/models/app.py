@@ -91,6 +91,40 @@ class ChatTurn(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class Report(Base):
+    __tablename__ = "reports"
+    __table_args__ = (
+        CheckConstraint("status in ('draft', 'ready', 'failed')", name="reports_status"),
+        Index("reports_user", "user_id", "updated_at"),
+        {"schema": "app"},
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("app.users.id", ondelete="CASCADE"))
+    session_id: Mapped[str | None]
+    title: Mapped[str]
+    purpose: Mapped[str | None]
+    status: Mapped[str] = mapped_column(server_default=text("'draft'"))
+    content: Mapped[dict | None] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ReportItem(Base):
+    """담은 답 하나. snapshot은 담을 때 복사한 화면 내용이라 chat_turns가 지워져도 남는다"""
+
+    __tablename__ = "report_items"
+    __table_args__ = ({"schema": "app"},)
+
+    report_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("app.reports.id", ondelete="CASCADE"), primary_key=True
+    )
+    turn_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    sort_order: Mapped[int] = mapped_column(SmallInteger)
+    snapshot: Mapped[dict] = mapped_column(JSONB)
+    added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class AdminAudit(Base):
     __tablename__ = "admin_audit"
     __table_args__ = (Index("admin_audit_created", "created_at"), {"schema": "app"})
