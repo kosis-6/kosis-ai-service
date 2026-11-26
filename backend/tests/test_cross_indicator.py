@@ -431,7 +431,12 @@ def test_summed_numerator_value_trend_rank() -> None:
     q["cross"]["plus"] = "사망자 수"
     res = x.compute(q, run)
     assert res["status"] == "ok"
-    assert res["operands"][0] == {"label": "출생아 수와 사망자 수", "value": 87605, "unit": "명"}
+    assert res["operands"][0] == {
+        "label": "출생아 수와 사망자 수",
+        "value": 87605,
+        "unit": "명",
+        "tbl_id": "T_출생아 수",
+    }
     assert res["value"] == x._div(41605 + 46000, 4482063, 1)
 
     t = q_of("trend")

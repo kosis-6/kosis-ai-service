@@ -258,3 +258,93 @@ def test_attach_figure_never_raises(monkeypatch):
     res = {"status": "ok", "result": ok(value=1)}
     ask_session._attach_figure(res)
     assert res["figure"] is None and res["reportable"] is False
+
+
+def test_operands_keep_their_own_tables():
+    """두 표를 엮은 계산: 분모의 출처가 첫 표로 바뀌지 않는다 (#244 리뷰)"""
+    r = ok(
+        region="서울",
+        year=2020,
+        kind="ratio",
+        unit="%",
+        value=1.0,
+        operands=[
+            {"label": "a", "value": 1, "unit": "명", "tbl_id": "DT_NUM"},
+            {"label": "b", "value": 2, "unit": "명", "tbl_id": "DT_DEN"},
+        ],
+    )
+    assert [o["tbl_id"] for o in figure.figure_of(r)["operands"]] == ["DT_NUM", "DT_DEN"]
+
+
+def test_operand_tables_for_dictionary_indicators():
+    from app.services import indicators
+
+    assert indicators.OPERAND_TABLES["area"] == indicators.AREA_TABLE
+    assert indicators.OPERAND_TABLES["households"] == indicators.HH_TABLE
+    assert indicators.OPERAND_TABLES["foreigners"] == indicators.FOREIGN_TABLE
+
+
+def test_replayed_conversation_keeps_turn_id():
+    """지난 대화를 다시 열어도 담을 수 있는 답에는 turn_id 가 있다 (#244 리뷰)"""
+    import asyncio
+    import json
+    import uuid
+
+    from sqlalchemy import text
+
+    from app.services import conversations
+
+    async def go():
+        from app.core.db import engine
+
+        tag = uuid.uuid4().hex[:10]
+        sid = f"fig-test-{tag}"
+        try:
+            async with engine.begin() as conn:
+                uid = (
+                    await conn.execute(
+                        text(
+                            "insert into app.users (email, password_hash)"
+                            " values (:e, 'x') returning id"
+                        ),
+                        {"e": f"fig-test-{tag}@example.com"},
+                    )
+                ).scalar_one()
+                await conn.execute(
+                    text(
+                        "insert into app.conversations (session_id, user_id, title)"
+                        " values (:s, :u, 't')"
+                    ),
+                    {"s": sid, "u": uid},
+                )
+                ids = []
+                for no, resp in enumerate([{"answer": "a", "reportable": True}, {"answer": "b"}]):
+                    ids.append(
+                        (
+                            await conn.execute(
+                                text(
+                                    "insert into app.chat_turns (session_id, user_id, turn_no,"
+                                    " message, recomputed, response) values (:s, :u, :n, 'q',"
+                                    " true, cast(:r as jsonb)) returning id"
+                                ),
+                                {"s": sid, "u": uid, "n": no + 1, "r": json.dumps(resp)},
+                            )
+                        ).scalar_one()
+                    )
+            found = await conversations.detail(uid, sid)
+            async with engine.begin() as conn:
+                await conn.execute(
+                    text("delete from app.chat_turns where user_id = :u"), {"u": uid}
+                )
+                await conn.execute(text("delete from app.users where id = :u"), {"u": uid})
+            return ids, found
+        finally:
+            await engine.dispose()
+
+    try:
+        ids, found = asyncio.run(go())
+    except Exception as e:  # DB 없음
+        pytest.skip(f"app 스키마 DB 없음: {e}")
+    responses = [t["response"] for t in found["turns"]]
+    assert responses[0]["turn_id"] == ids[0]
+    assert "turn_id" not in responses[1]  # 담을 수 없는 답에는 붙이지 않는다
