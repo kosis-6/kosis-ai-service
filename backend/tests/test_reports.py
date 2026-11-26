@@ -1,0 +1,325 @@
+"""통합 보고서 초안: 서비스(실제 DB의 app 스키마) · API (명세서 4 · 6장)
+
+서비스 테스트는 통계 데이터가 필요 없어 CI(빈 DB + alembic upgrade head)에서도 돈다.
+사용자 두 명과 chat_turns 행을 만들고 끝나면 지운다.
+"""
+
+import asyncio
+import json
+import uuid
+from types import SimpleNamespace
+
+import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import text
+
+from app.api.deps import get_current_user
+from app.core.db import get_session
+from app.main import app
+from app.services import reports as r
+from app.services.reports import ReportError
+
+FIG = {"label": "2020년 서울 1인가구", "value": 1, "unit": "가구", "kind": "value"}
+
+
+def run(coro):
+    async def go():
+        from app.core.db import engine
+
+        try:
+            return await coro
+        finally:
+            await engine.dispose()  # asyncio.run마다 새 이벤트 루프라 연결을 넘기지 않는다
+
+    return asyncio.run(go())
+
+
+async def _setup():
+    from app.core.db import engine
+
+    tag = uuid.uuid4().hex[:10]
+    async with engine.begin() as conn:
+        users = []
+        for who in ("a", "b"):
+            row = await conn.execute(
+                text("insert into app.users (email, password_hash) values (:e, 'x') returning id"),
+                {"e": f"report-test-{who}-{tag}@example.com"},
+            )
+            users.append(row.scalar_one())
+        turns = {}
+        rows = [
+            ("ok1", users[0], {"status": "ok", "answer": "답1", "figure": FIG, "reportable": True}),
+            ("ok2", users[0], {"status": "ok", "answer": "답2", "figure": FIG, "reportable": True}),
+            ("ok3", users[0], {"status": "ok", "answer": "답3", "figure": FIG, "reportable": True}),
+            ("bad", users[0], {"status": "ok", "answer": "일부만", "figure": FIG}),
+            ("tables", users[0], {"status": "tables", "answer": "표 안내"}),
+            (
+                "other",
+                users[1],
+                {"status": "ok", "answer": "남의 답", "figure": FIG, "reportable": True},
+            ),
+        ]
+        for i, (key, uid, response) in enumerate(rows):
+            row = await conn.execute(
+                text(
+                    "insert into app.chat_turns (session_id, user_id, turn_no, message, status,"
+                    " recomputed, response) values (:sid, :uid, :no, :msg, 'ok', true,"
+                    " cast(:resp as jsonb)) returning id"
+                ),
+                {
+                    "sid": f"report-test-{tag}",
+                    "uid": uid,
+                    "no": i + 1,
+                    "msg": f"질문 {key}",
+                    "resp": json.dumps(response, ensure_ascii=False),
+                },
+            )
+            turns[key] = row.scalar_one()
+    return tag, users, turns
+
+
+async def _teardown(tag, users):
+    from app.core.db import engine
+
+    async with engine.begin() as conn:
+        await conn.execute(
+            text("delete from app.chat_turns where session_id = :sid"),
+            {"sid": f"report-test-{tag}"},
+        )
+        await conn.execute(text("delete from app.users where id = any(:ids)"), {"ids": users})
+
+
+@pytest.fixture
+def db():
+    try:
+        tag, users, turns = run(_setup())
+    except Exception as e:  # DB가 없거나 마이그레이션 전
+        pytest.skip(f"app 스키마 DB 없음: {e}")
+    yield SimpleNamespace(a=users[0], b=users[1], t=turns)
+    run(_teardown(tag, users))
+
+
+def test_create_with_items_copies_snapshot(db):
+    rep = run(r.create(db.a, " 서울  1인 가구 ", "규모", [db.t["ok1"], db.t["ok2"], db.t["ok1"]]))
+    assert rep["title"] == "서울 1인 가구"
+    assert rep["status"] == "draft"
+    assert [i["turn_id"] for i in rep["items"]] == [db.t["ok1"], db.t["ok2"]]
+    snap = rep["items"][0]["snapshot"]
+    assert snap["question"] == "질문 ok1"
+    assert snap["figure"] == FIG
+    assert snap["answer"] == "답1"
+    assert "reportable" not in snap
+
+
+def test_snapshot_survives_turn_deletion(db):
+    rep = run(r.create(db.a, None, None, [db.t["ok1"]]))
+
+    async def wipe():
+        from app.core.db import engine
+
+        async with engine.begin() as conn:
+            await conn.execute(text("delete from app.chat_turns where id = :i"), {"i": db.t["ok1"]})
+
+    run(wipe())
+    again = run(r.detail(db.a, rep["id"]))
+    assert again["items"][0]["snapshot"]["answer"] == "답1"
+    assert again["title"] == r.DEFAULT_TITLE
+
+
+@pytest.mark.parametrize(
+    ("key", "code"),
+    [("bad", "not_reportable"), ("tables", "not_reportable"), ("other", "not_found")],
+)
+def test_cannot_add_unreportable_or_others_turn(db, key, code):
+    rep = run(r.create(db.a))
+    with pytest.raises(ReportError) as e:
+        run(r.add_item(db.a, rep["id"], db.t[key]))
+    assert e.value.code == code
+    assert run(r.detail(db.a, rep["id"]))["items"] == []
+
+
+def test_create_with_bad_turn_leaves_nothing(db):
+    with pytest.raises(ReportError):
+        run(r.create(db.a, "x", None, [db.t["ok1"], db.t["bad"]]))
+    assert run(r.listing(db.a))["total"] == 0
+
+
+def test_add_is_idempotent_and_remove(db):
+    rep = run(r.create(db.a))
+    run(r.add_item(db.a, rep["id"], db.t["ok1"]))
+    rep = run(r.add_item(db.a, rep["id"], db.t["ok1"]))
+    assert len(rep["items"]) == 1
+    rep = run(r.remove_item(db.a, rep["id"], db.t["ok1"]))
+    assert rep["items"] == []
+
+
+def test_item_limit(db, monkeypatch):
+    monkeypatch.setattr(r, "MAX_ITEMS", 2)
+    rep = run(r.create(db.a, None, None, [db.t["ok1"], db.t["ok2"]]))
+    with pytest.raises(ReportError) as e:
+        run(r.add_item(db.a, rep["id"], db.t["ok3"]))
+    assert e.value.code == "full"
+
+
+def test_reorder_and_rename(db):
+    rep = run(r.create(db.a, None, None, [db.t["ok1"], db.t["ok2"], db.t["ok3"]]))
+    order = [db.t["ok3"], db.t["ok1"], db.t["ok2"]]
+    rep = run(r.update(db.a, rep["id"], title="새 제목", purpose="목적", order=order))
+    assert [i["turn_id"] for i in rep["items"]] == order
+    assert (rep["title"], rep["purpose"]) == ("새 제목", "목적")
+    with pytest.raises(ReportError) as e:
+        run(r.update(db.a, rep["id"], order=[db.t["ok1"], db.t["ok2"]]))
+    assert e.value.code == "bad_order"
+
+
+def test_item_change_clears_generated_content(db):
+    rep = run(r.create(db.a, None, None, [db.t["ok1"]]))
+
+    async def generated():
+        from app.core.db import engine
+
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "update app.reports set status = 'ready', content = '{\"x\": 1}' where id = :i"
+                ),
+                {"i": rep["id"]},
+            )
+
+    run(generated())
+    rep = run(r.add_item(db.a, rep["id"], db.t["ok2"]))
+    assert rep["status"] == "draft" and rep["content"] is None
+
+
+def test_draft_is_reused_then_new_after_generation(db):
+    first = run(r.add_to_draft(db.a, db.t["ok1"], "S1"))
+    second = run(r.add_to_draft(db.a, db.t["ok2"]))
+    assert first["id"] == second["id"] and len(second["items"]) == 2
+    assert second["session_id"] == "S1"
+
+    async def generated():
+        from app.core.db import engine
+
+        async with engine.begin() as conn:
+            await conn.execute(
+                text("update app.reports set status = 'ready', content = '{}' where id = :i"),
+                {"i": first["id"]},
+            )
+
+    run(generated())
+    third = run(r.add_to_draft(db.a, db.t["ok3"]))
+    assert third["id"] != first["id"]
+
+
+def test_concurrent_first_adds_make_one_draft(db):
+    """초안이 없을 때 같은 답을 동시에 두 번 담아도 초안은 하나 (#245 리뷰)"""
+
+    async def both():
+        return await asyncio.gather(
+            r.add_to_draft(db.a, db.t["ok1"]), r.add_to_draft(db.a, db.t["ok1"])
+        )
+
+    first, second = run(both())
+    assert first["id"] == second["id"]
+    assert run(r.listing(db.a))["total"] == 1
+    assert len(run(r.detail(db.a, first["id"]))["items"]) == 1
+
+
+def test_draft_not_created_for_unreportable(db):
+    with pytest.raises(ReportError):
+        run(r.add_to_draft(db.a, db.t["bad"]))
+    assert run(r.listing(db.a))["total"] == 0
+
+
+def test_other_user_sees_nothing(db):
+    rep = run(r.create(db.a, None, None, [db.t["ok1"]]))
+    assert run(r.detail(db.b, rep["id"])) is None
+    assert run(r.listing(db.b))["total"] == 0
+    with pytest.raises(ReportError):
+        run(r.add_item(db.b, rep["id"], db.t["other"]))
+    assert run(r.delete(db.b, rep["id"])) is False
+    assert run(r.delete(db.a, rep["id"])) is True
+
+
+def test_title_masks_secrets():
+    assert r.clean_title("  ") == r.DEFAULT_TITLE
+    assert len(r.clean_title("가" * 200)) == r.TITLE_MAX
+
+
+# ---- API (서비스는 흉내) ------------------------------------------------------------
+
+READ = {
+    "id": 5,
+    "session_id": None,
+    "title": "t",
+    "purpose": None,
+    "status": "draft",
+    "content": None,
+    "created_at": "2026-11-26T00:00:00Z",
+    "updated_at": "2026-11-26T00:00:00Z",
+    "items": [],
+}
+
+
+@pytest.fixture
+def client(monkeypatch):
+    calls = []
+
+    def fake(name, result=READ, error=None):
+        async def f(*args, **kw):
+            calls.append((name, args))
+            if error:
+                raise error
+            return result
+
+        monkeypatch.setattr(r, name, f)
+
+    for name in ("create", "add_item", "add_to_draft", "remove_item", "update"):
+        fake(name)
+    fake("detail", None)
+    fake("delete", False)
+    fake("listing", {"total": 0, "reports": []})
+
+    async def no_db():
+        yield None
+
+    app.dependency_overrides[get_session] = no_db
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=3)
+    c = TestClient(app)
+    c.calls, c.fake = calls, fake
+    yield c
+    app.dependency_overrides.clear()
+
+
+def test_api_routes_pass_user(client):
+    assert client.post("/reports", json={"title": "x", "turn_ids": [1, 2]}).status_code == 201
+    assert client.post("/reports/draft/items", json={"turn_id": 9}).status_code == 200
+    assert client.put("/reports/5/items/9").status_code == 200
+    assert client.delete("/reports/5/items/9").status_code == 200
+    assert client.patch("/reports/5", json={"order": [9]}).status_code == 200
+    assert client.get("/reports").json() == {"total": 0, "reports": []}
+    assert all(args[0] == 3 for _, args in client.calls)
+
+
+@pytest.mark.parametrize(
+    ("code", "status"),
+    [("not_found", 404), ("not_reportable", 409), ("full", 409), ("bad_order", 422)],
+)
+def test_api_maps_errors(client, code, status):
+    client.fake("add_item", error=ReportError(code, "이유"))
+    res = client.put("/reports/5/items/9")
+    assert res.status_code == status and res.json()["detail"] == "이유"
+
+
+def test_api_missing_report_is_404(client):
+    assert client.get("/reports/5").status_code == 404
+    assert client.delete("/reports/5").status_code == 404
+
+
+def test_api_login_required_and_inputs_checked(client):
+    app.dependency_overrides.pop(get_current_user)
+    assert client.get("/reports").status_code == 401
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=3)
+    assert client.put("/reports/0/items/9").status_code == 422
+    assert client.post("/reports", json={"turn_ids": list(range(1, 20))}).status_code == 422
+    assert client.patch("/reports/5", json={"title": ""}).status_code == 422
