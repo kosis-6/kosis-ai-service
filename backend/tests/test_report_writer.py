@@ -271,6 +271,15 @@ def test_write_retries_once_with_problems(monkeypatch):
     assert content["generated_by"] == "hcx" and content["warnings"] == []
 
 
+def test_write_fills_comparison_direction(monkeypatch):
+    output = {"summary": [s("{r1.value}에서 {r2.value}로 {c1.direction}했습니다.")]}
+    content, calls = run_write(monkeypatch, [output])
+    assert len(calls) == 1
+    assert content["generated_by"] == "hcx" and content["warnings"] == []
+    assert content["summary"][0]["text"] == "1,390,701가구에서 1,500,000가구로 증가했습니다."
+    assert content["summary"][0]["refs"] == ["c1", "r1", "r2"]
+
+
 def test_write_falls_back_after_two_failures(monkeypatch):
     bad = {"summary": [s("약 140만 가구입니다.")], "analysis": []}
     content, calls = run_write(monkeypatch, [bad, dict(bad)])

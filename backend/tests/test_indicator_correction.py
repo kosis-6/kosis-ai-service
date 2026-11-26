@@ -267,3 +267,15 @@ def test_people_plus_registered_foreigners_is_a_sum(question: str) -> None:
 
 def test_people_alone_is_not_a_sum() -> None:
     assert x.detect("화성시 사는 사람 몇 명이야?") is None
+
+
+def test_birth_count_uses_sex_breakdown_for_lookup_and_trend(monkeypatch) -> None:
+    spec = indicators.spec("출생아 수")
+    monkeypatch.setattr(lookup, "_years", lambda _: (2015, 2025))
+
+    total, _ = lookup._pick(spec, "시도", 2024, 2024, "계")
+    male, _ = lookup._pick(spec, "시도", 2024, 2024, "남")
+    assert total["table"] == "DT_1B8000H"
+    assert (male["table"], male["item_id"]) == ("DT_1B81A03", "T2")
+    [(female, start, end)] = lookup._spans(spec, "시도", 2021, 2025, "여")
+    assert (female["table"], female["item_id"], start, end) == ("DT_1B81A03", "T3", 2021, 2025)

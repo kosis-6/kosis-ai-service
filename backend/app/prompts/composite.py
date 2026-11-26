@@ -23,13 +23,13 @@ SYSTEM = """너는 KOSIS 인구 통계의 복합 질문을 '계산 순서'로 �
 6. answer.step은 답이 되는 step 번호, with는 같이 보여 줄 step 번호들(예: 상위 N 지역 목록).
 
 예시
-질문: 고령 산모 비중 상승폭이 큰 상위 3개 시도의 저체중아 비중은 얼마나 변했어? (지표 0 고령 산모 비중, 1 저체중아 비중, 2019년과 2024년)
+질문: 고령 산모 비중 상승폭이 큰 상위 3개 시도의 저체중아 비중은 얼마나 변했어? (지표 0 고령 산모 비중, 1 저체중아 비중)
 {"steps": [
- {"op":"get","indicator":0,"regions":"all","years":["2019","2024"],"why":"고령 산모 비중 두 시점"},
- {"op":"change","of":0,"from":"2019","to":"2024","how":"diff","why":"상승폭"},
+ {"op":"get","indicator":0,"regions":"all","years":["latest-4","latest"],"why":"고령 산모 비중 두 시점"},
+ {"op":"change","of":0,"from":"latest-4","to":"latest","how":"diff","why":"상승폭"},
  {"op":"rank","of":1,"top":3,"why":"상승폭 상위 3"},
- {"op":"get","indicator":1,"regions":{"from_step":2},"years":["2019","2024"],"why":"그 시도의 저체중아 비중"},
- {"op":"change","of":3,"from":"2019","to":"2024","how":"diff","why":"변화폭"}],
+ {"op":"get","indicator":1,"regions":{"from_step":2},"years":["latest-4","latest"],"why":"그 시도의 저체중아 비중"},
+ {"op":"change","of":3,"from":"latest-4","to":"latest","how":"diff","why":"변화폭"}],
  "answer": {"step": 4, "with": [2]}}
 
 질문: 초혼연령이 전국보다 높으면서 다자녀 비중이 상위 10%인 지역은? (지표 0 평균 초혼연령, 1 다자녀 비중)

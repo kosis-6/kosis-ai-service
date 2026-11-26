@@ -63,6 +63,13 @@ def _effective(src, sex):
     return merged
 
 
+def _sources_for_sex(spec, sex):
+    sources = spec["sources"]
+    if sex in SEX_WORDS and any(src.get("by_sex") for src in sources):
+        return [src for src in sources if sex in src.get("by_sex", {})]
+    return sources
+
+
 @lru_cache
 def _table(tbl_id):
     c = _rows("select tbl_nm, org_nm, start_year, end_year from catalog where tbl_id = ?", [tbl_id])
@@ -362,7 +369,7 @@ def _resolve(spec, names, year):
 
 def _pick(spec, level, y0, y1, sex):
     fits = []
-    for s in spec["sources"]:
+    for s in _sources_for_sex(spec, sex):
         if s.get("national_only") and level != "전국":
             continue
         if LEVELS[s["level"]] < LEVELS[level]:
@@ -549,7 +556,7 @@ def value(spec, region, year, sex="계", ages=None):
 
 def _spans(spec, level, y0, y1, sex):
     spans, covered = [], set()
-    for s in spec["sources"]:
+    for s in _sources_for_sex(spec, sex):
         if s.get("national_only") and level != "전국":
             continue
         if LEVELS[s["level"]] < LEVELS[level]:
@@ -558,6 +565,8 @@ def _spans(spec, level, y0, y1, sex):
         if eff is None:
             continue
         lo, hi = _years(eff)
+        if lo is None or hi is None:
+            continue
         years = [y for y in range(max(lo, y0), min(hi, y1) + 1) if y not in covered]
         if years:
             spans.append((eff, min(years), max(years)))

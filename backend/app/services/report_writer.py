@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 MODEL = "HCX-007"
 MAX_TOKENS = 1500
 PLACEHOLDER = re.compile(r"\{([rc]\d+)\.value\}")
+DIRECTION_PLACEHOLDER = re.compile(r"\{(c\d+)\.direction\}")
 NUMBER = re.compile(r"\d+(?:[.,]\d+)*")
 CAUSAL = ("때문", "원인", "영향")
 UP = re.compile(r"증가|늘|상승|높아|올라|커졌")
@@ -60,6 +61,11 @@ def llm_input(title: str, purpose: str | None, items: list[dict], cmp: dict) -> 
                 "meaning": d["meaning"],
                 "unit": d["unit"],
                 "direction": d["direction"],
+                **(
+                    {"direction_ref": f"{{{d['id']}.direction}}"}
+                    if d["direction"] in ("증가", "감소")
+                    else {}
+                ),
                 **({"steady": d["steady"]} if "steady" in d else {}),
             }
             for d in cmp["derived"]
@@ -90,6 +96,9 @@ def check(
     valued |= {d["id"] for d in cmp["derived"]}
     known = set(by_id) | {d["id"] for d in cmp["derived"]}
     projected = {i for i, it in by_id.items() if it["figure"].get("is_projection")}
+    directions = {
+        d["id"]: d["direction"] for d in cmp["derived"] if d["direction"] in ("증가", "감소")
+    }
     blocked = [set(x["pair"]) for x in cmp["not_comparable"]]
     steady = {d["id"] for d in cmp["derived"] if d.get("steady")}
     problems: list[str] = []
@@ -106,8 +115,15 @@ def check(
             if not isinstance(s, dict) or not isinstance(s.get("text"), str):
                 continue
             text = " ".join(s["text"].split())
+            direction_refs = DIRECTION_PLACEHOLDER.findall(text)
+            if any(ref not in directions for ref in direction_refs):
+                bad(text, "계산된 증감 방향이 없는 자리표시자를 썼습니다.")
+                continue
+            text = DIRECTION_PLACEHOLDER.sub(lambda match: directions[match[1]], text)
             used = PLACEHOLDER.findall(text)
-            refs = {r for r in s.get("refs") or [] if isinstance(r, str)} | set(used)
+            refs = {r for r in s.get("refs") or [] if isinstance(r, str)} | set(
+                used + direction_refs
+            )
             if unknown := [u for u in used if u not in valued]:
                 bad(text, f"없는 자리표시자를 썼습니다: {', '.join(sorted(set(unknown)))}")
                 continue
