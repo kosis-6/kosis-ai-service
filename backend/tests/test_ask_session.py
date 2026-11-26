@@ -536,10 +536,65 @@ def test_chart_of_a_single_value_says_why_instead_of_asking_back(talk: Talk) -> 
     assert talk.say("2022년만", request_type="change", changes={"year": 2022})["status"] == "ok"
 
 
+@pytest.mark.parametrize(
+    ("said", "changes"),
+    [
+        ("65세 이상만", {"ages": [[65, None]]}),
+        ("65세 이상만 막대그래프로 보여줘", {"ages": [[65, None]]}),
+        ("노인은?", {"ages": [[65, None]]}),
+        ("그럼 30대는 어때?", {"ages": [[30, 39]]}),
+        ("20대 여자만", {"ages": [[20, 29]], "sex": "여"}),
+        ("서울 65세 이상만", None),  # 지역도 바꾼다: 변경 추출에
+        ("2023년 65세 이상만", None),
+        ("65세 이상 비율은?", None),  # 비율 후속 질문
+        ("남자만", None),
+    ],
+)
+def test_age_only_follow_up(said: str, changes: dict | None) -> None:
+    """변경 추출 형식에 연령이 없어 '65세 이상만'을 HCX가 지표('고령인구')로 바꾸거나 새 질문으로
+    읽어 앞 조건을 잃었다 (11/26 점검)"""
+    assert s.age_only_changes(said, {"indicator": "총인구", "type": "trend"}) == changes
+
+
+def test_age_change_is_applied_like_inheritance() -> None:
+    before = {"indicator": "총인구", "term": "총인구", "type": "trend", "age_group": "고령"}
+    after, changed = s.apply_changes(before, {"ages": [[65, None]]})
+    assert after["ages"] == [[65, None]] and "age_group" not in after
+    assert after["term"] == "총인구" and after["type"] == "trend" and changed == {"ages"}
+
+
+def test_age_only_follow_up_keeps_conditions_without_llm(talk: Talk) -> None:
+    talk.say("부산 출생아 최근 5년 보여 줘")
+    res = talk.say("65세 이상만 막대그래프로 보여줘")
+    assert res["request_type"] == "change" and talk.extracted == []
+    asked = talk.answered[-1]
+    assert asked["ages"] == [[65, None]] and asked["regions"] == ["부산"]
+    assert asked["type"] == "trend" and res["chart"]["view"] == "bar"
+
+
 def test_whole_talk_summary_request() -> None:
-    for said in ("지금까지 분석한 내용을 요약해줘", "앞에서 본 거 정리해줘", "대화 내용 요약해 줘"):
+    for said in (
+        "지금까지 분석한 내용을 요약해줘",
+        "앞에서 본 거 정리해줘",
+        "대화 내용 요약해 줘",
+        # 범위를 가리키는 다른 말 (11/26 점검: 몇 낱말만 잡아 직전 답만 요약했다)
+        "전체 내용 요약해줘",
+        "다 정리해줘",
+        "처음부터 요약해줘",
+        "전부 요약해 줘",
+        "모두 정리해줘",
+        "물어본 것들 정리해줘",
+        "이제까지 나온 결과 요약",
+    ):
         assert s.whole_talk_summary_request(said), said
-    for said in ("요약해줘", "서울 전체 인구 요약 통계 알려줘", "지금까지 서울 인구 정리해줘"):
+    for said in (
+        "요약해줘",
+        "다시 요약해줘",
+        "한 줄로 요약해줘",
+        "전체적으로 요약해줘",
+        "서울 전체 인구 요약 통계 알려줘",
+        "지금까지 서울 인구 정리해줘",
+    ):
         assert not s.whole_talk_summary_request(said), said
 
 

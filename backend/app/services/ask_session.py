@@ -343,6 +343,15 @@ def apply_changes(conditions: dict, changes: dict) -> tuple[dict, set[str]]:
         c["sex"] = changes["sex"]
         changed.add("sex")
 
+    if (bands := changes.get("ages")) and isinstance(bands, list):
+        # 새 질문 경로의 이어받기(inherit)와 같게: 연령 구간을 바꾸고 지표 이름을 기준 말로
+        c["ages"] = [list(band) for band in bands]
+        c.pop("age_group", None)
+        c.pop("age_note", None)
+        if c.get("indicator"):
+            c["term"] = c["indicator"]
+        changed.add("ages")
+
     if changes.get("type") in TYPES:
         c["type"] = changes["type"]
         changed.add("view")
@@ -940,6 +949,40 @@ def rank_scope_changes(question: str, conditions: dict) -> dict | None:
     return {"sido": regions[0], "level": "시군구"}
 
 
+# 연령 말을 지운 뒤 남아도 되는 말 ('65세 이상 여자만' → ' 여자만', '노인은?' → ' 은?')
+AGE_ONLY_REST = re.compile(
+    rf"\s*{FOLLOW_LEAD}(?P<sex>남자|여자|남성|여성)?\s*(?:인구|사람|층)?\s*"
+    r"(?:만|은|는|도|의|으로|로)?\s*(?:만)?\s*"
+    r"(?:(?:보여|알려|바꿔|해)\s*(?:줘요?|주세요|줄래요?)?|어때요?|어떤가요)?\s*[?.!~]*\s*"
+)
+
+
+def _without_ages(text: str) -> str:
+    text = agegroup.native_to_digits(text)
+    spans = [(a, b) for a, b, _ in qa.age_spans(text)]
+    spans += [(a, b) for a, b, _ in agegroup.spans(text)]
+    for start, end in sorted(spans, reverse=True):
+        text = text[:start] + " " + text[end:]
+    return text
+
+
+def age_only_changes(question: str, conditions: dict) -> dict | None:
+    """'65세 이상만' · '노인은?' · '20대 여자만'처럼 연령(과 성별)만 바꾸는 후속 질문 → 바꿀 조건.
+    변경 추출 형식에는 연령이 없어 HCX가 지표('고령인구')로 바꾸거나 새 질문으로 읽어 앞 조건을
+    잃었다 (11/26 점검)"""
+    if not (conditions.get("indicator") or conditions.get("term")):
+        return None
+    q = condition_part(question) if chart_shape(question) else question.strip()
+    if len(q) > REPLY_MAX_CHARS or not (bands := qa.resolved_ages(q)):
+        return None
+    if not (said := AGE_ONLY_REST.fullmatch(_without_ages(q))):
+        return None
+    changes: dict = {"ages": bands}
+    if said["sex"]:
+        changes["sex"] = "남" if said["sex"] in ("남자", "남성") else "여"
+    return changes
+
+
 def order_changes(question: str, conditions: dict) -> dict | None:
     """순위 뒤 '낮은 순으로': 순서만 바꾸고 개수 · 단위는 그대로"""
     if conditions.get("type") != "rank" or not (said := ORDER_REPLY.fullmatch(question)):
@@ -1088,9 +1131,12 @@ def summary_request(question: str) -> bool:
     return len(question.strip()) <= REPLY_MAX_CHARS and bool(SUMMARY_REQUEST.search(question))
 
 
-# '지금까지 분석한 내용을 요약해줘' · '앞에서 본 거 정리해줘': 직전 답이 아니라 대화 전체
+# '지금까지 분석한 내용을 요약해줘' · '다 정리해줘' · '전체 내용 요약해줘': 직전 답이 아니라
+# 대화 전체. 범위를 가리키는 말(때 · 양 · 대화)이 요약 · 정리 앞에 온다. '다시'의 '다',
+# '전체적으로'(대체로)는 범위가 아니다
 WHOLE_TALK = re.compile(
-    r"(?:지금까지|여태(?:까지)?|이때까지|그동안|앞에서|앞서|전체\s*대화|대화\s*전체|대화\s*내용)"
+    r"(?:지금까지|여태(?:까지)?|이때까지|이제까지|그동안|처음부터|앞에서|앞서|위에서"
+    r"|전체(?!적)|전부|모두|(?<![가-힣])다(?![가-힣])|대화|물어본|나눈|본\s*(?:것|거|내용))"
     r".{0,15}?(?:요약|정리)"
 )
 HISTORY = 10
@@ -1139,14 +1185,8 @@ def redraw(chart: dict | None, view: str, status: str | None) -> tuple[dict | No
     return shown, f"{chart_name(shown, view)}로 바꿨습니다."
 
 
-def crowded(chart: dict) -> bool:
-    """지역이 많은 추이: 화면(Chart.tsx의 MAX_OVERLAP, 색 6개)이 막대 없이
-    지역별 작은 꺾은선으로 그린다"""
-    return chart["type"] == "line" and len(chart.get("series") or []) > charts.MAX_LINES
-
-
 def chart_name(chart: dict, view: str | None = None) -> str:
-    if crowded(chart):
+    if charts.crowded(chart):
         return "지역별 꺾은선 그래프"
     return CHART_NAMES["bar" if view == "bar" and chart["type"] == "line" else chart["type"]]
 
@@ -1159,7 +1199,7 @@ def reshape(chart: dict, view: str) -> tuple[dict, str | None]:
     # parts(구성비)는 화면이 view 없이 기본 차트로 그린다
     shown = {**chart, "view": None if kind == "parts" else kind}
     if view == "bar" and kind == "line":
-        if crowded(chart):
+        if charts.crowded(chart):
             count = len(chart["series"])
             return shown, f"{count}개 지역을 막대로 그리면 겹쳐 읽기 어렵습니다"
         return {**chart, "view": "bar"}, None
@@ -2172,6 +2212,10 @@ async def _turn(
         elif scope := await asyncio.to_thread(rank_scope_changes, question, state["conditions"]):
             delta = {"request_type": CHANGE, "changes": scope, "chart": None, "unclear": None}
             flow.add("후속 질문", "시도 안 순위", scope["sido"])
+        elif ages := await asyncio.to_thread(age_only_changes, question, state["conditions"]):
+            delta = {"request_type": CHANGE, "changes": ages, "chart": None, "unclear": None}
+            label = ", ".join(indicators.age_label(band) for band in ages["ages"])
+            flow.add("후속 질문", "연령 변경", label)
         elif composition_request(question):
             delta = parse_delta('{"request_type": "change", "changes": {"type": "composition"}}')
         elif split := await asyncio.to_thread(region_split_changes, question, state["conditions"]):
