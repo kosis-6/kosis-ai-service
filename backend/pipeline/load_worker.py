@@ -229,7 +229,9 @@ async def process_update(job: Job, delta_dir: Path) -> None:
     try:
         path = await collect(job, delta_dir, delta=True)
     except NothingToFetch:
-        logger.info("%s: KOSIS에서 가져올 부분이 없습니다", job.tbl_id)
+        # 지난 시도가 덧붙인 뒤 적재 후 단계에서 멈췄으면 다시 받을 부분이 없다: 단계는 다시 돈다
+        logger.info("%s: KOSIS에서 가져올 부분이 없어 적재 후 단계만 다시", job.tbl_id)
+        await asyncio.to_thread(_after_load, job.tbl_id)
         return
     try:
         await asyncio.to_thread(_load, path, job.tbl_id, True)
@@ -241,9 +243,20 @@ async def process_update(job: Job, delta_dir: Path) -> None:
 def _load(path: Path, tbl_id: str, merge: bool = False) -> None:
     with psycopg.connect(conninfo(), autocommit=True) as pg:
         load_table(pg, path, merge=merge)
-        for name, step in AFTER_LOAD:
-            logger.info("%s: 적재 후 단계 %s", tbl_id, name)
-            step(pg, tbl_id)
+        _run_after_load(pg, tbl_id)
+
+
+def _after_load(tbl_id: str) -> None:
+    with psycopg.connect(conninfo(), autocommit=True) as pg:
+        _run_after_load(pg, tbl_id)
+
+
+def _run_after_load(pg: psycopg.Connection, tbl_id: str) -> None:
+    """원본 저장(load_table, autocommit) 뒤 단계. 다시 돌려도 결과가 같다
+    (지역 매핑은 그 표의 대응을 지우고 다시 넣고, 인구 집계 표는 통째로 다시 만든다)"""
+    for name, step in AFTER_LOAD:
+        logger.info("%s: 적재 후 단계 %s", tbl_id, name)
+        step(pg, tbl_id)
 
 
 def _with_pg(fn, *args):
@@ -273,6 +286,16 @@ def is_loaded(pg: psycopg.Connection, tbl_id: str) -> bool:
     )
 
 
+async def handle(job: Job) -> None:
+    if job.reason != "update" and await asyncio.to_thread(_with_pg, is_loaded, job.tbl_id):
+        # 원본이 있다고 적재 후 단계까지 끝난 것은 아니다: 지난 시도가 원본을 저장한 뒤
+        # 지역 매핑에서 실패했으면 재시도가 매핑 없이 done이 됐다. 단계만 다시 돈다
+        logger.info("%s: 원본은 이미 적재됨, 적재 후 단계만 다시", job.tbl_id)
+        await asyncio.to_thread(_after_load, job.tbl_id)
+    else:
+        await process(job)
+
+
 async def run_one() -> bool:
     job = await asyncio.to_thread(_with_pg, claim)
     if job is None:
@@ -280,10 +303,7 @@ async def run_one() -> bool:
     logger.info("시작 #%d %s (%s, %d번째 시도)", job.id, job.tbl_id, job.reason, job.attempts)
     try:
         async with table_lock(job.tbl_id):
-            if job.reason != "update" and await asyncio.to_thread(_with_pg, is_loaded, job.tbl_id):
-                logger.info("%s: 그사이 적재됨, 건너뜀", job.tbl_id)
-            else:
-                await process(job)
+            await handle(job)
     except BaseException as e:  # noqa: BLE001 - load_raw는 분류 수 초과에 SystemExit을 쓴다
         if isinstance(e, (KeyboardInterrupt, asyncio.CancelledError)):
             raise
