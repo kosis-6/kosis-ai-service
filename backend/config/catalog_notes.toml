@@ -585,13 +585,24 @@ sources = [{ table = "DT_1B81A24", item_id = "T4", level = "전국" }]
 name = "출생성비"
 definition = "출생성비는 그해 태어난 여자아이 100명당 남자아이 수입니다"
 aliases = ["출생 성비", "출생아 성비", "출생시 성비", "신생아 성비", "태어난 아이 성비", "태어난 아기 성비", "여아 100명당 남아"]
-unit = "여아 100명당 남아"
+unit = "여아 100명당 명"
 kind = "value"
 diff_unit = "명"
 method = "lookup"
 formula = "남자 출생아 수 ÷ 여자 출생아 수 × 100"
 desc = "태어난 남자아이 수를 여자아이 수로 나눈 값에 100을 곱함"
-sources = [{ table = "DT_1B81A03", item_id = "T2", den_item_id = "T3", level = "시군구", filters = { c2_id = "00" } }]
+sources = [{ table = "DT_1B81A03", item_id = "T2", den_item_id = "T3", level = "시군구", filters = { c2_id = "00" }, num_label = "남아 출생아 수", den_label = "여아 출생아 수" }]
+
+[[indicators]]
+name = "남아 100명당 여아 수"
+definition = "그해 태어난 남아 100명당 여아 수입니다"
+aliases = ["남아 100명당 여아", "남자 아기 100명당 여자 아기", "남자아이 100명당 여자아이"]
+unit = "명"
+kind = "value"
+method = "lookup"
+formula = "여자 출생아 수 ÷ 남자 출생아 수 × 100"
+desc = "태어난 여자아이 수를 남자아이 수로 나눈 값에 100을 곱함"
+sources = [{ table = "DT_1B81A03", item_id = "T3", den_item_id = "T2", level = "시군구", filters = { c2_id = "00" }, num_label = "여아 출생아 수", den_label = "남아 출생아 수" }]
 
 [[indicators]]
 name = "혼인 외 출생아 비율"
@@ -1208,4 +1219,48 @@ kind = "composition"
 formula = "항목별 값 ÷ 합계 × 100"
 method = "lookup"
 desc = "한국 국적을 취득한 사람의 이전 국적별 인원·비중"
-sources = [{ table = "TX_11025_A017_A", item_id = "16110AAA5", level = "시군구", parts_dim = "c2", parts_total = "15110AA200", leaf_only = true, exclude_labels = ["기타", "미상"] }]
+sources = [{ table = "TX_11025_A017_A", item_id = "16110AAA5", level = "시군구", parts_dim = "c2", parts_total = "15110AA200", leaf_only = true, exclude_labels = ["기타", "미상"] }]# ---------------------------------------------------------------------------
+# 정의어 → 숫자 구간 (app/services/band.py, 11/26)
+#   통계 표준 정의가 있는 말을 표의 구간 칸(여러 개의 합)으로 잇는다. dim 은 분류 이름에 들어 있어야
+#   하는 말, range 는 숫자 범위. 연령 구간(세)은 그 분류가 연령 축일 때만 (사람 연령은 지표 사전 몫)
+# ---------------------------------------------------------------------------
+[[band_words]]
+word = "고령산모"
+dim = "모의 연령"
+range = "35세 이상"
+note = "통계청 출생통계: 35세 이상 산모"
+
+[[band_words]]
+word = "고령 산모"
+dim = "모의 연령"
+range = "35세 이상"
+
+[[band_words]]
+word = "저체중아"
+dim = "체중"
+range = "2.5kg 미만"
+note = "출생 시 체중 2.5kg 미만"
+
+[[band_words]]
+word = "저체중"
+dim = "체중"
+range = "2.5kg 미만"
+
+[[band_words]]
+word = "거대아"
+dim = "체중"
+range = "4kg 이상"
+note = "출생 시 체중 4.0kg 이상"
+
+[[band_words]]
+word = "황혼이혼"
+dim = "결혼생활기간"
+range = "20년 이상"
+note = "결혼생활 20년 이상 부부의 이혼 (언론 · 통계청 보도 기준)"
+
+[[band_words]]
+word = "황혼 이혼"
+dim = "결혼생활기간"
+range = "20년 이상"
+
+

@@ -540,10 +540,29 @@ INDICATOR_PATTERNS = [
         "고령인구 비율",
     ),
 ]
-BIRTH_SEX_RATIO = re.compile(
-    r"(?:여자|여아|딸|남자|남아|아들)\S*\s*(?:아기|아이|애기|애)?\S*\s*100\s*명\S*"
-    r"\s*(?:\S+\s*){0,3}(?:태어|출생)"
-    r"|(?:태어|출생|신생아|아기|아이)\S*\s*(?:\S+\s*){0,2}성비"
+BIRTH_SEX_RATIO = "출생성비"
+REVERSE_BIRTH_SEX_RATIO = "남아 100명당 여아 수"
+BIRTH_RATIO_OPPOSITE = {
+    BIRTH_SEX_RATIO: REVERSE_BIRTH_SEX_RATIO,
+    REVERSE_BIRTH_SEX_RATIO: BIRTH_SEX_RATIO,
+}
+BIRTH_SEX_RATIO_WORDS = re.compile(r"(?:태어|출생|신생아|아기|아이)\S*\s*(?:\S+\s*){0,2}성비")
+MALE_BIRTH_WORDS = r"남아|남자|아들"
+FEMALE_BIRTH_WORDS = r"여아|여자|딸"
+BIRTH_RATIO_COUNTS = {
+    **agegroup.NATIVE_UNITS,
+    **agegroup.NATIVE_TENS,
+    "십": 10,
+    "백": 100,
+    "천": 1000,
+    "만": 10000,
+}
+BIRTH_RATIO_COUNT = rf"[+-]?(?:\d{{1,3}}(?:,\d{{3}})+|\d+)|{'|'.join(BIRTH_RATIO_COUNTS)}"
+BIRTH_RATIO_REFERENCE = re.compile(
+    rf"(?<![가-힣])(?P<sex>{MALE_BIRTH_WORDS}|{FEMALE_BIRTH_WORDS})"
+    rf"\s*(?P<child>아기|아이|애기|애)?\s*[이가]?\s*(?P<count>{BIRTH_RATIO_COUNT})\s*명\s*"
+    r"(?:당|[을를]?\s*기준(?:으로)?|[이가]?\s*(?:정도\s*)?"
+    r"(?:태어날\s*(?:때|경우)|태어나면|출생할\s*(?:때|경우)|출생하면))"
 )
 OUT_OF_WEDLOCK = re.compile(
     r"(?:혼인|결혼)\s*신고\s*(?:를|도)?\s*(?:안|않|없|하지\s*않)"
@@ -551,7 +570,8 @@ OUT_OF_WEDLOCK = re.compile(
 )
 BIRTH_WORDS = re.compile(r"태어|출생|낳|아기|아이|애기")
 MORE_SPECIFIC = {
-    "출생성비": {"출생아 수", "성비"},
+    BIRTH_SEX_RATIO: {"출생아 수", "성비"},
+    REVERSE_BIRTH_SEX_RATIO: {"출생아 수", "성비", BIRTH_SEX_RATIO},
     "혼인 외 출생아 비율": {"출생아 수", "혼인 외 출생아 수"},
     "혼인 외 출생아 수": {"출생아 수"},
     "조출생률": {"출생아 수"},
@@ -699,6 +719,36 @@ def age_spans(question):
         if int(m[1]) % 10 == 0:
             add(m, [int(m[1]), int(m[1]) + 9])
     return sorted(found, key=lambda x: x[0])
+
+
+def birth_ratio_count(text: str) -> int:
+    if text in BIRTH_RATIO_COUNTS:
+        return BIRTH_RATIO_COUNTS[text]
+    return int(text.replace(",", ""))
+
+
+def birth_sex_ratio_reference(question: str) -> tuple[str, int] | None:
+    for reference in BIRTH_RATIO_REFERENCE.finditer(question):
+        sex = reference["sex"]
+        if sex in ("남자", "여자") and not (
+            reference["child"] or BIRTH_WORDS.search(question) or "신생아" in question
+        ):
+            continue
+        male_base = sex in ("남아", "남자", "아들")
+        numerator = FEMALE_BIRTH_WORDS if male_base else MALE_BIRTH_WORDS
+        if re.search(numerator, question) or BIRTH_SEX_RATIO_WORDS.search(question):
+            name = REVERSE_BIRTH_SEX_RATIO if male_base else BIRTH_SEX_RATIO
+            return name, birth_ratio_count(reference["count"])
+    return None
+
+
+def birth_ratio_label(indicator: str | None, base: int | None) -> str | None:
+    if indicator not in BIRTH_RATIO_OPPOSITE or base is None or base == 100:
+        return indicator
+    denominator, numerator = (
+        ("남아", "여아") if indicator == REVERSE_BIRTH_SEX_RATIO else ("여아", "남아")
+    )
+    return f"{denominator} {base:,}명당 {numerator} 수"
 
 
 def _pick_indicator(question, names):
@@ -961,6 +1011,10 @@ def _localized_question(question):
 
 def correct(question, parsed, today=None):
     question = _localized_question(question)
+    birth_ratio, birth_ratio_base = birth_sex_ratio_reference(question) or (None, None)
+    if birth_ratio is None and BIRTH_SEX_RATIO_WORDS.search(question):
+        birth_ratio = BIRTH_SEX_RATIO
+    parsed.pop("birth_ratio_base", None)
     today = today or date.today()
     kind = parsed.get("type")
     fixes = []
@@ -997,7 +1051,9 @@ def correct(question, parsed, today=None):
         parsed["ages"] = ages
         if note := decade_part_note(question):
             parsed["age_note"] = note
-    elif (group := agegroup.resolve(question)) and not (group.lo == 0 and _about_births(parsed)):
+    elif (group := agegroup.resolve(question)) and not (
+        group.lo == 0 and (birth_ratio or _about_births(parsed))
+    ):
         parsed["age_group"] = {"expr": group.expr, "range": group.label(), "basis": group.basis}
         ages = [[group.lo, group.hi]]
         parsed["ages"] = ages
@@ -1043,8 +1099,8 @@ def correct(question, parsed, today=None):
                     and not OTHER_PEOPLE.search(question)
                 ):
                     names |= {"총인구"}
-        if BIRTH_SEX_RATIO.search(question):
-            names |= {"출생성비"}
+        if birth_ratio:
+            names.add(birth_ratio)
         if OUT_OF_WEDLOCK.search(question) and BIRTH_WORDS.search(question):
             names |= {"혼인 외 출생아 비율" if PCT_ASK.search(question) else "혼인 외 출생아 수"}
         for specific, general in MORE_SPECIFIC.items():
@@ -1083,20 +1139,26 @@ def correct(question, parsed, today=None):
         kind = parsed.get("type")
         chosen = indicators.canonical_name(parsed.get("indicator") or "")
         parsed["grounded"] = (chosen in names) if chosen else None
+        parsed.pop("ungrounded_by", None)
+        if parsed["grounded"] is False:
+            # 질문에 지표 이름 · 별칭이 글자로 없을 뿐이다. 이 경우만 사전 문지기가 조건을 검사해
+            # 사전 답을 둘지 정한다 (사전 지름길 D1). 아래의 다른 이유는 검사 없이 넘긴다
+            parsed["ungrounded_by"] = "name"
         population_question = without_survey(question)
         plain = _plain_people_question(population_question) or (
             _both_sexes(question) and not OTHER_PEOPLE.search(question)
         )
         if chosen == "총인구" and parsed["grounded"] is False and plain:
             parsed["grounded"] = True
+            parsed.pop("ungrounded_by", None)
         if chosen == "총인구":
             if population_modifier(population_question):
-                parsed["grounded"] = False
+                _hard_ungrounded(parsed, "인구에 수식어")
             elif kind in ("value", "trend", "compare", "composition"):
                 _fix_short_population_region(population_question, parsed, fix)
         chosen_spec = indicators.spec(chosen) if chosen else None
         if undone_pct and chosen_spec and lookup.kind_of(chosen_spec) == "count":
-            parsed["grounded"] = False
+            _hard_ungrounded(parsed, "비율을 물었는데 건수 지표")
 
     sp = indicators.spec(parsed.get("indicator"))
     is_comp = sp is not None and lookup.kind_of(sp) == "composition"
@@ -1120,19 +1182,28 @@ def correct(question, parsed, today=None):
     _read_question(question, parsed, fix)
 
     gender_question = HOUSEHOLD_MEMBER_GENDER.sub("가구", question)
-    genders = [sex for sex, pattern in GENDER_WORDS.items() if pattern.search(gender_question)]
-    if len(genders) == 1 and (parsed.get("sex") in (None, "", "계") or gender_question != question):
-        fix("sex", genders[0], "질문의 성별 표현")
-    both = len(genders) == 2 or (not genders and SEX_SPLIT.search(gender_question))
-    if parsed.get("sex") in ("남", "여"):
-        if both:
-            fix("sex", "계", "남녀를 함께 물음")
-        elif not genders and not SEX_IMPLIED.search(gender_question):
-            fix("sex", "계", "성별을 말하지 않음")
-    if both and kind != "composition" and not SEX_TOTAL.search(gender_question):
-        parsed["split_sex"] = True
-        if kind == "compare" and len(parsed.get("regions") or []) == 1:
-            fix("type", "value", "한 지역의 남녀 비교")
+    if sp and sp["name"] in BIRTH_RATIO_OPPOSITE:
+        if birth_ratio_base is not None and sp["name"] == birth_ratio:
+            parsed["birth_ratio_base"] = birth_ratio_base
+        if parsed.get("sex") != "계":
+            fix("sex", "계", "출생성비의 성별은 분자와 분모에 적용")
+        parsed.pop("split_sex", None)
+    else:
+        genders = [sex for sex, pattern in GENDER_WORDS.items() if pattern.search(gender_question)]
+        if len(genders) == 1 and (
+            parsed.get("sex") in (None, "", "계") or gender_question != question
+        ):
+            fix("sex", genders[0], "질문의 성별 표현")
+        both = len(genders) == 2 or (not genders and SEX_SPLIT.search(gender_question))
+        if parsed.get("sex") in ("남", "여"):
+            if both:
+                fix("sex", "계", "남녀를 함께 물음")
+            elif not genders and not SEX_IMPLIED.search(gender_question):
+                fix("sex", "계", "성별을 말하지 않음")
+        if both and kind != "composition" and not SEX_TOTAL.search(gender_question):
+            parsed["split_sex"] = True
+            if kind == "compare" and len(parsed.get("regions") or []) == 1:
+                fix("type", "value", "한 지역의 남녀 비교")
     mref = monthref.find(question)
     if mref and "y0" not in mref and parsed.get("type") in (None, "value", "other"):
         fix("months", [mref["m0"], mref["m1"]], f"'{mref['expr']}' = 달 묶음 합")
@@ -1223,7 +1294,7 @@ def correct(question, parsed, today=None):
         and (other := unlisted_measure(question))
     ):
         parsed["also_asked"] = other
-        parsed["grounded"] = False
+        _hard_ungrounded(parsed, "다른 지표도 함께 물음")
         rest = question.replace(other, " ")
         if (
             (parsed.get("ages") or parsed.get("age_group"))
@@ -1246,12 +1317,14 @@ def correct(question, parsed, today=None):
             fix("indicator", "합계출산율", "'한 명이 몇 명 낳는지'는 합계출산율")
         parsed["term"] = "합계출산율"
         parsed["grounded"] = True
+        parsed.pop("ungrounded_by", None)
         parsed.setdefault("asked", {})["birth_explain"] = True
     elif BIRTH_HOW_MANY.search(question) and not BIRTH_CLEAR.search(question):
         if parsed.get("indicator") in (None, "합계출산율", "출생아 수", "조출생률", *BIRTH_TOPIC):
             fix("indicator", "합계출산율", "'얼마나 낳아'는 합계출산율 + 출생아 수")
             parsed["term"] = "합계출산율"
             parsed["grounded"] = True
+            parsed.pop("ungrounded_by", None)
             parsed.pop("unsupported", None)
             if parsed.get("type") in (None, "other", "parse_error"):
                 fix("type", "value", "'얼마나 낳아'")
@@ -1265,7 +1338,7 @@ def correct(question, parsed, today=None):
     other_axis = OTHER_AXIS.search(question) and not AXIS_REGION.search(question)
     if parsed.get("type") == "rank" and other_axis:
         parsed["rank_axis"] = OTHER_AXIS.search(question)[1]
-        parsed["grounded"] = False
+        _hard_ungrounded(parsed, "순위 축이 지역이 아님")
     if housing := housing_population_condition(question):
         parsed["housing_condition"] = housing
     _one_region_years(parsed, fix)
@@ -1365,6 +1438,7 @@ def _change_rank(question, parsed, fix):
     if names == {"총인구"} and parsed.get("indicator") != "총인구":
         fix("indicator", "총인구", "'인구'의 변화량")
         parsed["grounded"] = True
+        parsed.pop("ungrounded_by", None)
 
 
 REGION_MEAN = re.compile(
@@ -1421,7 +1495,7 @@ CROSS_DYNAMIC = "cross_dynamic"
 
 def _about_births(parsed):
     name = indicators.canonical_name(parsed.get("indicator") or "") or ""
-    return "출생" in name
+    return "출생" in name or name == REVERSE_BIRTH_SEX_RATIO
 
 
 def _cross(question, parsed, fix):
@@ -1441,6 +1515,7 @@ def _cross(question, parsed, fix):
     parsed["term"] = found.official or found.name
     parsed["indicators"] = None
     parsed["grounded"] = True
+    parsed.pop("ungrounded_by", None)
     parsed.pop("unsupported", None)
     if (found.plus or found.form == "sum") and not parsed.get("group"):
         parsed.pop("aggregate", None)
@@ -1489,6 +1564,13 @@ def _plain_token(token):
             if indicators.resolve_region(form).get("status") == "ok":
                 return True
     return False
+
+
+def _hard_ungrounded(parsed, why):
+    """사전 답을 검사 없이 표 경로로 넘긴다. 질문에 지표 이름이 없을 뿐인 경우("name")와 달리
+    사전이 그 조건을 낼 수 없다는 뜻이 또렷한 이유다 (사전 지름길 D1이 건너뛰지 않음)"""
+    parsed["grounded"] = False
+    parsed["ungrounded_by"] = why
 
 
 def _plain_people_question(question):
@@ -2634,6 +2716,22 @@ def _compute(q):
         return result
     dyn = q.get("dynamic_spec") if _dynamic_fits(q) else None
     sp = dyn or (None if q.get("unsupported") else indicators.spec(ind))
+    base = q.get("birth_ratio_base")
+    if sp and sp["name"] in BIRTH_RATIO_OPPOSITE and base is not None and base != 100:
+        if base < 1:
+            return {
+                "status": "band_mismatch",
+                "indicator": sp["name"],
+                "reason": "기준 인원은 1명 이상이어야 합니다.",
+                "final": True,
+            }
+        sp = {
+            **sp,
+            "name": birth_ratio_label(sp["name"], base),
+            "unit": "명",
+            "formula": f"{sp['formula'].removesuffix(' × 100')} × {base:,}",
+            "sources": [{**source, "den_scale": base} for source in sp["sources"]],
+        }
     if q.get("dated_months") and (
         not sp or not sp.get("monthly_sources") or lookup.kind_of(sp) != "count"
     ):
@@ -3830,9 +3928,8 @@ def _body(r):
         return lines
     if (ops := r.get("operands")) and all(o.get("value") is not None for o in ops):
         a, b = ops
-        times = " × 100" if r.get("kind") == "ratio" else ""
-        if (scale := r.get("scale")) and scale != 1:
-            times = f" × {scale:,}"
+        scale = r.get("scale") or (100 if r.get("kind") == "ratio" else 1)
+        times = f" × {scale:,}" if scale != 1 else ""
         op = r.get("op") or "÷"
         return [
             f"- 계산: {a['label']} {a['value']:,}{a['unit']} {op} "
@@ -4049,13 +4146,16 @@ async def answer(parsed, trace=None, question=""):
 
         months = parsed.get("months") or parsed.get("months_each")
         if months and not has_values(result):
-            parsed["grounded"] = False
+            _hard_ungrounded(parsed, "월별 값 없음")
             parsed["gate_reasons"] = ["월을 물었는데 사전 표에 월별 값이 없음"]
             flow.add("사전 문지기", "넘김", parsed["gate_reasons"][0])
         settings = get_settings()
+        # 사전 지름길 (D1): 질문에 지표 이름이 글자로 없어 '근거 없음'이 된 것은 바로 넘기지 않고
+        # 문지기가 조건을 검사한다. 조건을 모두 담았으면 사전 답을 둔다
+        shortcut = parsed.get("grounded") is False and parsed.get("ungrounded_by") == "name"
         gate = (
             settings.binding_dict_gate
-            and parsed.get("grounded") is not False
+            and (parsed.get("grounded") is not False or shortcut)
             and not parsed.get("movement_route")
             and not parsed.get("cross")
         )
@@ -4068,6 +4168,10 @@ async def answer(parsed, trace=None, question=""):
                     parsed["grounded"] = False
                     parsed["gate_reasons"] = rec.get("reasons") or []
                     flow.add("사전 문지기", "넘김", " · ".join(parsed["gate_reasons"])[:200])
+                elif gate and shortcut and rec.get("decision") == dict_binding.KEEP:
+                    parsed["grounded"] = True
+                    parsed["dictionary_shortcut"] = True
+                    flow.add("사전 지름길", "사전 답 유지", "지표 이름은 없지만 조건을 모두 담음")
     return {
         "status": result.get("status"),
         "answer": f"{summary(result)}\n\n{render(result)}".strip(),
