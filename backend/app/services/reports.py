@@ -331,6 +331,7 @@ async def generate(user_id: int, report_id: int) -> dict:
     if not report["items"]:
         raise ReportError(EMPTY, "보고서에 담긴 결과가 없습니다.")
     seen = [(i["turn_id"], i["sort_order"]) for i in report["items"]]
+    stamp = report["updated_at"]
     try:
         content = await report_writer.write(report["title"], report["purpose"], report["items"])
         status = "ready"
@@ -340,8 +341,12 @@ async def generate(user_id: int, report_id: int) -> dict:
         if await _report(conn, user_id, report_id, lock=True) is None:
             raise ReportError(NOT_FOUND, "보고서가 없습니다.")
         now = [(i["turn_id"], i["sort_order"]) for i in await _items(conn, report_id)]
-        if now != seen:
-            raise ReportError(CHANGED, "만드는 동안 담긴 결과가 바뀌었습니다. 다시 만들어 주세요.")
+        latest = await _report(conn, user_id, report_id)
+        # 항목 · 순서 · 제목 · 목적 중 하나라도 바뀌었으면 이전 내용으로 만든 것이라 저장하지 않는다
+        if now != seen or latest is None or latest["updated_at"] != stamp:
+            raise ReportError(
+                CHANGED, "만드는 동안 보고서 내용이 바뀌었습니다. 다시 만들어 주세요."
+            )
         await conn.execute(
             text(
                 "update app.reports set content = cast(:content as jsonb), status = :status,"

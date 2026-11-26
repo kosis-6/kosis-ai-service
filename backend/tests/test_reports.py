@@ -385,3 +385,21 @@ def test_api_generate_timeout_and_errors(client, monkeypatch):
     assert client.post("/reports/5/generate").status_code == 409
     client.fake("generate")
     assert client.post("/reports/5/generate").status_code == 200
+
+
+def test_generate_discards_when_title_changed_meanwhile(db, monkeypatch):
+    """만드는 동안 제목 · 목적을 바꾸면 이전 내용으로 만든 보고서를 ready 로 저장하지 않는다"""
+    from app.services import report_writer
+
+    rep = run(r.create(db.a, "처음 제목", None, [db.t["ok1"]]))
+
+    async def write(title, purpose, items, style=None):
+        await r.update(db.a, rep["id"], title="바꾼 제목")
+        return {"summary": []}
+
+    monkeypatch.setattr(report_writer, "write", write)
+    with pytest.raises(ReportError) as e:
+        run(r.generate(db.a, rep["id"]))
+    assert e.value.code == "changed"
+    after = run(r.detail(db.a, rep["id"]))
+    assert after["status"] == "draft" and after["content"] is None and after["title"] == "바꾼 제목"

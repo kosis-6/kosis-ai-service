@@ -70,6 +70,9 @@ def check_pair(a: dict, b: dict) -> tuple[str | None, str | None]:
     ta, tb = set(fa.get("tbl_ids") or []), set(fb.get("tbl_ids") or [])
     if same_name and ta and tb and not ta & tb:
         return "R5", "같은 이름의 지표지만 출처 통계표가 달라 정의가 다를 수 있습니다"
+    aa, ab = _cond(a, "ages"), _cond(b, "ages")
+    if same_name and aa != ab:
+        return "R1", f"연령 조건이 다릅니다 ({aa or '전체'}, {ab or '전체'})"
     if _cond(a, "period") != _cond(b, "period") and not _same_series(a, b):
         return "R4", "기준 시점이 달라 지역이나 지표끼리 직접 비교하지 않습니다"
     return None, None
@@ -100,21 +103,26 @@ def _derive(a: dict, b: dict) -> dict | None:
         if not pct and va:
             out["rate"] = round((vb - va) / abs(va) * 100, 1)
         return out
-    if _norm(fa.get("indicator")) == _norm(fb.get("indicator")) and (
-        _cond(a, "region") != _cond(b, "region") or _cond(a, "sex") != _cond(b, "sex")
+    differs = [
+        k for k in ("region", "sex", "ages", "population", "period") if _cond(a, k) != _cond(b, k)
+    ]
+    # 지역 하나 또는 성별 하나만 다를 때만 차이를 계산한다 (서울 20대 vs 부산 30대는 안 함)
+    if _norm(fa.get("indicator")) == _norm(fb.get("indicator")) and differs in (
+        ["region"],
+        ["sex"],
     ):
         diff = va - vb
+        key = differs[0]
+        big, small = (a, b) if diff > 0 else (b, a)
         return {
             "kind": "gap",
             "of": [a["id"], b["id"]],
-            "meaning": f"{a['id']}와 {b['id']}의 {fa.get('indicator')} 차이",
+            "meaning": f"{_cond(a, key)}와 {_cond(b, key)}의 {fa.get('indicator')} 차이",
             "value": round(abs(diff), 2),
             "unit": "%p" if pct else unit,
-            "direction": f"{a['id']}가 더 큼"
-            if diff > 0
-            else f"{b['id']}가 더 큼"
-            if diff < 0
-            else "같음",
+            "direction": "같음" if diff == 0 else f"{_cond(big, key)}가 더 큼",
+            "larger": None if diff == 0 else big["id"],
+            "smaller": None if diff == 0 else small["id"],
         }
     return None
 

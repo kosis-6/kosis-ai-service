@@ -22,6 +22,8 @@ MAX_TOKENS = 1500
 PLACEHOLDER = re.compile(r"\{([rc]\d+)\.value\}")
 NUMBER = re.compile(r"\d+(?:[.,]\d+)*")
 CAUSAL = ("때문", "원인", "영향")
+UP = re.compile(r"증가|늘|상승|높아|올라|커졌")
+DOWN = re.compile(r"감소|줄|하락|낮아|떨어|작아졌")
 # 담은 결과에 없는 추측 · 제언 · 근거 없는 정도 표현
 SPECULATION = ("필요", "대비", "마련", "시사", "우려", "상당", "대부분", "급격", "크게", "심각")
 # 비교 · 증감 표현: 코드가 계산한 비교(c*)를 근거로 달아야 쓸 수 있다
@@ -82,7 +84,7 @@ def check(
 ) -> tuple[dict[str, list[dict]], list[str], list[dict]]:
     """(쓸 문장, 다시 쓰게 할 문제, 버린 문장)"""
     if not isinstance(out, dict):
-        return {}, ["JSON을 읽지 못했습니다."], []
+        return {section: [] for section in SECTIONS}, ["JSON을 읽지 못했습니다."], []
     by_id = {it["id"]: it for it in items}
     valued = {i for i, it in by_id.items() if it["figure"].get("value") is not None}
     valued |= {d["id"] for d in cmp["derived"]}
@@ -123,6 +125,9 @@ def check(
             ):
                 bad(text, f"비교 · 증감은 derived(c*)를 refs 에 넣을 때만 씁니다: {text}")
                 continue
+            if wrong := _wrong_direction(text, refs, cmp):
+                bad(text, f"{wrong} 방향이 계산과 반대입니다: {text}")
+                continue
             if not cmp["trend_ok"] and any(w in text for w in TREND):
                 bad(text, f"trend_ok 가 false 인데 추세 표현을 썼습니다: {text}")
                 continue
@@ -149,6 +154,20 @@ def check(
             f"값이 있는 결과는 {{rN.value}}로 한 번씩은 쓰세요. 빠진 것: {', '.join(missing)}"
         )
     return kept, problems, dropped
+
+
+def _wrong_direction(text: str, refs: set[str], cmp: dict) -> str | None:
+    """근거로 단 변화(change · series_change)의 방향과 반대 말을 썼으면 그 id"""
+    plain = PLACEHOLDER.sub("", text)
+    up, down = bool(UP.search(plain)), bool(DOWN.search(plain))
+    for d in cmp["derived"]:
+        if d["id"] not in refs or d["kind"] not in ("change", "series_change"):
+            continue
+        if d["direction"] == "증가" and down and not up:
+            return d["id"]
+        if d["direction"] == "감소" and up and not down:
+            return d["id"]
+    return None
 
 
 def unvalued(kept: dict[str, list[dict]], items: list[dict]) -> list[str]:

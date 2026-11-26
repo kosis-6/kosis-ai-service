@@ -106,7 +106,8 @@ def test_percent_change_is_percent_point_without_rate():
 def test_region_gap():
     out = rc.compare(items(fig("a", 100), fig("b", 70, region="부산광역시")))
     (d,) = out["derived"]
-    assert d["kind"] == "gap" and d["value"] == 30 and d["direction"] == "r1가 더 큼"
+    assert d["kind"] == "gap" and d["value"] == 30 and d["direction"] == "서울특별시가 더 큼"
+    assert (d["larger"], d["smaller"]) == ("r1", "r2")
 
 
 def test_different_indicators_same_place_no_derived():
@@ -440,3 +441,48 @@ def test_actual_values_not_written_as_forecast():
     out = {"summary": [s("{c1.value} 늘어 {r2.value}가 될 것으로 보입니다.", ["c1", "r1", "r2"])]}
     _, problems, _ = w.check(out, its, cmp, allowed)
     assert any("예상 · 전망처럼" in p for p in problems)
+
+
+# ---- #246 리뷰 -------------------------------------------------------------------------
+
+
+def test_opposite_direction_is_caught():
+    """100 → 120 인데 '감소'라고 쓴 문장은 통과하지 않는다"""
+    its, cmp, allowed = setup_two()
+    out = {"summary": [s("{c1.value} 감소했습니다.", ["c1", "r1", "r2"])]}
+    _, problems, dropped = w.check(out, its, cmp, allowed)
+    assert any("방향이 계산과 반대" in p for p in problems) and dropped
+    ok = {"summary": [s("{c1.value} 늘었습니다.", ["c1", "r1", "r2"])]}
+    assert not only_sentences(w.check(ok, its, cmp, allowed)[1])
+
+
+def test_series_opposite_direction_is_caught():
+    its = items(fig("추이", 15, "%", kind="series", rows=rows(10, 12, 15)))
+    cmp = rc.compare(its)
+    out = {"summary": [s("{r1.value}로 하락했습니다.", ["r1", "c1"])]}
+    _, problems, _ = w.check(out, its, cmp, w._allowed_numbers("t", None, its, cmp))
+    assert any("방향이 계산과 반대" in p for p in problems)
+
+
+def test_different_ages_and_regions_not_a_gap():
+    """서울 20대와 부산 30대를 지역 차이로 계산하지 않는다"""
+    a = fig("서울 20대 1인가구", 100)
+    a["conditions"]["ages"] = "20~29세"
+    b = fig("부산 30대 1인가구", 70, region="부산광역시")
+    b["conditions"]["ages"] = "30~39세"
+    out = rc.compare(items(a, b))
+    assert out["derived"] == []
+    assert out["not_comparable"][0]["rule"] == "R1"
+    assert "연령 조건" in out["not_comparable"][0]["why"]
+
+
+def test_two_regions_and_sexes_differ_not_a_gap():
+    out = rc.compare(items(fig("a", 100, sex="여"), fig("b", 70, region="부산광역시", sex="남")))
+    assert out["derived"] == []
+
+
+def test_invalid_json_twice_falls_back(monkeypatch):
+    """모델이 두 번 연속 JSON 을 주지 않아도 500 이 아니라 대체 요약"""
+    content, calls = run_write(monkeypatch, [None, "not json"])
+    assert len(calls) == 2 and content["generated_by"] == "fallback"
+    assert content["summary"]
