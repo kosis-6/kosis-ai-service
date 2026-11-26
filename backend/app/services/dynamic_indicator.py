@@ -2346,7 +2346,9 @@ POPULATION_GENERIC = {"인구", "사람", "사람들", "가구", "주민", "전�
 def _table_population(population: str, tbl_nm: str) -> bool:
     """'통근·통학 인구 중'처럼 모집단을 말한 낱말이 모두 표 이름에 있으면 그 표가 집계하는
     모집단 자체다 (통근 · 통학 인구는 12세 이상으로 정의). 일반 말('1인 가구', '전체 인구')이나
-    지역만 남으면 아니다: 표의 연령 제한이 질문의 모집단을 줄인다"""
+    지역만 남으면 아니다: 표의 연령 제한이 질문의 모집단을 줄인다.
+    표 이름에는 낱말 그대로 있어야 한다: '외국인 중'은 '외국인주민' 표, '여성 인구 중'은
+    '여성인구(15세이상)' 표의 모집단이 아니다"""
     try:
         places = {_norm(p) for p in indicators.find_regions(population)}
     except Exception:
@@ -2356,7 +2358,7 @@ def _table_population(population: str, tbl_nm: str) -> bool:
         w = _norm(JOSA_TAIL.sub("", token))
         if len(w) >= 2 and w not in POPULATION_GENERIC and w not in places:
             words.append(w)
-    return bool(words) and all(w in _norm(tbl_nm) for w in words)
+    return bool(words) and all(_as_word(w, tbl_nm) for w in words)
 
 
 async def answer_choice(question: str, context: dict, code: str, trace: dict) -> dict | None:

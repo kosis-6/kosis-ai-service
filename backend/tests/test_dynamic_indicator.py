@@ -904,6 +904,19 @@ def test_ratio_within_the_tables_own_population_is_not_a_band_mismatch(question,
     assert d.age_limit(table, question) == limit
 
 
+@pytest.mark.parametrize(
+    ("table", "question", "limit"),
+    [
+        ("시군구별 외국인주민 현황(15세 이상)", "외국인 중 여성 비율", "15세 이상"),
+        ("직업별 여성인구(15세이상)-시도", "여성 인구 중 취업 비율", "15세이상"),
+    ],
+)
+def test_population_word_must_be_a_whole_word_of_the_table_name(table, question, limit) -> None:
+    """'외국인'은 '외국인주민'의, '여성'은 '여성인구'의 글자 일부일 뿐이다:
+    표의 연령 제한이 질문의 모집단을 줄이므로 거절한다 (11/26 리뷰)"""
+    assert d.age_limit(table, question) == limit
+
+
 def test_table_topic_words_do_not_pick_a_cell_by_partial_name() -> None:
     """변형셋 P-017 · 085 · 019: '외국인 주민'이 '외국인근로자' · '주민등록인구'를,
     '한국에서'가 '중국(한국계)'를 골랐다고 보고 되물었다 (11/25)"""

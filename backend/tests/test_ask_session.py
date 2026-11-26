@@ -1110,11 +1110,24 @@ def test_follow_up_rules_for_region_order_scope_and_period() -> None:
     assert s.order_changes("낮은 순으로", rank) == {"ascending": True}
     assert s.order_changes("그럼 많은 순서로 보여줘", rank) == {"ascending": False}
     assert s.order_changes("낮은 순으로", value) is None
-    for said, n in (("10년으로 늘려줘", 10), ("기간을 3년으로", 3), ("그럼 7년으로", 7)):
+    for said, n in (
+        ("10년으로 늘려줘", 10),
+        ("기간을 3년으로", 3),
+        ("그럼 5년으로 줄여줘", 5),
+        ("7년치로", 7),
+    ):
         assert s.period_length_reply(said) and s.recent_years(said) == n, said
-    for said in ("2015년으로", "10년 전은?", "3년으로 나눠서 보여줘"):
+    # 기간을 말하는 낱말이 없으면 줄여 말한 연도일 수 있다 ('24년으로 바꿔줘'는 2024년)
+    for said in (
+        "2015년으로",
+        "10년 전은?",
+        "3년으로 나눠서 보여줘",
+        "24년으로 바꿔줘",
+        "그럼 20년으로 보여줘",
+        "그럼 7년으로",
+    ):
         assert not s.period_length_reply(said), said
-    assert s.recent_years("3년으로 나눠서 보여줘") is None
+        assert s.recent_years(said) is None, said
     for said, word in (("혼인도 알려줘", "혼인"), ("그럼 이혼은?", "이혼"), ("사망자도", "사망자")):
         assert s.said_other_subject(said) == word, said
     for said in (
@@ -1131,6 +1144,10 @@ def test_follow_up_rules_for_region_order_scope_and_period() -> None:
         "월별은?",
         "여아는?",
         "상위는?",
+        "몇명이야?",
+        "그럼 얼마야?",
+        "어때?",
+        "몇건이야?",
     ):
         assert s.said_other_subject(said) is None, said
     assert not s.names_indicator("부산은?", {"indicator": "출생아 수"})
@@ -1168,6 +1185,17 @@ def test_period_length_follow_up_keeps_conditions_without_llm(talk: Talk) -> Non
     asked = talk.answered[-1]
     assert asked["asked"]["recent"] == 10 and asked["regions"] == ["부산"]
     assert asked["indicator"] == "출생아 수" and asked["type"] == "trend"
+
+
+def test_short_year_follow_up_is_not_read_as_period_length(talk: Talk) -> None:
+    """'24년으로 바꿔줘'는 2024년: 기간 길이 규칙이 24년치 추이로 바꾸거나
+    변경 추출이 읽은 연도를 덮지 않는다 (11/26 리뷰)"""
+    talk.say("부산 출생아 최근 5년 보여 줘")
+    res = talk.say("24년으로 바꿔줘", request_type="change", changes={"year": 2024})
+    assert res["request_type"] == "change" and talk.extracted
+    asked = talk.answered[-1]
+    assert not (asked.get("asked") or {}).get("recent")
+    assert 2024 in (asked.get("year"), asked.get("end_year"))
 
 
 def test_scope_pending_does_not_swallow_unsupported_new_question(talk: Talk):

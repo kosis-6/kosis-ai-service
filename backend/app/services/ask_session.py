@@ -400,7 +400,8 @@ def recent_years(question: str) -> int | None:
     for ref in timeref.find(question):
         if ref["kind"] in ("recent", "span") and ref.get("n"):
             return ref["n"]
-    if (span := SPAN_TO.search(question)) and 1 < int(span[1]) <= 50:
+    span = SPAN_TO.search(question)
+    if span and PERIOD_CUE.search(question) and 1 < int(span[1]) <= 50:
         return int(span[1])
     return None
 
@@ -507,6 +508,8 @@ NOT_SUBJECT = {
     "근거", "기준", "이유", "원인", "숫자", "단위", "자세히", "전국", "우리나라", "한국", "국내",
     "읍면동", "상위", "하위", "꼴찌", "최고", "최저", "최대", "최소", "남아", "여아", "아들",
 }  # fmt: skip
+# '몇명이야?' · '얼마야?' · '어때?'는 볼 통계가 아니라 묻는 말 (붙여 쓰면 통째로 낱말로 잡힌다)
+ASKING_WORD = re.compile(r"^(?:몇|얼마|어때|어떻|어떤|어느|어디|언제|누구|뭐|무엇|무슨|왜)")
 
 
 def said_other_subject(question: str, regions: list[str] | None = None) -> str | None:
@@ -519,6 +522,7 @@ def said_other_subject(question: str, regions: list[str] | None = None) -> str |
     word = said["word"]
     if (
         word in NOT_SUBJECT
+        or ASKING_WORD.match(word)
         or word in VIEW_WORDS
         or word.endswith("별")
         or any(pattern.search(word) for pattern in CHART_WORDS.values())
@@ -844,6 +848,9 @@ SPAN_TO = re.compile(
     r"(?<![\d.])(\d{1,2})\s*년\s*(?:치|간|동안)?\s*(?:으로|로)(?=\s|$|[?.!~]|는|도|만)"
     r"(?!\s*(?:나눠|나누|나눈|묶어|묶은|끊어|단위))"
 )
+# 'N년으로'만으로는 기간 길이인지 줄여 말한 연도인지 모른다: '24년으로 바꿔줘'는 2024년이다.
+# 기간을 말하는 낱말이 함께 있을 때만 길이로 본다 (나머지는 변경 추출이 읽는다)
+PERIOD_CUE = re.compile(r"늘려|늘리|줄여|줄이|기간|최근|동안|\d\s*년\s*(?:치|간)")
 PERIOD_LENGTH_REPLY = re.compile(
     rf"\s*{FOLLOW_LEAD}(?:기간을?\s*)?(?:최근\s*)?\d{{1,2}}\s*년\s*(?:치|간|동안)?\s*(?:으로|로)?\s*"
     r"(?:만|은|는|도)?\s*(?:늘려|줄여|바꿔|보여|해|봐)?\s*(?:줘요?|주세요|줄래요?|봐요?)?\s*[?.!~]*\s*"
