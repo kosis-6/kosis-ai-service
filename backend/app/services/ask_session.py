@@ -149,7 +149,8 @@ def applied(
     if not regions and conditions.get("type") == "rank":
         regions = [f"{conditions.get('sido') or '전국'} {conditions.get('level') or '시도'}별"]
     values = {
-        "indicator": ", ".join(conditions.get("indicators") or []) or conditions.get("indicator"),
+        "indicator": ", ".join(conditions.get("indicators") or [])
+        or qa.birth_ratio_label(conditions.get("indicator"), conditions.get("birth_ratio_base")),
         "regions": ", ".join(regions) if include_regions else None,
         "period": period_text(conditions),
         "sex": conditions.get("sex"),
@@ -257,6 +258,15 @@ def apply_changes(conditions: dict, changes: dict) -> tuple[dict, set[str]]:
             "measure_conditions",
         ):
             c.pop(key, None)
+        if c["indicator"] not in qa.BIRTH_RATIO_OPPOSITE:
+            c.pop("birth_ratio_base", None)
+        changed.add("indicator")
+
+    if (
+        c.get("indicator") in qa.BIRTH_RATIO_OPPOSITE
+        and (base := changes.get("birth_ratio_base")) is not None
+    ):
+        c["birth_ratio_base"] = base
         changed.add("indicator")
 
     region = changes.get("regions")
@@ -354,6 +364,11 @@ YEAR_ONLY_REPLY = re.compile(
     rf"\s*{slots.YEAR.pattern}\s*(?:년도?\s*)?(?:(?:으로|로)\s*)?(?:은|는|도|만)?\s*(?:이?요)?"
     r"(?:\s*(?:보여|알려|바꿔)\s*(?:줘요?|주세요))?\s*[?.!]*"
 )
+BIRTH_RATIO_REVERSE_REPLY = re.compile(r"\s*(?:그럼\s*|그러면\s*)?반대(?:로)?(?:는|도)?\s*[?.!]*")
+BIRTH_RATIO_COUNT_REPLY = re.compile(
+    rf"\s*(?:그럼\s*|그러면\s*)?(?P<count>{qa.BIRTH_RATIO_COUNT})\s*명"
+    r"\s*(?:당|으로|[을를]?\s*기준(?:으로)?)(?:은|는|도)?\s*[?.!]*"
+)
 
 
 def follow_year(question: str, conditions: dict, today: date | None = None) -> int | None:
@@ -446,7 +461,11 @@ VIEW_WORDS = {
 
 def names_indicator(question: str, parsed: dict) -> bool:
     question = qa.without_survey(question)
-    if indicators.find_in_text(question) or PEOPLE_WORDS.search(question):
+    if (
+        qa.birth_sex_ratio_reference(question)
+        or indicators.find_in_text(question)
+        or PEOPLE_WORDS.search(question)
+    ):
         return True
     compact = question.replace(" ", "")
     words = [parsed.get("term"), parsed.get("indicator")]
@@ -479,7 +498,16 @@ def inherit(
     if kind in NO_CONDITIONS or prev.get("type") in NO_CONDITIONS:
         return p, s
     if question and prev.get("indicator") and not names_indicator(question, p):
-        keys = ["indicator", "term", "ages", "age_group", "age_note", "by", "dynamic_spec"]
+        keys = [
+            "indicator",
+            "term",
+            "ages",
+            "age_group",
+            "age_note",
+            "by",
+            "dynamic_spec",
+            "birth_ratio_base",
+        ]
         if said_ages := qa.extract_ages(question):
             keys = [k for k in keys if k not in ("term", "ages", "age_group", "age_note")]
             p["ages"] = said_ages
@@ -870,6 +898,11 @@ def asks_other_people(question: str, conditions: dict) -> bool:
 def inherited_question(parsed: dict) -> str:
     where = ", ".join(parsed.get("regions") or [])
     what = parsed.get("term") or parsed.get("indicator") or ""
+    if (
+        parsed.get("indicator") in qa.BIRTH_RATIO_OPPOSITE
+        and (base := parsed.get("birth_ratio_base")) is not None
+    ):
+        what = qa.birth_ratio_label(parsed["indicator"], base)
     return " ".join(p for p in (period_text(parsed), where, _with_demographics(what, parsed)) if p)
 
 
@@ -1617,6 +1650,8 @@ async def _turn(
     if (
         HOUSEHOLD_AGE_RATIO.fullmatch(question)
         or qa.housing_population_condition(question)
+        or qa.birth_sex_ratio_reference(question)
+        or qa.BIRTH_SEX_RATIO_WORDS.search(question)
         or await asyncio.to_thread(complete_question, question)
     ):
         return await _new(question, state)
@@ -1657,7 +1692,22 @@ async def _turn(
         return res, sources, notice
     if view is None and not (has_last and summary_request(question)):
         trace: dict = {}
-        if year_reply := YEAR_ONLY_REPLY.fullmatch(question):
+        reverse_birth_ratio = qa.BIRTH_RATIO_OPPOSITE.get(state["conditions"].get("indicator"))
+        if reverse_birth_ratio and BIRTH_RATIO_REVERSE_REPLY.fullmatch(question):
+            delta = {
+                "request_type": CHANGE,
+                "changes": {"indicator": reverse_birth_ratio, "sex": "계"},
+                "chart": None,
+                "unclear": None,
+            }
+        elif reverse_birth_ratio and (reply := BIRTH_RATIO_COUNT_REPLY.fullmatch(question)):
+            delta = {
+                "request_type": CHANGE,
+                "changes": {"birth_ratio_base": qa.birth_ratio_count(reply["count"])},
+                "chart": None,
+                "unclear": None,
+            }
+        elif year_reply := YEAR_ONLY_REPLY.fullmatch(question):
             delta = {
                 "request_type": CHANGE,
                 "changes": {"year": int(year_reply[1])},

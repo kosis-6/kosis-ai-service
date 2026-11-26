@@ -585,13 +585,24 @@ sources = [{ table = "DT_1B81A24", item_id = "T4", level = "전국" }]
 name = "출생성비"
 definition = "출생성비는 그해 태어난 여자아이 100명당 남자아이 수입니다"
 aliases = ["출생 성비", "출생아 성비", "출생시 성비", "신생아 성비", "태어난 아이 성비", "태어난 아기 성비", "여아 100명당 남아"]
-unit = "여아 100명당 남아"
+unit = "여아 100명당 명"
 kind = "value"
 diff_unit = "명"
 method = "lookup"
 formula = "남자 출생아 수 ÷ 여자 출생아 수 × 100"
 desc = "태어난 남자아이 수를 여자아이 수로 나눈 값에 100을 곱함"
-sources = [{ table = "DT_1B81A03", item_id = "T2", den_item_id = "T3", level = "시군구", filters = { c2_id = "00" } }]
+sources = [{ table = "DT_1B81A03", item_id = "T2", den_item_id = "T3", level = "시군구", filters = { c2_id = "00" }, num_label = "남아 출생아 수", den_label = "여아 출생아 수" }]
+
+[[indicators]]
+name = "남아 100명당 여아 수"
+definition = "그해 태어난 남아 100명당 여아 수입니다"
+aliases = ["남아 100명당 여아", "남자 아기 100명당 여자 아기", "남자아이 100명당 여자아이"]
+unit = "명"
+kind = "value"
+method = "lookup"
+formula = "여자 출생아 수 ÷ 남자 출생아 수 × 100"
+desc = "태어난 여자아이 수를 남자아이 수로 나눈 값에 100을 곱함"
+sources = [{ table = "DT_1B81A03", item_id = "T3", den_item_id = "T2", level = "시군구", filters = { c2_id = "00" }, num_label = "여아 출생아 수", den_label = "남아 출생아 수" }]
 
 [[indicators]]
 name = "혼인 외 출생아 비율"
