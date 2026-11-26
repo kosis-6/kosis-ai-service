@@ -7,6 +7,17 @@ from app.services import ask_session, indicators, lookup, qa
 from app.services import cross_indicator as x
 
 
+@pytest.fixture
+def seoul_region(monkeypatch: pytest.MonkeyPatch) -> None:
+    def resolve_region(name, year=None, sigungu=False):
+        if name == "서울":
+            return {"status": "ok", "display": name, "kind": "시도", "region_code": "11"}
+        return {"status": "unknown_region", "region": name}
+
+    monkeypatch.setattr(indicators, "_region_names", lambda: ("서울",))
+    monkeypatch.setattr(indicators, "resolve_region", resolve_region)
+
+
 @pytest.mark.parametrize(
     ("question", "indicator", "base"),
     [
@@ -19,7 +30,9 @@ from app.services import cross_indicator as x
         ("남아 한 명을 기준으로 여아는 몇 명이야?", "남아 100명당 여아 수", 1),
     ],
 )
-def test_birth_sex_ratio_words(question: str, indicator: str, base: int | None) -> None:
+def test_birth_sex_ratio_words(
+    seoul_region, question: str, indicator: str, base: int | None
+) -> None:
     parsed = qa.correct(
         f"2025년 서울 {question}",
         {"type": "value", "indicator": "출생아 수", "regions": ["서울"], "sex": "남"},
@@ -46,7 +59,7 @@ def test_population_sex_ratio_is_not_birth(question: str) -> None:
 
 
 @pytest.fixture
-def birth_counts(monkeypatch: pytest.MonkeyPatch) -> None:
+def birth_counts(monkeypatch: pytest.MonkeyPatch, seoul_region) -> None:
     counts = {"T2": 23453, "T3": 22063}
 
     def prepare(spec, names, y0, y1, sex, ages):
