@@ -479,8 +479,18 @@ def combine_value(c: Cross, num: dict, den: dict, q: dict) -> dict:
     out.update(region=num.get("region"), year=num.get("year"), sex=num.get("sex"))
     out["value"] = _calc(c, num.get("value"), den.get("value"))
     out["operands"] = [
-        {"label": c.num_label, "value": num.get("value"), "unit": c.unit_of(c.num)},
-        {"label": c.den, "value": den.get("value"), "unit": c.unit_of(c.den)},
+        {
+            "label": c.num_label,
+            "value": num.get("value"),
+            "unit": c.unit_of(c.num),
+            "tbl_id": num.get("tbl_id"),
+        },
+        {
+            "label": c.den,
+            "value": den.get("value"),
+            "unit": c.unit_of(c.den),
+            "tbl_id": den.get("tbl_id"),
+        },
     ]
     if c.form in ("diff", "sum"):
         out["op"] = "−" if c.form == "diff" else "+"

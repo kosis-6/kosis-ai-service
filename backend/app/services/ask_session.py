@@ -27,6 +27,7 @@ from app.services import (
     conversations,
     cross_indicator,
     dynamic_indicator,
+    figure,
     flow,
     indicators,
     llm_calls,
@@ -3083,6 +3084,7 @@ async def _with_also_asked(
     )
     if both is None:
         res["answer"] = f"{res.get('answer') or ''}\n※ {_also_asked_note(also, found)}"
+        res["also_missing"] = also  # 한쪽만 답함: 보고서에 담지 않는다 (figure.reportable)
         return False
     kind = res.get("request_type")
     res.clear()
@@ -3176,6 +3178,16 @@ def _same_dictionary_table(parsed: dict, computed: dict | None, found: dict | No
     return next((t for t in picked if t and t in tables), None)
 
 
+def _attach_figure(res: dict) -> None:
+    """대표 수치(figure)와 보고서에 담을 수 있는지(reportable)를 붙인다. 답은 바꾸지 않는다"""
+    try:
+        res["figure"] = figure.figure_of(res.get("result"), res.get("parsed"))
+        res["reportable"] = figure.reportable(res)
+    except Exception:
+        logger.exception("대표 수치 만들기 실패")
+        res["figure"], res["reportable"] = None, False
+
+
 def _summary(result: dict | None) -> dict | None:
     try:
         return answer_summary.build(result)
@@ -3208,6 +3220,7 @@ async def handle(
         await _judged(res, state, question, user_id)
         if "summary" not in res:  # 직전 답을 다시 쓴 응답(_reuse)은 그 요약을 이미 들고 있다
             res["summary"] = _summary(res.get("result"))
+        _attach_figure(res)
         if sex_not_split(res.get("parsed") or {}, res.get("result") or {}):
             word = "남자" if res["parsed"]["sex"] == "남" else "여자"
             told = f"이 지표는 성별로 나뉜 자료가 없어 {word}만 보지 못하고 전체 값으로 답했습니다."
@@ -3265,8 +3278,11 @@ async def _save(
 ) -> None:
     try:
         await save(sid, after)
-        await log_turn(sid, user_id, after.get("turn_no") or 1, question, res, before, after)
+        turn_id = await log_turn(
+            sid, user_id, after.get("turn_no") or 1, question, res, before, after
+        )
         if user_id is not None:
+            res["turn_id"] = turn_id  # 비로그인 답은 소유자를 확인할 수 없어 내보내지 않는다
             await conversations.touch(sid, user_id, question)
     except (SQLAlchemyError, OSError):
         logger.exception("대화 상태 저장 실패")
@@ -3337,12 +3353,13 @@ async def log_turn(
     res: dict,
     before: dict | None,
     after: dict,
-) -> None:
+) -> int | None:
+    """질문 하나를 app.chat_turns에 남기고 그 행의 id를 돌려준다"""
     from app.core.db import engine
 
     result = res.get("result") or {}
     async with engine.begin() as conn:
-        await conn.execute(
+        row = await conn.execute(
             text(
                 "insert into app.chat_turns (session_id, user_id, turn_no, message, request_type,"
                 " status, conditions_before, conditions_after, sources, tbl_id, recomputed, answer,"
@@ -3350,6 +3367,7 @@ async def log_turn(
                 " values (:session_id, :user_id, :turn_no, :message, :request_type, :status,"
                 " cast(:before as jsonb), cast(:after as jsonb), cast(:sources as jsonb),"
                 " :tbl_id, :recomputed, :answer, cast(:response as jsonb), cast(:flow as jsonb))"
+                " returning id"
             ),
             {
                 "session_id": session_id,
@@ -3376,7 +3394,9 @@ async def log_turn(
                 ),
             },
         )
+        turn_id = row.scalar()
         await conn.execute(
             text("delete from app.chat_turns where created_at < :cutoff"),
             {"cutoff": now() - TURNS_FOR},
         )
+    return turn_id
