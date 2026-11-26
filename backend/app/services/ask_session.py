@@ -1165,15 +1165,28 @@ async def _sure_rule(state: dict, question: str) -> str | None:
     11/25 대화 셋(끔)에서 오판이 없던 셋만: 비율 후속(C10 · C12 · C13) · 지역만(C01~C05) ·
     구별로(C19). 구성비로는 규칙도 틀려(C20) 넣지 않는다. 기존 경로가 구성비로를 먼저 보므로
     그 말이면 규칙으로 보내지 않는다. 직전 답이 정상(ok)이 아니면(거절 · 표 안내 뒤) 쓰지 않는다:
-    거절 뒤 "부산은?"이 거절된 조건(총인구)을 이어받았다 (C27)"""
+    거절 뒤 "부산은?"이 거절된 조건(총인구)을 이어받았다 (C27).
+    develop 의 후속 질문 규칙(출생성비 반대로 · N명 기준 · 연도만 · 끝 연도를 정한 기간)도
+    기존 경로가 코드로 처리하므로 같은 조건에서 복원보다 먼저 본다. 판정은 기존 경로와 같은 식"""
     if (state.get("last") or {}).get("status") != "ok" or composition_request(question):
         return None
+    if qa.BIRTH_RATIO_OPPOSITE.get(state["conditions"].get("indicator")):
+        if BIRTH_RATIO_REVERSE_REPLY.fullmatch(question):
+            return "출생성비 반대로"
+        if BIRTH_RATIO_COUNT_REPLY.fullmatch(question):
+            return "출생성비 기준 인원"
+    if YEAR_ONLY_REPLY.fullmatch(question):
+        return "연도만"
     if await asyncio.to_thread(ratio_followup, question, state):
         return "비율 후속"
     if await asyncio.to_thread(region_split_changes, question, state["conditions"]):
         return "구별로"
     if await asyncio.to_thread(region_only_changes, question, state["conditions"]):
         return "지역만"
+    if not names_indicator(question, {}) and any(
+        r["kind"] == "span_until" for r in timeref.find(question)
+    ):
+        return "끝 연도 기간"
     return None
 
 

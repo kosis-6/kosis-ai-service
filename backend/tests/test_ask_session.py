@@ -2236,8 +2236,97 @@ def test_sure_rules_skip_restate_for_ratio_follow_up(talk: Talk, sure_on: list) 
 
 def test_sure_rules_leave_other_follow_ups_to_restate(talk: Talk, sure_on: list) -> None:
     talk.say("부산 출생아 최근 5년 보여 줘")
-    talk.say("2022년만")
-    assert sure_on == ["2022년만"]  # 규칙 셋이 못 잡는 말은 LLM 복원으로
+    talk.say("작년은?")
+    assert sure_on == ["작년은?"]  # 규칙이 못 잡는 말은 LLM 복원으로 ("2022년만"은 연도만 규칙)
+
+
+def test_sure_rule_names_develop_follow_up_rules() -> None:
+    ok = {"last": {"status": "ok"}, "conditions": dict(BASE)}
+    ratio = {"last": {"status": "ok"}, "conditions": {**BASE, "indicator": qa.BIRTH_SEX_RATIO}}
+    assert asyncio.run(s._sure_rule(ratio, "그럼 반대로는?")) == "출생성비 반대로"
+    assert asyncio.run(s._sure_rule(ratio, "1,000명 기준으로는?")) == "출생성비 기준 인원"
+    assert asyncio.run(s._sure_rule(ok, "반대로는?")) is None  # 출생성비가 아니면 규칙 아님
+    assert asyncio.run(s._sure_rule(ok, "2022년만")) == "연도만"
+    assert asyncio.run(s._sure_rule(ok, "재작년까지 5년간은?")) == "끝 연도 기간"
+    refused = {"last": {"status": "partial_match"}, "conditions": dict(ratio["conditions"])}
+    assert asyncio.run(s._sure_rule(refused, "반대로는?")) is None  # 직전 답이 ok 일 때만
+
+
+BIRTH_RATIO_2024 = {**BASE, "type": "value", "indicator": qa.BIRTH_SEX_RATIO, "regions": ["전국"],
+                    "year": 2024, "start_year": None, "end_year": None}  # fmt: skip
+BIRTHS_2024 = {**BASE, "type": "value", "year": 2024, "start_year": None, "end_year": None}
+TREND_2021_2025 = {"type": "trend", "start_year": 2021, "end_year": 2025}
+
+
+def _follow_up(monkeypatch: pytest.MonkeyPatch, sure: bool, parsed: dict, first: str,
+               second: str, delta: dict) -> tuple[dict, dict, list]:  # fmt: skip
+    """같은 두 턴을 끔(sure=False) 또는 3-a(복원 + 확실한 규칙)로 돌린다
+    → (계산 조건, 답, 복원 호출)"""
+
+    class FixedDate(date):
+        @classmethod
+        def today(cls):
+            return cls(2026, 11, 24)
+
+    monkeypatch.setattr(s, "date", FixedDate)
+    monkeypatch.setattr(s.timeref, "date", FixedDate)
+    monkeypatch.setattr(s.get_settings(), "follow_restate", sure)
+    monkeypatch.setattr(s.get_settings(), "follow_sure_rules", sure)
+    called: list = []
+
+    async def spy(state, question, trace):
+        called.append(question)
+        return {"relation": "new", "question": question, "why": "spy"}
+
+    monkeypatch.setattr(s, "restate", spy)
+    talk = Talk(monkeypatch)
+    talk.parsed = dict(parsed)
+    talk.say(first)
+    res = talk.say(second, **delta)
+    return talk.answered[-1], res, called
+
+
+@pytest.mark.parametrize(
+    ("parsed", "first", "second", "delta", "rule"),
+    [
+        (BIRTH_RATIO_2024, "2024년 전국 출생성비는?", "반대로는?", {}, "출생성비 반대로"),
+        (BIRTH_RATIO_2024, "2024년 전국 출생성비는?", "1000명 기준으로는?", {},
+         "출생성비 기준 인원"),
+        (BIRTHS_2024, "2024년 부산 출생아 수", "2022년은?", {}, "연도만"),
+        (BIRTHS_2024, "2024년 부산 출생아 수", "재작년까지 5년간은?",
+         {"request_type": "change", "changes": TREND_2021_2025}, "끝 연도 기간"),
+    ],
+)  # fmt: skip
+def test_sure_rules_run_develop_follow_up_rules_before_restate(
+    monkeypatch: pytest.MonkeyPatch, parsed, first, second, delta, rule
+) -> None:
+    """3-a: develop 의 후속 질문 규칙이 잡는 말은 LLM 복원을 부르지 않고 끔과 같은 조건으로 계산한다
+    (반대로는? → 출생성비를 다시 답함, 1000명 기준 · 재작년까지 5년간 → unclear 되묻기 이던 것)"""
+    off, off_res, off_called = _follow_up(monkeypatch, False, parsed, first, second, delta)
+    sure, res, called = _follow_up(monkeypatch, True, parsed, first, second, delta)
+    assert off_called == [] and called == []  # 복원 LLM 을 부르지 않았다
+    assert sure == off  # 끔과 같은 조건으로 계산했다
+    assert res["request_type"] == off_res["request_type"] == "change"
+    assert _has_step(res, "이어 묻기 판단", "규칙")
+    assert any(rule in x["detail"] for x in res["trace"]["flow"] if x["stage"] == "이어 묻기 판단")
+
+
+def test_sure_rules_follow_up_results_match_expected_conditions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """위 네 말이 3-a 에서 실제로 맞는 조건이 되는지 (끔과 같다는 것만으로는 둘 다 틀릴 수 있다)"""
+    reverse, *_ = _follow_up(monkeypatch, True, BIRTH_RATIO_2024, "출생성비", "반대로는?", {})
+    assert reverse["indicator"] == qa.REVERSE_BIRTH_SEX_RATIO and reverse["year"] == 2024
+    count, *_ = _follow_up(
+        monkeypatch, True, BIRTH_RATIO_2024, "출생성비", "1000명 기준으로는?", {}
+    )
+    assert count["indicator"] == qa.BIRTH_SEX_RATIO and count["birth_ratio_base"] == 1000
+    year, *_ = _follow_up(monkeypatch, True, BIRTHS_2024, "출생아", "2022년은?", {})
+    assert year["year"] == 2022 and year["regions"] == ["부산"]
+    change = {"request_type": "change", "changes": TREND_2021_2025}
+    span, *_ = _follow_up(monkeypatch, True, BIRTHS_2024, "출생아", "재작년까지 5년간은?", change)
+    assert span["type"] == "trend" and (span["start_year"], span["end_year"]) == (2020, 2024)
+    assert span["regions"] == ["부산"]
 
 
 def test_follow_llm_gemma_uses_gemma_client(monkeypatch: pytest.MonkeyPatch) -> None:
