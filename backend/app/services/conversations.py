@@ -15,6 +15,8 @@ REPLAY_KEYS = (
     "request_type",
     "clarification",
     "summary",
+    "figure",
+    "reportable",
     "sources",
 )
 
@@ -103,7 +105,7 @@ async def detail(user_id: int, session_id: str) -> dict[str, Any] | None:
             (
                 await conn.execute(
                     text(
-                        "select turn_no, message as question, response, answer, created_at"
+                        "select id, turn_no, message as question, response, answer, created_at"
                         " from app.chat_turns where session_id = :sid and user_id = :uid"
                         " order by turn_no, id"
                     ),
@@ -116,6 +118,9 @@ async def detail(user_id: int, session_id: str) -> dict[str, Any] | None:
     items = []
     for t in turns:
         response = t["response"] or {"answer": t["answer"]}
+        if response.get("reportable"):
+            # 저장할 때는 id가 아직 없다. 다시 연 답도 [보고서에 담기]를 쓸 수 있게 붙인다
+            response = {**response, "turn_id": t["id"]}
         items.append(
             {
                 "turn_no": t["turn_no"],

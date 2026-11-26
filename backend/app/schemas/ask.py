@@ -79,6 +79,48 @@ class Summary(BaseModel):
     )
 
 
+class FigureConditions(BaseModel):
+    region: str | None = Field(default=None, description="지역 (비교·순위는 지역 목록이나 범위)")
+    period: str | None = Field(default=None, description="기간 ('2020년', '2015년~2025년')")
+    sex: str | None = Field(default=None, description="성별 (전체면 null)")
+    ages: str | None = Field(default=None, description="연령 ('70세 이상')")
+    population: str | None = Field(default=None, description="표의 집계 대상 (아직 채우지 않음)")
+
+
+class Operand(BaseModel):
+    label: str = Field(description="분자·분모 이름")
+    value: float | None
+    unit: str
+    conditions: FigureConditions | None = Field(
+        default=None, description="이 값의 조건 (아직 채우지 않음)"
+    )
+    tbl_id: str | None = None
+
+
+class FigureRow(BaseModel):
+    label: str = Field(description="연도 / 지역 / 항목")
+    value: float | None
+    rank: int | None = None
+    count: float | None = Field(default=None, description="구성비일 때 원래 값")
+
+
+class Figure(BaseModel):
+    label: str = Field(description="무엇의 값인지 ('2020년 서울특별시 1인가구')")
+    indicator: str
+    value: float | None = Field(
+        description="대표 수치. 비교·구성비처럼 값이 여럿이면 null이고 rows를 본다"
+    )
+    unit: str
+    kind: Literal["value", "ratio", "diff", "sum", "series", "compare", "ranking", "parts"]
+    conditions: FigureConditions
+    is_projection: bool = Field(description="장래추계 값인가")
+    formula: str | None = None
+    operands: list[Operand] = Field(default_factory=list, description="나눈(뺀·더한) 두 값")
+    rows: list[FigureRow] = Field(default_factory=list)
+    change: dict[str, Any] | None = Field(default=None, description="추이의 처음→끝 변화")
+    tbl_ids: list[str] = Field(default_factory=list, description="값을 가져온 통계표")
+
+
 class QuestionClarification(BaseModel):
     kind: Literal["local_region", "move_scope", "table_cell", "alternative"]
     prompt: str
@@ -130,3 +172,12 @@ class AskResponse(BaseModel):
         default=None,
         description="실제로 답한 질문 (되묻기 답을 앞 질문과 합친 경우 합친 질문)",
     )
+    figure: Figure | None = Field(
+        default=None,
+        description="답의 대표 수치 (result의 여러 모양을 한 형식으로). 수치로 답하지 못했거나"
+        " 여러 지표를 묶은 답이면 null",
+    )
+    turn_id: int | None = Field(
+        default=None, description="이 답의 기록 id (로그인한 사용자만). 보고서에 담을 때 쓴다"
+    )
+    reportable: bool = Field(default=False, description="보고서에 담을 수 있는 답인가")
