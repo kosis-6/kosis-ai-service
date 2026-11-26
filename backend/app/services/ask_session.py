@@ -3154,6 +3154,16 @@ async def _recompute(
     return again, how
 
 
+async def _repick_compute(res: dict, verdict: dict, asked: str) -> tuple[dict | None, str]:
+    """repick: 표는 맞는데 칸이 틀린 답을 같은 표에서 칸만 다시 골라 계산한 답 → (답, 방법).
+    다시 고르지 못하면 (None, 방법) → _retry 가 대체 행동으로 간다.
+    설계: docs/agent_redesign_2026-11-26.md 2-2 · 2-7. 표 고르기 · 다시 계산은 다음 단계에서 채운다
+    """
+    record = res.setdefault("trace", {}).setdefault("answer_judge", {})
+    record["repick"] = {"skip": "아직 구현 전"}
+    return None, "같은 표에서 칸 다시"
+
+
 async def _replan_compute(
     res: dict, verdict: dict, asked: str, user_id: int | None
 ) -> tuple[dict | None, str]:
@@ -3291,13 +3301,19 @@ async def _retry(
     user_id: int | None,
     done: set[str] | None = None,
 ) -> tuple[dict | None, str]:
-    """행동대로 한 번 다시 계산. replan 이 새 계획을 못 내면 대체 행동(표 · 경로)으로 떨어진다.
-    requery · repick 은 호출부가 아직 없어 바로 대체 행동으로 간다. done: 쓴 행동 (대체도 적는다)"""
+    """행동대로 한 번 다시 계산. replan · repick 이 다시 계산하지 못하면 대체 행동(표 · 경로)으로
+    떨어진다. requery 는 호출부가 아직 없어 바로 대체 행동으로 간다.
+    done: 쓴 행동 (대체도 적는다)"""
     if action.name == agent_action.REPLAN:
         again, how = await _replan_compute(res, verdict, asked, user_id)
         if again is not None or action.fallback is None:
             return again, how
         flow.add("다시 계산", "대체", f"{how}: 새 계획 없음 → {action.fallback}")
+    elif action.name == agent_action.REPICK:
+        again, how = await _repick_compute(res, verdict, asked)
+        if again is not None or action.fallback is None:
+            return again, how
+        flow.add("다시 계산", "대체", f"{how}: 칸을 다시 고르지 못함 → {action.fallback}")
     if done is not None and action.fallback:
         done.add(action.fallback)  # 대체 행동으로 떨어졌다: 그 행동도 쓴 것으로
     return await _recompute(res, state, asked, user_id)
@@ -3322,8 +3338,8 @@ async def _judged(res: dict, state: dict | None, question: str, user_id: int | N
     # 행동 고르기 (N9, 코드 규칙): 판정 이유 · 답의 경로 · 1위 후보의 ✔/✘로 다음 행동을 정한다.
     # 행동 고리 (N9 → 다시 계산 → 판정, 설계서 4-1 · 4-5): 첫 행동이 실패하거나 다시 한 답도
     # 판정에 걸리면 다음 행동으로 이어 간다. 상한은 agent_action(다시 2회 · LLM 1회)과 60초.
-    # 호출부가 있는 행동은 replan(_replan_compute) · reroute · retable(둘 다 _recompute) · give_up.
-    # requery · repick은 이름만 기록하고 fallback으로 떨어진다 (게이트 · 연결 단계가 들어오면)
+    # 호출부가 있는 행동은 replan(_replan_compute) · repick(_repick_compute) · reroute · retable
+    # (둘 다 _recompute) · give_up. requery는 이름만 기록하고 fallback으로 떨어진다
     verdict = first
     tried = llm_tried = 0
     done: set[str] = set()

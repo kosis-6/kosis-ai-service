@@ -17,8 +17,9 @@
   give_up   —                위 어느 것도 아니거나 상한 초과 → 처음 답 유지 또는 답변 불가 사유
 
 이 모듈은 행동 이름과 근거만 돌려준다. 실제 호출은 ask_session._judged가 한다. 지금 돌아가는
-행동은 replan(agent/replan.py) · reroute · retable · give_up이고, requery · repick은 이름만 내고
-호출부가 비어 있어 대체 행동으로 떨어진다 (재검색 게이트 · 연결 단계가 들어오면 채운다).
+행동은 replan(agent/replan.py) · repick(ask_session._repick_compute) · reroute · retable ·
+give_up이고, requery는 이름만 내고 호출부가 비어 있어 대체 행동으로 떨어진다. repick은 다시
+계산하지 못하면 대체 행동으로 간다 (docs/agent_redesign_2026-11-26.md).
 설계: 인계_2026-11-17/A_설계서.md 4절.
 """
 
