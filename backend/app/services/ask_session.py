@@ -70,12 +70,22 @@ REGION_RETRY_STATUSES = ("missing_data", "no_region_level")
 TYPES = {"value", "trend", "compare", "rank", "composition"}
 NO_CONDITIONS = {"other", "parse_error", None}
 
+# 순서대로 본다: '막대그래프'는 bar, 모양을 말하지 않은 '그래프로'는 chart(직전 차트의 기본 모양)
 CHART_WORDS = {
-    "table": re.compile(r"표\s*로|표\s*형태|표로\s*정리"),
-    "bar": re.compile(r"막대"),
-    "line": re.compile(r"꺾은\s*선|선\s*그래프|라인"),
+    "table": re.compile(r"표\s*로|표\s*형태|표로\s*정리|테이블"),
+    "bar": re.compile(r"막대(?![하한])"),
+    "line": re.compile(r"꺾은\s*선|선\s*그래프|라인|(?<![가-힣])선\s*으로"),
+    "pie": re.compile(r"원\s*그래프|원형|파이|도넛"),
+    "chart": re.compile(r"그래프|차트|시각화|그림\s*으로|그려"),
 }
-CHART_REQUEST = re.compile(r"(보여|바꿔|그려|볼래|보고|줘|주세요|로$|으로$)")
+CHART_REQUEST = re.compile(
+    r"보여|바꿔|바꾸|그려|볼래|보고|줘|주세요|시각화"
+    r"|(?:로|으로|그래프|차트|표|막대)\s*(?:는|은|도|요|가능)?\s*[?.!~]*$"
+)
+CHART_INSTEAD = re.compile(r"말고|대신|아니고|아니라")
+CHART_MAX_CHARS = 40
+CHART_NAMES = {"line": "꺾은선 그래프", "bar": "막대그래프", "parts": "구성비 막대그래프"}
+CHART_CANNOT = {"line": "꺾은선은 연도별 추이에만 씁니다", "pie": "원그래프는 지원하지 않습니다"}
 SUMMARY_REQUEST = re.compile(
     r"^\s*((한|두|세)\s*줄로|짧게|간단히|간단하게|간략히)?\s*(요약|정리)\s*"
     r"(좀\s*)?(해\s*(줘요?|주세요|줄래요?|봐요?|주라)?|부탁\s*(해요?|합니다|드려요)?)?\s*[.!?~]*$"
@@ -699,11 +709,21 @@ def replace_region(conditions: dict, asked: str | None, picked: str) -> dict:
 
 
 def chart_request(question: str) -> str | None:
+    """직전 답의 그림만 바꾸는 말이면 모양 (table · bar · line · pie · chart), 아니면 None.
+    연도 · 지표 · 지역 · 보는 방식(추이 · 비교 …)을 함께 말하면 조건 변경이라 변경 추출에 맡긴다"""
     q = question.strip()
-    if len(q) > REPLY_MAX_CHARS or ask_followup.has_explicit_year(q) or indicators.find_in_text(q):
+    if (
+        len(q) > CHART_MAX_CHARS
+        or not CHART_REQUEST.search(q)
+        or ask_followup.has_explicit_year(q)
+        or indicators.find_in_text(q)
+        or indicators.find_regions(q)
+        or NEW_VIEW.search(q)
+    ):
         return None
+    asked = CHART_INSTEAD.split(q)[-1]  # '표 말고 그래프로' → '그래프로'
     for view, pattern in CHART_WORDS.items():
-        if pattern.search(q) and CHART_REQUEST.search(q):
+        if pattern.search(asked):
             return view
     return None
 
@@ -910,12 +930,29 @@ def summary_request(question: str) -> bool:
     return len(question.strip()) <= REPLY_MAX_CHARS and bool(SUMMARY_REQUEST.search(question))
 
 
-def chart_with_view(chart: dict | None, view: str) -> dict | None:
+def redraw(chart: dict | None, view: str, status: str | None) -> tuple[dict | None, str]:
+    """직전 차트를 view 모양으로. 그 모양으로 못 그리면 그릴 수 있는 기본 모양과 이유를 준다.
+    되묻지 않는다: 무엇을 원하는지(그림 바꾸기)는 분명하다"""
     if not chart:
-        return None
-    if view == "table" or view == chart["type"] or (chart["type"] == "line" and view == "bar"):
-        return {**chart, "view": view}
-    return None
+        if status == "ok":
+            return None, (
+                "직전 답은 값이 하나라 그래프로 그릴 수 없습니다. '최근 5년 추이로'처럼 기간을 "
+                "넓히거나 '서울도 같이'처럼 지역을 더하면 그래프로 보여 드립니다."
+            )
+        return None, "직전 답에는 그래프로 그릴 수치가 없습니다."
+    kind = chart["type"]
+    if view == "table":
+        return {**chart, "view": "table"}, "표로 바꿨습니다."
+    if view == "bar" and kind == "line":
+        return {**chart, "view": "bar"}, "막대그래프로 바꿨습니다."
+    # parts(구성비)는 화면이 view 없이 기본 차트로 그린다
+    shown = {**chart, "view": None if kind == "parts" else kind}
+    name = CHART_NAMES[kind]
+    if view == kind or (view == "bar" and kind == "parts"):
+        return shown, f"{name}로 바꿨습니다."
+    if view == "chart":
+        return shown, f"{name}로 보여 드립니다."
+    return shown, f"{CHART_CANNOT[view]}. {name}로 보여 드립니다."
 
 
 def lead(answer: str) -> str:
@@ -1780,16 +1817,10 @@ async def _turn(
             view = delta["chart"]
 
     if has_last and (view or (delta and delta["request_type"] == CHART)):
-        chart = chart_with_view(state["last"].get("chart"), view) if view else None
-        if chart is None:
-            reason = (
-                "직전 답은 그 모양으로 그릴 수 없습니다."
-                if view
-                else "어떤 모양으로 바꿀지 알 수 없습니다."
-            )
-            return _unclear(state, reason), state["sources"], None
-        words = {"line": "꺾은선 그래프", "bar": "막대그래프", "table": "표"}
-        return _reuse(state, f"{words[view]}로 바꿨습니다.", chart, CHART), state["sources"], None
+        last = state["last"]
+        # 변경 추출이 모양을 비워 두면('그림 바꿔줘') 직전 차트의 기본 모양
+        chart, text = redraw(last.get("chart"), view or "chart", last.get("status"))
+        return _reuse(state, text, chart, CHART), state["sources"], None
     if has_last and (delta is None or delta["request_type"] == SUMMARY):
         last = state["last"]
         return (

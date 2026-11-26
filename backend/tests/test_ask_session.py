@@ -197,21 +197,50 @@ def test_pick_region_reply() -> None:
         ("막대그래프로 보여줘", "bar"),
         ("표로", "table"),
         ("꺾은선으로 바꿔줘", "line"),
+        ("그래프로 보여줘", "chart"),
+        ("차트로 그려줘", "chart"),
+        ("시각화해줘", "chart"),
+        ("막대그래프는?", "bar"),
+        ("테이블로 보여줘", "table"),
+        ("선으로 보여줘", "line"),
+        ("원그래프로 보여줘", "pie"),
+        ("표 말고 그래프로", "chart"),
+        ("그래프 말고 표로 보여줘", "table"),
+        ("이거 막대그래프로 바꿔서 보여줄 수 있어?", "bar"),
         ("부산 출생아 수 막대그래프로", None),
         ("2020년 막대그래프로 보여줘", None),
         ("막대한 영향이 있나요", None),
+        pytest.param("서울도 막대로 보여줘", None, marks=pytest.mark.needs_data),
+        ("추이를 막대그래프로 보여줘", None),
+        ("통계표 보여줘", None),
     ],
 )
 def test_chart_request(question, view) -> None:
     assert s.chart_request(question) == view
 
 
+@pytest.mark.parametrize(
+    ("kind", "view", "shown", "text"),
+    [
+        ("line", "bar", "bar", "막대그래프로 바꿨습니다."),
+        ("line", "table", "table", "표로 바꿨습니다."),
+        ("line", "chart", "line", "꺾은선 그래프로 보여 드립니다."),
+        ("bar", "bar", "bar", "막대그래프로 바꿨습니다."),
+        ("bar", "line", "bar", "꺾은선은 연도별 추이에만 씁니다. 막대그래프로 보여 드립니다."),
+        ("parts", "bar", None, "구성비 막대그래프로 바꿨습니다."),
+        ("parts", "chart", None, "구성비 막대그래프로 보여 드립니다."),
+        ("parts", "pie", None, "원그래프는 지원하지 않습니다. 구성비 막대그래프로 보여 드립니다."),
+    ],
+)
+def test_redraw_shows_a_drawable_view(kind, view, shown, text) -> None:
+    chart, said = s.redraw({"type": kind, "rows": [], "view": "table"}, view, "ok")
+    assert chart["view"] == shown and said == text
+
+
 def test_chart_view_and_summary() -> None:
-    line = {"type": "line", "rows": []}
-    assert s.chart_with_view(line, "bar")["view"] == "bar"
-    assert s.chart_with_view(line, "table")["view"] == "table"
-    assert s.chart_with_view({"type": "parts", "rows": []}, "line") is None
-    assert s.chart_with_view(None, "bar") is None
+    chart, said = s.redraw(None, "bar", "ok")
+    assert chart is None and said.startswith("직전 답은 값이 하나라 그래프로 그릴 수 없습니다.")
+    assert s.redraw(None, "chart", "tables") == (None, "직전 답에는 그래프로 그릴 수치가 없습니다.")
     assert s.summary_request("요약해줘") and s.summary_request("한 줄로 정리해 줘")
     for said in (
         "요약",
@@ -419,12 +448,25 @@ def test_summary_of_an_answer_without_numbers_repeats_its_lead(talk: Talk) -> No
     assert res["answer"] == "value ['부산'] 2022년"
 
 
-def test_chart_that_cannot_be_drawn_is_asked_back(talk: Talk) -> None:
+def test_chart_of_a_single_value_says_why_instead_of_asking_back(talk: Talk) -> None:
     talk.parsed = {**BASE, "type": "value", "start_year": None, "end_year": None}
     talk.say("2024년 부산 출생아 수")
     res = talk.say("막대그래프로 보여줘")
-    assert res["status"] == "unclear" and res["chart"] is None
+    assert res["request_type"] == "chart" and res["status"] == "ok" and res["chart"] is None
+    assert res["answer"].startswith("직전 답은 값이 하나라 그래프로 그릴 수 없습니다.")
+    assert talk.extracted == []
     assert talk.say("2022년만", request_type="change", changes={"year": 2022})["status"] == "ok"
+
+
+def test_chart_without_a_shape_uses_the_last_chart(talk: Talk) -> None:
+    first = talk.say("부산 출생아 최근 5년 보여 줘")
+    res = talk.say("그래프로 보여줘")
+    assert res["request_type"] == "chart" and res["chart"]["view"] == "line"
+    assert res["chart"]["rows"] == first["chart"]["rows"] and talk.extracted == []
+    res = talk.say("그림 좀 바꿔봐", request_type="chart", chart=None)
+    assert talk.extracted == ["그림 좀 바꿔봐"]
+    assert res["request_type"] == "chart" and res["chart"]["rows"] == first["chart"]["rows"]
+    assert res["answer"] == "꺾은선 그래프로 보여 드립니다."
 
 
 def test_new_question_inherits_and_tells(talk: Talk) -> None:
