@@ -32,6 +32,8 @@ NOT_FOUND = "not_found"
 NOT_REPORTABLE = "not_reportable"
 FULL = "full"
 BAD_ORDER = "bad_order"
+CHANGED = "changed"
+EMPTY = "empty"
 
 
 def clean_title(title: str | None) -> str:
@@ -317,3 +319,43 @@ async def delete(user_id: int, report_id: int) -> bool:
             {"rid": report_id, "uid": user_id},
         )
     return gone.rowcount > 0
+
+
+async def generate(user_id: int, report_id: int) -> dict:
+    """담긴 결과로 보고서 문장을 만들어 content에 저장한다. 생성 중 항목이 바뀌면 저장하지 않는다"""
+    from app.core.db import engine
+    from app.services import report_writer
+
+    async with engine.begin() as conn:
+        report = await _full(conn, user_id, report_id)
+    if not report["items"]:
+        raise ReportError(EMPTY, "보고서에 담긴 결과가 없습니다.")
+    seen = [(i["turn_id"], i["sort_order"]) for i in report["items"]]
+    stamp = report["updated_at"]
+    try:
+        content = await report_writer.write(report["title"], report["purpose"], report["items"])
+        status = "ready"
+    except ValueError as e:
+        content, status = {"error": str(e)}, "failed"
+    async with engine.begin() as conn:
+        if await _report(conn, user_id, report_id, lock=True) is None:
+            raise ReportError(NOT_FOUND, "보고서가 없습니다.")
+        now = [(i["turn_id"], i["sort_order"]) for i in await _items(conn, report_id)]
+        latest = await _report(conn, user_id, report_id)
+        # 항목 · 순서 · 제목 · 목적 중 하나라도 바뀌었으면 이전 내용으로 만든 것이라 저장하지 않는다
+        if now != seen or latest is None or latest["updated_at"] != stamp:
+            raise ReportError(
+                CHANGED, "만드는 동안 보고서 내용이 바뀌었습니다. 다시 만들어 주세요."
+            )
+        await conn.execute(
+            text(
+                "update app.reports set content = cast(:content as jsonb), status = :status,"
+                " updated_at = now() where id = :rid"
+            ),
+            {
+                "rid": report_id,
+                "status": status,
+                "content": json.dumps(content, ensure_ascii=False, default=str),
+            },
+        )
+        return await _full(conn, user_id, report_id)
