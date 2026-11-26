@@ -97,6 +97,18 @@ def test_same_series_over_time_is_change():
     assert d["direction"] == "증가" and d["of"] == ["r1", "r2"]
 
 
+@pytest.mark.parametrize(
+    ("earlier", "later"),
+    [("2023년", "2024년"), ("2024년 9월", "2024년 10월")],
+)
+def test_change_uses_chronological_order(earlier, later):
+    first, second = fig("이전", 12866, period=earlier), fig("이후", 13063, period=later)
+    (change,) = rc.compare(items(second, first))["derived"]
+    assert change["of"] == ["r2", "r1"]
+    assert change["direction"] == "증가" and change["value"] == 197 and change["rate"] == 1.5
+    assert change["meaning"].startswith(f"{earlier} → {later}")
+
+
 def test_percent_change_is_percent_point_without_rate():
     out = rc.compare(items(fig("a", 10.0, "%"), fig("b", 12.5, "%", period="2025년")))
     (d,) = out["derived"]
@@ -158,12 +170,12 @@ def s(text, refs=("r1",)):
 def test_check_keeps_good_sentences_and_adds_placeholder_refs():
     its, cmp, allowed = setup_two()
     out = {
-        "summary": [s("2020년 서울 1인가구는 {r1.value}이고 {c1.value} 늘었습니다.", [])],
+        "summary": [s("{c1.statement}", [])],
         "analysis": [],
     }
     kept, problems, dropped = w.check(out, its, cmp, allowed)
     assert only_sentences(problems) == [] and dropped == []
-    assert kept["summary"][0]["refs"] == ["c1", "r1"]
+    assert kept["summary"][0]["refs"] == ["c1", "r1", "r2"]
 
 
 @pytest.mark.parametrize(
@@ -187,7 +199,7 @@ def test_check_problems_cause_retry(text, why):
 def test_years_in_labels_are_allowed():
     its, cmp, allowed = setup_two()
     kept, problems, _ = w.check(
-        {"summary": [s("2020년과 2025년을 비교합니다.", ["r1", "r2"])]}, its, cmp, allowed
+        {"summary": [s("2020년 서울 1인가구는 {r1.value}였습니다.")]}, its, cmp, allowed
     )
     assert only_sentences(problems) == [] and kept["summary"]
 
@@ -245,9 +257,7 @@ def run_write(monkeypatch, outputs, figs=None, title="서울 1인 가구"):
 
 def test_write_fills_values(monkeypatch):
     good = {
-        "summary": [
-            s("서울 1인가구는 {r2.value}로 2020년보다 {c1.value} 늘었습니다.", ["r1", "r2", "c1"])
-        ],
+        "summary": [s("{c1.statement}", ["c1"])],
         "analysis": [s("2020년 서울특별시 1인가구는 {r1.value}였습니다.")],
     }
     content, calls = run_write(monkeypatch, [good])
@@ -255,7 +265,8 @@ def test_write_fills_values(monkeypatch):
     assert content["generated_by"] == "hcx"
     assert (
         content["summary"][0]["text"]
-        == "서울 1인가구는 1,500,000가구로 2020년보다 109,299가구(+7.9%) 늘었습니다."
+        == "서울특별시 1인가구는 2020년(1,390,701가구)에서 2025년(1,500,000가구)으로 "
+        "증가했습니다 (증감 109,299가구(+7.9%))."
     )
     assert content["items"][0]["value_text"] == "1,390,701가구"
     assert content["derived"][0]["value_text"] == "109,299가구(+7.9%)"
@@ -271,12 +282,19 @@ def test_write_retries_once_with_problems(monkeypatch):
     assert content["generated_by"] == "hcx" and content["warnings"] == []
 
 
-def test_write_fills_comparison_direction(monkeypatch):
-    output = {"summary": [s("{r1.value}에서 {r2.value}로 {c1.direction}했습니다.")]}
-    content, calls = run_write(monkeypatch, [output])
+def test_write_replaces_the_reproduced_reversed_sentence(monkeypatch):
+    figs = [
+        fig("2024년 부산 출생아 수", 13063, "명", ind="출생아 수", region="부산", period="2024년"),
+        fig("2023년 부산 출생아 수", 12866, "명", ind="출생아 수", region="부산", period="2023년"),
+    ]
+    bad = s("2024년 {r1.value}는 2023년 {r2.value}에 비해 감소했습니다.", ["c1"])
+    content, calls = run_write(monkeypatch, [{"summary": [bad]}], figs)
     assert len(calls) == 1
     assert content["generated_by"] == "hcx" and content["warnings"] == []
-    assert content["summary"][0]["text"] == "1,390,701가구에서 1,500,000가구로 증가했습니다."
+    assert content["summary"][0]["text"] == (
+        "부산 출생아 수는 2023년(12,866명)에서 2024년(13,063명)으로 "
+        "증가했습니다 (증감 197명(+1.5%))."
+    )
     assert content["summary"][0]["refs"] == ["c1", "r1", "r2"]
 
 
@@ -292,6 +310,8 @@ def test_write_falls_back_when_llm_down(monkeypatch):
     content, calls = run_write(monkeypatch, [RuntimeError("hcx down")])
     assert len(calls) == 1 and content["generated_by"] == "fallback"
     assert len(content["summary"]) == 2
+    assert content["analysis"][0]["refs"] == ["c1", "r1", "r2"]
+    assert "증감 109,299가구(+7.9%)" in content["analysis"][0]["text"]
 
 
 def test_write_without_items_raises(monkeypatch):
@@ -389,9 +409,13 @@ def test_limits_name_results_not_ids():
 
 
 def test_trend_word_blocked_without_three_periods():
-    its, cmp, allowed = setup_two()
+    its = items(fig("추이", 15, "%", kind="series", rows=rows(10, 15)))
+    cmp = rc.compare(its)
     _, problems, _ = w.check(
-        {"summary": [s("{c1.value} 늘어 증가세입니다.", ["c1"])]}, its, cmp, allowed
+        {"summary": [s("{c1.value} 늘어 증가세입니다.", ["c1"])]},
+        its,
+        cmp,
+        w._allowed_numbers("t", None, its, cmp),
     )
     assert any("추세" in p for p in problems)
 
@@ -399,7 +423,7 @@ def test_trend_word_blocked_without_three_periods():
 def test_comparison_needs_derived_ref():
     its, cmp, allowed = setup_two()
     _, bad, _ = w.check({"summary": [s("{r2.value}로 늘었습니다.", ["r2"])]}, its, cmp, allowed)
-    _, good, _ = w.check({"summary": [s("{c1.value} 늘었습니다.", ["c1"])]}, its, cmp, allowed)
+    _, good, _ = w.check({"summary": [s("{c1.statement}", ["c1"])]}, its, cmp, allowed)
     assert only_sentences(bad) and not only_sentences(good)
 
 
@@ -439,7 +463,7 @@ def test_missing_values_filled_from_summaries_on_second_try(monkeypatch):
     empty = {"summary": [s("서울 1인가구 결과를 담았습니다.")], "analysis": []}
     content, calls = run_write(monkeypatch, [empty, dict(empty)])
     assert len(calls) == 2 and content["generated_by"] == "hcx"
-    assert [x["text"] for x in content["analysis"]] == [
+    assert [x["text"] for x in content["analysis"][:2]] == [
         "2020년 서울특별시 1인가구는 1,390,701가구입니다.",
         "2025년 서울특별시 1인가구는 1,500,000가구입니다.",
     ]
@@ -447,7 +471,7 @@ def test_missing_values_filled_from_summaries_on_second_try(monkeypatch):
 
 def test_actual_values_not_written_as_forecast():
     its, cmp, allowed = setup_two()
-    out = {"summary": [s("{c1.value} 늘어 {r2.value}가 될 것으로 보입니다.", ["c1", "r1", "r2"])]}
+    out = {"summary": [s("{r2.value}가 될 것으로 보입니다.", ["r2"])]}
     _, problems, _ = w.check(out, its, cmp, allowed)
     assert any("예상 · 전망처럼" in p for p in problems)
 
@@ -455,14 +479,28 @@ def test_actual_values_not_written_as_forecast():
 # ---- #246 리뷰 -------------------------------------------------------------------------
 
 
-def test_opposite_direction_is_caught():
-    """100 → 120 인데 '감소'라고 쓴 문장은 통과하지 않는다"""
+@pytest.mark.parametrize(
+    ("text", "refs"),
+    [
+        ("{r2.value}는 {r1.value}보다 {c1.direction}했습니다.", ["c1"]),
+        ("{r1.value}보다 {r2.value}가 감소했습니다.", []),
+        ("변화는 {c1.statement}입니다.", []),
+    ],
+)
+def test_time_comparison_is_replaced_with_a_complete_statement(text, refs):
     its, cmp, allowed = setup_two()
-    out = {"summary": [s("{c1.value} 감소했습니다.", ["c1", "r1", "r2"])]}
-    _, problems, dropped = w.check(out, its, cmp, allowed)
-    assert any("방향이 계산과 반대" in p for p in problems) and dropped
-    ok = {"summary": [s("{c1.value} 늘었습니다.", ["c1", "r1", "r2"])]}
-    assert not only_sentences(w.check(ok, its, cmp, allowed)[1])
+    out = {"summary": [s(text, refs)], "analysis": [s("{c1.statement}", [])]}
+    kept, problems, dropped = w.check(out, its, cmp, allowed)
+    assert problems == [] and dropped == []
+    assert kept["summary"][0]["text"].endswith("증가했습니다 (증감 {c1.value}).")
+    assert kept["summary"][0]["refs"] == ["c1", "r1", "r2"]
+    assert kept["analysis"] == []
+
+
+def test_unknown_time_comparison_is_dropped():
+    its, cmp, allowed = setup_two()
+    kept, problems, dropped = w.check({"summary": [s("{c9.statement}")]}, its, cmp, allowed)
+    assert not kept["summary"] and dropped and any("{cN.statement}" in p for p in problems)
 
 
 def test_series_opposite_direction_is_caught():

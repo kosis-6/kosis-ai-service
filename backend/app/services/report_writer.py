@@ -1,8 +1,7 @@
 """통합 보고서 생성: 비교 검사 → LLM 문장 → 검증 → 자리표시자 채우기 (명세서 5장)
 
-LLM은 수치를 받지도 쓰지도 않는다. {r1.value} · {c1.value} 자리표시자만 쓰고, 코드가 검증한 뒤
-값을 채운다. 검증에 걸리면 한 번 다시 쓰게 하고, 또 걸리거나 LLM을 부르지 못하면 각 결과의 요약
-문장(코드가 만든 것)만으로 보고서를 만든다. 그래서 보고서의 모든 숫자는 담은 결과에서 온다.
+LLM은 수치 자리에 {r1.value} 같은 자리표시자를 쓴다. 두 시점의 변화는 {c1.statement}를
+선택하면 코드가 시점, 값, 방향을 한 문장으로 채운다. LLM을 부르지 못하면 코드가 보고서를 쓴다.
 """
 
 import json
@@ -14,6 +13,7 @@ from app.core.config import get_settings
 from app.prompts import report as prompt
 from app.services import llm_calls, llm_json, report_compare, search_llm
 from app.services.hcx_client import HcxClient
+from app.services.josa import josa
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +21,7 @@ MODEL = "HCX-007"
 MAX_TOKENS = 1500
 PLACEHOLDER = re.compile(r"\{([rc]\d+)\.value\}")
 DIRECTION_PLACEHOLDER = re.compile(r"\{(c\d+)\.direction\}")
+STATEMENT_PLACEHOLDER = re.compile(r"\{(c\d+)\.statement\}")
 NUMBER = re.compile(r"\d+(?:[.,]\d+)*")
 CAUSAL = ("때문", "원인", "영향")
 UP = re.compile(r"증가|늘|상승|높아|올라|커졌")
@@ -60,10 +61,14 @@ def llm_input(title: str, purpose: str | None, items: list[dict], cmp: dict) -> 
                 "of": d["of"],
                 "meaning": d["meaning"],
                 "unit": d["unit"],
-                "direction": d["direction"],
+                **(
+                    {"statement": f"{{{d['id']}.statement}}"}
+                    if d["kind"] == "change"
+                    else {"direction": d["direction"]}
+                ),
                 **(
                     {"direction_ref": f"{{{d['id']}.direction}}"}
-                    if d["direction"] in ("증가", "감소")
+                    if d["kind"] == "series_change" and d["direction"] in ("증가", "감소")
                     else {}
                 ),
                 **({"steady": d["steady"]} if "steady" in d else {}),
@@ -85,6 +90,45 @@ def _allowed_numbers(title: str, purpose: str | None, items: list[dict], cmp: di
     return {n for w in words for n in NUMBER.findall(w)}
 
 
+def _change_statements(items: list[dict], cmp: dict) -> dict[str, dict]:
+    """두 시점과 해당 수치, 증감 방향을 한 단위로 렌더링한다."""
+    figures = {it["id"]: it["figure"] for it in items}
+    statements = {}
+    for d in cmp["derived"]:
+        if d["kind"] != "change":
+            continue
+        start, end = d["of"]
+        a, b = figures[start], figures[end]
+        conditions = a["conditions"]
+        subject = (
+            " ".join(
+                s
+                for s in (
+                    conditions.get("region"),
+                    conditions.get("sex"),
+                    conditions.get("ages"),
+                    a.get("indicator"),
+                )
+                if s
+            )
+            or "값"
+        )
+        source_value = f"{'추계값 ' if a.get('is_projection') else ''}{{{start}.value}}"
+        target_value = f"{'추계값 ' if b.get('is_projection') else ''}{{{end}.value}}"
+        source = f"{conditions['period']}({source_value})"
+        target = f"{b['conditions']['period']}({target_value})"
+        change = (
+            f"{target}까지 같은 값이었습니다."
+            if d["direction"] == "같음"
+            else f"{target}으로 {d['direction']}했습니다 (증감 {{{d['id']}.value}})."
+        )
+        statements[d["id"]] = {
+            "text": f"{josa(subject, '은는')} {source}에서 {change}",
+            "refs": sorted([start, end, d["id"]]),
+        }
+    return statements
+
+
 def check(
     out: dict | None, items: list[dict], cmp: dict, allowed: set[str]
 ) -> tuple[dict[str, list[dict]], list[str], list[dict]]:
@@ -97,8 +141,13 @@ def check(
     known = set(by_id) | {d["id"] for d in cmp["derived"]}
     projected = {i for i, it in by_id.items() if it["figure"].get("is_projection")}
     directions = {
-        d["id"]: d["direction"] for d in cmp["derived"] if d["direction"] in ("증가", "감소")
+        d["id"]: d["direction"]
+        for d in cmp["derived"]
+        if d["kind"] != "change" and d["direction"] in ("증가", "감소")
     }
+    statements = _change_statements(items, cmp)
+    change_pairs = {d["id"]: set(d["of"]) for d in cmp["derived"] if d["kind"] == "change"}
+    used_statements: set[str] = set()
     blocked = [set(x["pair"]) for x in cmp["not_comparable"]]
     steady = {d["id"] for d in cmp["derived"] if d.get("steady")}
     problems: list[str] = []
@@ -116,14 +165,26 @@ def check(
                 continue
             text = " ".join(s["text"].split())
             direction_refs = DIRECTION_PLACEHOLDER.findall(text)
-            if any(ref not in directions for ref in direction_refs):
-                bad(text, "계산된 증감 방향이 없는 자리표시자를 썼습니다.")
-                continue
-            text = DIRECTION_PLACEHOLDER.sub(lambda match: directions[match[1]], text)
             used = PLACEHOLDER.findall(text)
             refs = {r for r in s.get("refs") or [] if isinstance(r, str)} | set(
                 used + direction_refs
             )
+            statement_ids = set(STATEMENT_PLACEHOLDER.findall(text)) | (refs & statements.keys())
+            statement_ids.update(key for key, pair in change_pairs.items() if pair <= refs)
+            if statement_ids:
+                if len(statement_ids) != 1 or not statement_ids <= statements.keys():
+                    bad(text, "한 문장에는 확인된 시점 비교 {cN.statement} 하나만 쓰세요.")
+                    continue
+                (key,) = statement_ids
+                # 시점 비교를 특정할 수 있으면 모델이 쓴 문장 전체를 계산 결과로 교체한다.
+                if key not in used_statements:
+                    kept[section].append(statements[key])
+                    used_statements.add(key)
+                continue
+            if any(ref not in directions for ref in direction_refs):
+                bad(text, "계산된 증감 방향이 없는 자리표시자를 썼습니다.")
+                continue
+            text = DIRECTION_PLACEHOLDER.sub(lambda match: directions[match[1]], text)
             if unknown := [u for u in used if u not in valued]:
                 bad(text, f"없는 자리표시자를 썼습니다: {', '.join(sorted(set(unknown)))}")
                 continue
@@ -173,11 +234,11 @@ def check(
 
 
 def _wrong_direction(text: str, refs: set[str], cmp: dict) -> str | None:
-    """근거로 단 변화(change · series_change)의 방향과 반대 말을 썼으면 그 id"""
+    """추이 결과의 방향과 반대 말을 썼으면 그 id"""
     plain = PLACEHOLDER.sub("", text)
     up, down = bool(UP.search(plain)), bool(DOWN.search(plain))
     for d in cmp["derived"]:
-        if d["id"] not in refs or d["kind"] not in ("change", "series_change"):
+        if d["id"] not in refs or d["kind"] != "series_change":
             continue
         if d["direction"] == "증가" and down and not up:
             return d["id"]
@@ -252,7 +313,7 @@ async def write(title: str, purpose: str | None, snapshots: list[dict]) -> dict[
             out = await _ask(messages)
         except Exception as e:  # HCX · Gemma 오류: 코드 문장으로 만든다
             logger.warning("보고서 문장 LLM 실패: %s", e)
-            warnings.append("자동 분석 문장을 만들지 못해 각 결과의 요약만 실었습니다.")
+            warnings.append("자동 분석 문장을 만들지 못해 코드로 생성한 문장을 실었습니다.")
             break
         kept, problems, dropped = check(out, items, cmp, allowed)
         if not problems or (attempt == 1 and kept["summary"]):
@@ -273,9 +334,14 @@ async def write(title: str, purpose: str | None, snapshots: list[dict]) -> dict[
             },
         ]
     else:
-        warnings.append("자동 분석 문장이 검증을 통과하지 못해 각 결과의 요약만 실었습니다.")
+        warnings.append("자동 분석 문장이 검증을 통과하지 못해 코드로 생성한 문장을 실었습니다.")
     if sections is None:
         sections, how = _fallback(items), "fallback"
+    statements = _change_statements(items, cmp)
+    if statements and not any(
+        statements.keys() & set(line["refs"]) for lines in sections.values() for line in lines
+    ):
+        sections["analysis"].append(next(iter(statements.values())))
     values = {it["id"]: report_compare.value_text(it) for it in items}
     values |= {d["id"]: report_compare.value_text(d) for d in cmp["derived"]}
     units = {it["id"]: it["figure"].get("unit") or "" for it in items}
