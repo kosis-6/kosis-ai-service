@@ -56,6 +56,12 @@ def test_birth_sex_ratio_words(
         ("여아 열한 명당 남아는 몇 명이야?", "출생성비", 11),
         ("남아 1만 명당 여아는 몇 명이야?", "남아 100명당 여아 수", 10000),
         ("여자아이가 2천 명 태어날 때 남자아이는?", "출생성비", 2000),
+        ("남아 1억 명당 여아는 몇 명이야?", "남아 100명당 여아 수", 10**8),
+        ("남아 일억 명당 여아는 몇 명이야?", "남아 100명당 여아 수", 10**8),
+        ("남아 1억 5천만 명당 여아는 몇 명이야?", "남아 100명당 여아 수", 150_000_000),
+        ("여아 삼억오천만 명당 남아는 몇 명이야?", "출생성비", 350_000_000),
+        ("남아 1조 명당 여아는 몇 명이야?", "남아 100명당 여아 수", 10**12),
+        ("여아 이조 오천억 명당 남아는 몇 명이야?", "출생성비", 2_500_000_000_000),
     ],
 )
 def test_birth_sex_ratio_reads_korean_numbers(question: str, indicator: str, base: int) -> None:
@@ -64,7 +70,13 @@ def test_birth_sex_ratio_reads_korean_numbers(question: str, indicator: str, bas
 
 @pytest.mark.parametrize(
     ("reply", "base"),
-    [("그럼 이백 명 기준으로는?", 200), ("스물다섯 명당은?", 25), ("1만 명 기준으로는?", 10000)],
+    [
+        ("그럼 이백 명 기준으로는?", 200),
+        ("스물다섯 명당은?", 25),
+        ("1만 명 기준으로는?", 10000),
+        ("그럼 1억 명 기준으로는?", 10**8),
+        ("삼조 명당은?", 3 * 10**12),
+    ],
 )
 def test_birth_ratio_count_reply_reads_korean_numbers(reply: str, base: int) -> None:
     count = ask_session.BIRTH_RATIO_COUNT_REPLY.fullmatch(reply)
