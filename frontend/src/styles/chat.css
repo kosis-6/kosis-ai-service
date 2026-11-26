@@ -612,6 +612,15 @@ button.pill:active { transform: scale(0.97); }
 .alt-card h3 { font-size: 16px; font-weight: 600; line-height: 24px; }
 .alt-card .btn { height: 40px; }
 .sheet-body > .btn.secondary { height: 52px; white-space: normal; }
+.report-picks { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.report-pick { display: flex; align-items: flex-start; gap: 12px; padding: 16px 20px; border-radius: 16px; background: var(--panel); cursor: pointer; }
+.report-pick input { flex: none; width: 16px; height: 16px; margin: 2px 0 0; accent-color: var(--accent); }
+.report-pick.off { cursor: default; }
+.report-pick.off .report-pick-q { color: var(--muted); }
+.report-pick-text { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.report-pick-q { font-size: 14px; font-weight: 600; line-height: 20px; }
+.report-pick-a { color: var(--muted); font-size: 13px; line-height: 20px; }
+.report-actions { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 
 @media (min-width: 861px) and (max-height: 860px) {
   .head { min-height: 72px; padding: 12px 32px; }

@@ -1,5 +1,6 @@
-import type { AskResponse, Chart } from "../api/types";
+import type { AskResponse, Chart, Source } from "../api/types";
 import { safeUrl } from "./format";
+import type { Report, ReportLine } from "./reports";
 import reportCss from "./report.css?raw";
 import reportCssUrl from "./report.css?url&no-inline";
 import reportViewUrl from "./report-view.js?url&no-inline";
@@ -120,42 +121,69 @@ function chartSvg(chart: Chart): string {
   return `<figure><h3>${escape(chart.title)}</h3><p>단위: ${escape(chart.unit)}${chart.type === "parts" ? " · 보고서에서는 항목별 막대로 표시" : ""}</p><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escape(chart.title)}" font-family="sans-serif" font-size="12">${marks}</svg>${chart.note ? `<p>${escape(chart.note)}</p>` : ""}</figure>`;
 }
 
-function reportBody(data: AskResponse, at: Date): string {
-  if (!canReport(data)) throw new Error("수치를 계산한 답변에서 보고서를 저장해 주세요.");
-  const title = data.question || "통계 분석 보고서";
-  const conditions = (data.applied ?? []).map((c) => `<li>${escape(c.name)}: ${escape(c.value)}${c.source === "inherited" ? " (앞 질문에서 이어받음)" : c.source === "default" ? " (기본값)" : ""}</li>`).join("");
-  const tables = reportTables(data.result).map((t) => `<section><h3>${escape(t.title)}</h3><table><thead><tr>${t.headings.map((h) => `<th>${escape(h)}</th>`).join("")}</tr></thead><tbody>${t.rows.map((r) => `<tr>${r.map((v) => `<td>${escape(value(v))}</td>`).join("")}</tr>`).join("")}</tbody></table></section>`).join("");
-  const sources = data.sources.map((s) => {
+const written = (at: Date) => `<p>작성 시각: ${escape(at.toLocaleString("ko-KR", { timeZone: "Asia/Seoul" }))} (한국 시간)</p>`;
+
+function sourceList(sources: Source[]): string {
+  return sources.map((s) => {
     const link = s.url && safeUrl(s.url);
     return `<li>${escape(s.name)} · ${escape(s.basis)}${link ? ` · <a href="${escape(link)}" rel="noopener noreferrer">통계표 보기</a>` : ""}</li>`;
   }).join("");
-  return `<h1>${escape(title)}</h1><p>작성 시각: ${escape(at.toLocaleString("ko-KR", { timeZone: "Asia/Seoul" }))} (한국 시간)</p><h2>분석 조건</h2><ul>${conditions}</ul>${data.notice ? `<p>${escape(data.notice)}</p>` : ""}<h2>요약과 계산 근거</h2><pre>${escape(data.answer)}</pre><h2>전체 수치</h2>${tables}${data.chart ? `<h2>시각화</h2>${chartSvg(data.chart)}` : ""}<h2>출처</h2><ul>${sources}</ul><footer>선택한 답변의 계산 결과로 작성했습니다. 보고서 저장 과정에서 자료를 다시 조회하거나 새로운 숫자를 생성하지 않았습니다. 자료가 없는 칸은 ‘자료 없음’으로 표시합니다.</footer>`;
 }
 
-function page(data: AskResponse, head: string, body: string): string {
-  const title = escape(data.question || "통계 분석 보고서");
-  return `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title>${head}</head><body>${body}</body></html>`;
+function reportBody(data: AskResponse, at: Date): string {
+  if (!canReport(data)) throw new Error("수치를 계산한 답변에서 보고서를 저장해 주세요.");
+  const title = titleOf(data);
+  const conditions = (data.applied ?? []).map((c) => `<li>${escape(c.name)}: ${escape(c.value)}${c.source === "inherited" ? " (앞 질문에서 이어받음)" : c.source === "default" ? " (기본값)" : ""}</li>`).join("");
+  const tables = reportTables(data.result).map((t) => `<section><h3>${escape(t.title)}</h3><table><thead><tr>${t.headings.map((h) => `<th>${escape(h)}</th>`).join("")}</tr></thead><tbody>${t.rows.map((r) => `<tr>${r.map((v) => `<td>${escape(value(v))}</td>`).join("")}</tr>`).join("")}</tbody></table></section>`).join("");
+  return `<h1>${escape(title)}</h1>${written(at)}<h2>분석 조건</h2><ul>${conditions}</ul>${data.notice ? `<p>${escape(data.notice)}</p>` : ""}<h2>요약과 계산 근거</h2><pre>${escape(data.answer)}</pre><h2>전체 수치</h2>${tables}${data.chart ? `<h2>시각화</h2>${chartSvg(data.chart)}` : ""}<h2>출처</h2><ul>${sourceList(data.sources)}</ul><footer>선택한 답변의 계산 결과로 작성했습니다. 보고서 저장 과정에서 자료를 다시 조회하거나 새로운 숫자를 생성하지 않았습니다. 자료가 없는 칸은 ‘자료 없음’으로 표시합니다.</footer>`;
+}
+
+/** 대화창 [보고서]: 이 대화에서 고른 답들로 서버가 만든 보고서 (요약 · 분석 · 담은 결과 · 유의할 점) */
+export function bundleBody(report: Report, at: Date): string {
+  const c = report.content ?? {};
+  const lines = (xs: ReportLine[] = []) => xs.map((l) => `<li>${escape(l.text)}</li>`).join("");
+  const results = (c.items ?? []).map((it) => `<section><h3>${escape(it.question || it.label || "")}</h3>${it.value_text ? `<p>값: ${escape(it.value_text)}</p>` : ""}${it.chart ? chartSvg(it.chart) : ""}${it.sources?.length ? `<ul>${sourceList(it.sources)}</ul>` : ""}</section>`).join("");
+  const notes = [...(c.limits ?? []), ...(c.warnings ?? [])].map((n) => `<li>${escape(n)}</li>`).join("");
+  return `<h1>${escape(report.title)}</h1>${written(at)}${report.purpose ? `<p>목적: ${escape(report.purpose)}</p>` : ""}<h2>요약</h2><ul>${lines(c.summary)}</ul>${c.analysis?.length ? `<h2>분석</h2><ul>${lines(c.analysis)}</ul>` : ""}<h2>담은 결과</h2>${results}${notes ? `<h2>유의할 점</h2><ul>${notes}</ul>` : ""}<footer>대화에서 고른 답의 계산 결과로 작성했습니다. 문장 속 숫자는 계산 결과를 그대로 넣었고, 보고서를 만들며 자료를 다시 조회하거나 새로운 숫자를 생성하지 않았습니다.</footer>`;
+}
+
+const titleOf = (data: AskResponse) => data.question || "통계 분석 보고서";
+
+function page(title: string, head: string, body: string): string {
+  return `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escape(title)}</title>${head}</head><body>${body}</body></html>`;
 }
 
 export function reportFileName(at = new Date()): string {
   return `통계보고서-${at.toLocaleDateString("sv-SE", { timeZone: "Asia/Seoul" })}.html`;
 }
 
-export function buildReport(data: AskResponse, at = new Date()): string {
+function fileOf(title: string, body: string): string {
   const toolbar = `<div class="report-toolbar"><button type="button" class="primary" onclick="window.print()">인쇄 · PDF 저장</button></div>`;
-  return page(data, `<style>${reportCss}</style>`, toolbar + reportBody(data, at));
+  return page(title, `<style>${reportCss}</style>`, toolbar + body);
 }
 
-export function buildPreview(data: AskResponse, assets: { css: string; script: string }, at = new Date()): string {
-  const file = JSON.stringify(buildReport(data, at)).replace(/</g, "\\u003c");
+function previewOf(title: string, body: string, assets: { css: string; script: string }, at: Date): string {
+  const file = JSON.stringify(fileOf(title, body)).replace(/</g, "\\u003c");
   const toolbar = `<div class="report-toolbar"><button type="button" class="primary" id="report-save">HTML 파일로 저장</button><button type="button" id="report-print">인쇄 · PDF 저장</button><p>내용을 확인한 뒤 저장하세요. 저장한 파일은 인터넷 없이도 열립니다.</p></div>`;
   return page(
-    data,
+    title,
     `<link rel="stylesheet" href="${escape(assets.css)}">`,
-    toolbar + reportBody(data, at)
+    toolbar + body
       + `<script type="application/json" id="report-file" data-filename="${escape(reportFileName(at))}">${file}</script>`
       + `<script src="${escape(assets.script)}"></script>`,
   );
+}
+
+export function buildReport(data: AskResponse, at = new Date()): string {
+  return fileOf(titleOf(data), reportBody(data, at));
+}
+
+export function buildPreview(data: AskResponse, assets: { css: string; script: string }, at = new Date()): string {
+  return previewOf(titleOf(data), reportBody(data, at), assets, at);
+}
+
+export function buildBundleReport(report: Report, at = new Date()): string {
+  return fileOf(report.title, bundleBody(report, at));
 }
 
 function saveFile(html: string, name: string): void {
@@ -169,16 +197,25 @@ function saveFile(html: string, name: string): void {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-export function openReport(data: AskResponse): "opened" | "saved" {
-  const at = new Date();
+/** 미리보기를 새 탭으로 연다. 브라우저가 새 탭을 막으면 파일로 바로 저장한다 */
+function openHtml(title: string, body: string, at: Date): "opened" | "saved" {
   const assets = {
     css: new URL(reportCssUrl, window.location.href).href,
     script: new URL(reportViewUrl, window.location.href).href,
   };
-  const html = buildPreview(data, assets, at);
-  const url = URL.createObjectURL(new Blob([html], { type: "text/html;charset=utf-8" }));
+  const url = URL.createObjectURL(new Blob([previewOf(title, body, assets, at)], { type: "text/html;charset=utf-8" }));
   if (window.open(url, "_blank")) return "opened";
   URL.revokeObjectURL(url);
-  saveFile(buildReport(data, at), reportFileName(at));
+  saveFile(fileOf(title, body), reportFileName(at));
   return "saved";
+}
+
+export function openReport(data: AskResponse): "opened" | "saved" {
+  const at = new Date();
+  return openHtml(titleOf(data), reportBody(data, at), at);
+}
+
+export function openBundleReport(report: Report): "opened" | "saved" {
+  const at = new Date();
+  return openHtml(report.title, bundleBody(report, at), at);
 }
