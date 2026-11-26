@@ -42,14 +42,9 @@ class Settings(BaseSettings):
     # 나머지만 LLM 복원으로 보낸다. 직전 답이 정상(ok)일 때만 규칙을 쓴다 (거절 뒤 "부산은?"이
     # 거절된 조건을 이어받던 C27). 기본은 끔 (FOLLOW_SURE_RULES=true 로 켠다)
     follow_sure_rules: bool = False
-    # 제3안 3-b: 기존 경로(코드 규칙 + 변경 추출)로 이어 묻기를 처리한 뒤, LLM 이 그 해석이
-    # 새 말과 맞는지 한 번 더 본다. 어긋난다고 하면 LLM 이 쓴 완전한 질문으로 새 질문 경로에서
-    # 다시 계산한다. FOLLOW_RESTATE 가 복원으로 처리한 턴에는 걸리지 않는다.
-    # 기본은 끔 (FOLLOW_CHECK=true 로 켠다)
-    follow_check: bool = False
-    # 이어 묻기 복원(FOLLOW_RESTATE) · 검사(FOLLOW_CHECK)에 쓸 LLM. gemma 는 GEMMA_BASE_URL 필요.
-    # gemma 가 실패해도 HCX 로 넘기지 않는다 (비교 실험이 섞이지 않게): 복원은 기존 경로로,
-    # 검사는 기존 답 그대로 가고 흐름에 "실패"가 남는다. 기본은 hcx
+    # 이어 묻기 복원(FOLLOW_RESTATE)에 쓸 LLM. gemma 는 GEMMA_BASE_URL 필요.
+    # gemma 가 실패해도 HCX 로 넘기지 않는다 (비교 실험이 섞이지 않게): 복원은 기존 경로로
+    # 가고 흐름에 "실패"가 남는다. 기본은 hcx
     follow_llm: Literal["hcx", "gemma"] = "hcx"
     # 조건 → 칸 잇기 1단계 (app/services/binding.py, docs/cell_binding_design_2026-11-23.md).
     # true: 바로 계산이 표 하나를 계산할 때 같은 표로 잇기를 돌려 처리 기록에만 남긴다

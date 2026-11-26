@@ -15,7 +15,7 @@ from starlette.concurrency import run_in_threadpool
 
 from app.agent import replan
 from app.core.config import get_settings
-from app.prompts.qa import CHECK_SYSTEM, FOLLOW_SYSTEM, RESTATE_SYSTEM
+from app.prompts.qa import FOLLOW_SYSTEM, RESTATE_SYSTEM
 from app.services import (
     agent_action,
     answer_judge,
@@ -1058,70 +1058,6 @@ def restate_outcome(r: dict, raw: str | None) -> str:
     return "ok" if r.get("relation") else "failed"
 
 
-# 3-b: 이 턴을 기존 경로(코드 규칙 + 변경 추출)가 처리했는가. handle 이 턴마다 False 로 되돌린다
-_legacy_follow: ContextVar[bool] = ContextVar("ask_legacy_follow", default=False)
-CHECK_VERDICTS = ("ok", "fix")
-
-
-def parse_check(raw: str) -> dict:
-    objects = qa._json_objects(raw)
-    data = objects[0] if objects else {}
-    verdict = str(data.get("verdict") or "").strip().lower()
-    return {
-        "verdict": verdict if verdict in CHECK_VERDICTS else "",
-        "question": " ".join(str(data.get("question") or "").split()),
-        "why": str(data.get("why") or "").strip(),
-    }
-
-
-def read_text(res: dict) -> str:
-    """3-b 검사에 보여 줄 기존 경로의 해석: 다시 쓴 질문(있으면) + 계산에 쓴 조건.
-    숫자 값은 넣지 않는다"""
-    lines = []
-    if (asked := res.get("question")) and res.get("request_type") == CHANGE:
-        lines.append(f"질문: {asked}")
-    parsed = res.get("parsed") or {}
-    if parsed:
-        lines.append(state_text(parsed, {}))
-    return "\n".join(lines) or "(해석 없음)"
-
-
-async def _checked(
-    state: dict, question: str, user_id: int | None, out: tuple[dict, dict, str | None]
-) -> tuple[dict, dict, str | None]:
-    """3-b (FOLLOW_CHECK): 기존 경로의 해석을 LLM 이 검사한다. fix 이고 문장이 있으면 그 문장을
-    복원과 같은 코드 확인(verify_restate: 상대 시점 · 최근 N년은 코드가 센다)을 거쳐 새 질문
-    경로로 다시 계산한다. ok · 못 읽음 · 호출 실패면 기존 답을 그대로 둔다"""
-    res = out[0]
-    if res.get("request_type") not in (CHANGE, NEW) or not res.get("parsed"):
-        return out
-    recent = state.get("recent") or []
-    system = (
-        CHECK_SYSTEM.replace("{PREV_QUESTION}", recent[-1] if recent else "(없음)")
-        .replace("{STATE}", state_text(state["conditions"], state["sources"]))
-        .replace("{READ}", read_text(res))
-    )
-    try:
-        raw = await _follow_chat(question, system)
-    except Exception:
-        logger.exception("이어 묻기 검사 실패 → 기존 답 그대로")
-        flow.add("이어 묻기 검사", "실패", "호출 실패 → 기존 답 그대로")
-        return out
-    c = parse_check(raw)
-    if c["verdict"] != "fix" or not c["question"]:
-        flow.add("이어 묻기 검사", c["verdict"] or "못 읽음", c["why"] or f"원문: {raw}")
-        return out
-    _, restored, note = verify_restate(
-        {"relation": "new", "question": c["question"]}, state["conditions"], question
-    )
-    flow.add("이어 묻기 검사", "fix", " · ".join(x for x in (restored, c["why"], note) if x))
-    again, sources, notice = await _new(restored, state)
-    again["request_type"], again["question"] = CHANGE, restored
-    if isinstance(again.get("trace"), dict):
-        again["trace"]["follow_check"] = {**c, "asked": question, "note": note, "raw": raw}
-    return again, sources, notice
-
-
 async def _sure_rule(state: dict, question: str) -> str | None:
     """3-a: LLM 복원보다 먼저 쓸 '확실한' 코드 규칙이 이 말을 잡는가 → 규칙 이름 (아니면 None).
     11/25 대화 셋(끔)에서 오판이 없던 셋만: 비율 후속(C10 · C12 · C13) · 지역만(C01~C05) ·
@@ -1195,7 +1131,7 @@ def indicator_names(conditions: dict) -> list[str]:
 
 
 async def _follow_chat(prompt: str, system: str) -> str:
-    """이어 묻기 복원 · 검사 LLM (FOLLOW_LLM). hcx 는 변경 추출과 같은 _chat, gemma 는
+    """이어 묻기 복원 LLM (FOLLOW_LLM). hcx 는 변경 추출과 같은 _chat, gemma 는
     재계획 · 판정과 같은 GemmaClient. gemma 실패를 HCX 로 넘기지 않는다
     (부른 쪽이 실패로 처리한다)"""
     if get_settings().follow_llm != "gemma":
@@ -1690,7 +1626,6 @@ async def _turn(
             flow.add("이어 묻기 판단", "규칙", f"{rule} 규칙이 잡음 → LLM 복원 건너뜀")
         elif (restated := await _restated(state, question, user_id)) is not None:
             return restated
-    _legacy_follow.set(True)  # 여기부터 기존 경로(코드 규칙 + 변경 추출): 3-b 검사 대상
     if view is None and (asked := await asyncio.to_thread(ratio_followup, question, state)):
         flow.add("비율 후속 질문", "새 질문으로", asked)
         res, sources, notice = await _new(
@@ -2768,11 +2703,7 @@ async def handle(
         if moved:
             sid, state, expired = new_id(), None, False
         _found_now.set(None)
-        _legacy_follow.set(False)
-        out = await _turn(state, question, selections, user_id)
-        if state and _legacy_follow.get() and get_settings().follow_check:
-            out = await _checked(state, question, user_id, out)
-        res, sources, notice = out
+        res, sources, notice = await _turn(state, question, selections, user_id)
         await _attach_tables(res, state, question, user_id)
         await refusal.finalize(res, question)
         await _judged(res, state, question, user_id)

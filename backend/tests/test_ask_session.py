@@ -2204,60 +2204,8 @@ def test_sure_rules_leave_other_follow_ups_to_restate(talk: Talk, sure_on: list)
     assert sure_on == ["2022년만"]  # 규칙 셋이 못 잡는 말은 LLM 복원으로
 
 
-def test_parse_check_reads_verdict_and_question() -> None:
-    raw = '{"verdict": "Fix", "question": " 2024년  서울 1인 가구 비율은? ", "why": "지역을 버림"}'
-    assert s.parse_check(raw) == {
-        "verdict": "fix",
-        "question": "2024년 서울 1인 가구 비율은?",
-        "why": "지역을 버림",
-    }
-    assert s.parse_check("말로 답함")["verdict"] == ""
-    assert s.parse_check('{"verdict": "maybe"}')["verdict"] == ""
-
-
-@pytest.fixture
-def check_on(monkeypatch: pytest.MonkeyPatch) -> dict:
-    """3-b 켬 + 검사 LLM 가짜. said["reply"] 를 바꿔 답을 정하고, 부른 질문은 said["calls"] 에"""
-    monkeypatch.setattr(s.get_settings(), "follow_check", True)
-    said: dict = {"reply": '{"verdict": "ok", "question": "", "why": "맞음"}', "calls": []}
-
-    async def fake(question, system):
-        said["calls"].append(question)
-        return said["reply"]
-
-    monkeypatch.setattr(s, "_chat", fake)
-    return said
-
-
-def test_follow_check_keeps_rule_answer_when_ok(talk: Talk, check_on: dict) -> None:
-    talk.say("부산 출생아 최근 5년 보여 줘")
-    assert check_on["calls"] == []  # 첫 턴(새 질문)은 검사하지 않는다
-    res = talk.say("2022년만", request_type="change", changes={"year": 2022})
-    assert check_on["calls"] == ["2022년만"]
-    assert talk.extracted == ["2022년만"] and talk.asked == ["부산 출생아 최근 5년 보여 줘"]
-    assert res["parsed"]["year"] == 2022 and res["parsed"]["regions"] == ["부산"]
-    steps = [x for x in res["trace"]["flow"] if x["stage"] == "이어 묻기 검사"]
-    assert steps and steps[0]["result"] == "ok"
-
-
-def test_follow_check_recomputes_with_llm_question_when_fix(talk: Talk, check_on: dict) -> None:
-    talk.say("부산 출생아 최근 5년 보여 줘")
-    check_on["reply"] = '{"verdict": "fix", "question": "2022년 서울 출생아 수는?", "why": "x"}'
-    res = talk.say("2022년만", request_type="change", changes={"year": 2022})
-    assert talk.asked[-1] == "2022년 서울 출생아 수는?"  # LLM 문장으로 새 질문 경로를 탔다
-    assert res["request_type"] == "change" and res["question"] == "2022년 서울 출생아 수는?"
-
-
-def test_follow_check_unreadable_keeps_rule_answer(talk: Talk, check_on: dict) -> None:
-    talk.say("부산 출생아 최근 5년 보여 줘")
-    check_on["reply"] = "죄송하지만 모르겠습니다"
-    res = talk.say("2022년만", request_type="change", changes={"year": 2022})
-    assert talk.asked == ["부산 출생아 최근 5년 보여 줘"]
-    assert res["parsed"]["year"] == 2022
-
-
 def test_follow_llm_gemma_uses_gemma_client(monkeypatch: pytest.MonkeyPatch) -> None:
-    """FOLLOW_LLM=gemma: 복원 · 검사 LLM 을 GemmaClient 로 부른다 (HCX _chat 은 부르지 않는다)"""
+    """FOLLOW_LLM=gemma: 복원 LLM 을 GemmaClient 로 부른다 (HCX _chat 은 부르지 않는다)"""
     monkeypatch.setattr(s.get_settings(), "follow_llm", "gemma")
     sent: list = []
 
