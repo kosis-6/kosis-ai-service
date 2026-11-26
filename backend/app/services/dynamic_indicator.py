@@ -315,7 +315,11 @@ def _named_place(cell: str, places: list[str]) -> bool:
 
 
 def _drop_region_words(
-    question: str, hits: dict[int, list[str]], dims: list[Dim], region_dim: int | None
+    question: str,
+    hits: dict[int, list[str]],
+    dims: list[Dim],
+    region_dim: int | None,
+    subject: str = "",
 ) -> dict[int, list[str]]:
     if region_dim is None:
         return hits
@@ -335,7 +339,7 @@ def _drop_region_words(
         d = by_no.get(no)
         kept = [c for c in codes if allowed(d, c)]
         if not kept and d is not None:
-            kept = [c for c in _word_hits(question, d) if allowed(d, c)]
+            kept = [c for c in _word_hits(question, d, subject) if allowed(d, c)]
         if kept:
             out[no] = kept
     return out
@@ -351,7 +355,9 @@ def _place_cell_unasked(question: str, d: Dim, code: str, region_dim: int | None
     )
 
 
-def _text_hits(question: str, dims: list[Dim], skip: set[int]) -> dict[int, list[str]]:
+def _text_hits(
+    question: str, dims: list[Dim], skip: set[int], subject: str = ""
+) -> dict[int, list[str]]:
     q = table_words(question)
     spans = []
     for d in dims:
@@ -377,7 +383,7 @@ def _text_hits(question: str, dims: list[Dim], skip: set[int]) -> dict[int, list
     for d in dims:
         if d.no in skip or d.no in hits:
             continue
-        if found := _word_hits(question, d):
+        if found := _word_hits(question, d, subject):
             hits[d.no] = found
     return hits
 
@@ -391,7 +397,15 @@ JOSA_TAIL = re.compile(
 )
 
 
-def _word_hits(question: str, d: Dim) -> list[str]:
+def _word_hits(question: str, d: Dim, subject: str = "") -> list[str]:
+    """질문 낱말이 칸 이름에 들어 있으면 그 칸을 말한 것으로 본다.
+    표 이름(subject)에도 있는 낱말은 표의 주제라, 칸 이름과 똑같을 때만 센다
+    - 분류 칸: 늘
+      ('외국인 주민' → 외국인주민 현황 표의 '외국인근로자' · '주민등록인구'가 아니라 합계)
+    - 항목(0번): 항목 여러 개에 걸릴 때만
+      ('통근' → '통근·통학 인구' · '통근·통학버스'를 합치지 않음).
+      항목 하나에만 걸리면 표 주제를 이름에 담은 그 항목이다 ('다문화가구' → '다문화가구 현황')"""
+    topic = _norm(subject)
     words = []
     for token in question.split():
         w = _norm(JOSA_TAIL.sub("", token))
@@ -404,6 +418,8 @@ def _word_hits(question: str, d: Dim) -> list[str]:
     out: list[str] = []
     for w in words:
         found = [c for c, n in cells if w in n or (len(w) >= 4 and w[:2] in n and w[-2:] in n)]
+        if topic and w in topic and (d.no != 0 or len(found) > 1):
+            found = [c for c, n in cells if n == w]
         if len(found) <= MAX_WORD_CELLS:
             out += [c for c in found if c not in out]
     return out
@@ -606,7 +622,9 @@ def choose(
     if plan.age_dim is None and parsed.get("ages"):
         return None, "표에 연령 구분이 없음"
     skip = {region_dim} | ({plan.age_dim.no} if plan.age_dim else set()) | set(plan.bands)
-    hits = _drop_region_words(question, _text_hits(question, dims, skip), dims, region_dim)
+    hits = _drop_region_words(
+        question, _text_hits(question, dims, skip, tbl_nm), dims, region_dim, tbl_nm
+    )
     household_table = HOUSEHOLD_CELL.search(_table_target(tbl_nm))
     asks: list[Ask] = []
     axis = parsed.get("rank_axis")
@@ -834,6 +852,7 @@ def uncovered(
     parsed: dict,
     region_dim: int | None = None,
     question: str = "",
+    tbl_nm: str = "",
 ) -> "str | BandMiss | None":
     if not slots:
         return None
@@ -864,7 +883,7 @@ def uncovered(
         if not any(target in w or (len(w) >= 2 and w in target) for w in words):
             return f"질문의 대상 '{slots['target']}'이 표나 고른 칸에 없음"
     skip = {"성별"} | ({"연령", "나이"} if parsed.get("ages") else set())
-    said = _text_hits(question, dims, {region_dim}) if question else {}
+    said = _text_hits(question, dims, {region_dim}, tbl_nm) if question else {}
     classes = [
         c
         for c in cond.get("classes") or []
@@ -1134,7 +1153,7 @@ def build(
     # 숫자 구간 축의 구간 합: "2.5kg 미만" · "고령산모(35세 이상)"가 덮는 칸들을 그 축에 잇는다
     items = list(((slots or {}).get("conditions") or {}).get("items") or [])
     literal = set(
-        _text_hits(question, dims, {region_dim})
+        _text_hits(question, dims, {region_dim}, tbl_nm)
     )  # 칸 이름이 글자로 있으면 그 매칭이 맡는다
     bands = {
         u.dim_no: (list(u.codes), u.label)
@@ -1164,7 +1183,7 @@ def build(
         names += [_norm(tbl_nm)] + [_norm(w) for w in (slots or {}).get("table_words") or [] if w]
         if not expr or not any(expr in n for n in names):
             return None, "질문의 연령 조건을 표의 칸에 반영할 수 없음"
-    if why := uncovered(slots, plan, dims, parsed, region_dim, question):
+    if why := uncovered(slots, plan, dims, parsed, region_dim, question, tbl_nm):
         return None, why
     miss = _band_miss([question], dims, region_dim)
     if miss and miss.dim_no not in plan.matched and miss.dim_no not in plan.bands:
@@ -2304,8 +2323,29 @@ def age_limit(tbl_nm: str, question: str, kind: str | None = None) -> str | None
         return None
     scope = WITHIN.split(question, maxsplit=1)
     population = scope[0] if len(scope) == 2 else "" if PCT_ASK.search(question) else question
-    bands = qa.resolved_ages(population)
-    return None if bands and all(lo >= int(m[1]) for lo, _ in bands) else m[0]
+    if bands := qa.resolved_ages(population):
+        return None if all(lo >= int(m[1]) for lo, _ in bands) else m[0]
+    # 연령을 말하지 않았으면: 모집단이 표가 집계하는 대상 그 자체인지
+    return None if _table_population(population, tbl_nm) else m[0]
+
+
+POPULATION_GENERIC = {"인구", "사람", "사람들", "가구", "주민", "전체", "세대", "국민", "우리나라"}
+
+
+def _table_population(population: str, tbl_nm: str) -> bool:
+    """'통근·통학 인구 중'처럼 모집단을 말한 낱말이 모두 표 이름에 있으면 그 표가 집계하는
+    모집단 자체다 (통근 · 통학 인구는 12세 이상으로 정의). 일반 말('1인 가구', '전체 인구')이나
+    지역만 남으면 아니다: 표의 연령 제한이 질문의 모집단을 줄인다"""
+    try:
+        places = {_norm(p) for p in indicators.find_regions(population)}
+    except Exception:
+        places = set()
+    words = []
+    for token in re.findall(r"[가-힣]+", population):
+        w = _norm(JOSA_TAIL.sub("", token))
+        if len(w) >= 2 and w not in POPULATION_GENERIC and w not in places:
+            words.append(w)
+    return bool(words) and all(w in _norm(tbl_nm) for w in words)
 
 
 async def answer_choice(question: str, context: dict, code: str, trace: dict) -> dict | None:
