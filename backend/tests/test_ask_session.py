@@ -1115,8 +1115,38 @@ def test_follow_up_rules_for_region_order_scope_and_period() -> None:
     for said in ("2015년으로", "10년 전은?", "3년으로 나눠서 보여줘"):
         assert not s.period_length_reply(said), said
     assert s.recent_years("3년으로 나눠서 보여줘") is None
-    assert s.names_indicator("사망자도 알려줘", {"indicator": "사망자 수"})
+    for said, word in (("혼인도 알려줘", "혼인"), ("그럼 이혼은?", "이혼"), ("사망자도", "사망자")):
+        assert s.said_other_subject(said) == word, said
+    for said in (
+        "부산은?",
+        "작년은?",
+        "남자는?",
+        "노인은?",
+        "추이는?",
+        "비율은?",
+        "거기는?",
+        "요약해줘",
+        "서울 혼인 건수는?",
+        "전국은?",
+        "월별은?",
+        "여아는?",
+        "상위는?",
+    ):
+        assert s.said_other_subject(said) is None, said
     assert not s.names_indicator("부산은?", {"indicator": "출생아 수"})
+
+
+def test_follow_up_naming_another_word_does_not_inherit_the_indicator(talk: Talk) -> None:
+    """출생아 수 뒤 '사망자도 알려줘': HCX가 지표를 비우면 앞 지표 출생아 수로 답했다 (11/26)"""
+    talk.say("부산 출생아 최근 5년 보여 줘")
+    talk.parsed = {**BASE, "indicator": None, "term": None}
+    res = talk.say("혼인도 알려줘")
+    assert res["parsed"].get("indicator") is None and res["parsed"]["term"] == "혼인"
+    talk.parsed = dict(BASE)
+    talk.say("부산 출생아 최근 5년 보여 줘")
+    talk.parsed = {**BASE, "indicator": None, "term": None}
+    res = talk.say("2020년부터 보여줘")
+    assert res["parsed"]["indicator"] == "출생아 수"
 
 
 def test_rank_follow_ups_change_scope_and_order_without_llm(talk: Talk) -> None:

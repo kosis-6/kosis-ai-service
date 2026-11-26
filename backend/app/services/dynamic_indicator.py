@@ -399,12 +399,14 @@ JOSA_TAIL = re.compile(
 
 def _word_hits(question: str, d: Dim, subject: str = "") -> list[str]:
     """질문 낱말이 칸 이름에 들어 있으면 그 칸을 말한 것으로 본다.
-    표 이름(subject)에도 있는 낱말은 표의 주제라, 칸 이름과 똑같을 때만 센다
-    - 분류 칸: 늘
-      ('외국인 주민' → 외국인주민 현황 표의 '외국인근로자' · '주민등록인구'가 아니라 합계)
-    - 항목(0번): 항목 여러 개에 걸릴 때만
-      ('통근' → '통근·통학 인구' · '통근·통학버스'를 합치지 않음).
-      항목 하나에만 걸리면 표 주제를 이름에 담은 그 항목이다 ('다문화가구' → '다문화가구 현황')"""
+    표 이름(subject)에도 있는 낱말은 표의 주제다. 그런 낱말은 다음일 때 칸을 고른 말로 보지 않는다
+    - 칸 여러 개에 걸림: 주제를 말한 것 ('한국' → '중국(한국계)' · '러시아(한국계)',
+      '통근' → '통근·통학 인구' · '통근·통학버스'). 칸 이름과 똑같은 칸만 남긴다
+    - 분류 칸에서 더 긴 낱말의 일부로만 걸림: 주제와 다른 하위 분류다
+      ('외국인' → '외국인근로자', '주민' → '주민등록인구', '국적' → '무국적', '연령' → '연령미상')
+    분류 칸 이름에 낱말 그대로 있거나('혼인' → '미혼→혼인 변화') 지역 칸이면('인천' → '인천광역시',
+    지역 규칙이 맡음) 센다. 항목(0번)은 '주제 + 단위' 이름이 흔해 하나에만 걸리면 센다
+    ('이혼' → '이혼건수', '다문화가구' → '다문화가구 현황')"""
     topic = _norm(subject)
     words = []
     for token in question.split():
@@ -418,11 +420,20 @@ def _word_hits(question: str, d: Dim, subject: str = "") -> list[str]:
     out: list[str] = []
     for w in words:
         found = [c for c, n in cells if w in n or (len(w) >= 4 and w[:2] in n and w[-2:] in n)]
-        if topic and w in topic and (d.no != 0 or len(found) > 1):
-            found = [c for c, n in cells if n == w]
+        if topic and w in topic:
+            if len(found) > 1:
+                found = [c for c in found if _norm(d.codes[c]) == w]
+            elif d.no != 0:
+                found = [c for c in found if _as_word(w, d.codes[c]) or _is_place_cell(d.codes[c])]
         if len(found) <= MAX_WORD_CELLS:
             out += [c for c in found if c not in out]
     return out
+
+
+def _as_word(word: str, name: str) -> bool:
+    """칸 이름에 word가 낱말 그대로 있는지
+    ('미혼→혼인 변화'의 '혼인'은 예, '외국인근로자'의 '외국인'은 아니오)"""
+    return word in {_norm(part) for part in re.split(r"[^0-9A-Za-z가-힣]+", name) if part}
 
 
 @dataclass

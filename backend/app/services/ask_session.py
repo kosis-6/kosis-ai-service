@@ -489,10 +489,48 @@ def _says_word(word: Any, compact: str) -> bool:
         return False
     if dynamic_indicator._without_age_words(agegroup.native_to_digits(word)) in ("", "로", "으로"):
         return False
-    word = word.replace(" ", "")
-    # '사망자 수'를 '사망자도 알려줘'처럼 '수' 없이 말해도 그 지표를 말한 것
-    short = word.removesuffix("수")
-    return word in compact or (short != word and len(short) >= 2 and short in compact)
+    return word.replace(" ", "") in compact
+
+
+# '혼인도 알려줘' · '그럼 이혼은?'처럼 낱말 하나만 말한 후속 질문
+SUBJECT_ONLY = re.compile(
+    r"\s*(?:그럼|그러면|그렇다면|그리고|혹시)?\s*(?P<word>[가-힣]{2,}?)\s*"
+    r"(?:은|는|도|이|가|만|이요|요)?\s*"
+    r"(?:(?:알려|보여|해)\s*(?:줘요?|주세요|줄래요?)|어때요?|몇\s*(?:명|건)(?:이야|이에요|인가요)?|얼마야)?"
+    r"\s*[?.!~]*\s*"
+)
+# 낱말 하나로 물어도 볼 통계가 아닌 말 (지역 · 기간 · 성별 · 연령 · 보는 방식은 따로 본다)
+NOT_SUBJECT = {
+    "거기", "여기", "그곳", "이곳", "그거", "이거", "전체", "합계", "평균", "비율", "비중",
+    "증가율", "감소율", "증감률", "변화율", "결과", "요즘", "최근", "작년", "올해", "재작년",
+    "내년", "남녀", "성별", "연령", "나이", "지역", "시도", "시군구", "요약", "정리", "출처",
+    "근거", "기준", "이유", "원인", "숫자", "단위", "자세히", "전국", "우리나라", "한국", "국내",
+    "읍면동", "상위", "하위", "꼴찌", "최고", "최저", "최대", "최소", "남아", "여아", "아들",
+}  # fmt: skip
+
+
+def said_other_subject(question: str, regions: list[str] | None = None) -> str | None:
+    """사전이 모르는 낱말 하나만 말한 후속 질문이면 그 낱말 ('혼인도 알려줘' → '혼인').
+    그 낱말이 볼 통계라 앞 지표를 몰래 이어받지 않는다: HCX가 지표를 비웠을 때
+    출생아 수 뒤 '사망자도 알려줘'를 출생아 수로 답했다 (11/26).
+    regions: HCX가 지역으로 읽은 이름 ('서울은?'의 '서울'은 지역)"""
+    if not (said := SUBJECT_ONLY.fullmatch(question.strip())):
+        return None
+    word = said["word"]
+    if (
+        word in NOT_SUBJECT
+        or word in VIEW_WORDS
+        or word.endswith("별")
+        or any(pattern.search(word) for pattern in CHART_WORDS.values())
+        or NEW_VIEW.search(word)
+        or SEX_WORDS.search(word)
+        or qa.resolved_ages(word)
+        or timeref.find(word)
+        or indicators.find_regions(word)
+        or any(word in str(r) or str(r) in word for r in regions or [])
+    ):
+        return None
+    return word
 
 
 def complete_question(question: str) -> bool:
@@ -512,7 +550,13 @@ def inherit(
     kind = p.get("type")
     if kind in NO_CONDITIONS or prev.get("type") in NO_CONDITIONS:
         return p, s
-    if question and prev.get("indicator") and not names_indicator(question, p):
+    word = said_other_subject(question, p.get("regions")) if question else None
+    if word and not names_indicator(question, p):
+        # 앞 지표 대신 말한 낱말로: 지표가 없으면 계산 단계가 그 낱말로 표를 찾는다
+        if not p.get("indicator") and not p.get("term"):
+            p["term"] = word
+        flow.add("지표 이어받기", "안 함", "질문이 " + josa(f"'{word}'", "을를") + " 물음")
+    elif question and prev.get("indicator") and not names_indicator(question, p):
         keys = [
             "indicator",
             "term",

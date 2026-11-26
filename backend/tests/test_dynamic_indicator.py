@@ -933,6 +933,25 @@ def test_table_topic_word_on_items_counts_only_when_it_names_one_item() -> None:
     assert d._word_hits("2010년 전철로 통근이나 통학한 사람", items, commute) == ["T3"]
     one = d.Dim(0, "항목", {"T001": "다문화가구 현황"})
     assert d._word_hits("2020년 서울 다문화가구 수는?", one, "읍면동별 다문화가구 현황") == ["T001"]
+    vital = d.Dim(
+        0, "항목", {"T1": "출생건수", "T2": "사망건수", "T3": "혼인건수", "T4": "이혼건수"}
+    )
+    title = "읍면동/성별/인구동태건수(출생,사망,혼인,이혼)"
+    assert d._word_hits("2020년 서울 이혼 몇 건이야", vital, title) == ["T4"]
+
+
+def test_table_topic_word_still_picks_a_cell_named_by_it() -> None:
+    """표 이름에 분류가 나열된 표: 질문이 그중 하나를 말하면 그 칸이다
+    (전체 표 검사에서 찾은 경계)"""
+    change = d.Dim(2, "특성별", {"0": "전체", "1": "미혼→혼인 변화", "2": "미출산→출산 변화"})
+    title = "성별, 소득수준별 혼인·출산 변화 비율(1년 단위)"
+    assert d._word_hits("소득별 혼인 변화 비율", change, title) == ["1"]
+    nations = d.Dim(2, "국적(지역)별", {"0": "계", "1": "중국", "2": "무국적"})
+    assert (
+        d._word_hits("국적별 등록외국인", nations, "시군구별 및 국적(지역)별 등록외국인 현황") == []
+    )
+    ages = d.Dim(2, "연령별", {"0": "계", "1": "20~24세", "2": "연령미상"})
+    assert d._word_hits("연령별 사망자", ages, "시도/성/연령(각세)별 사망자수") == []
 
 
 @pytest.mark.parametrize(
