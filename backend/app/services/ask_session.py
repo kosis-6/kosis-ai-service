@@ -400,6 +400,8 @@ def recent_years(question: str) -> int | None:
     for ref in timeref.find(question):
         if ref["kind"] in ("recent", "span") and ref.get("n"):
             return ref["n"]
+    if (span := SPAN_TO.search(question)) and 1 < int(span[1]) <= 50:
+        return int(span[1])
     return None
 
 
@@ -487,7 +489,10 @@ def _says_word(word: Any, compact: str) -> bool:
         return False
     if dynamic_indicator._without_age_words(agegroup.native_to_digits(word)) in ("", "로", "으로"):
         return False
-    return word.replace(" ", "") in compact
+    word = word.replace(" ", "")
+    # '사망자 수'를 '사망자도 알려줘'처럼 '수' 없이 말해도 그 지표를 말한 것
+    short = word.removesuffix("수")
+    return word in compact or (short != word and len(short) >= 2 and short in compact)
 
 
 def complete_question(question: str) -> bool:
@@ -772,12 +777,34 @@ def region_split_changes(question: str, conditions: dict) -> dict | None:
     return None
 
 
+FOLLOW_LEAD = r"(?:그럼|그러면|그렇다면|그리고|혹시)?\s*"
 REGION_ONLY_REST = re.compile(
+    rf"\s*{FOLLOW_LEAD}"
     r"(?:이랑|[\s,·와과랑하고및])*(?:광역시|특별시|특별자치시|특별자치도|시|도|군|구)?\s*"
     r"(?:의\s*경우(?:에)?|쪽|에서|에선)?\s*(?:은|는|도|이면|면)?\s*요?\s*"
-    r"(?:어때요?|어떤가요?|어떻게\s*돼요?)?\s*[?.!~]*\s*"
+    r"(?:어때요?|어떤가요?|어떤데요?|어떻게\s*(?:돼요?|되나요?|돼\?))?\s*[?.!~]*\s*"
 )
-ALSO = re.compile(r"^\s*도\s*요?\s*(?:어때요?)?\s*[?.!~]*\s*$")
+# 순위 뒤 '경기도 안에서는?': 그 시도 안의 시군구 순위로
+IN_SIDO_REPLY = re.compile(
+    rf"\s*{FOLLOW_LEAD}(?P<place>[가-힣]+?)\s*(?:안에서|안에선|내에서|내에선|안|내)\s*"
+    r"(?:만|는|은|도)?\s*(?:순위|순위는|순위로)?\s*(?:어때요?|보여\s*줘요?|알려\s*줘요?)?\s*[?.!~]*\s*"
+)
+# 순위 뒤 '낮은 순으로' · '많은 순서로' · '오름차순'
+ORDER_REPLY = re.compile(
+    rf"\s*{FOLLOW_LEAD}(?:(?P<low>낮은|적은|작은)\s*(?:순|순서|쪽)|(?P<high>높은|많은|큰)\s*(?:순|순서|쪽)"
+    r"|(?P<asc>오름차순|꼴찌부터)|(?P<desc>내림차순))\s*(?:부터|으로|로)?\s*(?:정렬)?\s*"
+    r"(?:해|보여|바꿔)?\s*(?:줘요?|주세요)?\s*[?.!~]*\s*"
+)
+# 추이 뒤 '10년으로 늘려줘' · '기간을 3년으로': 기간 길이만 바꿈
+SPAN_TO = re.compile(
+    r"(?<![\d.])(\d{1,2})\s*년\s*(?:치|간|동안)?\s*(?:으로|로)(?=\s|$|[?.!~]|는|도|만)"
+    r"(?!\s*(?:나눠|나누|나눈|묶어|묶은|끊어|단위))"
+)
+PERIOD_LENGTH_REPLY = re.compile(
+    rf"\s*{FOLLOW_LEAD}(?:기간을?\s*)?(?:최근\s*)?\d{{1,2}}\s*년\s*(?:치|간|동안)?\s*(?:으로|로)?\s*"
+    r"(?:만|은|는|도)?\s*(?:늘려|줄여|바꿔|보여|해|봐)?\s*(?:줘요?|주세요|줄래요?|봐요?)?\s*[?.!~]*\s*"
+)
+ALSO = re.compile(rf"^\s*{FOLLOW_LEAD}도\s*요?\s*(?:어때요?)?\s*[?.!~]*\s*$")
 
 
 def only_regions(question: str) -> tuple[list[str], str] | None:
@@ -810,6 +837,31 @@ def region_only_changes(question: str, conditions: dict) -> dict | None:
     if len(regions) > 1 and not _several_places(regions, rest):
         return None
     return {"regions": {"op": "add" if ALSO.match(rest) else "set", "value": regions}}
+
+
+def rank_scope_changes(question: str, conditions: dict) -> dict | None:
+    """순위 뒤 '경기도 안에서는?': 그 시도 안의 시군구 순위로"""
+    if conditions.get("type") != "rank" or not (said := IN_SIDO_REPLY.fullmatch(question)):
+        return None
+    regions = indicators.find_regions(said["place"])
+    if len(regions) != 1:
+        return None
+    found = indicators.resolve_region(regions[0])
+    if found.get("status") != "ok" or found.get("kind") != "시도":
+        return None
+    return {"sido": regions[0], "level": "시군구"}
+
+
+def order_changes(question: str, conditions: dict) -> dict | None:
+    """순위 뒤 '낮은 순으로': 순서만 바꾸고 개수 · 단위는 그대로"""
+    if conditions.get("type") != "rank" or not (said := ORDER_REPLY.fullmatch(question)):
+        return None
+    return {"ascending": bool(said["low"] or said["asc"])}
+
+
+def period_length_reply(question: str) -> bool:
+    """'10년으로 늘려줘' · '기간을 3년으로'처럼 기간 길이만 말한 후속 질문"""
+    return bool(PERIOD_LENGTH_REPLY.fullmatch(question) and recent_years(question))
 
 
 def _ask_indicator(regions: list[str], rest: str) -> dict:
@@ -1761,6 +1813,16 @@ async def _turn(
                 "unclear": None,
             }
             flow.add("후속 질문", "연도 변경", f"{year_reply[1]}년")
+        elif period_length_reply(question):
+            # 기간 길이는 아래 recent_years가 읽어 '자료 마지막 해까지 N년'으로 바꾼다
+            delta = {"request_type": CHANGE, "changes": {}, "chart": None, "unclear": None}
+            flow.add("후속 질문", "기간 길이 변경", f"{recent_years(question)}년")
+        elif order := order_changes(question, state["conditions"]):
+            delta = {"request_type": CHANGE, "changes": order, "chart": None, "unclear": None}
+            flow.add("후속 질문", "순위 순서 변경", "낮은 순" if order["ascending"] else "높은 순")
+        elif scope := await asyncio.to_thread(rank_scope_changes, question, state["conditions"]):
+            delta = {"request_type": CHANGE, "changes": scope, "chart": None, "unclear": None}
+            flow.add("후속 질문", "시도 안 순위", scope["sido"])
         elif composition_request(question):
             delta = parse_delta('{"request_type": "change", "changes": {"type": "composition"}}')
         elif split := await asyncio.to_thread(region_split_changes, question, state["conditions"]):

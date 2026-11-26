@@ -1095,6 +1095,51 @@ def test_local_region_reply_with_comma_and_sigungu_first(
     assert talk.asked[-1] == "요새 부산 영도구 사람 줄어드는 중이야?"
 
 
+def test_follow_up_rules_for_region_order_scope_and_period() -> None:
+    """후속 질문이 새 질문(new)으로 읽혀 앞 조건을 잃던 것 (11/25 멀티턴 평가 조건 변경)"""
+    value = {**BASE, "type": "value", "start_year": None, "end_year": None}
+    rank = {**BASE, "type": "rank", "regions": [], "start_year": None, "end_year": None}
+    assert s.region_only_changes("그럼 부산은 어때?", value) == {
+        "regions": {"op": "set", "value": ["부산"]}
+    }
+    assert s.region_only_changes("그러면 서울도?", value)["regions"]["op"] == "add"
+    assert s.rank_scope_changes("서울 안에서는?", rank) == {"sido": "서울", "level": "시군구"}
+    assert s.rank_scope_changes("그럼 부산 내에서 순위는?", rank)["sido"] == "부산"
+    assert s.rank_scope_changes("서울 안에서는?", value) is None
+    assert s.rank_scope_changes("그 안에서는?", rank) is None
+    assert s.order_changes("낮은 순으로", rank) == {"ascending": True}
+    assert s.order_changes("그럼 많은 순서로 보여줘", rank) == {"ascending": False}
+    assert s.order_changes("낮은 순으로", value) is None
+    for said, n in (("10년으로 늘려줘", 10), ("기간을 3년으로", 3), ("그럼 7년으로", 7)):
+        assert s.period_length_reply(said) and s.recent_years(said) == n, said
+    for said in ("2015년으로", "10년 전은?", "3년으로 나눠서 보여줘"):
+        assert not s.period_length_reply(said), said
+    assert s.recent_years("3년으로 나눠서 보여줘") is None
+    assert s.names_indicator("사망자도 알려줘", {"indicator": "사망자 수"})
+    assert not s.names_indicator("부산은?", {"indicator": "출생아 수"})
+
+
+def test_rank_follow_ups_change_scope_and_order_without_llm(talk: Talk) -> None:
+    talk.parsed = {**BASE, "type": "rank", "regions": [], "start_year": None, "end_year": None}
+    talk.say("2024년 시도별 출생아 수 순위")
+    res = talk.say("서울 안에서는?")
+    assert res["request_type"] == "change" and talk.extracted == []
+    assert (talk.answered[-1]["sido"], talk.answered[-1]["level"]) == ("서울", "시군구")
+    talk.say("낮은 순으로")
+    assert talk.extracted == [] and talk.answered[-1]["ascending"] is True
+    assert talk.answered[-1]["sido"] == "서울" and talk.answered[-1].get("top") is None
+
+
+def test_period_length_follow_up_keeps_conditions_without_llm(talk: Talk) -> None:
+    talk.say("부산 출생아 최근 5년 보여 줘")
+    talk.fail_when = lambda p: bool((p.get("asked") or {}).get("recent"))
+    res = talk.say("10년으로 늘려줘")
+    assert res["request_type"] == "change" and talk.extracted == []
+    asked = talk.answered[-1]
+    assert asked["asked"]["recent"] == 10 and asked["regions"] == ["부산"]
+    assert asked["indicator"] == "출생아 수" and asked["type"] == "trend"
+
+
 def test_scope_pending_does_not_swallow_unsupported_new_question(talk: Talk):
     talk.say("부산에서 이사한 건수")
     talk.parsed = {**BASE, "indicator": "반려동물 수"}
