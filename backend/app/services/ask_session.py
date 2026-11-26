@@ -71,6 +71,7 @@ TABLES = "tables"
 ASK_INDICATOR = "asked_place"
 REGION_RETRY_STATUSES = ("missing_data", "no_region_level")
 TYPES = {"value", "trend", "compare", "rank", "composition"}
+CHART_VIEWS = ("line", "bar", "table")
 NO_CONDITIONS = {"other", "parse_error", None}
 
 # 순서대로 본다: '막대그래프'는 bar, 모양을 말하지 않은 '그래프로'는 chart(직전 차트의 기본 모양)
@@ -803,6 +804,20 @@ def chart_shape(question: str) -> str | None:
     return next((view for view, pattern in CHART_WORDS.items() if pattern.search(asked)), None)
 
 
+# 차트 말을 지운 뒤 홀로 남은 조사 · 모양 말 ('막대로' → '로')
+CHART_LEFTOVER = re.compile(
+    r"(?<!\S)(?:(?:형태|모양)\s*)?(?:으로|로)(?:는|도)?(?!\S)|(?<!\S)(?:형태|모양|말고|대신)(?!\S)"
+)
+
+
+def condition_part(question: str) -> str:
+    """차트 말을 뺀 조건 부분 ('10개만 막대로 보여줘' → '10개만 보여줘')"""
+    rest = question
+    for pattern in [*CHART_WORDS.values(), CHART_NOUN]:
+        rest = pattern.sub(" ", rest)
+    return " ".join(CHART_LEFTOVER.sub(" ", rest).split())
+
+
 COMPOSITION_REQUEST = re.compile(r"구성비|구성\s*으로|비중\s*으로")
 
 
@@ -1298,14 +1313,17 @@ def parse_delta(raw: str) -> dict:
     unclear = unclear.strip() if isinstance(unclear, str) and unclear.strip() else None
     if kind not in (CHANGE, CHART, SUMMARY, NEW):
         kind = NEW
+    chart = data.get("chart") if data.get("chart") in CHART_VIEWS else None
+    # HCX가 그림 모양을 조건에 넣기도 한다 ("type": "bar" · "chart": "table"). 맞지 않는 type이
+    # 남으면 apply_changes가 보는 방식을 다시 맞추는 단계(_retype)를 건너뛴다
+    changes = dict(changes)
+    for key in ("type", "chart"):
+        if key in changes and (key == "chart" or changes[key] not in TYPES):
+            value = changes.pop(key)
+            chart = chart or (value if value in CHART_VIEWS else None)
     if kind == CHANGE and not changes and not unclear:
-        kind = NEW
-    return {
-        "request_type": kind,
-        "changes": changes,
-        "chart": data.get("chart") if data.get("chart") in ("line", "bar", "table") else None,
-        "unclear": unclear,
-    }
+        kind = CHART if chart else NEW
+    return {"request_type": kind, "changes": changes, "chart": chart, "unclear": unclear}
 
 
 RESTATE_RELATIONS = ("followup", "new", "unclear")
@@ -2163,7 +2181,11 @@ async def _turn(
         ):
             delta = {"request_type": CHANGE, "changes": region_only, "chart": None, "unclear": None}
         else:
-            delta = await extract(state, question, trace)
+            # 차트 말과 조건이 섞인 말은 조건 부분만 변경 추출에 준다. 섞인 채로 주면 HCX가
+            # '그림 바꾸기'로 읽어 조건을 버리거나('남성만 막대로') 새 질문으로 읽었다 (11/26 점검).
+            # 그림 모양은 아래에서 다시 계산한 답에 코드가 붙인다
+            asked = condition_part(question) if chart_shape(question) else question
+            delta = await extract(state, asked, trace)
             if (
                 delta["request_type"] == CHANGE
                 and "indicator" not in delta["changes"]
@@ -2213,16 +2235,7 @@ async def _turn(
                 if status in table_guide.SEARCH_INSTEAD or retry_region:
                     res["search_question"] = inherited_question(conditions)
                 sources = {**state["sources"], **{k: "user" for k in changed if k in LABELS}}
-                notice = None
-                # 말한 모양이 '그래프 · 차트'처럼 정해지지 않았으면 변경 추출이 읽은 모양을 쓴다
-                said = chart_shape(question)
-                shape = said if said not in (None, "chart") else delta.get("chart") or said
-                if res.get("chart") and shape:
-                    # 다시 계산한 답의 차트도 함께 말한 모양으로 ('남자만 막대그래프로')
-                    res["chart"], cannot = reshape(res["chart"], shape)
-                    if cannot:
-                        notice = f"{cannot}. {chart_name(res['chart'])}로 보여 드립니다."
-                return res, sources, notice
+                return res, sources, with_asked_shape(res, question, delta.get("chart"))
             delta["request_type"] = NEW
         if delta["request_type"] == CHART:
             view = delta["chart"]
@@ -2241,6 +2254,17 @@ async def _turn(
         )
 
     return await _new(question, state)
+
+
+def with_asked_shape(res: dict, question: str, read: str | None) -> str | None:
+    """다시 계산한 답의 차트를 질문에서 함께 말한 모양으로 ('남자만 막대그래프로') → 못 그린 이유.
+    말한 모양이 '그래프 · 차트'처럼 정해지지 않았으면 변경 추출이 읽은 모양(read)을 쓴다"""
+    said = chart_shape(question)
+    shape = said if said not in (None, "chart") else read or said
+    if not (res.get("chart") and shape):
+        return None
+    res["chart"], cannot = reshape(res["chart"], shape)
+    return f"{cannot}. {chart_name(res['chart'])}로 보여 드립니다." if cannot else None
 
 
 def next_state(state: dict | None, question: str, res: dict, sources: dict) -> dict:
@@ -3313,6 +3337,11 @@ async def handle(
             sid, state, expired = new_id(), None, False
         _found_now.set(None)
         res, sources, notice = await _turn(state, question, selections, user_id)
+        if res.get("request_type") == NEW:
+            # 새 질문도 함께 말한 차트 모양으로 ('부산 출생아 수 최근 5년 막대그래프로').
+            # 새 질문 경로는 여러 곳에서 나가 여기서 한 번 붙인다 (조건 변경은 _turn이 붙인다)
+            told = with_asked_shape(res, question, None)
+            notice = " ".join(filter(None, [notice, told])) or None
         await _attach_tables(res, state, question, user_id)
         await refusal.finalize(res, question)
         await _judged(res, state, question, user_id)

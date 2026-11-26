@@ -587,12 +587,54 @@ def test_chart_with_a_sex_change_recomputes_and_keeps_the_shape(talk: Talk) -> N
     (11/26 리뷰)"""
     talk.say("부산 출생아 최근 5년 보여 줘")
     res = talk.say("남자만 막대그래프로 보여줘", request_type="change", changes={"sex": "남"})
-    assert talk.extracted == ["남자만 막대그래프로 보여줘"]
+    # 변경 추출에는 조건 부분만: 차트 말이 섞이면 HCX가 '그림 바꾸기'로 읽어 조건을 버렸다
+    assert talk.extracted == ["남자만 보여줘"]
     assert res["request_type"] == "change" and talk.answered[-1]["sex"] == "남"
     assert res["chart"]["view"] == "bar"
-    # 질문의 모양 말이 '차트'뿐이면 변경 추출이 읽은 모양 (조건 변경과 함께 chart를 준다)
+    # 질문의 모양 말이 '차트'뿐이면 변경 추출이 읽은 모양
     res = talk.say("여자만 바 차트로", request_type="change", changes={"sex": "여"}, chart="bar")
     assert talk.answered[-1]["sex"] == "여" and res["chart"]["view"] == "bar"
+
+
+def test_new_question_with_a_chart_shape_keeps_the_shape(talk: Talk) -> None:
+    """차트 말과 함께 새 질문을 하면 새 질문 경로가 말한 모양을 버렸다 (11/26 점검)"""
+    first = talk.say("부산 출생아 최근 5년 막대그래프로 보여 줘")  # 첫 질문
+    assert first["request_type"] == "new" and first["chart"]["view"] == "bar"
+    res = talk.say("대구 출생아 수 최근 5년 막대그래프로", request_type="new")  # 이어 묻는 새 질문
+    assert res["request_type"] == "new" and res["chart"]["view"] == "bar"
+    plain = talk.say("부산 출생아 최근 5년 보여 줘", request_type="new")
+    assert plain["chart"].get("view") is None  # 모양을 말하지 않으면 기본 차트 그대로
+
+
+@pytest.mark.parametrize(
+    ("said", "condition"),
+    [
+        ("남자만 막대그래프로 보여줘", "남자만 보여줘"),
+        ("10개만 막대로 보여줘", "10개만 보여줘"),
+        ("여자만 표로 바꿔줘", "여자만 바꿔줘"),
+        ("부산도 같이 꺾은선으로", "부산도 같이"),
+        ("2023년만 그래프 형태로 보여줘", "2023년만 보여줘"),
+        ("여성 인구 표 말고 그래프로", "여성 인구"),
+    ],
+)
+def test_condition_part_drops_only_the_chart_words(said: str, condition: str) -> None:
+    assert s.condition_part(said) == condition
+
+
+def test_parse_delta_moves_a_chart_shape_out_of_the_changes() -> None:
+    """HCX가 그림 모양을 조건에 넣었다 ("type": "table"). 맞지 않는 type이 남으면 보는 방식을
+    다시 맞추는 단계를 건너뛴다 (11/26 점검)"""
+    raw = '{"request_type": "change", "changes": {"sex": "여", "type": "table"}}'
+    assert s.parse_delta(raw) == {
+        "request_type": "change",
+        "changes": {"sex": "여"},
+        "chart": "table",
+        "unclear": None,
+    }
+    only_shape = s.parse_delta('{"request_type": "change", "changes": {"chart": "bar"}}')
+    assert only_shape["request_type"] == "chart" and only_shape["chart"] == "bar"
+    kept = s.parse_delta('{"request_type": "change", "changes": {"type": "trend"}}')
+    assert kept["changes"] == {"type": "trend"} and kept["chart"] is None
 
 
 def test_chart_without_a_shape_uses_the_last_chart(talk: Talk) -> None:
