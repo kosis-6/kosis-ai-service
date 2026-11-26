@@ -20,6 +20,8 @@ HH_TABLE = "DT_1B040B3"
 HH_SOURCE = "행정안전부, 행정구역(시군구)별 주민등록세대수 (DT_1B040B3)"
 HH_BASIS = "주민등록 세대수, 각 연도 12월 31일 기준"
 FOREIGN_TABLE = "DT_1B040A9C"
+# 분자 · 분모가 주민등록인구 표가 아닌 지표의 그 값이 온 표 (답의 계산 근거 · figure.operands)
+OPERAND_TABLES = {"households": HH_TABLE, "foreigners": FOREIGN_TABLE, "area": AREA_TABLE}
 FOREIGN_ORG = "111"
 FOREIGN_SOURCE = "법무부, 시군구별 및 국적(지역)별 등록외국인 현황 (DT_1B040A9C)"
 FOREIGN_BASIS = "법무부 출입국·외국인정책 통계의 등록외국인"
@@ -1114,7 +1116,12 @@ def value(indicator, region, year, sex="계", ages=None):
         out["population"] = int(comp["total"])
     if ind.get("operands") and comp and v is not None:
         out["operands"] = [
-            {"label": label, "value": _operand(comp.get(key)), "unit": unit}
+            {
+                "label": label,
+                "value": _operand(comp.get(key)),
+                "unit": unit,
+                "tbl_id": OPERAND_TABLES.get(key, POP_TABLE),  # 세대수 · 외국인 · 면적은 다른 표
+            }
             for key, label, unit in ind["operands"]
         ]
     return _mark_monthly(out, reg["region_code"], sex, year)

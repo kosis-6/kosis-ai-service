@@ -30,6 +30,22 @@ class Settings(BaseSettings):
     # 함께 켜지는 것: 조건이 모두 맞고 2위와 점수 차가 큰 1위 표는 검토(llm_pick)를 건너뛴다.
     # 기본은 끔 (ANSWER_JUDGE=true 로 켠다). GEMMA_BASE_URL 이 없으면 켜도 판정하지 않는다
     answer_judge: bool = False
+    # 이어 묻는 말 판단을 LLM이 먼저 (실험실 A_16, 11/25): 직전 질문 · 조건 · 답을 주고
+    # followup / new / unclear 와 혼자 서는 완전한 질문 한 문장을 받아 새 질문 경로에 넣는다.
+    # 켜지면 ratio_followup 부터 뒤의 코드 규칙(비율 후속 · 지역만 바꾸기 · 구별로 · 구성비로 ·
+    # 사람 수 묻기)과 변경 추출은 쓰지 않는다. 그보다 앞의 규칙(되묻기 답 · 인사 · 완전한 질문
+    # complete_question · 요약 · 출처 · 왜)은 그대로 먼저 돈다. 복원 호출이 실패하면 기존 경로로.
+    # 기본은 끔 (FOLLOW_RESTATE=true 로 켠다). 꺼지면 지금 구조(규칙 + FOLLOW_SYSTEM 변경 추출)
+    follow_restate: bool = False
+    # 제3안 3-a (FOLLOW_RESTATE=true 와 함께 켤 때만): 대화 셋에서 오판이 없던 코드 규칙
+    # (비율 후속 · 지역만 바꾸기 · 구별로)이 잡는 말은 LLM 복원 없이 그 규칙으로 처리하고,
+    # 나머지만 LLM 복원으로 보낸다. 직전 답이 정상(ok)일 때만 규칙을 쓴다 (거절 뒤 "부산은?"이
+    # 거절된 조건을 이어받던 C27). 기본은 끔 (FOLLOW_SURE_RULES=true 로 켠다)
+    follow_sure_rules: bool = False
+    # 이어 묻기 복원(FOLLOW_RESTATE)에 쓸 LLM. gemma 는 GEMMA_BASE_URL 필요.
+    # gemma 가 실패해도 HCX 로 넘기지 않는다 (비교 실험이 섞이지 않게): 복원은 기존 경로로
+    # 가고 흐름에 "실패"가 남는다. 기본은 hcx
+    follow_llm: Literal["hcx", "gemma"] = "hcx"
     # 조건 → 칸 잇기 1단계 (app/services/binding.py, docs/cell_binding_design_2026-11-23.md).
     # true: 바로 계산이 표 하나를 계산할 때 같은 표로 잇기를 돌려 처리 기록에만 남긴다
     # (답은 그대로).
@@ -45,6 +61,9 @@ class Settings(BaseSettings):
     gemma_api_key: str = ""
     gemma_model: str = "gemma-4-31b"
     gemma_timeout: float = 30.0
+    # 통합 보고서 문장을 쓰는 LLM과 생성 전체 시간 제한 (넘으면 504, 보고서는 그대로 draft)
+    report_llm: Literal["hcx", "gemma"] = "hcx"
+    report_timeout: float = 30.0
 
     api_docs: bool = False
 

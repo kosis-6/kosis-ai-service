@@ -63,8 +63,8 @@ function gridSvg(chart: Chart): string {
 
 function chartSvg(chart: Chart): string {
   const rows = chart.rows;
-  if (!rows.length) return "";
-  if (chart.type === "line" && (chart.series?.length ?? 0) > colors.length) return gridSvg(chart);
+  if (!rows.length || chart.view === "table") return "";
+  if (chart.type === "line" && (chart.crowded ?? (chart.series?.length ?? 0) > colors.length)) return gridSvg(chart);
   const width = 780, left = 150, right = 730;
   let marks = "";
   let height = 300;
@@ -80,6 +80,9 @@ function chartSvg(chart: Chart): string {
       ? left + (years[i] - Math.min(...years)) / (Math.max(...years) - Math.min(...years)) * (right - left)
       : left + i / Math.max(1, rows.length - 1) * (right - left);
     const y = (n: number) => 220 - (n - lo) / span * 170;
+    const bar = chart.view === "bar";
+    const spacing = Math.min(...rows.slice(1).map((_, i) => Math.abs(x(i + 1) - x(i))).filter(n => n > 0), 60);
+    const barWidth = spacing * .8 / series.length;
     marks += `<text x="10" y="45">${escape(value(hi))}</text><text x="10" y="225">${escape(value(lo))}</text>`;
     series.forEach((name, j) => {
       let segment: string[] = [];
@@ -87,8 +90,14 @@ function chartSvg(chart: Chart): string {
       rows.forEach((r, i) => {
         const n = get(i, j);
         if (!number(n)) { flush(); return; }
+        const title = escape(`${name} ${r.label}: ${value(n)} ${chart.unit}`);
+        if (bar) {
+          const bx = x(i) + (j - series.length / 2) * barWidth;
+          marks += `<rect x="${bx}" y="${Math.min(y(0), y(n))}" width="${barWidth}" height="${Math.abs(y(0) - y(n))}" fill="${colors[j % colors.length]}"><title>${title}</title></rect>`;
+          return;
+        }
         segment.push(`${x(i)},${y(n)}`);
-        marks += `<circle cx="${x(i)}" cy="${y(n)}" r="3" fill="${colors[j % colors.length]}"><title>${escape(`${name} ${r.label}: ${value(n)} ${chart.unit}`)}</title></circle>`;
+        marks += `<circle cx="${x(i)}" cy="${y(n)}" r="3" fill="${colors[j % colors.length]}"><title>${title}</title></circle>`;
       });
       flush();
       marks += `<text x="${left + (j % 3) * 190}" y="${265 + Math.floor(j / 3) * 20}" fill="${colors[j % colors.length]}">${escape(name)}</text>`;

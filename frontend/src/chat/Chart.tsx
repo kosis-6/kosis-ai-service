@@ -438,8 +438,9 @@ function TableView({ chart }: { chart: Chart }) {
 
 type View = "line" | "bar" | "table";
 
-export default function ChartCard({ chart }: { chart: Chart }) {
-  const crowded = (chart.series?.length ?? 0) > MAX_OVERLAP;
+export default function ChartCard({ chart, onViewChange }: { chart: Chart; onViewChange?: (view: View) => void }) {
+  // 겹쳐 그릴지는 서버가 정한다(chart.crowded). 값이 없는 예전 대화만 선 수로 센다
+  const crowded = chart.crowded ?? (chart.series?.length ?? 0) > MAX_OVERLAP;
   const views: [View, string][] = crowded
     ? [
         ["line", "지역별"],
@@ -472,7 +473,10 @@ export default function ChartCard({ chart }: { chart: Chart }) {
               key={key}
               className={view === key ? "pill on" : "pill"}
               aria-pressed={view === key}
-              onClick={() => setView(key)}
+              onClick={() => {
+                setView(key);
+                onViewChange?.(key);
+              }}
             >
               {label}
             </button>

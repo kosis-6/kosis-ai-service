@@ -15,6 +15,8 @@ REPLAY_KEYS = (
     "request_type",
     "clarification",
     "summary",
+    "figure",
+    "reportable",
     "sources",
 )
 
@@ -31,19 +33,24 @@ def replay(res: dict) -> dict:
     return out
 
 
-async def touch(session_id: str, user_id: int, question: str) -> None:
+TOUCH = text(
+    "insert into app.conversations (session_id, user_id, title)"
+    " values (:sid, :uid, :title)"
+    " on conflict (session_id) do update set updated_at = now()"
+    " where app.conversations.user_id = excluded.user_id"
+)
+
+
+async def touch(session_id: str, user_id: int, question: str, conn=None) -> None:
+    """대화 목록에 올리거나 갱신. conn이 있으면 그 트랜잭션 안에서 (한 턴의 저장을 함께 묶는다)"""
+    params = {"sid": session_id, "uid": user_id, "title": title_of(question)}
+    if conn is not None:
+        await conn.execute(TOUCH, params)
+        return
     from app.core.db import engine
 
-    async with engine.begin() as conn:
-        await conn.execute(
-            text(
-                "insert into app.conversations (session_id, user_id, title)"
-                " values (:sid, :uid, :title)"
-                " on conflict (session_id) do update set updated_at = now()"
-                " where app.conversations.user_id = excluded.user_id"
-            ),
-            {"sid": session_id, "uid": user_id, "title": title_of(question)},
-        )
+    async with engine.begin() as own:
+        await own.execute(TOUCH, params)
 
 
 async def listing(user_id: int, limit: int = 30, offset: int = 0) -> dict[str, Any]:
@@ -98,7 +105,7 @@ async def detail(user_id: int, session_id: str) -> dict[str, Any] | None:
             (
                 await conn.execute(
                     text(
-                        "select turn_no, message as question, response, answer, created_at"
+                        "select id, turn_no, message as question, response, answer, created_at"
                         " from app.chat_turns where session_id = :sid and user_id = :uid"
                         " order by turn_no, id"
                     ),
@@ -111,6 +118,9 @@ async def detail(user_id: int, session_id: str) -> dict[str, Any] | None:
     items = []
     for t in turns:
         response = t["response"] or {"answer": t["answer"]}
+        if response.get("reportable"):
+            # 저장할 때는 id가 아직 없다. 다시 연 답도 [보고서에 담기]를 쓸 수 있게 붙인다
+            response = {**response, "turn_id": t["id"]}
         items.append(
             {
                 "turn_no": t["turn_no"],

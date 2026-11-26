@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import copy
 import json
 import logging
@@ -15,7 +16,8 @@ from sqlalchemy.exc import SQLAlchemyError
 from starlette.concurrency import run_in_threadpool
 
 from app.agent import replan
-from app.prompts.qa import FOLLOW_SYSTEM
+from app.core.config import get_settings
+from app.prompts.qa import FOLLOW_SYSTEM, RESTATE_SYSTEM
 from app.services import (
     agegroup,
     agent_action,
@@ -26,6 +28,7 @@ from app.services import (
     conversations,
     cross_indicator,
     dynamic_indicator,
+    figure,
     flow,
     indicators,
     llm_calls,
@@ -34,6 +37,7 @@ from app.services import (
     qa,
     question_clarify,
     refusal,
+    search_llm,
     slots,
     table_guide,
     timeref,
@@ -68,14 +72,42 @@ TABLES = "tables"
 ASK_INDICATOR = "asked_place"
 REGION_RETRY_STATUSES = ("missing_data", "no_region_level")
 TYPES = {"value", "trend", "compare", "rank", "composition"}
+CHART_VIEWS = ("line", "bar", "table")
 NO_CONDITIONS = {"other", "parse_error", None}
 
+# 순서대로 본다: '막대그래프'는 bar, 모양을 말하지 않은 '그래프로'는 chart(직전 차트의 기본 모양)
 CHART_WORDS = {
-    "table": re.compile(r"표\s*로|표\s*형태|표로\s*정리"),
-    "bar": re.compile(r"막대"),
-    "line": re.compile(r"꺾은\s*선|선\s*그래프|라인"),
+    "table": re.compile(r"표\s*로|표\s*형태|표로\s*정리|테이블"),
+    "bar": re.compile(r"막대(?![하한])"),
+    "line": re.compile(r"꺾은\s*선|선\s*그래프|라인|(?<![가-힣])선\s*으로"),
+    "pie": re.compile(r"원\s*그래프|원형|파이|도넛"),
+    "chart": re.compile(r"그래프|차트|시각화|그림\s*으로|그려"),
 }
-CHART_REQUEST = re.compile(r"(보여|바꿔|그려|볼래|보고|줘|주세요|로$|으로$)")
+CHART_REQUEST = re.compile(
+    r"보여|바꿔|바꾸|그려|볼래|볼\s*수|보고|줘|주세요|시각화"
+    r"|(?:로|으로|그래프|차트|표|막대)\s*(?:는|은|도|요|가능)?\s*[?.!~]*$"
+)
+CHART_INSTEAD = re.compile(r"말고|대신|아니고|아니라")
+CHART_MAX_CHARS = 40
+# 차트 말을 지운 나머지가 이런 말뿐이어야 그림만 바꾸는 요청이다. 무엇이든 조건이 남으면
+# ('남자만' · '상위 5개만' · '비율로' …) 변경 추출에 맡긴다 (11/26 리뷰: 빼는 말 목록 방식은
+# 목록에 없는 조건을 버리고 그림만 바꿨다)
+_CHART_FILLER = (
+    r"그럼|그러면|그렇다면|혹시|이거|그거|이걸|그걸|이것|그것|이건|그건|지금|이번엔|이번에는"
+    r"|(?:이|그|위|앞선|직전)?\s*결과|다시|한\s*번|좀|형태|모양|말고|대신|아니고|아니라"
+)
+_CHART_VERB = (
+    r"보여(?:줘요?|주세요|줄래요?|줄|주라|봐)?|바꿔(?:서|줘요?|주세요|줄래요?|줄|봐)?|바꿀|바꾸어"
+    r"|그려(?:서|줘요?|주세요|줄래요?|줄)?|볼래요?|볼|보고|싶어요?|싶은데|봐요?"
+    r"|해(?:서|줘요?|주세요|줄래요?|줄|봐)?|줘요?|주세요|줄래요?|주라"
+    r"|가능(?:해요?|할까요?|한가요?)?|수|있어요?|있나요|있을까요?|돼요?|되나요|될까요?|변경|전환"
+)
+_CHART_PARTICLE = r"으로|로|는|은|도|요|가|을|를|에|서|이"
+CHART_ONLY_REST = re.compile(rf"(?:{_CHART_FILLER}|{_CHART_VERB}|{_CHART_PARTICLE}|[\s?.!~,])*")
+# 모양을 정하지 않는 차트 말 ('표 말고 그래프로'의 '표'). '통계표'의 표는 아니다
+CHART_NOUN = re.compile(r"(?<![가-힣])표")
+CHART_NAMES = {"line": "꺾은선 그래프", "bar": "막대그래프", "parts": "구성비 막대그래프"}
+CHART_CANNOT = {"line": "꺾은선은 연도별 추이에만 씁니다", "pie": "원그래프는 지원하지 않습니다"}
 SUMMARY_REQUEST = re.compile(
     r"^\s*((한|두|세)\s*줄로|짧게|간단히|간단하게|간략히)?\s*(요약|정리)\s*"
     r"(좀\s*)?(해\s*(줘요?|주세요|줄래요?|봐요?|주라)?|부탁\s*(해요?|합니다|드려요)?)?\s*[.!?~]*$"
@@ -312,6 +344,15 @@ def apply_changes(conditions: dict, changes: dict) -> tuple[dict, set[str]]:
         c["sex"] = changes["sex"]
         changed.add("sex")
 
+    if (bands := changes.get("ages")) and isinstance(bands, list):
+        # 새 질문 경로의 이어받기(inherit)와 같게: 연령 구간을 바꾸고 지표 이름을 기준 말로
+        c["ages"] = [list(band) for band in bands]
+        c.pop("age_group", None)
+        c.pop("age_note", None)
+        if c.get("indicator"):
+            c["term"] = c["indicator"]
+        changed.add("ages")
+
     if changes.get("type") in TYPES:
         c["type"] = changes["type"]
         changed.add("view")
@@ -390,6 +431,9 @@ def recent_years(question: str) -> int | None:
     for ref in timeref.find(question):
         if ref["kind"] in ("recent", "span") and ref.get("n"):
             return ref["n"]
+    span = SPAN_TO.search(question)
+    if span and PERIOD_CUE.search(question) and 1 < int(span[1]) <= 50:
+        return int(span[1])
     return None
 
 
@@ -480,6 +524,50 @@ def _says_word(word: Any, compact: str) -> bool:
     return word.replace(" ", "") in compact
 
 
+# '혼인도 알려줘' · '그럼 이혼은?'처럼 낱말 하나만 말한 후속 질문
+SUBJECT_ONLY = re.compile(
+    r"\s*(?:그럼|그러면|그렇다면|그리고|혹시)?\s*(?P<word>[가-힣]{2,}?)\s*"
+    r"(?:은|는|도|이|가|만|이요|요)?\s*"
+    r"(?:(?:알려|보여|해)\s*(?:줘요?|주세요|줄래요?)|어때요?|몇\s*(?:명|건)(?:이야|이에요|인가요)?|얼마야)?"
+    r"\s*[?.!~]*\s*"
+)
+# 낱말 하나로 물어도 볼 통계가 아닌 말 (지역 · 기간 · 성별 · 연령 · 보는 방식은 따로 본다)
+NOT_SUBJECT = {
+    "거기", "여기", "그곳", "이곳", "그거", "이거", "전체", "합계", "평균", "비율", "비중",
+    "증가율", "감소율", "증감률", "변화율", "결과", "요즘", "최근", "작년", "올해", "재작년",
+    "내년", "남녀", "성별", "연령", "나이", "지역", "시도", "시군구", "요약", "정리", "출처",
+    "근거", "기준", "이유", "원인", "숫자", "단위", "자세히", "전국", "우리나라", "한국", "국내",
+    "읍면동", "상위", "하위", "꼴찌", "최고", "최저", "최대", "최소", "남아", "여아", "아들",
+}  # fmt: skip
+# '몇명이야?' · '얼마야?' · '어때?'는 볼 통계가 아니라 묻는 말 (붙여 쓰면 통째로 낱말로 잡힌다)
+ASKING_WORD = re.compile(r"^(?:몇|얼마|어때|어떻|어떤|어느|어디|언제|누구|뭐|무엇|무슨|왜)")
+
+
+def said_other_subject(question: str, regions: list[str] | None = None) -> str | None:
+    """사전이 모르는 낱말 하나만 말한 후속 질문이면 그 낱말 ('혼인도 알려줘' → '혼인').
+    그 낱말이 볼 통계라 앞 지표를 몰래 이어받지 않는다: HCX가 지표를 비웠을 때
+    출생아 수 뒤 '사망자도 알려줘'를 출생아 수로 답했다 (11/26).
+    regions: HCX가 지역으로 읽은 이름 ('서울은?'의 '서울'은 지역)"""
+    if not (said := SUBJECT_ONLY.fullmatch(question.strip())):
+        return None
+    word = said["word"]
+    if (
+        word in NOT_SUBJECT
+        or ASKING_WORD.match(word)
+        or word in VIEW_WORDS
+        or word.endswith("별")
+        or any(pattern.search(word) for pattern in CHART_WORDS.values())
+        or NEW_VIEW.search(word)
+        or SEX_WORDS.search(word)
+        or qa.resolved_ages(word)
+        or timeref.find(word)
+        or indicators.find_regions(word)
+        or any(word in str(r) or str(r) in word for r in regions or [])
+    ):
+        return None
+    return word
+
+
 def complete_question(question: str) -> bool:
     if re.search(r"같이|추가|빼|빼고|제외|대신|그대로|거기|거기에|보다|도\s", question):
         return False
@@ -497,7 +585,13 @@ def inherit(
     kind = p.get("type")
     if kind in NO_CONDITIONS or prev.get("type") in NO_CONDITIONS:
         return p, s
-    if question and prev.get("indicator") and not names_indicator(question, p):
+    word = said_other_subject(question, p.get("regions")) if question else None
+    if word and not names_indicator(question, p):
+        # 앞 지표 대신 말한 낱말로: 지표가 없으면 계산 단계가 그 낱말로 표를 찾는다
+        if not p.get("indicator") and not p.get("term"):
+            p["term"] = word
+        flow.add("지표 이어받기", "안 함", "질문이 " + josa(f"'{word}'", "을를") + " 물음")
+    elif question and prev.get("indicator") and not names_indicator(question, p):
         keys = [
             "indicator",
             "term",
@@ -699,13 +793,39 @@ def replace_region(conditions: dict, asked: str | None, picked: str) -> dict:
 
 
 def chart_request(question: str) -> str | None:
+    """직전 답의 그림만 바꾸는 말이면 모양 (table · bar · line · pie · chart), 아니면 None.
+    차트 말을 지운 나머지에 요청 말 · 조사만 남아야 한다. 연도 · 지표 · 지역 · 성별 · 순위 같은
+    조건이 남으면 조건 변경이라 변경 추출에 맡긴다 ('남자만 막대그래프로'를 전체 값의 막대로만
+    바꿨다)"""
     q = question.strip()
-    if len(q) > REPLY_MAX_CHARS or ask_followup.has_explicit_year(q) or indicators.find_in_text(q):
+    if len(q) > CHART_MAX_CHARS or not (view := chart_shape(q)):
         return None
-    for view, pattern in CHART_WORDS.items():
-        if pattern.search(q) and CHART_REQUEST.search(q):
-            return view
-    return None
+    rest = q
+    for pattern in [*CHART_WORDS.values(), CHART_NOUN]:
+        rest = pattern.sub(" ", rest)
+    return view if CHART_ONLY_REST.fullmatch(rest) else None
+
+
+def chart_shape(question: str) -> str | None:
+    """말한 차트 모양. 조건 변경과 함께 말해도 읽는다 ('남자만 막대그래프로' → bar)"""
+    if not CHART_REQUEST.search(question):
+        return None
+    asked = CHART_INSTEAD.split(question)[-1]  # '표 말고 그래프로' → '그래프로'
+    return next((view for view, pattern in CHART_WORDS.items() if pattern.search(asked)), None)
+
+
+# 차트 말을 지운 뒤 홀로 남은 조사 · 모양 말 ('막대로' → '로')
+CHART_LEFTOVER = re.compile(
+    r"(?<!\S)(?:(?:형태|모양)\s*)?(?:으로|로)(?:는|도)?(?!\S)|(?<!\S)(?:형태|모양|말고|대신)(?!\S)"
+)
+
+
+def condition_part(question: str) -> str:
+    """차트 말을 뺀 조건 부분 ('10개만 막대로 보여줘' → '10개만 보여줘')"""
+    rest = question
+    for pattern in [*CHART_WORDS.values(), CHART_NOUN]:
+        rest = pattern.sub(" ", rest)
+    return " ".join(CHART_LEFTOVER.sub(" ", rest).split())
 
 
 COMPOSITION_REQUEST = re.compile(r"구성비|구성\s*으로|비중\s*으로")
@@ -752,12 +872,37 @@ def region_split_changes(question: str, conditions: dict) -> dict | None:
     return None
 
 
+FOLLOW_LEAD = r"(?:그럼|그러면|그렇다면|그리고|혹시)?\s*"
 REGION_ONLY_REST = re.compile(
+    rf"\s*{FOLLOW_LEAD}"
     r"(?:이랑|[\s,·와과랑하고및])*(?:광역시|특별시|특별자치시|특별자치도|시|도|군|구)?\s*"
     r"(?:의\s*경우(?:에)?|쪽|에서|에선)?\s*(?:은|는|도|이면|면)?\s*요?\s*"
-    r"(?:어때요?|어떤가요?|어떻게\s*돼요?)?\s*[?.!~]*\s*"
+    r"(?:어때요?|어떤가요?|어떤데요?|어떻게\s*(?:돼요?|되나요?|돼\?))?\s*[?.!~]*\s*"
 )
-ALSO = re.compile(r"^\s*도\s*요?\s*(?:어때요?)?\s*[?.!~]*\s*$")
+# 순위 뒤 '경기도 안에서는?': 그 시도 안의 시군구 순위로
+IN_SIDO_REPLY = re.compile(
+    rf"\s*{FOLLOW_LEAD}(?P<place>[가-힣]+?)\s*(?:안에서|안에선|내에서|내에선|안|내)\s*"
+    r"(?:만|는|은|도)?\s*(?:순위|순위는|순위로)?\s*(?:어때요?|보여\s*줘요?|알려\s*줘요?)?\s*[?.!~]*\s*"
+)
+# 순위 뒤 '낮은 순으로' · '많은 순서로' · '오름차순'
+ORDER_REPLY = re.compile(
+    rf"\s*{FOLLOW_LEAD}(?:(?P<low>낮은|적은|작은)\s*(?:순|순서|쪽)|(?P<high>높은|많은|큰)\s*(?:순|순서|쪽)"
+    r"|(?P<asc>오름차순|꼴찌부터)|(?P<desc>내림차순))\s*(?:부터|으로|로)?\s*(?:정렬)?\s*"
+    r"(?:해|보여|바꿔)?\s*(?:줘요?|주세요)?\s*[?.!~]*\s*"
+)
+# 추이 뒤 '10년으로 늘려줘' · '기간을 3년으로': 기간 길이만 바꿈
+SPAN_TO = re.compile(
+    r"(?<![\d.])(\d{1,2})\s*년\s*(?:치|간|동안)?\s*(?:으로|로)(?=\s|$|[?.!~]|는|도|만)"
+    r"(?!\s*(?:나눠|나누|나눈|묶어|묶은|끊어|단위))"
+)
+# 'N년으로'만으로는 기간 길이인지 줄여 말한 연도인지 모른다: '24년으로 바꿔줘'는 2024년이다.
+# 기간을 말하는 낱말이 함께 있을 때만 길이로 본다 (나머지는 변경 추출이 읽는다)
+PERIOD_CUE = re.compile(r"늘려|늘리|줄여|줄이|기간|최근|동안|\d\s*년\s*(?:치|간)")
+PERIOD_LENGTH_REPLY = re.compile(
+    rf"\s*{FOLLOW_LEAD}(?:기간을?\s*)?(?:최근\s*)?\d{{1,2}}\s*년\s*(?:치|간|동안)?\s*(?:으로|로)?\s*"
+    r"(?:만|은|는|도)?\s*(?:늘려|줄여|바꿔|보여|해|봐)?\s*(?:줘요?|주세요|줄래요?|봐요?)?\s*[?.!~]*\s*"
+)
+ALSO = re.compile(rf"^\s*{FOLLOW_LEAD}도\s*요?\s*(?:어때요?)?\s*[?.!~]*\s*$")
 
 
 def only_regions(question: str) -> tuple[list[str], str] | None:
@@ -790,6 +935,83 @@ def region_only_changes(question: str, conditions: dict) -> dict | None:
     if len(regions) > 1 and not _several_places(regions, rest):
         return None
     return {"regions": {"op": "add" if ALSO.match(rest) else "set", "value": regions}}
+
+
+def rank_scope_changes(question: str, conditions: dict) -> dict | None:
+    """순위 뒤 '경기도 안에서는?': 그 시도 안의 시군구 순위로"""
+    if conditions.get("type") != "rank" or not (said := IN_SIDO_REPLY.fullmatch(question)):
+        return None
+    regions = indicators.find_regions(said["place"])
+    if len(regions) != 1:
+        return None
+    found = indicators.resolve_region(regions[0])
+    if found.get("status") != "ok" or found.get("kind") != "시도":
+        return None
+    return {"sido": regions[0], "level": "시군구"}
+
+
+# 연령 말을 지운 뒤 남아도 되는 말 ('65세 이상 여자만' → ' 여자만', '노인은?' → ' 은?')
+AGE_ONLY_REST = re.compile(
+    rf"\s*{FOLLOW_LEAD}(?P<sex>남자|여자|남성|여성)?\s*(?:인구|사람|층)?\s*"
+    r"(?:만|은|는|도|의|으로|로)?\s*(?:만)?\s*"
+    r"(?:(?:보여|알려|바꿔|해)\s*(?:줘요?|주세요|줄래요?)?|어때요?|어떤가요)?\s*[?.!~]*\s*"
+)
+
+
+def _without_ages(text: str) -> str:
+    text = agegroup.native_to_digits(text)
+    spans = [(a, b) for a, b, _ in qa.age_spans(text)]
+    spans += [(a, b) for a, b, _ in agegroup.spans(text)]
+    for start, end in sorted(spans, reverse=True):
+        text = text[:start] + " " + text[end:]
+    return text
+
+
+def age_only_changes(question: str, conditions: dict) -> dict | None:
+    """'65세 이상만' · '노인은?' · '20대 여자만'처럼 연령(과 성별)만 바꾸는 후속 질문 → 바꿀 조건.
+    변경 추출 형식에는 연령이 없어 HCX가 지표('고령인구')로 바꾸거나 새 질문으로 읽어 앞 조건을
+    잃었다 (11/26 점검)"""
+    if not (conditions.get("indicator") or conditions.get("term")):
+        return None
+    q = condition_part(question) if chart_shape(question) else question.strip()
+    if len(q) > REPLY_MAX_CHARS or not (bands := qa.resolved_ages(q)):
+        return None
+    if not (said := AGE_ONLY_REST.fullmatch(_without_ages(q))):
+        return None
+    changes: dict = {"ages": bands}
+    if said["sex"]:
+        changes["sex"] = "남" if said["sex"] in ("남자", "남성") else "여"
+    return changes
+
+
+def order_changes(question: str, conditions: dict) -> dict | None:
+    """순위 뒤 '낮은 순으로': 순서만 바꾸고 개수 · 단위는 그대로"""
+    if conditions.get("type") != "rank" or not (said := ORDER_REPLY.fullmatch(question)):
+        return None
+    return {"ascending": bool(said["low"] or said["asc"])}
+
+
+def period_length_reply(question: str) -> bool:
+    """'10년으로 늘려줘' · '기간을 3년으로'처럼 기간 길이만 말한 후속 질문"""
+    return bool(PERIOD_LENGTH_REPLY.fullmatch(question) and recent_years(question))
+
+
+# 값 · 추이 · 비교 뒤 '최근 5년간 추이를 보여줘' · '지난 10년 변화는?'
+RECENT_TREND_REPLY = re.compile(
+    rf"\s*{FOLLOW_LEAD}(?:최근|지난)\s*\d{{1,2}}\s*년\s*(?:간|동안)?\s*(?:의\s*)?"
+    r"(?:추이|추세|변화|흐름)?\s*(?:는|은|도|를|을|로|으로)?\s*"
+    r"(?:어때요?|어떤가요|(?:보여|알려|해|봐)\s*(?:줘요?|주세요|줄래요?)?)?\s*[?.!~]*\s*"
+)
+
+
+def recent_trend_reply(question: str, conditions: dict) -> bool:
+    """같은 조건의 최근 N년 추이만 물은 후속 질문. 변경 추출(HCX) 분류에 맡기면 실행마다 달랐다
+    (11/26 리뷰). 순위 · 구성비 뒤에는 무엇의 추이인지 정해야 해 변경 추출에 맡긴다"""
+    return (
+        conditions.get("type") in ("value", "trend", "compare")
+        and bool(RECENT_TREND_REPLY.fullmatch(question))
+        and bool(recent_years(question))
+    )
 
 
 def _ask_indicator(regions: list[str], rest: str) -> dict:
@@ -910,12 +1132,81 @@ def summary_request(question: str) -> bool:
     return len(question.strip()) <= REPLY_MAX_CHARS and bool(SUMMARY_REQUEST.search(question))
 
 
-def chart_with_view(chart: dict | None, view: str) -> dict | None:
+# '지금까지 분석한 내용을 요약해줘' · '다 정리해줘' · '전체 내용 요약해줘': 직전 답이 아니라
+# 대화 전체. 범위를 가리키는 말(때 · 양 · 대화)이 요약 · 정리 앞에 온다. '다시'의 '다',
+# '전체적으로'(대체로)는 범위가 아니다
+WHOLE_TALK = re.compile(
+    r"(?:지금까지|여태(?:까지)?|이때까지|이제까지|그동안|처음부터|앞에서|앞서|위에서"
+    r"|전체(?!적)|전부|모두|(?<![가-힣])다(?![가-힣])|대화|물어본|나눈|본\s*(?:것|거|내용))"
+    r".{0,15}?(?:요약|정리)"
+)
+HISTORY = 10
+
+
+def whole_talk_summary_request(question: str) -> bool:
+    q = question.strip()
+    return (
+        len(q) <= CHART_MAX_CHARS
+        and bool(WHOLE_TALK.search(q))
+        and not indicators.find_in_text(q)
+        and not indicators.find_regions(q)
+        and not ask_followup.has_explicit_year(q)
+    )
+
+
+def whole_talk_text(state: dict) -> str:
+    said = state.get("history") or [answer_line(state["last"])]
+    if len(said) == 1:
+        return said[0]
+    return "\n".join([f"지금까지 본 내용 {len(said)}가지입니다.", *(f"- {s}" for s in said)])
+
+
+def answer_line(last: dict) -> str:
+    """답 하나의 핵심 문장 (요약 대상): 요약이 있으면 그 첫 문장, 없으면 답의 첫 단락"""
+    return (last.get("summary") or {}).get("headline") or lead(last.get("answer") or "")
+
+
+def redraw(chart: dict | None, view: str, status: str | None) -> tuple[dict | None, str]:
+    """직전 차트를 view 모양으로. 그 모양으로 못 그리면 그릴 수 있는 기본 모양과 이유를 준다.
+    되묻지 않는다: 무엇을 원하는지(그림 바꾸기)는 분명하다"""
     if not chart:
-        return None
-    if view == "table" or view == chart["type"] or (chart["type"] == "line" and view == "bar"):
-        return {**chart, "view": view}
-    return None
+        if status == "ok":
+            return None, (
+                "직전 답은 값이 하나라 그래프로 그릴 수 없습니다. '최근 5년 추이로'처럼 기간을 "
+                "넓히거나 '서울도 같이'처럼 지역을 더하면 그래프로 보여 드립니다."
+            )
+        return None, "직전 답에는 그래프로 그릴 수치가 없습니다."
+    shown, cannot = reshape(chart, view)
+    if cannot:
+        return shown, f"{cannot}. {chart_name(shown)}로 보여 드립니다."
+    if view == "table":
+        return shown, "표로 바꿨습니다."
+    if view == "chart":
+        return shown, f"{chart_name(shown)}로 보여 드립니다."
+    return shown, f"{chart_name(shown, view)}로 바꿨습니다."
+
+
+def chart_name(chart: dict, view: str | None = None) -> str:
+    if charts.crowded(chart):
+        return "지역별 꺾은선 그래프"
+    return CHART_NAMES["bar" if view == "bar" and chart["type"] == "line" else chart["type"]]
+
+
+def reshape(chart: dict, view: str) -> tuple[dict, str | None]:
+    """차트를 view 모양으로 → (차트, 못 그린 이유). 못 그리면 그릴 수 있는 기본 모양으로 둔다"""
+    kind = chart["type"]
+    if view == "table":
+        return {**chart, "view": "table"}, None
+    # parts(구성비)는 화면이 view 없이 기본 차트로 그린다
+    shown = {**chart, "view": None if kind == "parts" else kind}
+    if view == "bar" and kind == "line":
+        if charts.crowded(chart):
+            count = len(chart["series"])
+            return shown, f"{count}개 지역을 막대로 그리면 겹쳐 읽기 어렵습니다"
+        return {**chart, "view": "bar"}, None
+    if view in (kind, "chart") or (view == "bar" and kind == "parts"):
+        return shown, None
+    return shown, CHART_CANNOT[view]
 
 
 def lead(answer: str) -> str:
@@ -1063,14 +1354,168 @@ def parse_delta(raw: str) -> dict:
     unclear = unclear.strip() if isinstance(unclear, str) and unclear.strip() else None
     if kind not in (CHANGE, CHART, SUMMARY, NEW):
         kind = NEW
+    chart = data.get("chart") if data.get("chart") in CHART_VIEWS else None
+    # HCX가 그림 모양을 조건에 넣기도 한다 ("type": "bar" · "chart": "table"). 맞지 않는 type이
+    # 남으면 apply_changes가 보는 방식을 다시 맞추는 단계(_retype)를 건너뛴다
+    changes = dict(changes)
+    for key in ("type", "chart"):
+        if key in changes and (key == "chart" or changes[key] not in TYPES):
+            value = changes.pop(key)
+            chart = chart or (value if value in CHART_VIEWS else None)
     if kind == CHANGE and not changes and not unclear:
-        kind = NEW
+        kind = CHART if chart else NEW
+    return {"request_type": kind, "changes": changes, "chart": chart, "unclear": unclear}
+
+
+RESTATE_RELATIONS = ("followup", "new", "unclear")
+RELATIVE_WORD = re.compile(r"(?:작년|지난해|재작년|올해|금년)(?:에|의|은|는)?\s*")
+
+
+async def restate(state: dict, question: str, trace: dict) -> dict:
+    """이어 묻기 LLM 복원 (FOLLOW_RESTATE, A_16): 직전 질문 · 조건 · 답을 주고 relation 과
+    혼자 서는 완전한 질문을 받는다 → {"relation", "question", "why"}. 못 읽으면 relation 은 빈 글"""
+    recent = state.get("recent") or []
+    system = (
+        RESTATE_SYSTEM.replace("{PREV_QUESTION}", recent[-1] if recent else "(없음)")
+        .replace("{STATE}", state_text(state["conditions"], state["sources"]))
+        .replace("{LAST}", last_text(state.get("last")))
+    )
+    raw = await _follow_chat(question, system)
+    trace["restate_raw"] = raw
+    return parse_restate(raw)
+
+
+def parse_restate(raw: str) -> dict:
+    objects = qa._json_objects(raw)
+    data = objects[0] if objects else {}
+    relation = str(data.get("relation") or "").strip().lower()
     return {
-        "request_type": kind,
-        "changes": changes,
-        "chart": data.get("chart") if data.get("chart") in ("line", "bar", "table") else None,
-        "unclear": unclear,
+        "relation": relation if relation in RESTATE_RELATIONS else "",
+        "question": " ".join(str(data.get("question") or "").split()),
+        "why": str(data.get("why") or "").strip(),
     }
+
+
+def verify_restate(r: dict, conditions: dict, question: str) -> tuple[str, str, str]:
+    """LLM 결정의 코드 확인 (뜻 판단은 하지 않는다) → (relation, 쓸 질문, 확인 메모).
+    · 읽지 못했거나 문장이 비면 새 말 그대로 새 질문
+    · followup 인데 복원 문장에 직전 지표(이름 · 별칭 · 말)가 없으면 새 질문으로
+    · followup 인데 연도가 빠졌고 직전에 연도가 있으면 직전 기간을 앞에 붙인다 (상대 시점 그대로)"""
+    relation, restored = r.get("relation") or "", r.get("question") or ""
+    if relation == "unclear":
+        return relation, "", ""
+    if not relation or not restored:
+        return "new", question, "복원 못 읽음 → 새 말 그대로"
+    if (n := recent_years(question)) and not names_indicator(question, {}):
+        # "최근 5년은?"의 기간도 코드가 센다: HCX가 "2023년부터 2020년까지"처럼 거꾸로 적었다 (C08).
+        # 숫자 연도를 지우고 '최근 N년'을 앞에 두면 새 질문 경로가 자료 마지막 해까지 N개 해로 푼다
+        bare = re.sub(r"\d{4}\s*년\s*(?:부터|에서|~|까지|과|와|이랑|에)?\s*", "", restored)
+        bare = re.sub(r"\s{2,}", " ", bare).strip()
+        return relation, f"최근 {n}년 {bare}", f"상대 기간은 코드로 최근 {n}년"
+    if year := follow_year(question, conditions):
+        # 새 말의 상대 시점("작년은?")은 코드가 오늘 기준으로 센다 (상대 연도 원칙). HCX는 직전
+        # 연도에서 1을 빼 2023년의 작년을 2022년으로 썼다 (11/25 대화 셋 C06 · C25)
+        if re.search(r"\d{4}\s*년", restored):
+            restored = re.sub(r"\d{4}(\s*년)", lambda m: f"{year}{m[1]}", restored, count=1)
+        else:
+            bare = RELATIVE_WORD.sub("", restored).strip()
+            restored = f"{year}년 {bare}"
+        return relation, restored, f"상대 시점은 코드로 {year}년"
+    if relation == "followup":
+        prev = str(conditions.get("indicator") or conditions.get("term") or "")
+        names = {n for *_, n in indicators.find_in_text(restored) or []}
+        compact = restored.replace(" ", "")
+        if prev and prev not in names and prev.replace(" ", "") not in compact:
+            return "new", restored, f"복원 문장에 직전 지표({prev})가 없음 → 새 질문"
+        if not re.search(
+            r"\d{4}\s*년|작년|지난해|재작년|올해|금년|최근|년\s*전|년간|년\s*동안", restored
+        ):
+            if period := period_text(conditions):
+                return relation, f"{period} {restored}", f"직전 기간 {period} 붙임"
+    return relation, restored, ""
+
+
+# unclear 일 때 사용자에게 보이는 문장. LLM 의 why 는 판단 메모라 화면에 내지 않고 기록에만 둔다
+# (11/25 경계 시험: "더" → "새 말이 불완전함 바꿀 조건을…"이 그대로 나왔다)
+RESTATE_UNCLEAR = "앞 대화에서 무엇을 가리키는지 알 수 없습니다."
+
+
+def restate_outcome(r: dict, raw: str | None) -> str:
+    """복원 결과를 어떻게 쓸까 → "ok" · "unclear" · "failed".
+    · failed: 호출 실패 · JSON 이 없음 · 문장은 있는데 relation 이 셋 중 하나가 아님 → 기존 경로로
+    · unclear: JSON 은 읽혔는데 문장을 채우지 못함 → 되묻기. LLM 이 무엇을 가리키는지 못 찾은 것이다
+      (11/25 대화 셋 C25 "거기는 작년에?": why "새로 언급한 대상이 없음", 문장 비움)"""
+    if not qa._json_objects(raw or ""):
+        return "failed"
+    if r.get("relation") == "unclear" or not r.get("question"):
+        return "unclear"
+    return "ok" if r.get("relation") else "failed"
+
+
+async def _sure_rule(state: dict, question: str) -> str | None:
+    """3-a: LLM 복원보다 먼저 쓸 '확실한' 코드 규칙이 이 말을 잡는가 → 규칙 이름 (아니면 None).
+    11/25 대화 셋(끔)에서 오판이 없던 셋만: 비율 후속(C10 · C12 · C13) · 지역만(C01~C05) ·
+    구별로(C19). 구성비로는 규칙도 틀려(C20) 넣지 않는다. 기존 경로가 구성비로를 먼저 보므로
+    그 말이면 규칙으로 보내지 않는다. 직전 답이 정상(ok)이 아니면(거절 · 표 안내 뒤) 쓰지 않는다:
+    거절 뒤 "부산은?"이 거절된 조건(총인구)을 이어받았다 (C27).
+    develop 의 후속 질문 규칙(출생성비 반대로 · N명 기준 · 연도만 · 끝 연도를 정한 기간)도
+    기존 경로가 코드로 처리하므로 같은 조건에서 복원보다 먼저 본다. 판정은 기존 경로와 같은 식"""
+    if (state.get("last") or {}).get("status") != "ok" or composition_request(question):
+        return None
+    if qa.BIRTH_RATIO_OPPOSITE.get(state["conditions"].get("indicator")):
+        if BIRTH_RATIO_REVERSE_REPLY.fullmatch(question):
+            return "출생성비 반대로"
+        if BIRTH_RATIO_COUNT_REPLY.fullmatch(question):
+            return "출생성비 기준 인원"
+    if YEAR_ONLY_REPLY.fullmatch(question):
+        return "연도만"
+    if await asyncio.to_thread(ratio_followup, question, state):
+        return "비율 후속"
+    if await asyncio.to_thread(region_split_changes, question, state["conditions"]):
+        return "구별로"
+    if await asyncio.to_thread(region_only_changes, question, state["conditions"]):
+        return "지역만"
+    if not names_indicator(question, {}) and any(
+        r["kind"] == "span_until" for r in timeref.find(question)
+    ):
+        return "끝 연도 기간"
+    return None
+
+
+async def _restated(
+    state: dict, question: str, user_id: int | None
+) -> tuple[dict, dict, str | None] | None:
+    """FOLLOW_RESTATE: LLM 복원 → 코드 확인 → 복원 문장을 새 질문 경로로.
+    복원을 쓸 수 없으면 None: 호출한 _turn 이 기존 경로(코드 규칙 + 변경 추출)로 이어 간다.
+    새 말만 새 질문으로 보내면 직전 대화를 잃는다
+    (11/25 HCX 42901에서 "2020년은?"이 맥락 없이 감)"""
+    trace: dict = {}
+    try:
+        r = await restate(state, question, trace)
+    except Exception:
+        logger.exception("이어 묻기 복원 실패 → 기존 경로")
+        r = {"relation": "", "question": "", "why": "호출 실패"}
+    outcome = restate_outcome(r, trace.get("restate_raw"))
+    if outcome == "failed":
+        # LLM 이 실제로 무엇을 냈는지 기록에 남긴다 (다음 경로의 trace 에는 restate 가 붙지 않는다)
+        raw = trace.get("restate_raw")
+        said = f"원문: {raw}" if raw else r.get("why") or "응답 없음"
+        flow.add("이어 묻기 판단", "실패", f"{said} → 기존 경로")
+        return None
+    if outcome == "unclear":
+        r = {**r, "relation": "unclear"}
+    relation, restored, note = verify_restate(r, state["conditions"], question)
+    flow.add("이어 묻기 판단", relation, " · ".join(x for x in (restored, r.get("why"), note) if x))
+    if relation == "unclear":
+        res = _unclear(state, RESTATE_UNCLEAR)
+        res["trace"] = {"restate": {**r, "note": note, **trace}}
+        return res, state["sources"], None
+    res, sources, notice = await _new(restored, state)
+    res["request_type"] = CHANGE if relation == "followup" else NEW
+    res["question"] = restored
+    if isinstance(res.get("trace"), dict):
+        res["trace"]["restate"] = {**r, "note": note, "asked": question, **trace}
+    return res, sources, notice
 
 
 async def extract(state: dict, question: str, trace: dict) -> dict:
@@ -1090,6 +1535,22 @@ def indicator_names(conditions: dict) -> list[str]:
     if conditions.get("dynamic_spec") and current and current not in names:
         names.append(current)
     return names
+
+
+async def _follow_chat(prompt: str, system: str) -> str:
+    """이어 묻기 복원 LLM (FOLLOW_LLM). hcx 는 변경 추출과 같은 _chat, gemma 는
+    재계획 · 판정과 같은 GemmaClient. gemma 실패를 HCX 로 넘기지 않는다
+    (부른 쪽이 실패로 처리한다)"""
+    if get_settings().follow_llm != "gemma":
+        return await _chat(prompt, system)
+    result = await search_llm.GemmaClient(retry_waits=()).chat(
+        qa.MODEL,
+        [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
+        thinking={"effort": "none"},
+        maxCompletionTokens=FOLLOW_MAX_TOKENS,
+        temperature=0,
+    )
+    return result.content
 
 
 @llm_calls.staged("follow_up")
@@ -1324,7 +1785,8 @@ async def _composite(question: str, res: dict, state: dict | None) -> dict | Non
     if res.get("clarification") or res.get("status") in table_guide.REFUSED:
         return None
     trace = res.get("trace") or {}
-    if not await composite.is_composite(question, trace):
+    ranked_scope = composite.RANKED_SCOPE.search(question)
+    if not ranked_scope and not await composite.is_composite(question, trace):
         return None
     flow.add("복합 판별", "복합", str((trace.get("composite_gate") or {}).get("why") or "")[:120])
     sid = (state or {}).get("search_session") or table_guide.new_search_session()
@@ -1333,9 +1795,19 @@ async def _composite(question: str, res: dict, state: dict | None) -> dict | Non
         alt = await composite.answer(question, parsed, found, trace)
     except Exception:
         logger.exception("복합 질문 계산 실패")
-        return None
+        alt = None
     if alt is None:
-        return None
+        if not ranked_scope:
+            return None
+        flow.add("복합 계산", "답변 불가", "요청한 순위에 해당하는 지역의 값을 확인하지 못함")
+        return {
+            "status": "partial_match",
+            "answer": "요청하신 순위에 해당하는 지역을 골라 해당 통계를 계산하지 못했습니다.",
+            "parsed": parsed,
+            "result": {"status": "partial_match", "final": True},
+            "sources": [],
+            "trace": trace,
+        }
     alt["search_session"] = sid
     alt["trace"] = trace
     return alt
@@ -1426,6 +1898,10 @@ async def _clarified(question: str, state: dict):
     res, sources, notice = await _new(question, state.get("clarification_context"))
     res["request_type"], res["question"] = REPLY, question
     return res, sources, notice
+
+
+def _one_place(name: str) -> bool:
+    return indicators.resolve_region(name)["status"] == "ok"
 
 
 def _gave_up_asking(pending: dict) -> bool:
@@ -1521,6 +1997,11 @@ async def _turn(
             regions = await asyncio.to_thread(indicators.find_regions, choice)
             has_indicator = bool(indicators.find_in_text(choice))
             region = question_clarify.region_reply(choice, regions, has_indicator)
+            if region:
+                region = (
+                    await asyncio.to_thread(question_clarify.place_order, regions, _one_place)
+                    or region
+                )
             name = None if region or has_indicator else question_clarify.bare_region(choice)
             if name:
                 found = await asyncio.to_thread(indicators.resolve_region, name)
@@ -1671,6 +2152,10 @@ async def _turn(
     has_last = bool((state.get("last") or {}).get("answer"))
     view = chart_request(question) if has_last else None
     delta = None
+    if has_last and view is None and await asyncio.to_thread(whole_talk_summary_request, question):
+        # 대화 전체 요약: 변경 추출이 요약으로 읽어도 직전 답만 요약했다 (11/26 리뷰)
+        flow.add("후속 질문", "대화 전체 요약", f"답 {len(state.get('history') or [1])}개")
+        return _reuse(state, whole_talk_text(state), None, SUMMARY), state["sources"], None
     if has_last and view is None and await asyncio.to_thread(detail_request, question):
         last = state["last"]
         return _reuse(state, last["answer"], last.get("chart"), DETAIL), state["sources"], None
@@ -1683,6 +2168,20 @@ async def _turn(
     if asked_why and state["last"].get("summary"):
         text = f"{NO_CAUSE}\n{answer_summary.text(state['last']['summary'])}"
         return _reuse(state, text, state["last"].get("chart"), SUMMARY), state["sources"], None
+    if (
+        view is None
+        and get_settings().follow_restate
+        and not (has_last and summary_request(question))
+    ):
+        # 이어 묻기 LLM 복원 (A_16): 아래 코드 규칙(비율 후속 · 구별로 · 지역만 · 구성비 · 사람 수)
+        # 과 변경 추출(FOLLOW_SYSTEM) 대신 LLM이 완전한 질문으로 복원하고 새 질문 경로로 간다.
+        # 복원을 쓸 수 없으면(None) 아래 기존 경로로 이어 간다.
+        # 3-a(FOLLOW_SURE_RULES): 오판이 없던 규칙이 잡는 말은 복원 없이 아래 규칙으로 간다
+        rule = await _sure_rule(state, question) if get_settings().follow_sure_rules else None
+        if rule:
+            flow.add("이어 묻기 판단", "규칙", f"{rule} 규칙이 잡음 → LLM 복원 건너뜀")
+        elif (restated := await _restated(state, question, user_id)) is not None:
+            return restated
     if view is None and (asked := await asyncio.to_thread(ratio_followup, question, state)):
         flow.add("비율 후속 질문", "새 질문으로", asked)
         res, sources, notice = await _new(
@@ -1715,6 +2214,20 @@ async def _turn(
                 "unclear": None,
             }
             flow.add("후속 질문", "연도 변경", f"{year_reply[1]}년")
+        elif period_length_reply(question) or recent_trend_reply(question, state["conditions"]):
+            # 기간 길이는 아래 recent_years가 읽어 '자료 마지막 해까지 N년'으로 바꾼다
+            delta = {"request_type": CHANGE, "changes": {}, "chart": None, "unclear": None}
+            flow.add("후속 질문", "기간 길이 변경", f"{recent_years(question)}년")
+        elif order := order_changes(question, state["conditions"]):
+            delta = {"request_type": CHANGE, "changes": order, "chart": None, "unclear": None}
+            flow.add("후속 질문", "순위 순서 변경", "낮은 순" if order["ascending"] else "높은 순")
+        elif scope := await asyncio.to_thread(rank_scope_changes, question, state["conditions"]):
+            delta = {"request_type": CHANGE, "changes": scope, "chart": None, "unclear": None}
+            flow.add("후속 질문", "시도 안 순위", scope["sido"])
+        elif ages := await asyncio.to_thread(age_only_changes, question, state["conditions"]):
+            delta = {"request_type": CHANGE, "changes": ages, "chart": None, "unclear": None}
+            label = ", ".join(indicators.age_label(band) for band in ages["ages"])
+            flow.add("후속 질문", "연령 변경", label)
         elif composition_request(question):
             delta = parse_delta('{"request_type": "change", "changes": {"type": "composition"}}')
         elif split := await asyncio.to_thread(region_split_changes, question, state["conditions"]):
@@ -1724,7 +2237,11 @@ async def _turn(
         ):
             delta = {"request_type": CHANGE, "changes": region_only, "chart": None, "unclear": None}
         else:
-            delta = await extract(state, question, trace)
+            # 차트 말과 조건이 섞인 말은 조건 부분만 변경 추출에 준다. 섞인 채로 주면 HCX가
+            # '그림 바꾸기'로 읽어 조건을 버리거나('남성만 막대로') 새 질문으로 읽었다 (11/26 점검).
+            # 그림 모양은 아래에서 다시 계산한 답에 코드가 붙인다
+            asked = condition_part(question) if chart_shape(question) else question
+            delta = await extract(state, asked, trace)
             if (
                 delta["request_type"] == CHANGE
                 and "indicator" not in delta["changes"]
@@ -1774,22 +2291,16 @@ async def _turn(
                 if status in table_guide.SEARCH_INSTEAD or retry_region:
                     res["search_question"] = inherited_question(conditions)
                 sources = {**state["sources"], **{k: "user" for k in changed if k in LABELS}}
-                return res, sources, None
+                return res, sources, with_asked_shape(res, question, delta.get("chart"))
             delta["request_type"] = NEW
         if delta["request_type"] == CHART:
             view = delta["chart"]
 
     if has_last and (view or (delta and delta["request_type"] == CHART)):
-        chart = chart_with_view(state["last"].get("chart"), view) if view else None
-        if chart is None:
-            reason = (
-                "직전 답은 그 모양으로 그릴 수 없습니다."
-                if view
-                else "어떤 모양으로 바꿀지 알 수 없습니다."
-            )
-            return _unclear(state, reason), state["sources"], None
-        words = {"line": "꺾은선 그래프", "bar": "막대그래프", "table": "표"}
-        return _reuse(state, f"{words[view]}로 바꿨습니다.", chart, CHART), state["sources"], None
+        last = state["last"]
+        # 변경 추출이 모양을 비워 두면('그림 바꿔줘') 직전 차트의 기본 모양
+        chart, text = redraw(last.get("chart"), view or "chart", last.get("status"))
+        return _reuse(state, text, chart, CHART), state["sources"], None
     if has_last and (delta is None or delta["request_type"] == SUMMARY):
         last = state["last"]
         return (
@@ -1799,6 +2310,17 @@ async def _turn(
         )
 
     return await _new(question, state)
+
+
+def with_asked_shape(res: dict, question: str, read: str | None) -> str | None:
+    """다시 계산한 답의 차트를 질문에서 함께 말한 모양으로 ('남자만 막대그래프로') → 못 그린 이유.
+    말한 모양이 '그래프 · 차트'처럼 정해지지 않았으면 변경 추출이 읽은 모양(read)을 쓴다"""
+    said = chart_shape(question)
+    shape = said if said not in (None, "chart") else read or said
+    if not (res.get("chart") and shape):
+        return None
+    res["chart"], cannot = reshape(res["chart"], shape)
+    return f"{cannot}. {chart_name(res['chart'])}로 보여 드립니다." if cannot else None
 
 
 def next_state(state: dict | None, question: str, res: dict, sources: dict) -> dict:
@@ -1848,15 +2370,17 @@ def next_state(state: dict | None, question: str, res: dict, sources: dict) -> d
             and (parsed.get("term") or parsed.get("indicator"))
         )
         found = res.get("tables")
+        last = {
+            "status": res.get("status"),
+            "answer": res.get("answer") or "",
+            "sources": [],
+            "chart": None,
+        }
         return {
             "conditions": effective(parsed, {}) if numeric else {},
             "sources": sources if numeric else {},
-            "last": {
-                "status": res.get("status"),
-                "answer": res.get("answer") or "",
-                "sources": [],
-                "chart": None,
-            },
+            "last": last,
+            "history": [*(prev.get("history") or []), answer_line(last)][-HISTORY:],
             "pending": {
                 "missing": "table",
                 "options": table_choice_options(found),
@@ -1877,16 +2401,18 @@ def next_state(state: dict | None, question: str, res: dict, sources: dict) -> d
         conditions["regions"] = [r for r in conditions.get("regions") or [] if r != unconfirmed]
         if conditions.get("sido") == unconfirmed:
             conditions.pop("sido")
+    last = {
+        "status": res.get("status"),
+        "answer": res.get("answer") or "",
+        "sources": res.get("sources") or [],
+        "chart": res.get("chart"),
+        "summary": res.get("summary"),
+    }
     return {
         "conditions": conditions,
         "sources": sources,
-        "last": {
-            "status": res.get("status"),
-            "answer": res.get("answer") or "",
-            "sources": res.get("sources") or [],
-            "chart": res.get("chart"),
-            "summary": res.get("summary"),
-        },
+        "last": last,
+        "history": [*(prev.get("history") or []), answer_line(last)][-HISTORY:],
         "pending": pending_of(res.get("result") or {}, asked),
         "search_session": prev.get("search_session"),
         "recent": recent,
@@ -2747,6 +3273,7 @@ async def _with_also_asked(
     )
     if both is None:
         res["answer"] = f"{res.get('answer') or ''}\n※ {_also_asked_note(also, found)}"
+        res["also_missing"] = also  # 한쪽만 답함: 보고서에 담지 않는다 (figure.reportable)
         return False
     kind = res.get("request_type")
     res.clear()
@@ -2840,6 +3367,16 @@ def _same_dictionary_table(parsed: dict, computed: dict | None, found: dict | No
     return next((t for t in picked if t and t in tables), None)
 
 
+def _attach_figure(res: dict) -> None:
+    """대표 수치(figure)와 보고서에 담을 수 있는지(reportable)를 붙인다. 답은 바꾸지 않는다"""
+    try:
+        res["figure"] = figure.figure_of(res.get("result"), res.get("parsed"))
+        res["reportable"] = figure.reportable(res)
+    except Exception:
+        logger.exception("대표 수치 만들기 실패")
+        res["figure"], res["reportable"] = None, False
+
+
 def _summary(result: dict | None) -> dict | None:
     try:
         return answer_summary.build(result)
@@ -2867,11 +3404,17 @@ async def handle(
             sid, state, expired = new_id(), None, False
         _found_now.set(None)
         res, sources, notice = await _turn(state, question, selections, user_id)
+        if res.get("request_type") == NEW:
+            # 새 질문도 함께 말한 차트 모양으로 ('부산 출생아 수 최근 5년 막대그래프로').
+            # 새 질문 경로는 여러 곳에서 나가 여기서 한 번 붙인다 (조건 변경은 _turn이 붙인다)
+            told = with_asked_shape(res, question, None)
+            notice = " ".join(filter(None, [notice, told])) or None
         await _attach_tables(res, state, question, user_id)
         await refusal.finalize(res, question)
         await _judged(res, state, question, user_id)
         if "summary" not in res:  # 직전 답을 다시 쓴 응답(_reuse)은 그 요약을 이미 들고 있다
             res["summary"] = _summary(res.get("result"))
+        _attach_figure(res)
         if sex_not_split(res.get("parsed") or {}, res.get("result") or {}):
             word = "남자" if res["parsed"]["sex"] == "남" else "여자"
             told = f"이 지표는 성별로 나뉜 자료가 없어 {word}만 보지 못하고 전체 값으로 답했습니다."
@@ -2927,13 +3470,68 @@ async def _load(session_id: str) -> tuple[dict | None, bool]:
 async def _save(
     sid: str, after: dict, res: dict, before: dict | None, question: str, user_id
 ) -> None:
+    continuing = user_id is not None and before is not None
     try:
-        await save(sid, after)
-        await log_turn(sid, user_id, after.get("turn_no") or 1, question, res, before, after)
+        async with turn_writer(sid, user_id, continuing) as conn:
+            if conn is None:
+                # 이어 가는 대화를 답을 만드는 사이 사용자가 지웠다. 그대로 저장하면 같은 ID로
+                # 다시 생겨 지운 대화가 목록에 되살아났다 (11/26 리뷰)
+                logger.info("답을 만드는 사이 지운 대화라 저장하지 않음")
+                return
+            await save(sid, after, conn)
+            turn_no = after.get("turn_no") or 1
+            turn_id = await log_turn(sid, user_id, turn_no, question, res, before, after, conn)
+            if user_id is not None:
+                await conversations.touch(sid, user_id, question, conn)
         if user_id is not None:
-            await conversations.touch(sid, user_id, question)
+            res["turn_id"] = turn_id  # 저장이 끝난 로그인 답만 보고서에 담을 수 있다
     except (SQLAlchemyError, OSError):
+        STATE_CACHE.delete(sid)  # 되돌린 저장을 캐시에 남기지 않는다
         logger.exception("대화 상태 저장 실패")
+
+
+@contextlib.asynccontextmanager
+async def turn_writer(session_id: str, user_id: int | None, continuing: bool):
+    """한 턴의 저장(상태 · 턴 기록 · 대화 목록)을 트랜잭션 하나로 → 연결, 지운 대화면 None.
+    이어 가는 대화는 대화 행을 잠근다(for update). 지우기(conversations.delete)도 대화 행부터
+    지우므로 둘이 겹치면 한쪽이 끝날 때까지 기다린다: 지우기가 먼저면 행이 없어 저장하지 않고,
+    저장이 먼저면 지우기가 새 턴까지 함께 지운다"""
+    from app.core.db import engine
+
+    async with engine.begin() as conn:
+        if continuing and not await _conversation_held(conn, session_id, user_id):
+            yield None
+        else:
+            yield conn
+
+
+async def _conversation_held(conn, session_id: str, user_id: int | None) -> bool:
+    held = await conn.execute(
+        text(
+            "select 1 from app.conversations where session_id = :sid and user_id = :uid for update"
+        ),
+        {"sid": session_id, "uid": user_id},
+    )
+    if held.first():
+        return True
+    # 대화 행이 처음부터 없는 대화(첫 턴의 목록 저장이 실패함)는 상태가 남아 있으면 이어 간다.
+    # 지운 대화는 상태도 함께 지워졌다
+    state = await conn.execute(
+        text("select 1 from app.chat_sessions where session_id = :k"), {"k": _key(session_id)}
+    )
+    return state.first() is not None
+
+
+@contextlib.asynccontextmanager
+async def _within(conn=None):
+    """conn이 있으면 그 트랜잭션 안에서, 없으면 새 트랜잭션으로"""
+    if conn is not None:
+        yield conn
+        return
+    from app.core.db import engine
+
+    async with engine.begin() as own:
+        yield own
 
 
 def keeps_for(state: dict) -> timedelta:
@@ -2965,11 +3563,10 @@ async def load(session_id: str, at: datetime) -> tuple[dict | None, bool]:
     return copy.deepcopy(slots), False
 
 
-async def save(session_id: str, state: dict) -> None:
-    from app.core.db import engine
+async def save(session_id: str, state: dict, conn=None) -> None:
     from app.services import dialog
 
-    async with engine.begin() as conn:
+    async with _within(conn) as conn:
         await dialog._ensure(conn)
         await conn.execute(
             text(dialog.UPSERT),
@@ -3001,12 +3598,12 @@ async def log_turn(
     res: dict,
     before: dict | None,
     after: dict,
-) -> None:
-    from app.core.db import engine
-
+    conn=None,
+) -> int | None:
+    """질문 하나를 app.chat_turns에 남기고 그 행의 id를 돌려준다"""
     result = res.get("result") or {}
-    async with engine.begin() as conn:
-        await conn.execute(
+    async with _within(conn) as conn:
+        row = await conn.execute(
             text(
                 "insert into app.chat_turns (session_id, user_id, turn_no, message, request_type,"
                 " status, conditions_before, conditions_after, sources, tbl_id, recomputed, answer,"
@@ -3014,6 +3611,7 @@ async def log_turn(
                 " values (:session_id, :user_id, :turn_no, :message, :request_type, :status,"
                 " cast(:before as jsonb), cast(:after as jsonb), cast(:sources as jsonb),"
                 " :tbl_id, :recomputed, :answer, cast(:response as jsonb), cast(:flow as jsonb))"
+                " returning id"
             ),
             {
                 "session_id": session_id,
@@ -3040,7 +3638,9 @@ async def log_turn(
                 ),
             },
         )
+        turn_id = row.scalar()
         await conn.execute(
             text("delete from app.chat_turns where created_at < :cutoff"),
             {"cutoff": now() - TURNS_FOR},
         )
+    return turn_id

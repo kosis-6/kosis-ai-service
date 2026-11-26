@@ -52,6 +52,15 @@ describe("분석 보고서", () => {
     expect(html).not.toContain("NaN");
   });
 
+  it("막대 보기로 요청한 추이를 막대로 보존한다", () => {
+    const html = buildReport({ ...base, chart: {
+      type: "line", view: "bar", title: "추이", unit: "명", category: "연도",
+      rows: [{ label: "2020", value: 10 }, { label: "2021", value: null }, { label: "2022", value: -5 }],
+    } });
+    expect(html.match(/<rect /g)).toHaveLength(2);
+    expect(html).not.toContain("<polyline ");
+  });
+
   it("구성비 원값·비중과 여러 지표별 단위를 보존한다", () => {
     const result = { status: "ok", split: [
       { status: "ok", indicator: "구성", unit: "%", count_unit: "명", parts: [

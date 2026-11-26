@@ -3,7 +3,16 @@ from typing import Any
 
 MAX_BARS = 15
 MAX_PARTS = 6
-MAX_LINES = 6
+MAX_LINES = 6  # 겹쳐 그리는 꺾은선 수 (화면의 선 색 수와 같다)
+
+
+def crowded(chart: dict) -> bool:
+    """겹쳐 그리기엔 선이 많은 꺾은선: 지역별 작은 꺾은선으로 그리고 막대 보기는 없다.
+    서버가 여기서 정해 차트에 싣고(crowded) 화면은 그 값을 따른다. 값이 없는 차트(이 값이 생기기
+    전에 저장된 대화)는 같은 기준으로 센다"""
+    if "crowded" in chart:
+        return bool(chart["crowded"])
+    return chart.get("type") == "line" and len(chart.get("series") or []) > MAX_LINES
 
 
 def _title(*parts: Any) -> str:
@@ -96,6 +105,7 @@ def _lines(result: dict) -> dict | None:
         "rows": rows,
         "series": names,
         "unit": first.get("unit") or "",
+        "crowded": len(names) > MAX_LINES,
     }
 
 

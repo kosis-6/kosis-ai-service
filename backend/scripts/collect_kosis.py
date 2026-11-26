@@ -20,7 +20,9 @@ PERIOD_TYPES = {"년": ("Y", 1), "반년": ("H", 2), "분기": ("Q", 4), "월": 
 
 
 class KosisError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, code: str | None = None):
+        super().__init__(message)
+        self.code = code
 
 
 async def call(
@@ -37,9 +39,10 @@ async def call(
     if pause:
         await asyncio.sleep(pause)
     if isinstance(data, dict):
-        if data.get("err") == "30":
+        code = str(data["err"]) if data.get("err") is not None else None
+        if code == "30":
             return []
-        raise KosisError(f"{data.get('err')}: {data.get('errMsg')} ({params})")
+        raise KosisError(f"{code}: {data.get('errMsg')} ({params})", code=code)
     return data
 
 

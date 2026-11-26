@@ -5,6 +5,8 @@ from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 from fastapi import FastAPI, Request
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse, RedirectResponse
 
@@ -97,6 +99,14 @@ def _korean_openapi() -> dict:
 app.openapi = _korean_openapi  # type: ignore[method-assign]
 app.add_middleware(SecurityHeadersMiddleware)
 app.include_router(api_router)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
+    if request.url.path.startswith("/auth/"):
+        detail = [{k: error[k] for k in ("loc", "msg", "type")} for error in exc.errors()]
+        return JSONResponse(status_code=422, content={"detail": detail})
+    return await request_validation_exception_handler(request, exc)
 
 
 @app.exception_handler(AuthNotConfigured)

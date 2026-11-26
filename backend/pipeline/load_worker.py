@@ -17,6 +17,7 @@ from pipeline import population_mart
 from pipeline.load_raw import load_table
 from pipeline.region_map import map_table
 from pipeline.stats_build import conninfo
+from scripts.collect_kosis import KosisError
 
 ROOT = Path(__file__).resolve().parent.parent
 TABLE_DIR = ROOT / os.environ.get("KOSIS_TABLE_DIR", "data/tables")
@@ -74,7 +75,8 @@ def finish(pg: psycopg.Connection, job: Job) -> None:
 
 
 def retry_delay(error: BaseException, attempts: int) -> timedelta | None:
-    if not isinstance(error, TRANSIENT) or attempts >= MAX_ATTEMPTS:
+    rate_limited = isinstance(error, KosisError) and error.code == "40"
+    if attempts >= MAX_ATTEMPTS or not (rate_limited or isinstance(error, TRANSIENT)):
         return None
     return RETRY_AFTER[min(attempts, len(RETRY_AFTER)) - 1]
 
@@ -239,7 +241,11 @@ async def process_update(job: Job, delta_dir: Path) -> None:
 
 
 def _load(path: Path, tbl_id: str, merge: bool = False) -> None:
-    with psycopg.connect(conninfo(), autocommit=True) as pg:
+    """원본 저장과 적재 후 단계(지역 매핑 · 인구 집계 표)를 한 트랜잭션으로. 어느 단계든 실패하면
+    원본도 되돌린다. 원본 기록(raw.stat_load)이 있으면 '적재됨'으로 보므로(is_loaded ·
+    load_queue.loaded) 둘이 따로 확정되면 매핑 없이 적재됨이 됐다: 재시도는 건너뛰어 done이
+    됐고 앱은 그 표를 다시 적재하지 않았다 (11/26 리뷰). 안쪽 transaction()은 저장점이 된다"""
+    with psycopg.connect(conninfo(), autocommit=True) as pg, pg.transaction():
         load_table(pg, path, merge=merge)
         for name, step in AFTER_LOAD:
             logger.info("%s: 적재 후 단계 %s", tbl_id, name)
@@ -273,6 +279,14 @@ def is_loaded(pg: psycopg.Connection, tbl_id: str) -> bool:
     )
 
 
+async def handle(job: Job) -> None:
+    # 원본 저장과 적재 후 단계는 한 트랜잭션이라(_load) 원본이 있으면 매핑까지 끝난 표다
+    if job.reason != "update" and await asyncio.to_thread(_with_pg, is_loaded, job.tbl_id):
+        logger.info("%s: 그사이 적재됨, 건너뜀", job.tbl_id)
+    else:
+        await process(job)
+
+
 async def run_one() -> bool:
     job = await asyncio.to_thread(_with_pg, claim)
     if job is None:
@@ -280,10 +294,7 @@ async def run_one() -> bool:
     logger.info("시작 #%d %s (%s, %d번째 시도)", job.id, job.tbl_id, job.reason, job.attempts)
     try:
         async with table_lock(job.tbl_id):
-            if job.reason != "update" and await asyncio.to_thread(_with_pg, is_loaded, job.tbl_id):
-                logger.info("%s: 그사이 적재됨, 건너뜀", job.tbl_id)
-            else:
-                await process(job)
+            await handle(job)
     except BaseException as e:  # noqa: BLE001 - load_raw는 분류 수 초과에 SystemExit을 쓴다
         if isinstance(e, (KeyboardInterrupt, asyncio.CancelledError)):
             raise

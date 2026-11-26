@@ -9,6 +9,7 @@ from app import main
 from app.core import stats_db
 from app.services import ask_session as s
 from app.services import dynamic_indicator, indicators, lookup, qa, table_guide
+from tests.conftest import memory_turn_writer
 
 BASE = {
     "type": "trend",
@@ -23,6 +24,17 @@ BASE = {
     "ascending": False,
 }
 USER = {"indicator": "user", "regions": "user", "period": "user", "sex": "default"}
+
+
+@pytest.fixture(autouse=True)
+def follow_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    """이어 묻기 설정을 기본값으로 고정한다: .env 에 FOLLOW_RESTATE=true · FOLLOW_LLM=gemma 가
+    있어도 테스트는 기존 경로 · HCX 로 시작한다. 켜야 하는 테스트는 restate_on · sure_on 처럼
+    그 테스트 안에서 다시 켠다 (autouse 가 먼저 돌고 그 뒤에 켜진다)"""
+    settings = s.get_settings()
+    monkeypatch.setattr(settings, "follow_restate", False)
+    monkeypatch.setattr(settings, "follow_sure_rules", False)
+    monkeypatch.setattr(settings, "follow_llm", "hcx")
 
 
 @pytest.fixture(autouse=True)
@@ -197,21 +209,89 @@ def test_pick_region_reply() -> None:
         ("막대그래프로 보여줘", "bar"),
         ("표로", "table"),
         ("꺾은선으로 바꿔줘", "line"),
+        ("그래프로 보여줘", "chart"),
+        ("차트로 그려줘", "chart"),
+        ("시각화해줘", "chart"),
+        ("막대그래프는?", "bar"),
+        ("테이블로 보여줘", "table"),
+        ("선으로 보여줘", "line"),
+        ("원그래프로 보여줘", "pie"),
+        ("표 말고 그래프로", "chart"),
+        ("그래프 말고 표로 보여줘", "table"),
+        ("이거 막대그래프로 바꿔서 보여줄 수 있어?", "bar"),
         ("부산 출생아 수 막대그래프로", None),
         ("2020년 막대그래프로 보여줘", None),
         ("막대한 영향이 있나요", None),
+        ("서울도 막대로 보여줘", None),
+        ("추이를 막대그래프로 보여줘", None),
+        ("통계표 보여줘", None),
+        # 요청 말 · 채움말만 더한 그림 바꾸기
+        ("막대그래프로 다시 보여줘", "bar"),
+        ("막대그래프로 좀 볼 수 있을까요?", "bar"),
+        ("그래프 형태로 바꿔 주세요", "chart"),
+        ("이번엔 표로", "table"),
+        ("막대그래프가 보고 싶어", "bar"),
+        ("그래프로 그려줄래?", "chart"),
+        ("그림으로 보여줘", "chart"),
+        # 조건이 남으면 조건 변경 (11/26 리뷰: 빼는 말 목록에 없는 조건은 버리고 그림만 바꿨다)
+        ("남자만 막대그래프로 보여줘", None),
+        ("여자는 그래프로", None),
+        ("65세 이상만 막대로", None),
+        ("내국인만 막대그래프로", None),
+        ("상위 5개만 막대로", None),
+        ("많은 순으로 막대그래프", None),
+        ("10개만 막대그래프로 보여줘", None),
+        ("비율로 막대그래프 보여줘", None),
+        ("증가율로 그래프", None),
+        ("평균으로 막대그래프", None),
+        ("합계만 표로", None),
     ],
 )
 def test_chart_request(question, view) -> None:
     assert s.chart_request(question) == view
 
 
+def test_chart_shape_is_read_with_a_condition_change() -> None:
+    assert s.chart_shape("남자만 막대그래프로 보여줘") == "bar"
+    assert s.chart_shape("65세 이상만 표로") == "table"
+    assert s.chart_shape("남자만 보여줘") is None
+
+
+def test_crowded_line_chart_is_not_said_to_be_bars() -> None:
+    """지역이 6개를 넘는 추이는 화면이 막대 없이 지역별 꺾은선으로 그린다: 막대로 바꿨다고
+    답하면 화면과 어긋났다 (11/26 리뷰)"""
+    seven = {"type": "line", "rows": [], "series": [f"지역{i}" for i in range(7)]}
+    chart, said = s.redraw(seven, "bar", "ok")
+    assert chart["view"] == "line"
+    assert said == (
+        "7개 지역을 막대로 그리면 겹쳐 읽기 어렵습니다. 지역별 꺾은선 그래프로 보여 드립니다."
+    )
+    six = {**seven, "series": seven["series"][:6]}
+    assert s.redraw(six, "bar", "ok") == ({**six, "view": "bar"}, "막대그래프로 바꿨습니다.")
+
+
+@pytest.mark.parametrize(
+    ("kind", "view", "shown", "text"),
+    [
+        ("line", "bar", "bar", "막대그래프로 바꿨습니다."),
+        ("line", "table", "table", "표로 바꿨습니다."),
+        ("line", "chart", "line", "꺾은선 그래프로 보여 드립니다."),
+        ("bar", "bar", "bar", "막대그래프로 바꿨습니다."),
+        ("bar", "line", "bar", "꺾은선은 연도별 추이에만 씁니다. 막대그래프로 보여 드립니다."),
+        ("parts", "bar", None, "구성비 막대그래프로 바꿨습니다."),
+        ("parts", "chart", None, "구성비 막대그래프로 보여 드립니다."),
+        ("parts", "pie", None, "원그래프는 지원하지 않습니다. 구성비 막대그래프로 보여 드립니다."),
+    ],
+)
+def test_redraw_shows_a_drawable_view(kind, view, shown, text) -> None:
+    chart, said = s.redraw({"type": kind, "rows": [], "view": "table"}, view, "ok")
+    assert chart["view"] == shown and said == text
+
+
 def test_chart_view_and_summary() -> None:
-    line = {"type": "line", "rows": []}
-    assert s.chart_with_view(line, "bar")["view"] == "bar"
-    assert s.chart_with_view(line, "table")["view"] == "table"
-    assert s.chart_with_view({"type": "parts", "rows": []}, "line") is None
-    assert s.chart_with_view(None, "bar") is None
+    chart, said = s.redraw(None, "bar", "ok")
+    assert chart is None and said.startswith("직전 답은 값이 하나라 그래프로 그릴 수 없습니다.")
+    assert s.redraw(None, "chart", "tables") == (None, "직전 답에는 그래프로 그릴 수치가 없습니다.")
     assert s.summary_request("요약해줘") and s.summary_request("한 줄로 정리해 줘")
     for said in (
         "요약",
@@ -257,6 +337,7 @@ class Talk:
         monkeypatch.setattr(s, "extract", self._extract)
         monkeypatch.setattr(s, "load", self._load)
         monkeypatch.setattr(s, "save", self._save)
+        monkeypatch.setattr(s, "turn_writer", memory_turn_writer(self.store))
         monkeypatch.setattr(s, "log_turn", self._log)
         monkeypatch.setattr(s, "now", lambda: self.at)
         monkeypatch.setattr(table_guide, "find_tables", self._find)
@@ -334,10 +415,10 @@ class Talk:
             return None, False
         return (None, True) if at - row[1] > s.SESSION_FOR else (row[0], False)
 
-    async def _save(self, session_id, state):
+    async def _save(self, session_id, state, conn=None):
         self.store[session_id] = (state, self.at)
 
-    async def _log(self, session_id, user_id, turn_no, question, res, before, after):
+    async def _log(self, session_id, user_id, turn_no, question, res, before, after, conn=None):
         self.turns.append((turn_no, res.get("request_type"), question))
 
     user_id: int | None = 7
@@ -352,6 +433,32 @@ class Talk:
 @pytest.fixture
 def talk(monkeypatch: pytest.MonkeyPatch) -> Talk:
     return Talk(monkeypatch)
+
+
+def test_conversation_deleted_while_answering_is_not_saved_again(
+    talk: Talk, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """이어 묻는 답을 만드는 사이 대화를 지우면 상태 · 기록 · 목록을 다시 만들지 않는다.
+    그대로 저장하면 같은 ID로 다시 생겨 지운 대화가 되살아났다 (11/26 리뷰)"""
+    talk.say("부산 출생아 최근 5년 보여 줘")
+    touched: list[str] = []
+
+    async def touch(session_id, user_id, question, conn=None):
+        touched.append(question)
+
+    monkeypatch.setattr(s.conversations, "touch", touch)
+    turn = s._turn
+
+    async def deleted_while_answering(*args, **kwargs):
+        out = await turn(*args, **kwargs)
+        talk.store.clear()  # conversations.delete가 상태까지 지운다
+        return out
+
+    monkeypatch.setattr(s, "_turn", deleted_while_answering)
+    res = talk.say("서울은?")
+    assert res["status"] == "ok"  # 보낸 요청에는 답한다
+    assert talk.store == {} and touched == []
+    assert [q for *_, q in talk.turns] == ["부산 출생아 최근 5년 보여 줘"]
 
 
 def test_first_question_starts_a_session(talk: Talk) -> None:
@@ -393,7 +500,7 @@ def test_adding_region_to_trend_keeps_the_period(talk: Talk) -> None:
 
 def test_chart_and_summary_reuse_last_answer(talk: Talk) -> None:
     first = talk.say("부산 출생아 최근 5년 보여 줘")
-    res = talk.say("막대그래프로 보여줘")
+    res = talk.say("이 결과를 막대그래프로 변경해줘.")
     assert res["request_type"] == "chart" and res["chart"]["view"] == "bar"
     assert res["chart"]["rows"] == first["chart"]["rows"] and res["sources"] == first["sources"]
     assert talk.extracted == [] and talk.answered == []
@@ -419,12 +526,181 @@ def test_summary_of_an_answer_without_numbers_repeats_its_lead(talk: Talk) -> No
     assert res["answer"] == "value ['부산'] 2022년"
 
 
-def test_chart_that_cannot_be_drawn_is_asked_back(talk: Talk) -> None:
+def test_chart_of_a_single_value_says_why_instead_of_asking_back(talk: Talk) -> None:
     talk.parsed = {**BASE, "type": "value", "start_year": None, "end_year": None}
     talk.say("2024년 부산 출생아 수")
     res = talk.say("막대그래프로 보여줘")
-    assert res["status"] == "unclear" and res["chart"] is None
+    assert res["request_type"] == "chart" and res["status"] == "ok" and res["chart"] is None
+    assert res["answer"].startswith("직전 답은 값이 하나라 그래프로 그릴 수 없습니다.")
+    assert talk.extracted == []
     assert talk.say("2022년만", request_type="change", changes={"year": 2022})["status"] == "ok"
+
+
+@pytest.mark.parametrize(
+    ("said", "changes"),
+    [
+        ("65세 이상만", {"ages": [[65, None]]}),
+        ("65세 이상만 막대그래프로 보여줘", {"ages": [[65, None]]}),
+        ("노인은?", {"ages": [[65, None]]}),
+        ("그럼 30대는 어때?", {"ages": [[30, 39]]}),
+        ("20대 여자만", {"ages": [[20, 29]], "sex": "여"}),
+        ("서울 65세 이상만", None),  # 지역도 바꾼다: 변경 추출에
+        ("2023년 65세 이상만", None),
+        ("65세 이상 비율은?", None),  # 비율 후속 질문
+        ("남자만", None),
+    ],
+)
+def test_age_only_follow_up(said: str, changes: dict | None) -> None:
+    """변경 추출 형식에 연령이 없어 '65세 이상만'을 HCX가 지표('고령인구')로 바꾸거나 새 질문으로
+    읽어 앞 조건을 잃었다 (11/26 점검)"""
+    assert s.age_only_changes(said, {"indicator": "총인구", "type": "trend"}) == changes
+
+
+def test_age_change_is_applied_like_inheritance() -> None:
+    before = {"indicator": "총인구", "term": "총인구", "type": "trend", "age_group": "고령"}
+    after, changed = s.apply_changes(before, {"ages": [[65, None]]})
+    assert after["ages"] == [[65, None]] and "age_group" not in after
+    assert after["term"] == "총인구" and after["type"] == "trend" and changed == {"ages"}
+
+
+def test_age_only_follow_up_keeps_conditions_without_llm(talk: Talk) -> None:
+    talk.say("부산 출생아 최근 5년 보여 줘")
+    res = talk.say("65세 이상만 막대그래프로 보여줘")
+    assert res["request_type"] == "change" and talk.extracted == []
+    asked = talk.answered[-1]
+    assert asked["ages"] == [[65, None]] and asked["regions"] == ["부산"]
+    assert asked["type"] == "trend" and res["chart"]["view"] == "bar"
+
+
+def test_whole_talk_summary_request() -> None:
+    for said in (
+        "지금까지 분석한 내용을 요약해줘",
+        "앞에서 본 거 정리해줘",
+        "대화 내용 요약해 줘",
+        # 범위를 가리키는 다른 말 (11/26 점검: 몇 낱말만 잡아 직전 답만 요약했다)
+        "전체 내용 요약해줘",
+        "다 정리해줘",
+        "처음부터 요약해줘",
+        "전부 요약해 줘",
+        "모두 정리해줘",
+        "물어본 것들 정리해줘",
+        "이제까지 나온 결과 요약",
+    ):
+        assert s.whole_talk_summary_request(said), said
+    for said in (
+        "요약해줘",
+        "다시 요약해줘",
+        "한 줄로 요약해줘",
+        "전체적으로 요약해줘",
+        "서울 전체 인구 요약 통계 알려줘",
+        "지금까지 서울 인구 정리해줘",
+    ):
+        assert not s.whole_talk_summary_request(said), said
+
+
+def test_whole_talk_summary_lists_every_answer(talk: Talk) -> None:
+    """'지금까지 분석한 내용을 요약해줘'가 요약으로 분류돼도 직전 답만 요약했다 (11/26 리뷰)"""
+    first = talk.say("부산 출생아 최근 5년 보여 줘")
+    second = talk.say("서울은?")
+    talk.say("막대그래프로 보여줘")  # 차트만 바꾼 턴은 새 답이 아니다
+    res = talk.say("지금까지 분석한 내용을 요약해줘")
+    assert res["request_type"] == "summary" and talk.extracted == []
+    lines = res["answer"].split("\n")
+    assert lines[0] == "지금까지 본 내용 2가지입니다."
+    assert lines[1:] == [f"- {first['summary']['headline']}", f"- {second['summary']['headline']}"]
+
+
+@pytest.mark.parametrize(
+    ("said", "kind", "expected"),
+    [
+        ("최근 5년간 추이를 보여줘", "value", True),
+        ("그럼 지난 10년 변화는?", "trend", True),
+        ("최근 3년은 어때?", "compare", True),
+        ("최근 5년간 추이를 보여줘", "rank", False),
+        ("최근 5년 서울은?", "value", False),
+    ],
+)
+def test_recent_trend_reply(said: str, kind: str, expected: bool) -> None:
+    assert s.recent_trend_reply(said, {"type": kind}) is expected
+
+
+def test_recent_trend_follow_up_does_not_depend_on_llm(talk: Talk) -> None:
+    """'최근 5년간 추이를 보여줘'는 변경 추출(HCX) 분류에 따라 결과가 달랐다 (11/26 리뷰)"""
+    talk.parsed = {**BASE, "type": "value", "year": 2024, "start_year": None, "end_year": None}
+    talk.say("2024년 부산 출생아 수")
+    # 가짜 계산은 N년을 연도로 풀지 못한다: 조건만 본다
+    talk.fail_when = lambda p: bool((p.get("asked") or {}).get("recent"))
+    res = talk.say("최근 5년간 추이를 보여줘")
+    assert res["request_type"] == "change" and talk.extracted == []
+    asked = talk.answered[-1]
+    assert asked["asked"]["recent"] == 5 and asked["type"] == "trend"
+    assert asked["regions"] == ["부산"]
+
+
+def test_chart_with_a_sex_change_recomputes_and_keeps_the_shape(talk: Talk) -> None:
+    """'남자만 막대그래프로'가 성별을 다시 계산하지 않고 전체 값의 차트 모양만 바꿨다
+    (11/26 리뷰)"""
+    talk.say("부산 출생아 최근 5년 보여 줘")
+    res = talk.say("남자만 막대그래프로 보여줘", request_type="change", changes={"sex": "남"})
+    # 변경 추출에는 조건 부분만: 차트 말이 섞이면 HCX가 '그림 바꾸기'로 읽어 조건을 버렸다
+    assert talk.extracted == ["남자만 보여줘"]
+    assert res["request_type"] == "change" and talk.answered[-1]["sex"] == "남"
+    assert res["chart"]["view"] == "bar"
+    # 질문의 모양 말이 '차트'뿐이면 변경 추출이 읽은 모양
+    res = talk.say("여자만 바 차트로", request_type="change", changes={"sex": "여"}, chart="bar")
+    assert talk.answered[-1]["sex"] == "여" and res["chart"]["view"] == "bar"
+
+
+def test_new_question_with_a_chart_shape_keeps_the_shape(talk: Talk) -> None:
+    """차트 말과 함께 새 질문을 하면 새 질문 경로가 말한 모양을 버렸다 (11/26 점검)"""
+    first = talk.say("부산 출생아 최근 5년 막대그래프로 보여 줘")  # 첫 질문
+    assert first["request_type"] == "new" and first["chart"]["view"] == "bar"
+    res = talk.say("대구 출생아 수 최근 5년 막대그래프로", request_type="new")  # 이어 묻는 새 질문
+    assert res["request_type"] == "new" and res["chart"]["view"] == "bar"
+    plain = talk.say("부산 출생아 최근 5년 보여 줘", request_type="new")
+    assert plain["chart"].get("view") is None  # 모양을 말하지 않으면 기본 차트 그대로
+
+
+@pytest.mark.parametrize(
+    ("said", "condition"),
+    [
+        ("남자만 막대그래프로 보여줘", "남자만 보여줘"),
+        ("10개만 막대로 보여줘", "10개만 보여줘"),
+        ("여자만 표로 바꿔줘", "여자만 바꿔줘"),
+        ("부산도 같이 꺾은선으로", "부산도 같이"),
+        ("2023년만 그래프 형태로 보여줘", "2023년만 보여줘"),
+        ("여성 인구 표 말고 그래프로", "여성 인구"),
+    ],
+)
+def test_condition_part_drops_only_the_chart_words(said: str, condition: str) -> None:
+    assert s.condition_part(said) == condition
+
+
+def test_parse_delta_moves_a_chart_shape_out_of_the_changes() -> None:
+    """HCX가 그림 모양을 조건에 넣었다 ("type": "table"). 맞지 않는 type이 남으면 보는 방식을
+    다시 맞추는 단계를 건너뛴다 (11/26 점검)"""
+    raw = '{"request_type": "change", "changes": {"sex": "여", "type": "table"}}'
+    assert s.parse_delta(raw) == {
+        "request_type": "change",
+        "changes": {"sex": "여"},
+        "chart": "table",
+        "unclear": None,
+    }
+    only_shape = s.parse_delta('{"request_type": "change", "changes": {"chart": "bar"}}')
+    assert only_shape["request_type"] == "chart" and only_shape["chart"] == "bar"
+    kept = s.parse_delta('{"request_type": "change", "changes": {"type": "trend"}}')
+    assert kept["changes"] == {"type": "trend"} and kept["chart"] is None
+
+
+def test_chart_without_a_shape_uses_the_last_chart(talk: Talk) -> None:
+    first = talk.say("부산 출생아 최근 5년 보여 줘")
+    res = talk.say("그래프로 보여줘")
+    assert res["request_type"] == "chart" and res["chart"]["view"] == "line"
+    assert res["chart"]["rows"] == first["chart"]["rows"] and talk.extracted == []
+    res = talk.say("그림 좀 바꿔봐", request_type="chart", chart=None)
+    assert talk.extracted == ["그림 좀 바꿔봐"]
+    assert res["request_type"] == "chart" and res["chart"]["rows"] == first["chart"]["rows"]
+    assert res["answer"] == "꺾은선 그래프로 보여 드립니다."
 
 
 def test_new_question_inherits_and_tells(talk: Talk) -> None:
@@ -1028,6 +1304,132 @@ def test_region_reply_without_suffix_and_ambiguous_name(talk: Talk):
     res = talk.say("고성")
     assert res["status"] == "clarify_question"
     assert {"강원특별자치도 고성군", "경상남도 고성군"} <= set(res["clarification"]["options"])
+
+
+def test_local_region_reply_with_comma_and_sigungu_first(
+    talk: Talk, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """변형셋 P-121: '영도구, 부산이요'를 지역 답으로 못 읽어 같은 되묻기를 되풀이했다 (11/25)"""
+    monkeypatch.setattr(
+        indicators, "find_regions", lambda t: [r for r in ("영도구", "부산") if r in t]
+    )
+    monkeypatch.setattr(
+        indicators,
+        "resolve_region",
+        lambda name, year=None, sigungu=False: (
+            {"status": "ok", "display": "부산광역시 영도구"}
+            if name == "부산 영도구"
+            else {"status": "unknown_region", "region": name}
+        ),
+    )
+    assert talk.say("요새 우리 동네 사람 줄어드는 중이야?")["status"] == "clarify_question"
+    talk.parsed = {**BASE, "regions": ["부산 영도구"]}
+    res = talk.say("영도구, 부산이요")
+    assert res["request_type"] == "reply" and res["status"] == "ok"
+    assert talk.asked[-1] == "요새 부산 영도구 사람 줄어드는 중이야?"
+
+
+def test_follow_up_rules_for_region_order_scope_and_period() -> None:
+    """후속 질문이 새 질문(new)으로 읽혀 앞 조건을 잃던 것 (11/25 멀티턴 평가 조건 변경)"""
+    value = {**BASE, "type": "value", "start_year": None, "end_year": None}
+    rank = {**BASE, "type": "rank", "regions": [], "start_year": None, "end_year": None}
+    assert s.region_only_changes("그럼 부산은 어때?", value) == {
+        "regions": {"op": "set", "value": ["부산"]}
+    }
+    assert s.region_only_changes("그러면 서울도?", value)["regions"]["op"] == "add"
+    assert s.rank_scope_changes("서울 안에서는?", rank) == {"sido": "서울", "level": "시군구"}
+    assert s.rank_scope_changes("그럼 부산 내에서 순위는?", rank)["sido"] == "부산"
+    assert s.rank_scope_changes("서울 안에서는?", value) is None
+    assert s.rank_scope_changes("그 안에서는?", rank) is None
+    assert s.order_changes("낮은 순으로", rank) == {"ascending": True}
+    assert s.order_changes("그럼 많은 순서로 보여줘", rank) == {"ascending": False}
+    assert s.order_changes("낮은 순으로", value) is None
+    for said, n in (
+        ("10년으로 늘려줘", 10),
+        ("기간을 3년으로", 3),
+        ("그럼 5년으로 줄여줘", 5),
+        ("7년치로", 7),
+    ):
+        assert s.period_length_reply(said) and s.recent_years(said) == n, said
+    # 기간을 말하는 낱말이 없으면 줄여 말한 연도일 수 있다 ('24년으로 바꿔줘'는 2024년)
+    for said in (
+        "2015년으로",
+        "10년 전은?",
+        "3년으로 나눠서 보여줘",
+        "24년으로 바꿔줘",
+        "그럼 20년으로 보여줘",
+        "그럼 7년으로",
+    ):
+        assert not s.period_length_reply(said), said
+        assert s.recent_years(said) is None, said
+    for said, word in (("혼인도 알려줘", "혼인"), ("그럼 이혼은?", "이혼"), ("사망자도", "사망자")):
+        assert s.said_other_subject(said) == word, said
+    for said in (
+        "부산은?",
+        "작년은?",
+        "남자는?",
+        "노인은?",
+        "추이는?",
+        "비율은?",
+        "거기는?",
+        "요약해줘",
+        "서울 혼인 건수는?",
+        "전국은?",
+        "월별은?",
+        "여아는?",
+        "상위는?",
+        "몇명이야?",
+        "그럼 얼마야?",
+        "어때?",
+        "몇건이야?",
+    ):
+        assert s.said_other_subject(said) is None, said
+    assert not s.names_indicator("부산은?", {"indicator": "출생아 수"})
+
+
+def test_follow_up_naming_another_word_does_not_inherit_the_indicator(talk: Talk) -> None:
+    """출생아 수 뒤 '사망자도 알려줘': HCX가 지표를 비우면 앞 지표 출생아 수로 답했다 (11/26)"""
+    talk.say("부산 출생아 최근 5년 보여 줘")
+    talk.parsed = {**BASE, "indicator": None, "term": None}
+    res = talk.say("혼인도 알려줘")
+    assert res["parsed"].get("indicator") is None and res["parsed"]["term"] == "혼인"
+    talk.parsed = dict(BASE)
+    talk.say("부산 출생아 최근 5년 보여 줘")
+    talk.parsed = {**BASE, "indicator": None, "term": None}
+    res = talk.say("2020년부터 보여줘")
+    assert res["parsed"]["indicator"] == "출생아 수"
+
+
+def test_rank_follow_ups_change_scope_and_order_without_llm(talk: Talk) -> None:
+    talk.parsed = {**BASE, "type": "rank", "regions": [], "start_year": None, "end_year": None}
+    talk.say("2024년 시도별 출생아 수 순위")
+    res = talk.say("서울 안에서는?")
+    assert res["request_type"] == "change" and talk.extracted == []
+    assert (talk.answered[-1]["sido"], talk.answered[-1]["level"]) == ("서울", "시군구")
+    talk.say("낮은 순으로")
+    assert talk.extracted == [] and talk.answered[-1]["ascending"] is True
+    assert talk.answered[-1]["sido"] == "서울" and talk.answered[-1].get("top") is None
+
+
+def test_period_length_follow_up_keeps_conditions_without_llm(talk: Talk) -> None:
+    talk.say("부산 출생아 최근 5년 보여 줘")
+    talk.fail_when = lambda p: bool((p.get("asked") or {}).get("recent"))
+    res = talk.say("10년으로 늘려줘")
+    assert res["request_type"] == "change" and talk.extracted == []
+    asked = talk.answered[-1]
+    assert asked["asked"]["recent"] == 10 and asked["regions"] == ["부산"]
+    assert asked["indicator"] == "출생아 수" and asked["type"] == "trend"
+
+
+def test_short_year_follow_up_is_not_read_as_period_length(talk: Talk) -> None:
+    """'24년으로 바꿔줘'는 2024년: 기간 길이 규칙이 24년치 추이로 바꾸거나
+    변경 추출이 읽은 연도를 덮지 않는다 (11/26 리뷰)"""
+    talk.say("부산 출생아 최근 5년 보여 줘")
+    res = talk.say("24년으로 바꿔줘", request_type="change", changes={"year": 2024})
+    assert res["request_type"] == "change" and talk.extracted
+    asked = talk.answered[-1]
+    assert not (asked.get("asked") or {}).get("recent")
+    assert 2024 in (asked.get("year"), asked.get("end_year"))
 
 
 def test_scope_pending_does_not_swallow_unsupported_new_question(talk: Talk):
@@ -2000,6 +2402,345 @@ def test_recent_years_follow_up_sends_recent_to_the_calculation(talk: Talk) -> N
     asked = talk.answered[0]  # 첫 질문은 해석(qa.ask)으로 답하므로 조건으로 계산한 첫 번째가 이 턴
     assert asked["type"] == "trend" and asked["asked"]["recent"] == 5
     assert asked["start_year"] is None and asked["end_year"] is None  # HCX가 적은 기간은 버린다
+
+
+def test_parse_restate_reads_relation_and_question() -> None:
+    raw = (
+        '{"relation": "Followup", "question": " 2024년  대구 출생아 수는? ", "why": "지역만 바꿈"}'
+    )
+    assert s.parse_restate(raw) == {
+        "relation": "followup",
+        "question": "2024년 대구 출생아 수는?",
+        "why": "지역만 바꿈",
+    }
+    assert s.parse_restate("말로 답함")["relation"] == ""
+    assert s.parse_restate('{"relation": "maybe", "question": "x"}')["relation"] == ""
+
+
+def test_verify_restate_falls_back_and_checks_indicator_and_period() -> None:
+    cond = {"type": "value", "indicator": "출생아 수", "regions": ["부산광역시"], "year": 2024}
+    # 못 읽음 → 새 말 그대로 새 질문
+    assert s.verify_restate({"relation": "", "question": ""}, cond, "대구는?") == (
+        "new",
+        "대구는?",
+        "복원 못 읽음 → 새 말 그대로",
+    )
+    # followup 인데 직전 지표가 없음 → 새 질문
+    rel, q, note = s.verify_restate(
+        {"relation": "followup", "question": "2024년 대구 혼인 건수는?"}, cond, "대구는?"
+    )
+    assert rel == "new" and q == "2024년 대구 혼인 건수는?" and "직전 지표" in note
+    # followup 에 연도가 빠짐 → 직전 기간을 앞에 붙임
+    assert s.verify_restate(
+        {"relation": "followup", "question": "대구 출생아 수는?"}, cond, "대구는?"
+    ) == ("followup", "2024년 대구 출생아 수는?", "직전 기간 2024년 붙임")
+    # 상대 시점은 코드가 센 연도로 (test_verify_restate_replaces_llm_year_with_code_relative_year)
+    assert (
+        s.verify_restate({"relation": "unclear", "question": ""}, cond, "거기는?")[0] == "unclear"
+    )
+
+
+def test_verify_restate_replaces_llm_year_with_code_relative_year(monkeypatch) -> None:
+    # "작년은?"의 연도는 코드가 센다: LLM이 적은 2022년을 버리고 follow_year 의 값으로
+    monkeypatch.setattr(s, "follow_year", lambda q, c: 2025)
+    cond = {"type": "value", "indicator": "혼인 건수", "regions": ["서울특별시"], "year": 2023}
+    assert s.verify_restate(
+        {"relation": "followup", "question": "2022년 서울 혼인 건수는?"}, cond, "작년은?"
+    ) == ("followup", "2025년 서울 혼인 건수는?", "상대 시점은 코드로 2025년")
+    assert s.verify_restate(
+        {"relation": "new", "question": "서울 인구는?"}, cond, "작년 인구는?"
+    ) == ("new", "2025년 서울 인구는?", "상대 시점은 코드로 2025년")
+
+
+def test_verify_restate_keeps_recent_years_for_code(monkeypatch) -> None:
+    # "최근 5년은?"의 기간은 코드가 센다: LLM이 적은 연도를 지우고 '최근 5년'을 앞에
+    monkeypatch.setattr(s, "recent_years", lambda q: 5)
+    cond = {"type": "value", "indicator": "고령인구 비율", "regions": ["전국"], "year": 2024}
+    rel, q, note = s.verify_restate(
+        {"relation": "followup", "question": "2023년부터 2020년까지 전국 고령인구 비율은?"},
+        cond,
+        "최근 5년은 어떻게 변했어?",
+    )
+    assert (rel, q, note) == (
+        "followup",
+        "최근 5년 전국 고령인구 비율은?",
+        "상대 기간은 코드로 최근 5년",
+    )
+
+
+def test_restate_outcome_separates_broken_from_unfilled() -> None:
+    ok = '{"relation": "new", "question": "2024년 대구 출생아 수는?", "why": "x"}'
+    assert s.restate_outcome(s.parse_restate(ok), ok) == "ok"
+    # 호출 실패 · JSON 없음 → 기존 경로
+    assert s.restate_outcome({"relation": "", "question": "", "why": "호출 실패"}, None) == "failed"
+    assert s.restate_outcome(s.parse_restate("말로 답함"), "말로 답함") == "failed"
+    odd = '{"relation": "maybe", "question": "2024년 대구 출생아 수는?"}'
+    assert s.restate_outcome(s.parse_restate(odd), odd) == "failed"
+    # JSON 은 읽혔는데 문장을 못 채움 → 되묻기 (11/25 C25)
+    empty = '{"relation": "followup", "question": "", "why": "새로 언급한 대상이 없음"}'
+    assert s.restate_outcome(s.parse_restate(empty), empty) == "unclear"
+    unclear = '{"relation": "unclear", "question": "", "why": "x"}'
+    assert s.restate_outcome(s.parse_restate(unclear), unclear) == "unclear"
+
+
+@pytest.fixture
+def restate_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(s.get_settings(), "follow_restate", True)
+
+
+def _has_step(res: dict, stage: str, result: str) -> bool:
+    return any(x["stage"] == stage and x["result"] == result for x in res["trace"]["flow"])
+
+
+def test_follow_restate_call_failure_goes_back_to_existing_path(
+    talk: Talk, restate_on: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """복원 호출이 실패하면 새 말만 새 질문으로 보내지 않고 기존 경로(규칙 + 변경 추출)로 이어 간다
+    (11/25 HCX 42901: "2020년은?"이 직전 대화 없이 새 질문으로 갔다).
+    "2022년만"은 기존 경로의 연도만 규칙(YEAR_ONLY_REPLY)이 변경 추출보다 먼저 잡는다"""
+    tried: list[str] = []
+
+    async def broken(state, question, trace):
+        tried.append(question)
+        raise RuntimeError("HCX 42901")
+
+    monkeypatch.setattr(s, "restate", broken)
+    talk.say("부산 출생아 최근 5년 보여 줘")
+    res = talk.say("2022년만", request_type="change", changes={"year": 2022})
+    assert tried == ["2022년만"]  # 복원을 한 번 시도했다
+    assert _has_step(res, "이어 묻기 판단", "실패")
+    assert _has_step(res, "후속 질문", "연도 변경")  # 기존 경로의 연도만 규칙을 탔다
+    assert res["request_type"] == "change"
+    assert res["parsed"]["year"] == 2022 and res["parsed"]["regions"] == ["부산"]
+    assert talk.asked == ["부산 출생아 최근 5년 보여 줘"]  # 새 말만으로 새 질문을 하지 않았다
+
+
+def test_follow_restate_unreadable_answer_goes_back_to_existing_path(
+    talk: Talk, restate_on: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tried: list[str] = []
+
+    async def prose(question, system):
+        tried.append(question)
+        return "죄송하지만 이해하지 못했습니다"
+
+    monkeypatch.setattr(s, "_chat", prose)
+    talk.say("부산 출생아 최근 5년 보여 줘")
+    res = talk.say("2022년만", request_type="change", changes={"year": 2022})
+    assert tried == ["2022년만"]  # 복원 LLM 을 한 번 불렀다
+    assert _has_step(res, "이어 묻기 판단", "실패")
+    assert _has_step(res, "후속 질문", "연도 변경")  # 기존 경로의 연도만 규칙을 탔다
+    assert res["parsed"]["year"] == 2022 and res["parsed"]["regions"] == ["부산"]
+    assert talk.asked == ["부산 출생아 최근 5년 보여 줘"]
+
+
+def test_follow_restate_unclear_shows_fixed_sentence_not_llm_note(
+    talk: Talk, restate_on: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """unclear 의 why 는 LLM 판단 메모라 화면에 내지 않는다 (11/25 "더" → "새 말이 불완전함 …")"""
+
+    async def unclear(question, system):
+        return '{"relation": "unclear", "question": "", "why": "새 말이 불완전함"}'
+
+    monkeypatch.setattr(s, "_chat", unclear)
+    talk.say("부산 출생아 최근 5년 보여 줘")
+    res = talk.say("더")
+    assert res["request_type"] == "unclear"
+    assert res["answer"].startswith(s.RESTATE_UNCLEAR)
+    assert "새 말이 불완전함" not in res["answer"]
+    assert talk.extracted == []  # unclear 는 복원의 판단이라 기존 경로로 가지 않는다
+
+
+def test_follow_restate_unfilled_sentence_asks_back(
+    talk: Talk, restate_on: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """JSON 은 읽혔는데 문장이 비면 기존 경로가 아니라 되묻기 (11/25 C25 "거기는 작년에?")"""
+
+    async def unfilled(question, system):
+        return '{"relation": "followup", "question": "", "why": "새로 언급한 대상이 없음"}'
+
+    monkeypatch.setattr(s, "_chat", unfilled)
+    talk.say("부산 출생아 최근 5년 보여 줘")
+    res = talk.say("거기는 작년에 어땠어?")
+    assert res["request_type"] == "unclear"
+    assert res["answer"].startswith(s.RESTATE_UNCLEAR)
+    assert talk.extracted == []
+
+
+def test_follow_restate_failure_keeps_llm_raw_in_flow(
+    talk: Talk, restate_on: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """실패해 기존 경로로 가도 LLM 이 낸 원문은 처리 흐름에 남는다 (무엇이 깨졌는지 보려고)"""
+
+    async def prose(question, system):
+        return "죄송하지만 이해하지 못했습니다"
+
+    monkeypatch.setattr(s, "_chat", prose)
+    talk.say("부산 출생아 최근 5년 보여 줘")
+    res = talk.say("2022년만", request_type="change", changes={"year": 2022})
+    steps = [x for x in res["trace"]["flow"] if x["stage"] == "이어 묻기 판단"]
+    assert steps and steps[0]["result"] == "실패"
+    assert "죄송하지만 이해하지 못했습니다" in steps[0]["detail"]
+
+
+@pytest.fixture
+def sure_on(monkeypatch: pytest.MonkeyPatch) -> list:
+    """3-a 켬 + 복원 호출을 기록만 하는 가짜 (불리면 기록이 남는다)"""
+    monkeypatch.setattr(s.get_settings(), "follow_restate", True)
+    monkeypatch.setattr(s.get_settings(), "follow_sure_rules", True)
+    called: list = []
+
+    async def spy(state, question, trace):
+        called.append(question)
+        return {"relation": "new", "question": question, "why": "spy"}
+
+    monkeypatch.setattr(s, "restate", spy)
+    return called
+
+
+def test_sure_rule_picks_only_trusted_rules_after_an_ok_answer() -> None:
+    ok = {"last": {"status": "ok"}, "conditions": dict(BASE)}
+    assert asyncio.run(s._sure_rule(ok, "서울은?")) == "지역만"
+    assert asyncio.run(s._sure_rule(ok, "구성비로 보여줘")) is None  # 규칙도 틀리던 말 → LLM
+    assert asyncio.run(s._sure_rule(ok, "작년은?")) is None  # 규칙이 못 잡는 말 → LLM
+    # 거절 · 표 안내 뒤에는 규칙을 쓰지 않는다 (C27: 거절된 조건을 이어받았다)
+    refused = {"last": {"status": "partial_match"}, "conditions": dict(BASE)}
+    assert asyncio.run(s._sure_rule(refused, "서울은?")) is None
+
+
+def test_sure_rules_skip_restate_for_region_only(talk: Talk, sure_on: list) -> None:
+    talk.say("부산 출생아 최근 5년 보여 줘")
+    res = talk.say("서울은?")
+    assert sure_on == []  # LLM 복원을 부르지 않았다
+    assert talk.answered[-1]["regions"] == ["서울"] and res["request_type"] == "change"
+    steps = [x for x in res["trace"]["flow"] if x["stage"] == "이어 묻기 판단"]
+    assert steps and steps[0]["result"] == "규칙"
+
+
+def test_sure_rules_skip_restate_for_ratio_follow_up(talk: Talk, sure_on: list) -> None:
+    talk.parsed = dict(ONE_PERSON)
+    talk.say("2020년 서울 1인 가구 수는?")
+    talk.say("그중 여성 비율은?", request_type="change", changes={"sex": "여"})
+    assert sure_on == []
+    assert talk.asked[-1] == "2020년 서울 1인 가구 중 여성 비율은?"
+
+
+def test_sure_rules_leave_other_follow_ups_to_restate(talk: Talk, sure_on: list) -> None:
+    talk.say("부산 출생아 최근 5년 보여 줘")
+    talk.say("작년은?")
+    assert sure_on == ["작년은?"]  # 규칙이 못 잡는 말은 LLM 복원으로 ("2022년만"은 연도만 규칙)
+
+
+def test_sure_rule_names_develop_follow_up_rules() -> None:
+    ok = {"last": {"status": "ok"}, "conditions": dict(BASE)}
+    ratio = {"last": {"status": "ok"}, "conditions": {**BASE, "indicator": qa.BIRTH_SEX_RATIO}}
+    assert asyncio.run(s._sure_rule(ratio, "그럼 반대로는?")) == "출생성비 반대로"
+    assert asyncio.run(s._sure_rule(ratio, "1,000명 기준으로는?")) == "출생성비 기준 인원"
+    assert asyncio.run(s._sure_rule(ok, "반대로는?")) is None  # 출생성비가 아니면 규칙 아님
+    assert asyncio.run(s._sure_rule(ok, "2022년만")) == "연도만"
+    assert asyncio.run(s._sure_rule(ok, "재작년까지 5년간은?")) == "끝 연도 기간"
+    refused = {"last": {"status": "partial_match"}, "conditions": dict(ratio["conditions"])}
+    assert asyncio.run(s._sure_rule(refused, "반대로는?")) is None  # 직전 답이 ok 일 때만
+
+
+BIRTH_RATIO_2024 = {**BASE, "type": "value", "indicator": qa.BIRTH_SEX_RATIO, "regions": ["전국"],
+                    "year": 2024, "start_year": None, "end_year": None}  # fmt: skip
+BIRTHS_2024 = {**BASE, "type": "value", "year": 2024, "start_year": None, "end_year": None}
+TREND_2021_2025 = {"type": "trend", "start_year": 2021, "end_year": 2025}
+
+
+def _follow_up(monkeypatch: pytest.MonkeyPatch, sure: bool, parsed: dict, first: str,
+               second: str, delta: dict) -> tuple[dict, dict, list]:  # fmt: skip
+    """같은 두 턴을 끔(sure=False) 또는 3-a(복원 + 확실한 규칙)로 돌린다
+    → (계산 조건, 답, 복원 호출)"""
+
+    class FixedDate(date):
+        @classmethod
+        def today(cls):
+            return cls(2026, 11, 24)
+
+    monkeypatch.setattr(s, "date", FixedDate)
+    monkeypatch.setattr(s.timeref, "date", FixedDate)
+    monkeypatch.setattr(s.get_settings(), "follow_restate", sure)
+    monkeypatch.setattr(s.get_settings(), "follow_sure_rules", sure)
+    called: list = []
+
+    async def spy(state, question, trace):
+        called.append(question)
+        return {"relation": "new", "question": question, "why": "spy"}
+
+    monkeypatch.setattr(s, "restate", spy)
+    talk = Talk(monkeypatch)
+    talk.parsed = dict(parsed)
+    talk.say(first)
+    res = talk.say(second, **delta)
+    return talk.answered[-1], res, called
+
+
+@pytest.mark.parametrize(
+    ("parsed", "first", "second", "delta", "rule"),
+    [
+        (BIRTH_RATIO_2024, "2024년 전국 출생성비는?", "반대로는?", {}, "출생성비 반대로"),
+        (BIRTH_RATIO_2024, "2024년 전국 출생성비는?", "1000명 기준으로는?", {},
+         "출생성비 기준 인원"),
+        (BIRTHS_2024, "2024년 부산 출생아 수", "2022년은?", {}, "연도만"),
+        (BIRTHS_2024, "2024년 부산 출생아 수", "재작년까지 5년간은?",
+         {"request_type": "change", "changes": TREND_2021_2025}, "끝 연도 기간"),
+    ],
+)  # fmt: skip
+def test_sure_rules_run_develop_follow_up_rules_before_restate(
+    monkeypatch: pytest.MonkeyPatch, parsed, first, second, delta, rule
+) -> None:
+    """3-a: develop 의 후속 질문 규칙이 잡는 말은 LLM 복원을 부르지 않고 끔과 같은 조건으로 계산한다
+    (반대로는? → 출생성비를 다시 답함, 1000명 기준 · 재작년까지 5년간 → unclear 되묻기 이던 것)"""
+    off, off_res, off_called = _follow_up(monkeypatch, False, parsed, first, second, delta)
+    sure, res, called = _follow_up(monkeypatch, True, parsed, first, second, delta)
+    assert off_called == [] and called == []  # 복원 LLM 을 부르지 않았다
+    assert sure == off  # 끔과 같은 조건으로 계산했다
+    assert res["request_type"] == off_res["request_type"] == "change"
+    assert _has_step(res, "이어 묻기 판단", "규칙")
+    assert any(rule in x["detail"] for x in res["trace"]["flow"] if x["stage"] == "이어 묻기 판단")
+
+
+def test_sure_rules_follow_up_results_match_expected_conditions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """위 네 말이 3-a 에서 실제로 맞는 조건이 되는지 (끔과 같다는 것만으로는 둘 다 틀릴 수 있다)"""
+    reverse, *_ = _follow_up(monkeypatch, True, BIRTH_RATIO_2024, "출생성비", "반대로는?", {})
+    assert reverse["indicator"] == qa.REVERSE_BIRTH_SEX_RATIO and reverse["year"] == 2024
+    count, *_ = _follow_up(
+        monkeypatch, True, BIRTH_RATIO_2024, "출생성비", "1000명 기준으로는?", {}
+    )
+    assert count["indicator"] == qa.BIRTH_SEX_RATIO and count["birth_ratio_base"] == 1000
+    year, *_ = _follow_up(monkeypatch, True, BIRTHS_2024, "출생아", "2022년은?", {})
+    assert year["year"] == 2022 and year["regions"] == ["부산"]
+    change = {"request_type": "change", "changes": TREND_2021_2025}
+    span, *_ = _follow_up(monkeypatch, True, BIRTHS_2024, "출생아", "재작년까지 5년간은?", change)
+    assert span["type"] == "trend" and (span["start_year"], span["end_year"]) == (2020, 2024)
+    assert span["regions"] == ["부산"]
+
+
+def test_follow_llm_gemma_uses_gemma_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    """FOLLOW_LLM=gemma: 복원 LLM 을 GemmaClient 로 부른다 (HCX _chat 은 부르지 않는다)"""
+    monkeypatch.setattr(s.get_settings(), "follow_llm", "gemma")
+    sent: list = []
+
+    class Fake:
+        def __init__(self, **kw):
+            pass
+
+        async def chat(self, model, messages, **options):
+            sent.append(messages)
+            return type("R", (), {"content": '{"verdict": "ok"}'})()
+
+    async def no_hcx(prompt, system):
+        pytest.fail("FOLLOW_LLM=gemma 인데 HCX 를 불렀습니다")
+
+    monkeypatch.setattr(s.search_llm, "GemmaClient", Fake)
+    monkeypatch.setattr(s, "_chat", no_hcx)
+    assert asyncio.run(s._follow_chat("대구는?", "SYS")) == '{"verdict": "ok"}'
+    assert sent[0][0] == {"role": "system", "content": "SYS"}
+    assert sent[0][1]["content"] == "대구는?"
 
 
 @pytest.mark.parametrize("question", ["재작년까지 5년간은?", "2024년까지 최근 5년은?"])

@@ -1,3 +1,4 @@
+import contextlib
 import os
 from pathlib import Path
 
@@ -69,7 +70,7 @@ def ask_sessions(monkeypatch: pytest.MonkeyPatch) -> dict:
     async def load(session_id, at):
         return store["sessions"].get(session_id), False
 
-    async def save(session_id, state):
+    async def save(session_id, state, conn=None):
         store["sessions"][session_id] = state
 
     async def log_turn(session_id, user_id, turn_no, question, *rest):
@@ -78,7 +79,26 @@ def ask_sessions(monkeypatch: pytest.MonkeyPatch) -> dict:
     monkeypatch.setattr(ask_session, "load", load)
     monkeypatch.setattr(ask_session, "save", save)
     monkeypatch.setattr(ask_session, "log_turn", log_turn)
+    monkeypatch.setattr(ask_session, "turn_writer", memory_turn_writer(store["sessions"]))
     return store
+
+
+class NoDb:
+    """turn_writer 가 넘기는 연결 대신: 대화 목록 저장(conversations.touch)은 하지 않는다"""
+
+    async def execute(self, *args, **kwargs):
+        return None
+
+
+def memory_turn_writer(sessions: dict):
+    """한 턴 저장을 메모리로 (ask_session.turn_writer).
+    이어 가는 대화인데 상태가 없으면 지운 대화다"""
+
+    @contextlib.asynccontextmanager
+    async def writer(session_id, user_id, continuing):
+        yield None if continuing and session_id not in sessions else NoDb()
+
+    return writer
 
 
 @pytest.fixture(autouse=True)
