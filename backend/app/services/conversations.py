@@ -15,6 +15,8 @@ REPLAY_KEYS = (
     "request_type",
     "clarification",
     "summary",
+    "figure",
+    "reportable",
     "sources",
 )
 
