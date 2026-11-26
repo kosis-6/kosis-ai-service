@@ -44,6 +44,34 @@ def test_birth_sex_ratio_words(
 
 
 @pytest.mark.parametrize(
+    ("question", "indicator", "base"),
+    [
+        ("남아 이백 명당 여아는 몇 명이야?", "남아 100명당 여아 수", 200),
+        ("남아가 이천 명 태어나면 여아는 몇 명?", "남아 100명당 여아 수", 2000),
+        ("남아이십명당 여아는 몇 명이야?", "남아 100명당 여아 수", 20),
+        ("여아 이백오십 명당 남아는 몇 명이야?", "출생성비", 250),
+        ("남아 천오백 명당 여아는 몇 명이야?", "남아 100명당 여아 수", 1500),
+        ("여아 이만 명당 남아는 몇 명이야?", "출생성비", 20000),
+        ("남아 스물다섯 명당 여아는 몇 명이야?", "남아 100명당 여아 수", 25),
+        ("여아 열한 명당 남아는 몇 명이야?", "출생성비", 11),
+        ("남아 1만 명당 여아는 몇 명이야?", "남아 100명당 여아 수", 10000),
+        ("여자아이가 2천 명 태어날 때 남자아이는?", "출생성비", 2000),
+    ],
+)
+def test_birth_sex_ratio_reads_korean_numbers(question: str, indicator: str, base: int) -> None:
+    assert qa.birth_sex_ratio_reference(question) == (indicator, base)
+
+
+@pytest.mark.parametrize(
+    ("reply", "base"),
+    [("그럼 이백 명 기준으로는?", 200), ("스물다섯 명당은?", 25), ("1만 명 기준으로는?", 10000)],
+)
+def test_birth_ratio_count_reply_reads_korean_numbers(reply: str, base: int) -> None:
+    count = ask_session.BIRTH_RATIO_COUNT_REPLY.fullmatch(reply)
+    assert count and qa.birth_ratio_count(count["count"]) == base
+
+
+@pytest.mark.parametrize(
     "question",
     [
         "남녀 성비 알려줘",
