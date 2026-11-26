@@ -111,7 +111,20 @@ def _clean(step: dict[str, Any]) -> dict[str, Any]:
         out["regions"] = "all"
     if op == "change" and "how" not in out:
         out["how"] = "diff"
+    if op == "combine" and "how" not in out:
+        out["how"] = _combine_how(str(step.get("why") or ""))
     return out
+
+
+def _combine_how(why: str) -> str:
+    """계획기가 combine.how 를 비웠을 때 이유 글로 추정 (비율 · 합 · 큰 쪽 · 차이)"""
+    if re.search(r"비율|비중|상쇄율|÷|나누|대비|배", why):
+        return "ratio"
+    if re.search(r"합계|합치|더하|합$|합\s", why):
+        return "sum"
+    if re.search(r"큰\s*쪽|많은\s*쪽|어느\s*쪽|비교", why):
+        return "which_larger"
+    return "diff"
 
 
 def normalize(

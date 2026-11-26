@@ -203,9 +203,13 @@ def change(t: Table, from_: str, to: str, how: str = "diff") -> Table:
     rows = {r: {label: _change_value(v.get(p0), v.get(p1), how)} for r, v in t.rows.items()}
     unit = {"diff": "%p" if t.unit == "%" else t.unit, "rate": "%", "ratio": "배"}[how]
     how_ko = {"diff": "변화", "rate": "증감률", "ratio": "배"}[how]
-    return Table(
+    out = Table(
         rows, t.indicator, unit, f"{t.label or t.indicator or ''} {p0}→{p1} {how_ko}".strip()
     )
+    # 답에 "41.36% → 45.83% (+4.47%p)"처럼 전 · 후 값을 같이 보이도록 남긴다
+    out.meta["from_to"] = {r: (v.get(p0), v.get(p1)) for r, v in t.rows.items()}
+    out.meta["from_to_unit"] = t.unit
+    return out
 
 
 def _combine_value(a: float | None, b: float | None, how: str, scale: float) -> float | None:

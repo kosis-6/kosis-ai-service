@@ -125,7 +125,11 @@ class Getter:
         self.calls = 0
 
     def _level(self) -> str:
-        return self.parsed.get("level") or ("시군구" if self.parsed.get("sido") else "시도")
+        if self.parsed.get("level"):
+            return self.parsed["level"]
+        if "시군구" in self.question or self.parsed.get("sido"):
+            return "시군구"
+        return "시도"
 
     async def _rank(self, ind: int, year: int | None) -> dict:
         from app.services import multi_indicator
@@ -161,6 +165,8 @@ class Getter:
                 **{k: v for k, v in (target.get("conditions") or {}).items() if k != "year_end"},
                 "year": year,
             },
+            # 질문 전체의 연령("80세 이상 사망자")이 다른 지표("출생아 수")에 붙지 않게
+            "unsaid_age": not multi_indicator.says_age(span),
         }
         self.calls += 1
         res, sub = await multi_indicator._one(asked, p, self.found, target, "rank")
@@ -254,12 +260,26 @@ def _lead(all_tables: list[Table], steps: list[dict], with_: list[int]) -> list[
         if not regs:
             continue
         what = s.get("why") or f"{s.get('op')} 결과"
-        shown = ", ".join(
-            f"{r}({t.single(r):,.1f}{t.unit or ''})" if t.single(r) is not None else r
-            for r in regs[:10]
-        )
+        shown = ", ".join(f"{r}({_cell(t, r)})" for r in regs[:10])
         out.append(f"{what}: {shown}")
     return out
+
+
+def _num(v: float | None, unit: str | None) -> str:
+    if v is None:
+        return "-"
+    text = f"{v:,.0f}" if float(v).is_integer() else f"{v:,.2f}"
+    return f"{text}{unit or ''}"
+
+
+def _cell(t: Table, region: str) -> str:
+    """지역 값 한 칸. 변화 표면 '전 → 후 (+변화)'까지"""
+    v = t.single(region)
+    if (ft := t.meta.get("from_to", {}).get(region)) and v is not None:
+        a, b = ft
+        u = t.meta.get("from_to_unit")
+        return f"{_num(a, u)} → {_num(b, u)} ({'+' if v > 0 else ''}{_num(v, t.unit)})"
+    return _num(v, t.unit)
 
 
 # ---------------------------------------------------------------- 들어가는 곳
@@ -302,7 +322,16 @@ async def answer(question: str, parsed: dict, found: dict, trace: dict) -> dict 
     level = getter._level()
     result = _result(out, getter, level)
     leads = _lead(all_, p["steps"], (p.get("answer") or {}).get("with") or [])
+    if out.meta.get("from_to"):
+        # 변화 표는 전 · 후 값까지: "서울 41.36% → 45.83% (+4.47%p)"
+        leads.append(
+            "지역별 전 → 후: " + ", ".join(f"{r} {_cell(out, r)}" for r in out.regions()[:10])
+        )
     result["notes"] = [*leads, "질문을 계산 순서로 나눠 차례로 계산했습니다"]
+    # 답 판정이 "걸러내기 · 변화량이 빠졌다"고 틀리게 걸지 않도록 계산 순서를 결과에 남긴다
+    result["steps_text"] = " → ".join(
+        f"{i + 1}. {s.get('why') or s['op']}" for i, s in enumerate(p["steps"])
+    )
     flow.add("복합 계산", "ok", f"get {getter.calls}회 · step {len(p['steps'])}")
     text = f"{qa.summary(result)}\n\n{qa.render(result)}".strip()
     return {

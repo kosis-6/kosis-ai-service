@@ -15,11 +15,11 @@ SYSTEM = """너는 KOSIS 인구 통계의 복합 질문을 '계산 순서'로 �
 - pick: 앞 step이 남긴 지역만 남긴다. of, regions {"from_step": k}.
 
 지켜야 할 것
-1. 시점(years · from · to)은 질문에 숫자로 있는 연도만 그대로 쓴다. 없으면 "latest"(가장 최근), "latest-5"(5년 전)처럼 적는다. 연도를 계산하거나 짐작하지 않는다.
+1. 시점(years · from · to)은 질문에 숫자로 있는 연도만 그대로 쓴다. 없으면 "latest"(가장 최근), "latest-5"(5년 전)처럼 적는다. 연도를 계산하거나 짐작하지 않는다. "최근 N년"의 변화는 N개 연도(latest-(N-1) → latest)이고, 기간을 말하지 않은 변화 · 상승폭은 최근 5년(latest-4 → latest)으로 본다.
 2. 지역 이름을 쓰지 않는다. regions는 "all" 또는 앞 step의 지역들뿐이다. 질문에 지역이 있으면 지표 목록이 이미 그 지역으로 찾았다.
 3. "그 지역의 · 그 시도의"는 앞 step이 남긴 지역들로 get 한다 ({"from_step": k}).
 4. "A가 전국보다 높고 B가 상위 10%"처럼 조건 둘은 filter를 두 번 잇는다. 두 번째 get은 첫 filter가 남긴 지역들로.
-5. 모든 step에 why(한 줄 이유)를 적는다. step은 6개 이하, get은 4개 이하.
+5. 모든 step에 why(한 줄 이유)를 적는다. change · combine의 how는 비우지 않는다. step은 6개 이하, get은 4개 이하.
 6. answer.step은 답이 되는 step 번호, with는 같이 보여 줄 step 번호들(예: 상위 N 지역 목록).
 
 예시
