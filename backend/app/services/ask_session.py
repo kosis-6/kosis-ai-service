@@ -15,7 +15,8 @@ from sqlalchemy.exc import SQLAlchemyError
 from starlette.concurrency import run_in_threadpool
 
 from app.agent import replan
-from app.prompts.qa import FOLLOW_SYSTEM
+from app.core.config import get_settings
+from app.prompts.qa import FOLLOW_SYSTEM, RESTATE_SYSTEM
 from app.services import (
     agegroup,
     agent_action,
@@ -34,6 +35,7 @@ from app.services import (
     qa,
     question_clarify,
     refusal,
+    search_llm,
     slots,
     table_guide,
     timeref,
@@ -1073,6 +1075,157 @@ def parse_delta(raw: str) -> dict:
     }
 
 
+RESTATE_RELATIONS = ("followup", "new", "unclear")
+RELATIVE_WORD = re.compile(r"(?:작년|지난해|재작년|올해|금년)(?:에|의|은|는)?\s*")
+
+
+async def restate(state: dict, question: str, trace: dict) -> dict:
+    """이어 묻기 LLM 복원 (FOLLOW_RESTATE, A_16): 직전 질문 · 조건 · 답을 주고 relation 과
+    혼자 서는 완전한 질문을 받는다 → {"relation", "question", "why"}. 못 읽으면 relation 은 빈 글"""
+    recent = state.get("recent") or []
+    system = (
+        RESTATE_SYSTEM.replace("{PREV_QUESTION}", recent[-1] if recent else "(없음)")
+        .replace("{STATE}", state_text(state["conditions"], state["sources"]))
+        .replace("{LAST}", last_text(state.get("last")))
+    )
+    raw = await _follow_chat(question, system)
+    trace["restate_raw"] = raw
+    return parse_restate(raw)
+
+
+def parse_restate(raw: str) -> dict:
+    objects = qa._json_objects(raw)
+    data = objects[0] if objects else {}
+    relation = str(data.get("relation") or "").strip().lower()
+    return {
+        "relation": relation if relation in RESTATE_RELATIONS else "",
+        "question": " ".join(str(data.get("question") or "").split()),
+        "why": str(data.get("why") or "").strip(),
+    }
+
+
+def verify_restate(r: dict, conditions: dict, question: str) -> tuple[str, str, str]:
+    """LLM 결정의 코드 확인 (뜻 판단은 하지 않는다) → (relation, 쓸 질문, 확인 메모).
+    · 읽지 못했거나 문장이 비면 새 말 그대로 새 질문
+    · followup 인데 복원 문장에 직전 지표(이름 · 별칭 · 말)가 없으면 새 질문으로
+    · followup 인데 연도가 빠졌고 직전에 연도가 있으면 직전 기간을 앞에 붙인다 (상대 시점 그대로)"""
+    relation, restored = r.get("relation") or "", r.get("question") or ""
+    if relation == "unclear":
+        return relation, "", ""
+    if not relation or not restored:
+        return "new", question, "복원 못 읽음 → 새 말 그대로"
+    if (n := recent_years(question)) and not names_indicator(question, {}):
+        # "최근 5년은?"의 기간도 코드가 센다: HCX가 "2023년부터 2020년까지"처럼 거꾸로 적었다 (C08).
+        # 숫자 연도를 지우고 '최근 N년'을 앞에 두면 새 질문 경로가 자료 마지막 해까지 N개 해로 푼다
+        bare = re.sub(r"\d{4}\s*년\s*(?:부터|에서|~|까지|과|와|이랑|에)?\s*", "", restored)
+        bare = re.sub(r"\s{2,}", " ", bare).strip()
+        return relation, f"최근 {n}년 {bare}", f"상대 기간은 코드로 최근 {n}년"
+    if year := follow_year(question, conditions):
+        # 새 말의 상대 시점("작년은?")은 코드가 오늘 기준으로 센다 (상대 연도 원칙). HCX는 직전
+        # 연도에서 1을 빼 2023년의 작년을 2022년으로 썼다 (11/25 대화 셋 C06 · C25)
+        if re.search(r"\d{4}\s*년", restored):
+            restored = re.sub(r"\d{4}(\s*년)", lambda m: f"{year}{m[1]}", restored, count=1)
+        else:
+            bare = RELATIVE_WORD.sub("", restored).strip()
+            restored = f"{year}년 {bare}"
+        return relation, restored, f"상대 시점은 코드로 {year}년"
+    if relation == "followup":
+        prev = str(conditions.get("indicator") or conditions.get("term") or "")
+        names = {n for *_, n in indicators.find_in_text(restored) or []}
+        compact = restored.replace(" ", "")
+        if prev and prev not in names and prev.replace(" ", "") not in compact:
+            return "new", restored, f"복원 문장에 직전 지표({prev})가 없음 → 새 질문"
+        if not re.search(
+            r"\d{4}\s*년|작년|지난해|재작년|올해|금년|최근|년\s*전|년간|년\s*동안", restored
+        ):
+            if period := period_text(conditions):
+                return relation, f"{period} {restored}", f"직전 기간 {period} 붙임"
+    return relation, restored, ""
+
+
+# unclear 일 때 사용자에게 보이는 문장. LLM 의 why 는 판단 메모라 화면에 내지 않고 기록에만 둔다
+# (11/25 경계 시험: "더" → "새 말이 불완전함 바꿀 조건을…"이 그대로 나왔다)
+RESTATE_UNCLEAR = "앞 대화에서 무엇을 가리키는지 알 수 없습니다."
+
+
+def restate_outcome(r: dict, raw: str | None) -> str:
+    """복원 결과를 어떻게 쓸까 → "ok" · "unclear" · "failed".
+    · failed: 호출 실패 · JSON 이 없음 · 문장은 있는데 relation 이 셋 중 하나가 아님 → 기존 경로로
+    · unclear: JSON 은 읽혔는데 문장을 채우지 못함 → 되묻기. LLM 이 무엇을 가리키는지 못 찾은 것이다
+      (11/25 대화 셋 C25 "거기는 작년에?": why "새로 언급한 대상이 없음", 문장 비움)"""
+    if not qa._json_objects(raw or ""):
+        return "failed"
+    if r.get("relation") == "unclear" or not r.get("question"):
+        return "unclear"
+    return "ok" if r.get("relation") else "failed"
+
+
+async def _sure_rule(state: dict, question: str) -> str | None:
+    """3-a: LLM 복원보다 먼저 쓸 '확실한' 코드 규칙이 이 말을 잡는가 → 규칙 이름 (아니면 None).
+    11/25 대화 셋(끔)에서 오판이 없던 셋만: 비율 후속(C10 · C12 · C13) · 지역만(C01~C05) ·
+    구별로(C19). 구성비로는 규칙도 틀려(C20) 넣지 않는다. 기존 경로가 구성비로를 먼저 보므로
+    그 말이면 규칙으로 보내지 않는다. 직전 답이 정상(ok)이 아니면(거절 · 표 안내 뒤) 쓰지 않는다:
+    거절 뒤 "부산은?"이 거절된 조건(총인구)을 이어받았다 (C27).
+    develop 의 후속 질문 규칙(출생성비 반대로 · N명 기준 · 연도만 · 끝 연도를 정한 기간)도
+    기존 경로가 코드로 처리하므로 같은 조건에서 복원보다 먼저 본다. 판정은 기존 경로와 같은 식"""
+    if (state.get("last") or {}).get("status") != "ok" or composition_request(question):
+        return None
+    if qa.BIRTH_RATIO_OPPOSITE.get(state["conditions"].get("indicator")):
+        if BIRTH_RATIO_REVERSE_REPLY.fullmatch(question):
+            return "출생성비 반대로"
+        if BIRTH_RATIO_COUNT_REPLY.fullmatch(question):
+            return "출생성비 기준 인원"
+    if YEAR_ONLY_REPLY.fullmatch(question):
+        return "연도만"
+    if await asyncio.to_thread(ratio_followup, question, state):
+        return "비율 후속"
+    if await asyncio.to_thread(region_split_changes, question, state["conditions"]):
+        return "구별로"
+    if await asyncio.to_thread(region_only_changes, question, state["conditions"]):
+        return "지역만"
+    if not names_indicator(question, {}) and any(
+        r["kind"] == "span_until" for r in timeref.find(question)
+    ):
+        return "끝 연도 기간"
+    return None
+
+
+async def _restated(
+    state: dict, question: str, user_id: int | None
+) -> tuple[dict, dict, str | None] | None:
+    """FOLLOW_RESTATE: LLM 복원 → 코드 확인 → 복원 문장을 새 질문 경로로.
+    복원을 쓸 수 없으면 None: 호출한 _turn 이 기존 경로(코드 규칙 + 변경 추출)로 이어 간다.
+    새 말만 새 질문으로 보내면 직전 대화를 잃는다
+    (11/25 HCX 42901에서 "2020년은?"이 맥락 없이 감)"""
+    trace: dict = {}
+    try:
+        r = await restate(state, question, trace)
+    except Exception:
+        logger.exception("이어 묻기 복원 실패 → 기존 경로")
+        r = {"relation": "", "question": "", "why": "호출 실패"}
+    outcome = restate_outcome(r, trace.get("restate_raw"))
+    if outcome == "failed":
+        # LLM 이 실제로 무엇을 냈는지 기록에 남긴다 (다음 경로의 trace 에는 restate 가 붙지 않는다)
+        raw = trace.get("restate_raw")
+        said = f"원문: {raw}" if raw else r.get("why") or "응답 없음"
+        flow.add("이어 묻기 판단", "실패", f"{said} → 기존 경로")
+        return None
+    if outcome == "unclear":
+        r = {**r, "relation": "unclear"}
+    relation, restored, note = verify_restate(r, state["conditions"], question)
+    flow.add("이어 묻기 판단", relation, " · ".join(x for x in (restored, r.get("why"), note) if x))
+    if relation == "unclear":
+        res = _unclear(state, RESTATE_UNCLEAR)
+        res["trace"] = {"restate": {**r, "note": note, **trace}}
+        return res, state["sources"], None
+    res, sources, notice = await _new(restored, state)
+    res["request_type"] = CHANGE if relation == "followup" else NEW
+    res["question"] = restored
+    if isinstance(res.get("trace"), dict):
+        res["trace"]["restate"] = {**r, "note": note, "asked": question, **trace}
+    return res, sources, notice
+
+
 async def extract(state: dict, question: str, trace: dict) -> dict:
     system = (
         FOLLOW_SYSTEM.replace("{STATE}", state_text(state["conditions"], state["sources"]))
@@ -1090,6 +1243,22 @@ def indicator_names(conditions: dict) -> list[str]:
     if conditions.get("dynamic_spec") and current and current not in names:
         names.append(current)
     return names
+
+
+async def _follow_chat(prompt: str, system: str) -> str:
+    """이어 묻기 복원 LLM (FOLLOW_LLM). hcx 는 변경 추출과 같은 _chat, gemma 는
+    재계획 · 판정과 같은 GemmaClient. gemma 실패를 HCX 로 넘기지 않는다
+    (부른 쪽이 실패로 처리한다)"""
+    if get_settings().follow_llm != "gemma":
+        return await _chat(prompt, system)
+    result = await search_llm.GemmaClient(retry_waits=()).chat(
+        qa.MODEL,
+        [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
+        thinking={"effort": "none"},
+        maxCompletionTokens=FOLLOW_MAX_TOKENS,
+        temperature=0,
+    )
+    return result.content
 
 
 @llm_calls.staged("follow_up")
@@ -1683,6 +1852,20 @@ async def _turn(
     if asked_why and state["last"].get("summary"):
         text = f"{NO_CAUSE}\n{answer_summary.text(state['last']['summary'])}"
         return _reuse(state, text, state["last"].get("chart"), SUMMARY), state["sources"], None
+    if (
+        view is None
+        and get_settings().follow_restate
+        and not (has_last and summary_request(question))
+    ):
+        # 이어 묻기 LLM 복원 (A_16): 아래 코드 규칙(비율 후속 · 구별로 · 지역만 · 구성비 · 사람 수)
+        # 과 변경 추출(FOLLOW_SYSTEM) 대신 LLM이 완전한 질문으로 복원하고 새 질문 경로로 간다.
+        # 복원을 쓸 수 없으면(None) 아래 기존 경로로 이어 간다.
+        # 3-a(FOLLOW_SURE_RULES): 오판이 없던 규칙이 잡는 말은 복원 없이 아래 규칙으로 간다
+        rule = await _sure_rule(state, question) if get_settings().follow_sure_rules else None
+        if rule:
+            flow.add("이어 묻기 판단", "규칙", f"{rule} 규칙이 잡음 → LLM 복원 건너뜀")
+        elif (restated := await _restated(state, question, user_id)) is not None:
+            return restated
     if view is None and (asked := await asyncio.to_thread(ratio_followup, question, state)):
         flow.add("비율 후속 질문", "새 질문으로", asked)
         res, sources, notice = await _new(
