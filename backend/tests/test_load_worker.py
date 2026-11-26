@@ -1,9 +1,11 @@
 import asyncio
+import contextlib
 import gzip
 from datetime import timedelta
 from pathlib import Path
 
 import httpx
+import psycopg
 import pytest
 
 from pipeline import load_worker as w
@@ -29,12 +31,8 @@ def calls(monkeypatch: pytest.MonkeyPatch) -> list:
     def load(path, tbl_id, merge=False):
         seen.append(("load", path.name, path.exists()))
 
-    def after_load(tbl_id):
-        seen.append(("after_load", tbl_id))
-
     monkeypatch.setattr(w, "collect", collect)
     monkeypatch.setattr(w, "_load", load)
-    monkeypatch.setattr(w, "_after_load", after_load)
     return seen
 
 
@@ -81,27 +79,68 @@ def test_update_fetches_only_delta_into_separate_folder(tmp_path: Path, calls: l
 def test_update_with_nothing_to_fetch_does_not_load(
     tmp_path: Path, calls: list, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """받을 부분이 없으면 원본은 넣지 않는다. 적재 후 단계는 다시 돈다: 지난 시도가 덧붙인 뒤
-    지역 매핑에서 실패했으면 재시도에는 받을 부분이 없다 (11/26 리뷰)"""
-
     async def nothing(job, table_dir, delta=False):
         raise w.NothingToFetch(job.tbl_id)
 
     monkeypatch.setattr(w, "collect", nothing)
     asyncio.run(w.process(_job(reason="update"), "auto", tmp_path))
-    assert calls == [("after_load", "DT_X")]
+    assert calls == []
 
 
-@pytest.mark.parametrize("attempts", [1, 2])
-def test_loaded_table_reruns_only_the_after_load_steps(
-    calls: list, monkeypatch: pytest.MonkeyPatch, attempts: int
-) -> None:
-    """원본 저장 뒤 지역 매핑이 실패한 작업을 재시도하면, 원본이 있다는 이유로 매핑을 건너뛰고
-    done이 됐다 (11/26 리뷰). 원본은 다시 넣지 않고 적재 후 단계만 다시 돈다"""
+def test_loaded_table_is_skipped(calls: list, monkeypatch: pytest.MonkeyPatch) -> None:
+    """원본 저장과 적재 후 단계가 한 트랜잭션이라 원본이 있으면 매핑까지 끝난 표다"""
     monkeypatch.setattr(w, "_with_pg", lambda fn, *args: fn(None, *args))
     monkeypatch.setattr(w, "is_loaded", lambda pg, tbl_id: True)
-    asyncio.run(w.handle(_job(attempts=attempts)))
-    assert calls == [("after_load", "DT_X")]
+    asyncio.run(w.handle(_job(attempts=2)))
+    assert calls == []
+
+
+class TxPg:
+    """psycopg 연결 대신: 트랜잭션 시작 · 확정 · 되돌림을 적는다"""
+
+    def __init__(self, events: list) -> None:
+        self.events = events
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    @contextlib.contextmanager
+    def transaction(self):
+        self.events.append("begin")
+        try:
+            yield
+        except BaseException:
+            self.events.append("rollback")
+            raise
+        self.events.append("commit")
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_raw_rows_and_after_load_steps_commit_together(
+    monkeypatch: pytest.MonkeyPatch, fails: bool
+) -> None:
+    """원본을 저장한 뒤 지역 매핑이 실패하면 원본만 확정돼 '적재됨'이 됐다 (11/26 리뷰).
+    원본 저장과 적재 후 단계를 한 트랜잭션으로: 매핑이 실패하면 원본도 되돌린다"""
+    events: list = []
+    monkeypatch.setattr(w.psycopg, "connect", lambda *a, **k: TxPg(events))
+    monkeypatch.setattr(w, "load_table", lambda pg, path, merge=False: events.append("raw"))
+
+    def map_table(pg, tbl_id):
+        events.append("map")
+        if fails:
+            raise psycopg.OperationalError("연결 끊김")
+
+    monkeypatch.setattr(w, "AFTER_LOAD", [("지역 매핑", map_table)])
+    if fails:
+        with pytest.raises(psycopg.OperationalError):
+            w._load(Path("DT_X.csv"), "DT_X")
+        assert events == ["begin", "raw", "map", "rollback"]
+    else:
+        w._load(Path("DT_X.csv"), "DT_X")
+        assert events == ["begin", "raw", "map", "commit"]
 
 
 def test_table_not_loaded_yet_is_processed(calls: list, monkeypatch: pytest.MonkeyPatch) -> None:

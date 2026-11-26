@@ -229,9 +229,7 @@ async def process_update(job: Job, delta_dir: Path) -> None:
     try:
         path = await collect(job, delta_dir, delta=True)
     except NothingToFetch:
-        # 지난 시도가 덧붙인 뒤 적재 후 단계에서 멈췄으면 다시 받을 부분이 없다: 단계는 다시 돈다
-        logger.info("%s: KOSIS에서 가져올 부분이 없어 적재 후 단계만 다시", job.tbl_id)
-        await asyncio.to_thread(_after_load, job.tbl_id)
+        logger.info("%s: KOSIS에서 가져올 부분이 없습니다", job.tbl_id)
         return
     try:
         await asyncio.to_thread(_load, path, job.tbl_id, True)
@@ -241,22 +239,15 @@ async def process_update(job: Job, delta_dir: Path) -> None:
 
 
 def _load(path: Path, tbl_id: str, merge: bool = False) -> None:
-    with psycopg.connect(conninfo(), autocommit=True) as pg:
+    """원본 저장과 적재 후 단계(지역 매핑 · 인구 집계 표)를 한 트랜잭션으로. 어느 단계든 실패하면
+    원본도 되돌린다. 원본 기록(raw.stat_load)이 있으면 '적재됨'으로 보므로(is_loaded ·
+    load_queue.loaded) 둘이 따로 확정되면 매핑 없이 적재됨이 됐다: 재시도는 건너뛰어 done이
+    됐고 앱은 그 표를 다시 적재하지 않았다 (11/26 리뷰). 안쪽 transaction()은 저장점이 된다"""
+    with psycopg.connect(conninfo(), autocommit=True) as pg, pg.transaction():
         load_table(pg, path, merge=merge)
-        _run_after_load(pg, tbl_id)
-
-
-def _after_load(tbl_id: str) -> None:
-    with psycopg.connect(conninfo(), autocommit=True) as pg:
-        _run_after_load(pg, tbl_id)
-
-
-def _run_after_load(pg: psycopg.Connection, tbl_id: str) -> None:
-    """원본 저장(load_table, autocommit) 뒤 단계. 다시 돌려도 결과가 같다
-    (지역 매핑은 그 표의 대응을 지우고 다시 넣고, 인구 집계 표는 통째로 다시 만든다)"""
-    for name, step in AFTER_LOAD:
-        logger.info("%s: 적재 후 단계 %s", tbl_id, name)
-        step(pg, tbl_id)
+        for name, step in AFTER_LOAD:
+            logger.info("%s: 적재 후 단계 %s", tbl_id, name)
+            step(pg, tbl_id)
 
 
 def _with_pg(fn, *args):
@@ -287,11 +278,9 @@ def is_loaded(pg: psycopg.Connection, tbl_id: str) -> bool:
 
 
 async def handle(job: Job) -> None:
+    # 원본 저장과 적재 후 단계는 한 트랜잭션이라(_load) 원본이 있으면 매핑까지 끝난 표다
     if job.reason != "update" and await asyncio.to_thread(_with_pg, is_loaded, job.tbl_id):
-        # 원본이 있다고 적재 후 단계까지 끝난 것은 아니다: 지난 시도가 원본을 저장한 뒤
-        # 지역 매핑에서 실패했으면 재시도가 매핑 없이 done이 됐다. 단계만 다시 돈다
-        logger.info("%s: 원본은 이미 적재됨, 적재 후 단계만 다시", job.tbl_id)
-        await asyncio.to_thread(_after_load, job.tbl_id)
+        logger.info("%s: 그사이 적재됨, 건너뜀", job.tbl_id)
     else:
         await process(job)
 
