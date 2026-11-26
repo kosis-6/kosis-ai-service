@@ -224,10 +224,33 @@ def test_pick_region_reply() -> None:
         ("서울도 막대로 보여줘", None),
         ("추이를 막대그래프로 보여줘", None),
         ("통계표 보여줘", None),
+        # 성별 · 연령을 함께 말하면 조건 변경 (11/26 리뷰)
+        ("남자만 막대그래프로 보여줘", None),
+        ("여자는 그래프로", None),
+        ("65세 이상만 막대로", None),
     ],
 )
 def test_chart_request(question, view) -> None:
     assert s.chart_request(question) == view
+
+
+def test_chart_shape_is_read_with_a_condition_change() -> None:
+    assert s.chart_shape("남자만 막대그래프로 보여줘") == "bar"
+    assert s.chart_shape("65세 이상만 표로") == "table"
+    assert s.chart_shape("남자만 보여줘") is None
+
+
+def test_crowded_line_chart_is_not_said_to_be_bars() -> None:
+    """지역이 6개를 넘는 추이는 화면이 막대 없이 지역별 꺾은선으로 그린다: 막대로 바꿨다고
+    답하면 화면과 어긋났다 (11/26 리뷰)"""
+    seven = {"type": "line", "rows": [], "series": [f"지역{i}" for i in range(7)]}
+    chart, said = s.redraw(seven, "bar", "ok")
+    assert chart["view"] == "line"
+    assert said == (
+        "7개 지역을 막대로 그리면 겹쳐 읽기 어렵습니다. 지역별 꺾은선 그래프로 보여 드립니다."
+    )
+    six = {**seven, "series": seven["series"][:6]}
+    assert s.redraw(six, "bar", "ok") == ({**six, "view": "bar"}, "막대그래프로 바꿨습니다.")
 
 
 @pytest.mark.parametrize(
@@ -497,6 +520,62 @@ def test_chart_of_a_single_value_says_why_instead_of_asking_back(talk: Talk) -> 
     assert res["answer"].startswith("직전 답은 값이 하나라 그래프로 그릴 수 없습니다.")
     assert talk.extracted == []
     assert talk.say("2022년만", request_type="change", changes={"year": 2022})["status"] == "ok"
+
+
+def test_whole_talk_summary_request() -> None:
+    for said in ("지금까지 분석한 내용을 요약해줘", "앞에서 본 거 정리해줘", "대화 내용 요약해 줘"):
+        assert s.whole_talk_summary_request(said), said
+    for said in ("요약해줘", "서울 전체 인구 요약 통계 알려줘", "지금까지 서울 인구 정리해줘"):
+        assert not s.whole_talk_summary_request(said), said
+
+
+def test_whole_talk_summary_lists_every_answer(talk: Talk) -> None:
+    """'지금까지 분석한 내용을 요약해줘'가 요약으로 분류돼도 직전 답만 요약했다 (11/26 리뷰)"""
+    first = talk.say("부산 출생아 최근 5년 보여 줘")
+    second = talk.say("서울은?")
+    talk.say("막대그래프로 보여줘")  # 차트만 바꾼 턴은 새 답이 아니다
+    res = talk.say("지금까지 분석한 내용을 요약해줘")
+    assert res["request_type"] == "summary" and talk.extracted == []
+    lines = res["answer"].split("\n")
+    assert lines[0] == "지금까지 본 내용 2가지입니다."
+    assert lines[1:] == [f"- {first['summary']['headline']}", f"- {second['summary']['headline']}"]
+
+
+@pytest.mark.parametrize(
+    ("said", "kind", "expected"),
+    [
+        ("최근 5년간 추이를 보여줘", "value", True),
+        ("그럼 지난 10년 변화는?", "trend", True),
+        ("최근 3년은 어때?", "compare", True),
+        ("최근 5년간 추이를 보여줘", "rank", False),
+        ("최근 5년 서울은?", "value", False),
+    ],
+)
+def test_recent_trend_reply(said: str, kind: str, expected: bool) -> None:
+    assert s.recent_trend_reply(said, {"type": kind}) is expected
+
+
+def test_recent_trend_follow_up_does_not_depend_on_llm(talk: Talk) -> None:
+    """'최근 5년간 추이를 보여줘'는 변경 추출(HCX) 분류에 따라 결과가 달랐다 (11/26 리뷰)"""
+    talk.parsed = {**BASE, "type": "value", "year": 2024, "start_year": None, "end_year": None}
+    talk.say("2024년 부산 출생아 수")
+    # 가짜 계산은 N년을 연도로 풀지 못한다: 조건만 본다
+    talk.fail_when = lambda p: bool((p.get("asked") or {}).get("recent"))
+    res = talk.say("최근 5년간 추이를 보여줘")
+    assert res["request_type"] == "change" and talk.extracted == []
+    asked = talk.answered[-1]
+    assert asked["asked"]["recent"] == 5 and asked["type"] == "trend"
+    assert asked["regions"] == ["부산"]
+
+
+def test_chart_with_a_sex_change_recomputes_and_keeps_the_shape(talk: Talk) -> None:
+    """'남자만 막대그래프로'가 성별을 다시 계산하지 않고 전체 값의 차트 모양만 바꿨다
+    (11/26 리뷰)"""
+    talk.say("부산 출생아 최근 5년 보여 줘")
+    res = talk.say("남자만 막대그래프로 보여줘", request_type="change", changes={"sex": "남"})
+    assert talk.extracted == ["남자만 막대그래프로 보여줘"]
+    assert res["request_type"] == "change" and talk.answered[-1]["sex"] == "남"
+    assert res["chart"]["view"] == "bar"
 
 
 def test_chart_without_a_shape_uses_the_last_chart(talk: Talk) -> None:

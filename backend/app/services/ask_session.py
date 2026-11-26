@@ -765,7 +765,8 @@ def replace_region(conditions: dict, asked: str | None, picked: str) -> dict:
 
 def chart_request(question: str) -> str | None:
     """직전 답의 그림만 바꾸는 말이면 모양 (table · bar · line · pie · chart), 아니면 None.
-    연도 · 지표 · 지역 · 보는 방식(추이 · 비교 …)을 함께 말하면 조건 변경이라 변경 추출에 맡긴다"""
+    연도 · 지표 · 지역 · 성별 · 연령 · 보는 방식(추이 · 비교 …)을 함께 말하면 조건 변경이라
+    변경 추출에 맡긴다: '남자만 막대그래프로'를 전체 값의 막대로만 바꿨다 (11/26 리뷰)"""
     q = question.strip()
     if (
         len(q) > CHART_MAX_CHARS
@@ -774,13 +775,19 @@ def chart_request(question: str) -> str | None:
         or indicators.find_in_text(q)
         or indicators.find_regions(q)
         or NEW_VIEW.search(q)
+        or SEX_WORDS.search(q)
+        or qa.resolved_ages(q)
     ):
         return None
-    asked = CHART_INSTEAD.split(q)[-1]  # '표 말고 그래프로' → '그래프로'
-    for view, pattern in CHART_WORDS.items():
-        if pattern.search(asked):
-            return view
-    return None
+    return chart_shape(q)
+
+
+def chart_shape(question: str) -> str | None:
+    """말한 차트 모양. 조건 변경과 함께 말해도 읽는다 ('남자만 막대그래프로' → bar)"""
+    if not CHART_REQUEST.search(question):
+        return None
+    asked = CHART_INSTEAD.split(question)[-1]  # '표 말고 그래프로' → '그래프로'
+    return next((view for view, pattern in CHART_WORDS.items() if pattern.search(asked)), None)
 
 
 COMPOSITION_REQUEST = re.compile(r"구성비|구성\s*으로|비중\s*으로")
@@ -917,6 +924,24 @@ def period_length_reply(question: str) -> bool:
     return bool(PERIOD_LENGTH_REPLY.fullmatch(question) and recent_years(question))
 
 
+# 값 · 추이 · 비교 뒤 '최근 5년간 추이를 보여줘' · '지난 10년 변화는?'
+RECENT_TREND_REPLY = re.compile(
+    rf"\s*{FOLLOW_LEAD}(?:최근|지난)\s*\d{{1,2}}\s*년\s*(?:간|동안)?\s*(?:의\s*)?"
+    r"(?:추이|추세|변화|흐름)?\s*(?:는|은|도|를|을|로|으로)?\s*"
+    r"(?:어때요?|어떤가요|(?:보여|알려|해|봐)\s*(?:줘요?|주세요|줄래요?)?)?\s*[?.!~]*\s*"
+)
+
+
+def recent_trend_reply(question: str, conditions: dict) -> bool:
+    """같은 조건의 최근 N년 추이만 물은 후속 질문. 변경 추출(HCX) 분류에 맡기면 실행마다 달랐다
+    (11/26 리뷰). 순위 · 구성비 뒤에는 무엇의 추이인지 정해야 해 변경 추출에 맡긴다"""
+    return (
+        conditions.get("type") in ("value", "trend", "compare")
+        and bool(RECENT_TREND_REPLY.fullmatch(question))
+        and bool(recent_years(question))
+    )
+
+
 def _ask_indicator(regions: list[str], rest: str) -> dict:
     several = _several_places(regions, rest)
     place = " · ".join(regions) if several else " ".join(regions)
@@ -1035,6 +1060,37 @@ def summary_request(question: str) -> bool:
     return len(question.strip()) <= REPLY_MAX_CHARS and bool(SUMMARY_REQUEST.search(question))
 
 
+# '지금까지 분석한 내용을 요약해줘' · '앞에서 본 거 정리해줘': 직전 답이 아니라 대화 전체
+WHOLE_TALK = re.compile(
+    r"(?:지금까지|여태(?:까지)?|이때까지|그동안|앞에서|앞서|전체\s*대화|대화\s*전체|대화\s*내용)"
+    r".{0,15}?(?:요약|정리)"
+)
+HISTORY = 10
+
+
+def whole_talk_summary_request(question: str) -> bool:
+    q = question.strip()
+    return (
+        len(q) <= CHART_MAX_CHARS
+        and bool(WHOLE_TALK.search(q))
+        and not indicators.find_in_text(q)
+        and not indicators.find_regions(q)
+        and not ask_followup.has_explicit_year(q)
+    )
+
+
+def whole_talk_text(state: dict) -> str:
+    said = state.get("history") or [answer_line(state["last"])]
+    if len(said) == 1:
+        return said[0]
+    return "\n".join([f"지금까지 본 내용 {len(said)}가지입니다.", *(f"- {s}" for s in said)])
+
+
+def answer_line(last: dict) -> str:
+    """답 하나의 핵심 문장 (요약 대상): 요약이 있으면 그 첫 문장, 없으면 답의 첫 단락"""
+    return (last.get("summary") or {}).get("headline") or lead(last.get("answer") or "")
+
+
 def redraw(chart: dict | None, view: str, status: str | None) -> tuple[dict | None, str]:
     """직전 차트를 view 모양으로. 그 모양으로 못 그리면 그릴 수 있는 기본 모양과 이유를 준다.
     되묻지 않는다: 무엇을 원하는지(그림 바꾸기)는 분명하다"""
@@ -1045,19 +1101,43 @@ def redraw(chart: dict | None, view: str, status: str | None) -> tuple[dict | No
                 "넓히거나 '서울도 같이'처럼 지역을 더하면 그래프로 보여 드립니다."
             )
         return None, "직전 답에는 그래프로 그릴 수치가 없습니다."
+    shown, cannot = reshape(chart, view)
+    if cannot:
+        return shown, f"{cannot}. {chart_name(shown)}로 보여 드립니다."
+    if view == "table":
+        return shown, "표로 바꿨습니다."
+    if view == "chart":
+        return shown, f"{chart_name(shown)}로 보여 드립니다."
+    return shown, f"{chart_name(shown, view)}로 바꿨습니다."
+
+
+def crowded(chart: dict) -> bool:
+    """지역이 많은 추이: 화면(Chart.tsx의 MAX_OVERLAP, 색 6개)이 막대 없이
+    지역별 작은 꺾은선으로 그린다"""
+    return chart["type"] == "line" and len(chart.get("series") or []) > charts.MAX_LINES
+
+
+def chart_name(chart: dict, view: str | None = None) -> str:
+    if crowded(chart):
+        return "지역별 꺾은선 그래프"
+    return CHART_NAMES["bar" if view == "bar" and chart["type"] == "line" else chart["type"]]
+
+
+def reshape(chart: dict, view: str) -> tuple[dict, str | None]:
+    """차트를 view 모양으로 → (차트, 못 그린 이유). 못 그리면 그릴 수 있는 기본 모양으로 둔다"""
     kind = chart["type"]
     if view == "table":
-        return {**chart, "view": "table"}, "표로 바꿨습니다."
-    if view == "bar" and kind == "line":
-        return {**chart, "view": "bar"}, "막대그래프로 바꿨습니다."
+        return {**chart, "view": "table"}, None
     # parts(구성비)는 화면이 view 없이 기본 차트로 그린다
     shown = {**chart, "view": None if kind == "parts" else kind}
-    name = CHART_NAMES[kind]
-    if view == kind or (view == "bar" and kind == "parts"):
-        return shown, f"{name}로 바꿨습니다."
-    if view == "chart":
-        return shown, f"{name}로 보여 드립니다."
-    return shown, f"{CHART_CANNOT[view]}. {name}로 보여 드립니다."
+    if view == "bar" and kind == "line":
+        if crowded(chart):
+            count = len(chart["series"])
+            return shown, f"{count}개 지역을 막대로 그리면 겹쳐 읽기 어렵습니다"
+        return {**chart, "view": "bar"}, None
+    if view in (kind, "chart") or (view == "bar" and kind == "parts"):
+        return shown, None
+    return shown, CHART_CANNOT[view]
 
 
 def lead(answer: str) -> str:
@@ -1989,6 +2069,10 @@ async def _turn(
     has_last = bool((state.get("last") or {}).get("answer"))
     view = chart_request(question) if has_last else None
     delta = None
+    if has_last and view is None and await asyncio.to_thread(whole_talk_summary_request, question):
+        # 대화 전체 요약: 변경 추출이 요약으로 읽어도 직전 답만 요약했다 (11/26 리뷰)
+        flow.add("후속 질문", "대화 전체 요약", f"답 {len(state.get('history') or [1])}개")
+        return _reuse(state, whole_talk_text(state), None, SUMMARY), state["sources"], None
     if has_last and view is None and await asyncio.to_thread(detail_request, question):
         last = state["last"]
         return _reuse(state, last["answer"], last.get("chart"), DETAIL), state["sources"], None
@@ -2047,7 +2131,7 @@ async def _turn(
                 "unclear": None,
             }
             flow.add("후속 질문", "연도 변경", f"{year_reply[1]}년")
-        elif period_length_reply(question):
+        elif period_length_reply(question) or recent_trend_reply(question, state["conditions"]):
             # 기간 길이는 아래 recent_years가 읽어 '자료 마지막 해까지 N년'으로 바꾼다
             delta = {"request_type": CHANGE, "changes": {}, "chart": None, "unclear": None}
             flow.add("후속 질문", "기간 길이 변경", f"{recent_years(question)}년")
@@ -2116,7 +2200,13 @@ async def _turn(
                 if status in table_guide.SEARCH_INSTEAD or retry_region:
                     res["search_question"] = inherited_question(conditions)
                 sources = {**state["sources"], **{k: "user" for k in changed if k in LABELS}}
-                return res, sources, None
+                notice = None
+                if res.get("chart") and (shape := chart_shape(question)):
+                    # 다시 계산한 답의 차트도 함께 말한 모양으로 ('남자만 막대그래프로')
+                    res["chart"], cannot = reshape(res["chart"], shape)
+                    if cannot:
+                        notice = f"{cannot}. {chart_name(res['chart'])}로 보여 드립니다."
+                return res, sources, notice
             delta["request_type"] = NEW
         if delta["request_type"] == CHART:
             view = delta["chart"]
@@ -2184,15 +2274,17 @@ def next_state(state: dict | None, question: str, res: dict, sources: dict) -> d
             and (parsed.get("term") or parsed.get("indicator"))
         )
         found = res.get("tables")
+        last = {
+            "status": res.get("status"),
+            "answer": res.get("answer") or "",
+            "sources": [],
+            "chart": None,
+        }
         return {
             "conditions": effective(parsed, {}) if numeric else {},
             "sources": sources if numeric else {},
-            "last": {
-                "status": res.get("status"),
-                "answer": res.get("answer") or "",
-                "sources": [],
-                "chart": None,
-            },
+            "last": last,
+            "history": [*(prev.get("history") or []), answer_line(last)][-HISTORY:],
             "pending": {
                 "missing": "table",
                 "options": table_choice_options(found),
@@ -2213,16 +2305,18 @@ def next_state(state: dict | None, question: str, res: dict, sources: dict) -> d
         conditions["regions"] = [r for r in conditions.get("regions") or [] if r != unconfirmed]
         if conditions.get("sido") == unconfirmed:
             conditions.pop("sido")
+    last = {
+        "status": res.get("status"),
+        "answer": res.get("answer") or "",
+        "sources": res.get("sources") or [],
+        "chart": res.get("chart"),
+        "summary": res.get("summary"),
+    }
     return {
         "conditions": conditions,
         "sources": sources,
-        "last": {
-            "status": res.get("status"),
-            "answer": res.get("answer") or "",
-            "sources": res.get("sources") or [],
-            "chart": res.get("chart"),
-            "summary": res.get("summary"),
-        },
+        "last": last,
+        "history": [*(prev.get("history") or []), answer_line(last)][-HISTORY:],
         "pending": pending_of(res.get("result") or {}, asked),
         "search_session": prev.get("search_session"),
         "recent": recent,
