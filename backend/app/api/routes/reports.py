@@ -1,8 +1,10 @@
+import asyncio
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response
 
 from app.api.deps import CurrentUser
+from app.core.config import get_settings
 from app.schemas.reports import DraftAdd, ReportCreate, ReportList, ReportRead, ReportUpdate
 from app.services import reports
 from app.services.reports import ReportError
@@ -20,6 +22,8 @@ STATUS = {
     reports.NOT_REPORTABLE: 409,
     reports.FULL: 409,
     reports.BAD_ORDER: 422,
+    reports.EMPTY: 409,
+    reports.CHANGED: 409,
 }
 
 
@@ -87,6 +91,23 @@ async def add_item(report_id: ReportId, turn_id: TurnId, user: CurrentUser) -> R
 async def remove_item(report_id: ReportId, turn_id: TurnId, user: CurrentUser) -> ReportRead:
     try:
         found = await reports.remove_item(user.id, report_id, turn_id)
+    except ReportError as e:
+        raise _http(e) from e
+    return ReportRead(**found)
+
+
+@router.post("/{report_id}/generate", summary="보고서 만들기 (담긴 결과로 문장 생성)")
+async def generate_report(report_id: ReportId, user: CurrentUser) -> ReportRead:
+    """담긴 결과를 비교 검사하고 LLM이 요약 · 분석 문장을 쓴다. 숫자는 코드가 채운다.
+    시간 제한(REPORT_TIMEOUT)을 넘기면 504이고 보고서는 그대로다"""
+    try:
+        found = await asyncio.wait_for(
+            reports.generate(user.id, report_id), timeout=get_settings().report_timeout
+        )
+    except TimeoutError as e:
+        raise HTTPException(
+            status_code=504, detail="보고서를 만드는 데 시간이 너무 걸렸습니다. 다시 시도해 주세요."
+        ) from e
     except ReportError as e:
         raise _http(e) from e
     return ReportRead(**found)

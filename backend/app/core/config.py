@@ -45,6 +45,9 @@ class Settings(BaseSettings):
     gemma_api_key: str = ""
     gemma_model: str = "gemma-4-31b"
     gemma_timeout: float = 30.0
+    # 통합 보고서 문장을 쓰는 LLM과 생성 전체 시간 제한 (넘으면 504, 보고서는 그대로 draft)
+    report_llm: Literal["hcx", "gemma"] = "hcx"
+    report_timeout: float = 30.0
 
     api_docs: bool = False
 

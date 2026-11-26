@@ -309,3 +309,65 @@ def test_api_login_required_and_inputs_checked(client):
     assert client.put("/reports/0/items/9").status_code == 422
     assert client.post("/reports", json={"turn_ids": list(range(1, 20))}).status_code == 422
     assert client.patch("/reports/5", json={"title": ""}).status_code == 422
+
+
+# ---- 생성 (문장 쓰기는 흉내) ---------------------------------------------------------
+
+
+def test_generate_saves_content_and_status(db, monkeypatch):
+    from app.services import report_writer
+
+    seen = []
+
+    async def write(title, purpose, items):
+        seen.append((title, purpose, [i["turn_id"] for i in items]))
+        return {"summary": [{"text": "요약", "refs": ["r1"]}], "generated_by": "hcx"}
+
+    monkeypatch.setattr(report_writer, "write", write)
+    rep = run(r.create(db.a, "제목", "목적", [db.t["ok1"], db.t["ok2"]]))
+    rep = run(r.generate(db.a, rep["id"]))
+    assert rep["status"] == "ready" and rep["content"]["summary"][0]["text"] == "요약"
+    assert seen == [("제목", "목적", [db.t["ok1"], db.t["ok2"]])]
+    rep = run(r.remove_item(db.a, rep["id"], db.t["ok2"]))
+    assert rep["status"] == "draft" and rep["content"] is None
+
+
+def test_generate_empty_and_others_report(db):
+    rep = run(r.create(db.a))
+    with pytest.raises(ReportError) as e:
+        run(r.generate(db.a, rep["id"]))
+    assert e.value.code == "empty"
+    with pytest.raises(ReportError) as e:
+        run(r.generate(db.b, rep["id"]))
+    assert e.value.code == "not_found"
+
+
+def test_generate_discards_when_items_changed_meanwhile(db, monkeypatch):
+    from app.services import report_writer
+
+    rep = run(r.create(db.a, None, None, [db.t["ok1"]]))
+
+    async def write(title, purpose, items):
+        await r.add_item(db.a, rep["id"], db.t["ok2"])  # 만드는 동안 다른 탭에서 담음
+        return {"summary": []}
+
+    monkeypatch.setattr(report_writer, "write", write)
+    with pytest.raises(ReportError) as e:
+        run(r.generate(db.a, rep["id"]))
+    assert e.value.code == "changed"
+    assert run(r.detail(db.a, rep["id"]))["content"] is None
+
+
+def test_api_generate_timeout_and_errors(client, monkeypatch):
+    from app.core.config import get_settings
+
+    async def slow(*args):
+        await asyncio.sleep(1)
+
+    monkeypatch.setattr(r, "generate", slow)
+    monkeypatch.setattr(get_settings(), "report_timeout", 0.01)
+    assert client.post("/reports/5/generate").status_code == 504
+    client.fake("generate", error=ReportError("empty", "없음"))
+    assert client.post("/reports/5/generate").status_code == 409
+    client.fake("generate")
+    assert client.post("/reports/5/generate").status_code == 200
