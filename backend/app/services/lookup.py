@@ -533,6 +533,7 @@ def value(spec, region, year, sex="계", ages=None):
     extra = {}
     if v is not None and parts:  # 분자 ÷ 분모 지표 (den_item_id): 나눈 두 값을 답에 보여 준다
         extra["operands"] = _operands(src, parts["num"].get(key), parts["den"].get(key))
+        extra["scale"] = src.get("den_scale", 100)
     return _base(
         spec,
         src,
