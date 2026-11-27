@@ -53,3 +53,15 @@ backend/data/*
 !backend/data/embeddings/
 backend/data/embeddings/*
 !backend/data/embeddings/hyper_adapter.npz
+
+
+graphify-out/
+
+# 테스트용 골든셋: 문항·정답이 담긴 파일은 깃에 올리지 않는다 (채점 전용, 보고 고치지 않음)
+backend/eval/golden_test*.csv
+backend/scripts/build_golden_test.py
+backend/scripts/golden_api.py
+docs/golden_test_*.md
+
+# 보고서 에이전트 멀티턴 개발셋: 구글 드라이브 시트가 원본이라 깃에 올리지 않는다
+backend/eval/report_scenarios_*.csv
