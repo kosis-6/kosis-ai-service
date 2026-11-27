@@ -81,6 +81,7 @@ function ReportButton({ data }: { data: AskResponse }) {
 }
 
 export function Answer({ data, busy, onSend, onOthers, onAskAgain }: Props) {
+  const [reportView, setReportView] = useState<"line" | "bar" | "table">();
   const notice = data.notice && <p className="answer-notice">{data.notice}</p>;
   const tables = data.tables;
   const clarification = data.clarification;
@@ -151,10 +152,12 @@ export function Answer({ data, busy, onSend, onOthers, onAskAgain }: Props) {
         <Linked text={lead} />
       </div>
       <Conditions applied={data.applied ?? []} />
-      {canReport(data) && <ReportButton data={data} />}
+      {canReport(data) && (
+        <ReportButton data={reportView && data.chart ? { ...data, chart: { ...data.chart, view: reportView } } : data} />
+      )}
       {data.chart && (
         <Suspense fallback={<div className="chart-card chart-loading">차트를 그리고 있어요</div>}>
-          <ChartCard chart={data.chart} />
+          <ChartCard chart={data.chart} onViewChange={setReportView} />
         </Suspense>
       )}
       {detail && data.request_type !== "chart" && data.request_type !== "summary" && (

@@ -62,10 +62,23 @@ def test_birth_sex_ratio_words(
         ("여아 삼억오천만 명당 남아는 몇 명이야?", "출생성비", 350_000_000),
         ("남아 1조 명당 여아는 몇 명이야?", "남아 100명당 여아 수", 10**12),
         ("여아 이조 오천억 명당 남아는 몇 명이야?", "출생성비", 2_500_000_000_000),
+        # 숫자 + 단위를 이어 쓴 수 (11/26 리뷰: '2천 5백'을 기준 인원으로 못 읽음)
+        ("남아 2천 5백 명당 여아는 몇 명이야?", "남아 100명당 여아 수", 2500),
+        ("남아 2천5백 명당 여아는 몇 명이야?", "남아 100명당 여아 수", 2500),
+        ("여아 2천 오백 명당 남아는 몇 명이야?", "출생성비", 2500),
+        ("남아 1만 2천 명당 여아는 몇 명이야?", "남아 100명당 여아 수", 12000),
+        ("여아 3백 명당 남아는 몇 명이야?", "출생성비", 300),
     ],
 )
 def test_birth_sex_ratio_reads_korean_numbers(question: str, indicator: str, base: int) -> None:
     assert qa.birth_sex_ratio_reference(question) == (indicator, base)
+
+
+@pytest.mark.parametrize(("text", "count"), [("0천", 0), ("0만", 0), ("천", 1000), ("만", 10000)])
+def test_zero_before_a_unit_is_zero_not_one(text: str, count: int) -> None:
+    """'0천'을 1,000명으로 읽었다 (11/26 리뷰). 앞 수가 없을 때만 1이다.
+    0명 기준은 계산 단계가 '기준 인원은 1명 이상이어야 합니다'로 거절한다"""
+    assert qa.birth_ratio_count(text) == count
 
 
 @pytest.mark.parametrize(
@@ -76,6 +89,7 @@ def test_birth_sex_ratio_reads_korean_numbers(question: str, indicator: str, bas
         ("1만 명 기준으로는?", 10000),
         ("그럼 1억 명 기준으로는?", 10**8),
         ("삼조 명당은?", 3 * 10**12),
+        ("그럼 2천 5백 명 기준으로는?", 2500),
     ],
 )
 def test_birth_ratio_count_reply_reads_korean_numbers(reply: str, base: int) -> None:
@@ -253,3 +267,15 @@ def test_people_plus_registered_foreigners_is_a_sum(question: str) -> None:
 
 def test_people_alone_is_not_a_sum() -> None:
     assert x.detect("화성시 사는 사람 몇 명이야?") is None
+
+
+def test_birth_count_uses_sex_breakdown_for_lookup_and_trend(monkeypatch) -> None:
+    spec = indicators.spec("출생아 수")
+    monkeypatch.setattr(lookup, "_years", lambda _: (2015, 2025))
+
+    total, _ = lookup._pick(spec, "시도", 2024, 2024, "계")
+    male, _ = lookup._pick(spec, "시도", 2024, 2024, "남")
+    assert total["table"] == "DT_1B8000H"
+    assert (male["table"], male["item_id"]) == ("DT_1B81A03", "T2")
+    [(female, start, end)] = lookup._spans(spec, "시도", 2021, 2025, "여")
+    assert (female["table"], female["item_id"], start, end) == ("DT_1B81A03", "T3", 2021, 2025)

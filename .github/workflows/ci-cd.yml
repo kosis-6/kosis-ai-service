@@ -111,3 +111,12 @@ jobs:
           for path in health health/search; do
             curl -fsS --max-time 10 --retry 30 --retry-all-errors --retry-delay 5 "https://like-snake.kro.kr/$path"
           done
+      # /health 만으로는 질문 이해(HCX) · DB 계산 · 답 만들기가 실제로 도는지 모른다
+      - name: 확인 (실제 질문 하나에 숫자로 답하는지)
+        run: |
+          res=$(curl -fsS --max-time 90 --retry 5 --retry-all-errors --retry-delay 15 \
+            -H 'Content-Type: application/json' \
+            -d '{"question": "2024년 전국 출생아 수는?"}' \
+            https://like-snake.kro.kr/ask)
+          printf '%s' "$res" | jq '{status, answer: (.answer | split("\n")[0])}'
+          printf '%s' "$res" | jq -e '.status == "ok" and (.answer | test("[0-9]"))' > /dev/null

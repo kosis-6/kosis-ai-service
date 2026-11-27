@@ -4,6 +4,7 @@ import csv
 import json
 import time
 from collections import Counter
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -30,13 +31,18 @@ def _memory_sessions() -> None:
     async def load(session_id, at):
         return store.get(session_id), False
 
-    async def save(session_id, state):
+    async def save(session_id, state, conn=None):
         store[session_id] = state
 
     async def log_turn(*args, **kwargs):
         return None
 
+    @asynccontextmanager
+    async def turn_writer(*args, **kwargs):
+        yield object()
+
     ask_session.load, ask_session.save, ask_session.log_turn = load, save, log_turn
+    ask_session.turn_writer = turn_writer
 
 
 async def _turn(session_id: str | None, question: str) -> dict[str, Any]:

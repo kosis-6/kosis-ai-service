@@ -553,9 +553,12 @@ SINO_DIGITS = {"일": 1, "이": 2, "삼": 3, "사": 4, "오": 5, "육": 6, "칠"
 SMALL_UNITS = {"십": 10, "백": 100, "천": 1000}
 BIG_UNITS = {"만": 10**4, "억": 10**8, "조": 10**12}
 _SINO_DIGIT = f"[{''.join(SINO_DIGITS)}]"
-_DIGIT_CHUNK = r"(?:\d{1,3}(?:,\d{3})+|\d+)[십백천]?"
-_SINO_CHUNK = rf"(?:{_SINO_DIGIT}?천)?(?:{_SINO_DIGIT}?백)?(?:{_SINO_DIGIT}?십)?{_SINO_DIGIT}?"
-_CHUNK = rf"(?:{_DIGIT_CHUNK}|{_SINO_CHUNK})"
+_COEF = rf"(?:\d+|{_SINO_DIGIT})"
+# 만 아래 한 덩어리: 1,000 · 이천오백 · 2천5백 · 2천 5백 · 2천 오백 (띄어 쓰기는 단위 뒤에만)
+_CHUNK = (
+    r"(?:\d{1,3}(?:,\d{3})+"
+    rf"|(?:{_COEF}?천\s*)?(?:{_COEF}?백\s*)?(?:{_COEF}?십\s*)?{_COEF}?)"
+)
 _NUMBER_CHARS = f"\\d,{''.join(SINO_DIGITS)}{''.join(SMALL_UNITS)}{''.join(BIG_UNITS)}"
 # 1,000 · 2천 · 이백오십 · 1억 5천만 · 삼조
 # 숫자나 십 · 백 · 천 · 만 · 억 · 조 중 하나는 있어야 한다 ('이' 한 글자는 조사일 수 있음)
@@ -741,19 +744,23 @@ def birth_ratio_count(text: str) -> int:
         return agegroup.NATIVE_TENS.get(native["tens"], 0) + agegroup.NATIVE_UNITS.get(
             native["units"], 0
         )
-    total = part = digit = 0
+    # 앞 수가 없으면('천', '만') 1이지만 0이라고 썼으면('0천') 0이다
+    # (0명 기준은 계산 단계가 거절한다)
+    total = part = 0
+    digit: int | None = None
     for token in re.findall(r"\d+|\D", text):
         if token.isdigit():
             digit = int(token)
         elif token in SINO_DIGITS:
             digit = SINO_DIGITS[token]
         elif token in SMALL_UNITS:
-            part += (digit or 1) * SMALL_UNITS[token]
-            digit = 0
+            part += (1 if digit is None else digit) * SMALL_UNITS[token]
+            digit = None
         else:
-            total += ((part + digit) or 1) * BIG_UNITS[token]
-            part = digit = 0
-    return sign * (total + part + digit)
+            said = part or digit is not None
+            total += (part + (digit or 0) if said else 1) * BIG_UNITS[token]
+            part, digit = 0, None
+    return sign * (total + part + (digit or 0))
 
 
 def birth_sex_ratio_reference(question: str) -> tuple[str, int] | None:

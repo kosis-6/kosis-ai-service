@@ -46,21 +46,24 @@ def test_state_is_read_from_memory_copy() -> None:
     assert s.STATE_CACHE.get("A_1")[0]["conditions"]["regions"] == ["서울"]
 
 
-def test_save_touches_conversation_only_for_logged_in(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_save_exposes_turn_id_only_for_logged_in(monkeypatch: pytest.MonkeyPatch) -> None:
     touched = []
+    anonymous, logged_in = {}, {}
 
-    async def nothing(*args):
-        return None
+    async def log_turn(*args):
+        return 17
 
-    async def touch(sid, user_id, question):
+    async def touch(sid, user_id, question, conn=None):
+        assert "turn_id" not in logged_in
         touched.append((sid, user_id, question))
 
-    monkeypatch.setattr(s, "save", nothing)
-    monkeypatch.setattr(s, "log_turn", nothing)
+    monkeypatch.setattr(s, "log_turn", log_turn)
     monkeypatch.setattr(c, "touch", touch)
-    asyncio.run(s._save("A_1", {"turn_no": 1}, {}, None, "서울 출생아 수", None))
-    asyncio.run(s._save("A_2", {"turn_no": 1}, {}, None, "부산 출생아 수", 3))
+    asyncio.run(s._save("A_1", {"turn_no": 1}, anonymous, None, "서울 출생아 수", None))
+    asyncio.run(s._save("A_2", {"turn_no": 1}, logged_in, None, "부산 출생아 수", 3))
     assert touched == [("A_2", 3, "부산 출생아 수")]
+    assert "turn_id" not in anonymous
+    assert logged_in["turn_id"] == 17
 
 
 def test_replay_keeps_screen_fields_without_internal_context() -> None:

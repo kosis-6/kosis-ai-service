@@ -270,6 +270,7 @@ def test_register_validates_input(db) -> None:
         "/auth/register", json={"email": "a@b.co", "password": "abc123", "nickname": NICK}
     )
     assert r.json()["detail"][0]["msg"].startswith("비밀번호에 특수기호를 넣어 주세요.")
+    assert "abc123" not in r.text
 
 
 def test_me_requires_valid_active_user(db) -> None:
