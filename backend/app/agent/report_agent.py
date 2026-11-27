@@ -214,7 +214,13 @@ async def run(question: str, sid: str, state: dict | None, user_id: int | None) 
         "question": question,
     }
     if user_id is None:
-        return {**base, "answer": tools.REFUSE_WHY["login"], "report_agent_state": {}}
+        # handle(_agent_turn)이 trace.report_agent 를 읽는다. 없으면 KeyError 로 오류 화면이 떴다
+        return {
+            **base,
+            "answer": tools.REFUSE_WHY["login"],
+            "trace": {"report_agent": {"steps": [], "end": "login"}},
+            "report_agent_state": {},
+        }
     ctx = tools.Ctx(sid, user_id, question, saved)
     ctx.turn_no = (state or {}).get("turn_no")
     trace: list[dict] = []

@@ -2455,7 +2455,10 @@ REPORT_NO_TURNS = (
     "이 대화에는 아직 보고서로 묶을 수 있는 답이 없습니다."
     " 통계 수치를 물어본 뒤 다시 말씀해 주세요."
 )
-REPORT_LOGIN = "로그인하면 이 내용을 보고서로 저장하고 분석 문장까지 만들 수 있습니다."
+REPORT_LOGIN = (
+    "보고서는 로그인한 사용자만 만들 수 있습니다."
+    " 로그인하면 이 내용을 보고서로 저장하고 분석 문장까지 만들어 드립니다."
+)
 
 
 async def _session_turns(session_id: str, user_id: int | None) -> list[dict]:
