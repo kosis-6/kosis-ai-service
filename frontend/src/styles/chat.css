@@ -621,6 +621,15 @@ button.pill:active { transform: scale(0.97); }
 .report-pick-q { font-size: 14px; font-weight: 600; line-height: 20px; }
 .report-pick-a { color: var(--muted); font-size: 13px; line-height: 20px; }
 .report-actions { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+/* 보고서 미리보기: 만든 보고서를 문서 한 장 크기로 먼저 보여 준다 */
+.sheet.doc { width: min(1040px, calc(100vw - 32px)); height: calc(100dvh - 32px); max-height: none; padding: 24px 32px 32px; }
+.sheet.doc[open] { display: flex; flex-direction: column; }
+.sheet.doc .sheet-head { margin-bottom: 12px; }
+.sheet.doc .sheet-body { flex: 1; min-height: 0; gap: 12px; }
+.report-view-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
+.report-view-bar .sheet-text { flex: 1; min-width: 180px; text-align: right; }
+.report-view-bar .text-btn { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; line-height: 20px; }
+.report-frame { flex: 1; min-height: 0; width: 100%; border: 0; border-radius: 16px; background: var(--panel); }
 
 @media (min-width: 861px) and (max-height: 860px) {
   .head { min-height: 72px; padding: 12px 32px; }
@@ -664,6 +673,10 @@ button.pill:active { transform: scale(0.97); }
   .composer textarea::placeholder { font-size: 13px; }
   .composer-note { font-size: 11px; line-height: 16px; }
   .sheet { padding: 24px; }
+  .sheet.doc { width: 100vw; height: 100dvh; max-width: none; margin: 0; padding: 16px; border-radius: 0; }
+  .report-view-bar .sheet-text { order: 3; flex-basis: 100%; text-align: left; }
+  .report-view-bar .btn.primary { margin-left: auto; }
+  .report-frame { border-radius: 12px; }
 }
 
 @media (max-width: 560px) {

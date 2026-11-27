@@ -1,9 +1,8 @@
-import { lazy, Suspense, useState } from "react";
+import { lazy, Suspense } from "react";
 import type { Applied, AskResponse, Parsed, Recommendation, SearchResponse } from "../api/types";
 import { Icon } from "../components/Icon";
 import { safeUrl, splitLinks } from "./format";
 import { Reply, TopCard, type Send } from "./Reply";
-import { canReport, openReport } from "./report";
 
 const ChartCard = lazy(() => import("./Chart"));
 
@@ -59,29 +58,7 @@ type Props = {
   onAskAgain: () => void;
 };
 
-function ReportButton({ data }: { data: AskResponse }) {
-  const [message, setMessage] = useState<string | null>(null);
-  return (
-    <div>
-      <button type="button" className="btn secondary card-link" onClick={() => {
-        try {
-          const how = openReport(data);
-          setMessage(how === "saved"
-            ? "브라우저가 새 탭을 막아 보고서를 파일로 바로 저장했습니다. 새 탭으로 보려면 이 사이트의 팝업을 허용해 주세요."
-            : null);
-        } catch {
-          setMessage("보고서를 열지 못했습니다. 다시 시도해 주세요.");
-        }
-      }}>
-        보고서 보기
-      </button>
-      {message && <p role="alert">{message}</p>}
-    </div>
-  );
-}
-
 export function Answer({ data, busy, onSend, onOthers, onAskAgain }: Props) {
-  const [reportView, setReportView] = useState<"line" | "bar" | "table">();
   const notice = data.notice && <p className="answer-notice">{data.notice}</p>;
   const tables = data.tables;
   const clarification = data.clarification;
@@ -152,12 +129,9 @@ export function Answer({ data, busy, onSend, onOthers, onAskAgain }: Props) {
         <Linked text={lead} />
       </div>
       <Conditions applied={data.applied ?? []} />
-      {canReport(data) && (
-        <ReportButton data={reportView && data.chart ? { ...data, chart: { ...data.chart, view: reportView } } : data} />
-      )}
       {data.chart && (
         <Suspense fallback={<div className="chart-card chart-loading">차트를 그리고 있어요</div>}>
-          <ChartCard chart={data.chart} onViewChange={setReportView} />
+          <ChartCard chart={data.chart} />
         </Suspense>
       )}
       {detail && data.request_type !== "chart" && data.request_type !== "summary" && (

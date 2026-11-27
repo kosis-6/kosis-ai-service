@@ -1,9 +1,9 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import type { AskResponse } from "../api/types";
-import { bundleBody } from "./report";
+import { bundleBody, reportDocument } from "./report";
 import { MAX_ITEMS, pickable, type Report } from "./reports";
-import { ReportSheet } from "./ReportSheet";
+import { ReportPreview, ReportSheet } from "./ReportSheet";
 
 const answer = (over: Partial<AskResponse>): AskResponse => ({
   status: "ok", answer: "2024년 부산광역시의 출생아 수는 13,063명입니다.\n\n- 계산", parsed: {}, result: {},
@@ -32,6 +32,7 @@ describe("대화창 [보고서]: 이 대화의 답 고르기", () => {
     expect(html).toContain("2024년 부산 출생아 수");
     expect(html).toContain("수치로 답하지 않은 답이에요");
     expect(html).toContain(`0/${MAX_ITEMS} 선택`);
+    expect(html).toContain(`1개부터 ${MAX_ITEMS}개까지`);
     // 꺼 둔 답의 체크박스와 아직 고르지 않아 누를 수 없는 [보고서 만들기]
     expect(html.match(/disabled=""/g)).toHaveLength(2);
   });
@@ -99,5 +100,32 @@ describe("대화창 [보고서]: 고른 답으로 만든 보고서", () => {
     expect(html).toContain('<td>2023년</td><td class="num">13,063</td>');
     expect(html).toContain('<th>순위</th><th>지역</th><th class="num">값 (명)</th>');
     expect(html).toContain('<td>1</td><td>경기도</td><td class="num">71,285</td>');
+  });
+});
+
+describe("대화창 [보고서]: 만든 보고서 미리보기 · PDF", () => {
+  const report: Report = {
+    id: 5, session_id: "A_1", title: "통계 분석 보고서", purpose: null, status: "ready", items: [{ turn_id: 1 }],
+    content: { summary: [{ text: "요약" }], items: [{ id: "r1", turn_id: 1, question: "부산 출생아", value_text: "1명" }] },
+  };
+  const at = new Date("2026-11-27T01:00:00Z");
+
+  it("미리보기 문서는 스타일을 파일로 불러오고 스크립트 · 문서 안 스타일이 없다 (페이지 보안 정책)", () => {
+    const doc = reportDocument(report, at, "/chat/assets/report.css");
+    expect(doc).toContain('<link rel="stylesheet" href="/chat/assets/report.css">');
+    expect(doc).toContain('<base target="_blank">'); // 출처 링크는 새 탭으로
+    expect(doc).toContain("<title>통계 분석 보고서 2026-11-27</title>"); // 'PDF로 저장' 파일 이름
+    for (const bad of ["<script", "<style", 'style="', "onclick="]) expect(doc).not.toContain(bad);
+  });
+
+  it("미리보기는 앱 안에서 먼저 보여 주고, 스크립트를 막은 채 PDF로 저장 · 답 다시 고르기를 둔다", () => {
+    const html = renderToStaticMarkup(<ReportPreview report={report} onBack={vi.fn()} />);
+    expect(html).toContain('title="보고서 미리보기"');
+    expect(html).toContain('sandbox="allow-same-origin allow-modals allow-popups allow-popups-to-escape-sandbox"');
+    expect(html).not.toContain("allow-scripts");
+    expect(html).toContain("통계 분석 보고서"); // 보고서 내용이 미리보기 문서에 들어 있다
+    expect(html).toContain("PDF로 저장");
+    expect(html).toContain("답 다시 고르기");
+    expect(html).not.toContain("HTML");
   });
 });
