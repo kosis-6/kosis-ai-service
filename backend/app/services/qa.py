@@ -3034,7 +3034,10 @@ def _compute(q):
 def _rank_by_change(q, hi):
     year = q.get("year") or hi
     n = (q.get("asked") or {}).get("recent") or 0
-    start = q.get("change_from") or year - (n - 1 if n > 1 else 1)
+    # 질문의 시작 해('2015년 대비 2024년')가 있으면 그 해부터. 11/27 PR #261 점검: 2015년을
+    # 읽고도 쓰지 않아 2023 → 2024년 변화로 답했다
+    asked_start = q.get("start_year") if (q.get("start_year") or year) < year else None
+    start = q.get("change_from") or asked_start or year - (n - 1 if n > 1 else 1)
     base = {**q, "rank_by": None, "top": None, "type": "rank", "start_year": None, "end_year": None}
     base.pop("change_from", None)
     base["asked"] = {k: v for k, v in (q.get("asked") or {}).items() if k != "recent"}

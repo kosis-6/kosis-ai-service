@@ -281,3 +281,47 @@ def test_sigungu_deaths_add_up_to_the_sido_value():
     towns = qa.compute({**base, "type": "rank", "level": "시군구", "sido": "경기도"})["ranking"]
     sido = qa.compute({**base, "type": "value", "regions": ["경기도"]})["value"]
     assert len(towns) == 31 and sum(x["value"] for x in towns) == sido
+
+
+@pytest.mark.parametrize(
+    ("question", "conditions", "changes"),
+    [
+        # 11/27 PR #261 점검: 목록 뒤 지역만 말하면 새 질문으로 읽어 답하지 못했다
+        ("부산은?", {"type": "rank", "sido": "경기도", "level": "시군구"},
+         {"sido": "부산", "level": "시군구"}),
+        ("성남시는?", {"type": "rank", "within": "경기도 수원시", "level": "시군구"},
+         {"within": "경기도 성남시", "sido": None}),
+        ("부산은?", {"type": "rank", "within": "경기도 수원시", "level": "시군구"},
+         {"sido": "부산", "level": "시군구", "within": None}),
+        # 원래 말투('경기도 안에서는?')는 범위 없는 시도 순위 뒤에도 그대로
+        ("경기도 안에서는?", {"type": "rank", "level": "시도"},
+         {"sido": "경기도", "level": "시군구"}),
+        # 범위 없는 순위 뒤 지역만 · 시도 범위 뒤 구 있는 시 · 목록이 아닌 답은 이 규칙이 아니다
+        ("부산은?", {"type": "rank", "level": "시도"}, None),
+        ("성남시는?", {"type": "rank", "sido": "경기도", "level": "시군구"}, None),
+        ("부산은?", {"type": "value", "regions": ["서울"]}, None),
+    ],
+)  # fmt: skip
+def test_region_after_a_scoped_list_moves_the_scope(question, conditions, changes):
+    from app.services import ask_session
+
+    assert ask_session.rank_scope_changes(question, conditions) == changes
+
+
+def test_within_change_is_applied():
+    from app.services import ask_session
+
+    before = {"type": "rank", "indicator": "총인구", "within": "경기도 수원시", "year": 2024}
+    after, changed = ask_session.apply_changes(before, {"within": "경기도 성남시", "sido": None})
+    assert after["within"] == "경기도 성남시" and after["sido"] is None and "view" in changed
+
+
+def test_change_rank_uses_the_asked_start_year():
+    """11/27 PR #261 점검: '2015년 대비 2024년 … 가장 많이 줄어든'을 2023 → 2024년으로 계산했다"""
+    from app.services import qa
+
+    q = {"type": "rank", "indicator": "총인구", "level": "시도", "sex": "계", "year": 2024,
+         "start_year": 2015, "end_year": 2024, "rank_by": "decrease", "top": 3}  # fmt: skip
+    r = qa.compute(q)
+    assert r["change_from"] == 2015 and r["notes"][0].startswith("2015년 → 2024년")
+    assert qa.compute({**q, "start_year": None, "end_year": None})["change_from"] == 2023
