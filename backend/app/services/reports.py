@@ -133,12 +133,8 @@ async def _add(
     turn = await _turn(conn, user_id, turn_id)
     await _same_talk(conn, report_id, turn["session_id"])
     snapshot = snapshot_of(turn)
-    if chart_view and (chart := snapshot.get("chart")):
-        kind = chart.get("type")
-        if chart_view in ("table", kind) or (
-            chart_view == "bar" and kind == "line" and not charts.crowded(chart)
-        ):
-            snapshot["chart"] = {**chart, "view": chart_view}
+    if chart_view and (chart := snapshot.get("chart")) and charts.view_fits(chart, chart_view):
+        snapshot["chart"] = {**chart, "view": chart_view}
     await conn.execute(
         text(
             "insert into app.report_items (report_id, turn_id, sort_order, snapshot)"

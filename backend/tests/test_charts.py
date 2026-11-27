@@ -278,3 +278,13 @@ def test_region_lines_are_crowded_only_past_six() -> None:
 
     assert lines(charts.MAX_LINES)["crowded"] is False
     assert lines(charts.MAX_LINES + 1)["crowded"] is True
+
+
+def test_view_fits_matches_what_the_screen_offers():
+    line = {"type": "line", "series": ["서울", "부산"]}
+    crowded_line = {"type": "line", "crowded": True}
+    bar = {"type": "bar"}
+    assert all(charts.view_fits(line, v) for v in ("line", "bar", "table"))
+    assert not charts.view_fits(crowded_line, "bar")  # 선이 많으면 막대 보기가 없다
+    assert charts.view_fits(crowded_line, "table")
+    assert charts.view_fits(bar, "bar") and not charts.view_fits(bar, "line")

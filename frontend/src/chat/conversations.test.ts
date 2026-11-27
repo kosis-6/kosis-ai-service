@@ -1,9 +1,17 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { pickable } from "./reports";
 import { Answer } from "./Answer";
-import { replayed, when } from "./conversations";
+import { replayed, saveChartView, when } from "./conversations";
+
+const calls: { url: string; init?: RequestInit }[] = [];
+vi.mock("../auth/client", () => ({
+  authFetch: async (url: string, init?: RequestInit) => {
+    calls.push({ url, init });
+    return new Response(null, { status: url.includes("/turns/9/") ? 409 : 204 });
+  },
+}));
 
 const turn = (response: Record<string, unknown>) => ({
   turn_no: 1,
@@ -51,3 +59,17 @@ describe("목록의 마지막 대화 시각", () => {
     expect(when("없음", now)).toBe("");
   });
 });
+
+describe("화면에서 바꾼 차트 모양 남기기", () => {
+  it("그 답의 모양을 서버에 남긴다 (말로 만든 보고서 · 다시 연 대화가 쓴다)", async () => {
+    await saveChartView("A_1", 7, "bar");
+    expect(calls.at(-1)?.url).toBe("/conversations/A_1/turns/7/chart-view");
+    expect(calls.at(-1)?.init?.method).toBe("PUT");
+    expect(JSON.parse(String(calls.at(-1)?.init?.body))).toEqual({ view: "bar" });
+  });
+
+  it("서버가 받지 않으면 알린다", async () => {
+    await expect(saveChartView("A_1", 9, "bar")).rejects.toThrow();
+  });
+});
+

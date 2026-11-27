@@ -148,6 +148,37 @@ async def rename(user_id: int, session_id: str, title: str) -> bool:
     return done.rowcount > 0
 
 
+async def set_chart_view(user_id: int, session_id: str, turn_id: int, view: str) -> str:
+    """화면에서 바꾼 차트 모양(꺾은선 · 막대 · 표)을 그 답에 남긴다 → "ok" · "missing" · "unfit".
+    보고서는 이 답(chat_turns.response)을 복사해 만들어서, 남기지 않으면 말로 만든 보고서
+    ('보고서 만들어줘' · 제안 칩 · '정리해줘')와 다시 연 대화가 처음 모양으로 돌아갔다"""
+    from app.core.db import engine
+    from app.services import charts
+
+    async with engine.begin() as conn:
+        row = await conn.execute(
+            text(
+                "select response from app.chat_turns"
+                " where id = :tid and session_id = :sid and user_id = :uid for update"
+            ),
+            {"tid": turn_id, "sid": session_id, "uid": user_id},
+        )
+        response = row.scalar()
+        chart = (response or {}).get("chart")
+        if not isinstance(chart, dict):
+            return "missing"
+        if not charts.view_fits(chart, view):
+            return "unfit"
+        await conn.execute(
+            text(
+                "update app.chat_turns set response = jsonb_set(response, '{chart,view}',"
+                " to_jsonb(cast(:view as text))) where id = :tid"
+            ),
+            {"view": view, "tid": turn_id},
+        )
+    return "ok"
+
+
 async def delete(user_id: int, session_id: str) -> bool:
     from app.core.db import engine
     from app.services import ask_session

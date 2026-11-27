@@ -7,7 +7,7 @@ import { Answer } from "../chat/Answer";
 import { ask } from "../chat/api";
 import { EXAMPLE_CATEGORIES, EXAMPLES } from "../chat/examples";
 import { History } from "../chat/History";
-import { deleteConversation, getConversation, HistoryError, listConversations, replayed } from "../chat/conversations";
+import { deleteConversation, getConversation, HistoryError, listConversations, replayed, saveChartView } from "../chat/conversations";
 import { AltCard } from "../chat/Reply";
 import { ReportPreview, ReportSheet } from "../chat/ReportSheet";
 import type { Report } from "../chat/reports";
@@ -98,6 +98,14 @@ export function ChatPage() {
         ? { ...message, data: { ...message.data, chart: { ...message.data.chart, view: chartView } } }
         : message,
     ));
+    // 서버의 답에도 남긴다: 말로 만든 보고서와 다시 연 대화가 이 모양을 쓴다.
+    // 남기지 못해도 화면은 그대로 두고, [보고서] 시트는 chart_views로 따로 보낸다
+    const target = messages.find((message) => message.id === messageId);
+    const data = target?.kind === "answer" ? target.data : null;
+    const sessionOf = data?.session_id ?? routeId;
+    if (saved && sessionOf && data?.turn_id != null && data.chart) {
+      void saveChartView(sessionOf, data.turn_id, chartView).catch(() => {});
+    }
   }
 
   const refreshHistory = useCallback(async () => {

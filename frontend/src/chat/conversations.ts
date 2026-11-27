@@ -1,4 +1,4 @@
-import type { AskResponse, ConversationDetail, ConversationList, ConversationTurn } from "../api/types";
+import type { AskResponse, ChartView, ConversationDetail, ConversationList, ConversationTurn } from "../api/types";
 import { authFetch } from "../auth/client";
 
 export class HistoryError extends Error {
@@ -24,6 +24,18 @@ export function getConversation(sessionId: string): Promise<ConversationDetail> 
 export async function deleteConversation(sessionId: string): Promise<void> {
   const res = await authFetch(`/conversations/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
   if (!res.ok && res.status !== 404) throw new HistoryError(res.status);
+}
+
+/** 화면에서 바꾼 차트 모양(꺾은선 · 막대 · 표)을 그 답에 남긴다. 보고서는 서버의 답을 복사해
+ *  만들어서, 남기지 않으면 말로 만든 보고서('보고서 만들어줘' · 제안 칩 · '정리해줘')와 다시 연
+ *  대화가 처음 모양으로 돌아갔다 */
+export async function saveChartView(sessionId: string, turnId: number, view: ChartView): Promise<void> {
+  const res = await authFetch(`/conversations/${encodeURIComponent(sessionId)}/turns/${turnId}/chart-view`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ view }),
+  });
+  if (!res.ok) throw new HistoryError(res.status);
 }
 
 export function replayed(turn: ConversationTurn, sessionId: string): AskResponse {

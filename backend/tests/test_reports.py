@@ -151,6 +151,37 @@ def test_create_saves_selected_chart_view_without_changing_the_answer(db):
     assert saved["items"][0]["snapshot"]["chart"] == {**chart, "view": "bar"}
 
 
+def test_chart_view_chosen_on_screen_reaches_every_report_path(db):
+    """화면에서 바꾼 모양은 그 답에 남아, 말로 만든 보고서(담기 · '정리해줘')도 그 모양으로 그린다.
+    [보고서] 시트만 chart_views 를 보내 '보고서 만들어줘'로 만들면 꺾은선으로 돌아갔다"""
+    from app.services import conversations
+
+    assert run(conversations.set_chart_view(db.a, db.talk, db.t["ok1"], "bar")) == "ok"
+    drafted = run(r.add_to_draft(db.a, db.t["ok1"]))  # 보고서 에이전트 · 제안 칩의 담기
+    assert drafted["items"][0]["snapshot"]["chart"]["view"] == "bar"
+    made = run(r.create(db.a, turn_ids=[db.t["ok1"]]))  # '정리해줘' 보고서
+    assert made["items"][0]["snapshot"]["chart"]["view"] == "bar"
+    assert run(_response(db.t["ok1"]))["chart"]["view"] == "bar"  # 다시 연 대화가 그리는 답
+
+
+async def _response(turn_id):
+    from app.core.db import engine
+
+    async with engine.begin() as conn:
+        row = await conn.execute(
+            text("select response from app.chat_turns where id = :t"), {"t": turn_id}
+        )
+        return row.scalar()
+
+
+def test_chart_view_is_kept_only_for_own_drawable_charts(db):
+    from app.services import conversations
+
+    assert run(conversations.set_chart_view(db.b, db.talk, db.t["ok1"], "bar")) == "missing"
+    assert run(conversations.set_chart_view(db.a, db.talk, db.t["ok2"], "bar")) == "missing"
+    assert run(conversations.set_chart_view(db.a, "other-talk", db.t["ok1"], "bar")) == "missing"
+
+
 @pytest.mark.parametrize(
     ("key", "code"),
     [("bad", "not_reportable"), ("tables", "not_reportable"), ("other", "not_found")],
