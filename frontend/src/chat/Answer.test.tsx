@@ -73,3 +73,27 @@ describe("직전 답을 다시 쓰는 응답", () => {
     expect(html).not.toContain("보고서 보기");
   });
 });
+
+describe("보고서 제안 칩 · 에이전트가 만든 보고서", () => {
+  const ok: AskResponse = {
+    status: "ok", answer: "서울 1인 가구는 1명입니다.", parsed: {}, sources: [], result: { status: "ok", value: 1 },
+    report_offer: { topic: "서울특별시 1인 가구 수", count: 3 },
+  } as AskResponse;
+  const with_ = (d: AskResponse, extra: object) => renderToStaticMarkup(
+    <Answer data={d} busy={false} onSend={vi.fn()} onOthers={vi.fn()} onAskAgain={vi.fn()} {...extra} />,
+  );
+
+  it("[보고서]를 쓸 수 있을 때만 만들기 · 고르기 · 괜찮아요 칩을 보여 준다", () => {
+    const html = with_(ok, { onReport: vi.fn() });
+    for (const word of ["서울특별시 1인 가구 수", "3개로 보고서를 만들까요?", "만들기", "고르기", "괜찮아요"]) {
+      expect(html).toContain(word);
+    }
+    expect(with_(ok, {})).not.toContain("만들까요");
+  });
+
+  it("에이전트가 만든 보고서는 [보고서 보기]로 앱 안에서 연다 (만들기 전이면 버튼 없음)", () => {
+    const made = { ...ok, report_offer: null, status: "report", request_type: "report", answer: "만들었어요." } as AskResponse;
+    expect(with_({ ...made, report: { id: 1, status: "ready" } } as AskResponse, { onShowReport: vi.fn() })).toContain("보고서 보기");
+    expect(with_({ ...made, report: { id: 1, status: "draft" } } as AskResponse, { onShowReport: vi.fn() })).not.toContain("보고서 보기");
+  });
+});

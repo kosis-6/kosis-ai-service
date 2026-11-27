@@ -353,7 +353,7 @@ async def delete(user_id: int, report_id: int) -> bool:
     return gone.rowcount > 0
 
 
-async def generate(user_id: int, report_id: int) -> dict:
+async def generate(user_id: int, report_id: int, style: str | None = None) -> dict:
     """담긴 결과로 보고서 문장을 만들어 content에 저장한다. 생성 중 항목이 바뀌면 저장하지 않는다"""
     from app.core.db import engine
     from app.services import report_writer
@@ -365,7 +365,9 @@ async def generate(user_id: int, report_id: int) -> dict:
     seen = [(i["turn_id"], i["sort_order"]) for i in report["items"]]
     stamp = report["updated_at"]
     try:
-        content = await report_writer.write(report["title"], report["purpose"], report["items"])
+        content = await report_writer.write(
+            report["title"], report["purpose"], report["items"], style
+        )
         status = "ready"
     except ValueError as e:
         content, status = {"error": str(e)}, "failed"

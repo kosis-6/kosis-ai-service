@@ -710,3 +710,11 @@ button.pill:active { transform: scale(0.97); }
   .send::after { inset: -2px; }
   .more-examples::after { inset: -14px 0; }
 }
+
+/* 보고서 제안 칩 */
+.report-offer {
+  display: flex; flex-direction: column; gap: 8px; padding: 10px 14px;
+  border: 1px solid var(--accent-mid); border-radius: 14px; background: var(--accent-soft);
+  font-size: 14px; color: var(--ink);
+}
+.report-offer p { margin: 0; }
