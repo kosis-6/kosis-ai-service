@@ -450,6 +450,33 @@ def test_generate_empty_and_others_report(db):
     assert e.value.code == "not_found"
 
 
+def test_shorten_only_saves_a_strictly_shorter_body(db, monkeypatch):
+    from app.services import report_writer
+
+    texts = iter(["처음 요약", "조금 더 길어진 보고서 요약", "처음 요약", "요약"])
+    calls = []
+
+    async def write(title, purpose, items, style=None, *, compact=False):
+        calls.append(compact)
+        return {"summary": [{"text": next(texts), "refs": ["r1"]}]}
+
+    monkeypatch.setattr(report_writer, "write", write)
+    draft = run(r.create(db.a, turn_ids=[db.t["ok1"]]))
+    original = run(r.generate(db.a, draft["id"]))
+    for _ in range(2):
+        with pytest.raises(ReportError) as e:
+            run(r.generate(db.a, draft["id"], "짧게", shorten=True))
+        assert e.value.code == r.NOT_SHORTER
+        saved = run(r.detail(db.a, draft["id"]))
+        assert saved["content"] == original["content"]
+        assert saved["updated_at"] == original["updated_at"]
+
+    saved = run(r.generate(db.a, draft["id"], "짧게", shorten=True))
+    assert saved["status"] == "ready" and saved["content"]["summary"][0]["text"] == "요약"
+    assert saved["updated_at"] > original["updated_at"]
+    assert calls == [False, True, True, True]
+
+
 def test_generate_discards_when_items_changed_meanwhile(db, monkeypatch):
     from app.services import report_writer
 

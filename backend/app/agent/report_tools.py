@@ -20,7 +20,11 @@ MAX_ASK_STAT = 3
 # (LLM이 시키지 않은 일을 하지 않게, 개발셋 R03 · R04)
 ASKS_WRITE = re.compile(r"만들|써|쓰|작성|정리|생성|보고서로")
 ASKS_REVISE = re.compile(
-    r"짧게|간단|간결|길게|자세|요약|문체|말투|어투|표현|다듬|줄여|늘려|다시\s*(?:써|쓰|정리|작성)"
+    r"짧게|간단|간결|간략|축약|길게|자세|요약|문체|말투|어투|표현|다듬|줄여|늘려"
+    r"|다시\s*(?:써|쓰|정리|작성)"
+)
+ASKS_SHORTER = re.compile(
+    r"(?:짧게|간단히|간단하게|간결하게|간략히|축약|줄여)(?!\s*(?:말고|하지\s*마))"
 )
 # "아니 서울 거" · "부산 말고 서울"은 바꿔 담으라는 말 (개발셋 R15)
 ASKS_ADD = re.compile(r"담|넣|추가|포함|만들|써|작성|정리|보고서로|^\s*아니|말고")
@@ -330,10 +334,13 @@ async def write_report(
     return await _generate(ctx, report["id"], style)
 
 
-async def _generate(ctx: Ctx, report_id: int, style: str | None) -> dict:
+async def _generate(ctx: Ctx, report_id: int, style: str | None, *, shorten: bool = False) -> dict:
     try:
-        ctx.report = await reports.generate(ctx.user_id, report_id, style)
+        options = {"shorten": True} if shorten else {}
+        ctx.report = await reports.generate(ctx.user_id, report_id, style, **options)
     except ReportError as e:
+        if e.code == reports.NOT_SHORTER:
+            return {"unchanged": e.message}
         return {"error": e.message}
     content = ctx.report.get("content") or {}
     if ctx.report["status"] != "ready":
@@ -342,6 +349,7 @@ async def _generate(ctx: Ctx, report_id: int, style: str | None) -> dict:
         "status": ctx.report["status"],
         "summary": [s["text"] for s in content.get("summary") or []][:3],
         "limits": content.get("limits") or [],
+        **({"shortened": True} if shorten else {}),
     }
 
 
@@ -351,7 +359,9 @@ async def revise_text(ctx: Ctx, style: str = "") -> dict:
     report = await current_report(ctx)
     if not report or report["status"] != "ready":
         return {"error": "아직 만든 보고서가 없습니다. write_report 를 먼저 부르세요"}
-    return await _generate(ctx, report["id"], style or ctx.question)
+    return await _generate(
+        ctx, report["id"], style or ctx.question, shorten=bool(ASKS_SHORTER.search(ctx.question))
+    )
 
 
 async def decline_offer(ctx: Ctx) -> dict:

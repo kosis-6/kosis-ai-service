@@ -160,6 +160,18 @@ async def _loop(ctx: tools.Ctx, trace: list[dict]) -> dict[str, Any]:
             result = {"error": f"args 가 맞지 않습니다: {e}"}
         trace.append({"action": action, "args": args, "result": result})
         error = isinstance(result, dict) and result.get("error") and not result.get("added")
+        if action == "revise_text":
+            if error:
+                message = ACTION_FAILED
+            elif result.get("unchanged"):
+                message = result["unchanged"]
+            else:
+                message = (
+                    "보고서를 더 짧게 줄였어요."
+                    if result.get("shortened")
+                    else "보고서 문장을 수정했어요."
+                )
+            return {"end": "finish", "message": message, "seen": seen}
         if action in SMALL_EDITS and not error and _done_after(action, ctx):
             return {"end": "finish", "message": _report_line(ctx), "seen": seen + _report_line(ctx)}
         if (

@@ -495,7 +495,8 @@ def test_report_agent_edits_only_the_current_conversation(db, monkeypatch):
     assert run(reports.detail(uid, other["id"]))["title"] == "다른 대화"
 
 
-def test_revise_ready_report_without_request_to_create(db, monkeypatch):
+@pytest.mark.parametrize("can_shorten", [True, False])
+def test_revise_is_terminal_and_reports_the_actual_outcome(db, monkeypatch, can_shorten):
     sid, uid, (t1, _, _) = db
     draft = run(reports.create(uid, turn_ids=[t1], session_id=sid))
     ready = {**draft, "status": "ready"}
@@ -505,17 +506,25 @@ def test_revise_ready_report_without_request_to_create(db, monkeypatch):
         assert (user, session) == (uid, sid)
         return ready
 
-    async def generate(user, report_id, style):
-        generated.append((user, report_id, style))
+    async def generate(user, report_id, style, *, shorten=False):
+        generated.append((user, report_id, style, shorten))
+        if not can_shorten:
+            raise reports.ReportError(reports.NOT_SHORTER, reports.ALREADY_SHORT)
         return {**ready, "content": {"summary": [{"text": "짧은 요약"}]}}
 
     monkeypatch.setattr(reports, "latest_for_conversation", latest)
     monkeypatch.setattr(reports, "generate", generate)
-    script(monkeypatch, [act("revise_text", style="한 문장"), act("finish", message="수정했어요.")])
+    calls = script(monkeypatch, [act("revise_text", style="한 문장"), act("write_report")])
     res = run(ra.run("보고서 좀 짧게 해줘", sid, {"turn_no": 3}, uid))
 
-    assert generated == [(uid, draft["id"], "한 문장")]
-    assert res["report"]["content"]["summary"] == [{"text": "짧은 요약"}]
+    assert generated == [(uid, draft["id"], "한 문장", True)]
+    assert len(calls) == 1
+    if can_shorten:
+        assert res["answer"] == "보고서를 더 짧게 줄였어요."
+        assert res["report"]["content"]["summary"] == [{"text": "짧은 요약"}]
+    else:
+        assert res["answer"] == reports.ALREADY_SHORT
+        assert res["report"] == ready
 
 
 def test_correction_can_add():
