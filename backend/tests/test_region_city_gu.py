@@ -138,3 +138,35 @@ def test_compare_of_named_regions_stays_a_compare(question):
     parsed = {"type": "compare", "indicator": "총인구", "regions": ["서울", "부산"], "year": 2024}
     p = qa.correct(question, {**parsed, "sex": "계"}, date(2026, 11, 27))
     assert p["type"] == "compare" and p["regions"] == ["서울", "부산"]
+
+
+@pytest.mark.parametrize(
+    ("question", "parsed", "kind"),
+    [
+        # PR 리뷰: 두 해 비교가 한 해 순위로 바뀌어 연도를 잃었다
+        (
+            "2020년과 2024년 경기도 시군별 인구 비교",
+            {"indicator": "총인구", "regions": ["경기도"], "sido": "경기도", "level": "시군구",
+             "start_year": 2020, "end_year": 2024},
+            "trend",
+        ),
+        # PR 리뷰: 수원시 범위가 빠져 전국 시군구 순위로 넓어졌다
+        ("2024년 수원시 구별 인구 비교", {"indicator": "총인구", "regions": ["수원시"]}, "compare"),
+        # PR 리뷰: 순위로 먼저 바뀌어 사망자 수가 빠졌다
+        (
+            "2024년 경기도 시군별 출생아 수와 사망자 수 비교",
+            {"indicator": "출생아 수", "regions": ["경기도"], "sido": "경기도", "level": "시군구"},
+            "compare",
+        ),
+    ],
+)  # fmt: skip
+def test_compare_by_region_that_must_stay_a_compare(question, parsed, kind):
+    from datetime import date
+
+    from app.services import qa
+
+    base = {"type": "compare", "year": 2024, "sex": "계"}
+    p = qa.correct(question, {**base, **parsed}, date(2026, 11, 27))
+    assert p["type"] == kind and p.get("regions") == parsed["regions"]
+    if "사망자" in question:
+        assert p["indicators"] == ["출생아 수", "사망자 수"]

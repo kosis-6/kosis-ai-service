@@ -24,10 +24,6 @@ def first_group(q):
         ("호남권 인구", "호남권", 3),
         ("충청권 인구", "충청권", 4),
         ("광역시 전체 인구", "광역시 전체", 6),
-        # 11/27 차트 점검: '7개 광역시와 세종'을 묶음으로 못 읽어 지역 확인 실패
-        ("7개 광역시와 세종의 출생아 수 추이", "광역시와 세종", 7),
-        ("6대 광역시와 세종 인구", "광역시와 세종", 7),
-        ("광역시랑 세종 인구 비교", "광역시랑 세종", 7),
         ("6개 광역시 인구", "6개 광역시", 6),
     ],
 )
@@ -101,3 +97,29 @@ def test_group_name_is_not_population_modifier(q):
 @pytest.mark.needs_data
 def test_population_modifier_still_works():
     assert qa.population_modifier("통학 인구") is not None
+
+
+METROS_6 = ["부산", "대구", "인천", "광주광역시", "대전", "울산"]
+
+
+@pytest.mark.parametrize(
+    ("q", "members"),
+    [
+        # 11/27 차트 점검: '7개 광역시와 세종'을 묶음으로 못 읽어 지역 확인 실패
+        ("7개 광역시와 세종의 출생아 수 추이", [*METROS_6, "세종"]),
+        ("6대 광역시와 세종 인구", [*METROS_6, "세종"]),
+        ("광역시랑 세종 인구 비교", [*METROS_6, "세종"]),
+        ("광역시 및 세종 인구", [*METROS_6, "세종"]),
+        # PR 리뷰: '5대 광역시와 세종'에 울산이 끼어 7곳이 됐다 (5대 광역시 + 세종 = 6곳)
+        ("5대 광역시와 세종 인구 비교", [*qa.REGION_GROUPS["5대 광역시"], "세종"]),
+        ("지방 광역시와 세종 인구", [*qa.REGION_GROUPS["지방 광역시"], "세종"]),
+    ],
+)
+def test_metro_group_and_sejong(q, members):
+    word, found = qa._metro_and_sejong(q)
+    assert found == members and word in q
+
+
+def test_metro_without_sejong_keeps_its_group():
+    assert qa._metro_and_sejong("5대 광역시 인구") is None
+    assert first_group("5대 광역시 인구") == "5대 광역시"

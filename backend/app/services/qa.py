@@ -297,13 +297,6 @@ REGION_GROUPS = {
     "지방 광역시": ["부산", "대구", "광주광역시", "대전", "울산"],
     "지방광역시": ["부산", "대구", "광주광역시", "대전", "울산"],
     "특례시": ["경기 수원시", "경기 고양시", "경기 용인시", "경남 창원시(통합)", "경기 화성시"],
-    # '7개 광역시와 세종'처럼 광역시에 세종을 더한 말 (광역시는 6개: 세종까지 세어 7개로 말한다).
-    # '6대 광역시'보다 먼저 봐야 '6대 광역시와 세종'에서 세종이 빠지지 않는다 (11/27 차트 점검)
-    "광역시와 세종": ["부산", "대구", "인천", "광주광역시", "대전", "울산", "세종"],
-    "광역시랑 세종": ["부산", "대구", "인천", "광주광역시", "대전", "울산", "세종"],
-    "광역시하고 세종": ["부산", "대구", "인천", "광주광역시", "대전", "울산", "세종"],
-    "광역시 및 세종": ["부산", "대구", "인천", "광주광역시", "대전", "울산", "세종"],
-    "광역시·세종": ["부산", "대구", "인천", "광주광역시", "대전", "울산", "세종"],
     "6대 광역시": ["부산", "대구", "인천", "광주광역시", "대전", "울산"],
     "6개 광역시": ["부산", "대구", "인천", "광주광역시", "대전", "울산"],
     "5대 광역시": ["부산", "대구", "인천", "광주광역시", "대전"],
@@ -1217,11 +1210,11 @@ def correct(question, parsed, today=None):
         kind == "compare"
         and BY_REGION.search(question)
         and not is_comp
-        and len(indicators.find_regions(question)) <= 1
+        and _list_not_compare(question, parsed)
     ):
-        # '시도별 … 비교' · '경기도 시군별 … 비교': 질문에 지역을 둘 이상 말하지 않았으면 비교가
-        # 아니라 지역별 목록이다. 11/27 차트 점검: HCX가 펼친 17개 시도를 질문에 없다고 막았고,
-        # '경기도 시군별'은 경기도 값 하나로 답했다
+        # '시도별 … 비교' · '경기도 시군별 … 비교': 한 해 · 한 지표를 시도 하나(또는 전국) 안에서
+        # 물으면 비교가 아니라 지역별 목록이다. 11/27 차트 점검: HCX가 펼친 17개 시도를 질문에
+        # 없다고 막았고, '경기도 시군별'은 경기도 값 하나로 답했다
         fix("type", "rank", "지역별 목록 (비교)")
         _region_list(question, parsed, fix)
     elif kind == "composition" and not is_comp:
@@ -2111,6 +2104,19 @@ def _both_sexes(question):
     return len(genders) == 2 or (not genders and bool(SEX_SPLIT.search(question)))
 
 
+def _list_not_compare(question, parsed):
+    """'○○별 비교'를 지역별 목록으로 읽어도 되는가. PR 리뷰: 두 해 비교('2020년과 2024년') ·
+    시군구 안의 구('수원시 구별') · 두 지표('출생아 수와 사망자 수')는 목록으로 바꾸면
+    연도 · 범위 · 지표를 잃어 비교로 둔다"""
+    start, end = parsed.get("start_year"), parsed.get("end_year")
+    if (start and end and start != end) or len(re.findall(r"\d{4}\s*년", question)) > 1:
+        return False
+    named = indicators.find_regions(question)
+    if len(named) > 1 or any(indicators.resolve_region(n).get("kind") != "시도" for n in named):
+        return False
+    return len(asked_indicators(question)) <= 1
+
+
 def _region_list(question, parsed, fix):
     regions = parsed.get("regions") or []
     level = "시도" if re.search(r"시도\s*(별|마다)", question) else "시군구"
@@ -2142,9 +2148,27 @@ def _group_in(word, question):
     return any(GROUP_TAIL.match(question, m.end()) for m in re.finditer(re.escape(word), question))
 
 
+# '○○ 광역시와 세종': 앞의 광역시 묶음에 세종을 더한다. 광역시는 6개라 '7개 광역시와 세종'은
+# 세종까지 세어 7개로 말한 것으로 본다 (11/27 차트 점검 · PR 리뷰: '5대 광역시와 세종'은 6곳)
+METRO_AND_SEJONG = re.compile(
+    r"(?:(지방)\s*|(\d)\s*(?:개|대)\s*)?광역시\s*(?:와|과|랑|하고|및|·|,)\s*세종"
+)
+
+
+def _metro_and_sejong(question):
+    if not (m := METRO_AND_SEJONG.search(question)):
+        return None
+    base = "지방 광역시" if m[1] else "5대 광역시" if m[2] == "5" else "6대 광역시"
+    return m[0], [*REGION_GROUPS[base], "세종"]
+
+
 def _read_question(question, parsed, fix):
     kind = parsed.get("type")
-    for word, members in REGION_GROUPS.items():
+    if both := _metro_and_sejong(question):
+        word, members = both
+        fix("regions", members, f"'{word}'")
+        parsed["group"] = word
+    for word, members in REGION_GROUPS.items() if not both else ():
         if _group_in(word, question):
             fix("regions", members, f"'{word}'")
             parsed["group"] = word
