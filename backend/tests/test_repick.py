@@ -436,3 +436,13 @@ def test_blocked_evidence_keeps_repick_out_of_the_loop(monkeypatch: pytest.Monke
     res = {**_res(), "request_type": ask_session.NEW, "answer": "처음 답"}
     asyncio.run(ask_session._judged(res, None, "q", None))
     assert "repick" not in seen and seen
+
+
+def test_hint_naming_a_cell_makes_the_topic_fit(birth, monkeypatch: pytest.MonkeyPatch) -> None:
+    """질문의 일상어가 칸에 안 닿아도(topic_ok 거짓) 판정 지적이 그 표의 칸을 가리키면 repick
+    (11/27 측정: '애 많이 낳는 곳' → 출생아 수로 답함 → 지적 '합계출산율' → 같은 표에서 고침)"""
+    _no_check(monkeypatch, cells_exist=True, topic_ok=False)
+    out = _cells(_res(), "출생아 수가 아니라 출생성비를 써야 함")
+    assert out["cells"] and out["fits"]
+    out = _cells(_res(), "다른 통계를 써야 함")
+    assert out["cells"] and not out["fits"]

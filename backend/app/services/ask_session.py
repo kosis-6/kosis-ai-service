@@ -3320,7 +3320,8 @@ async def repick_cells(
     → {"cells", "fits", "blocked", "tbl_id", "by", "check", "hits"}.
       cells   검사의 differs · cells_exist, 또는 판정 지적이 칸에 닿음(앞 답 칸 · 주제어 빼고),
               또는 아래 순위 표가 답했고 1위가 칸에서 막힘
-      fits    값 종류 · 주제가 맞음 ('대상이 다름'일 때 repick 조건)
+      fits    값 종류 · 주제가 맞음 ('대상이 다름'일 때 repick 조건). 판정 지적이 그 표의 칸에
+              닿으면 주제는 맞다고 본다
       blocked 여러 지표 · 복합 답, 또는 계산이 필요한 판정 지적 → repick 안 함"""
     if why_not := repick_blocked(res, verdict):
         return {"cells": False, "fits": True, "blocked": why_not, "by": why_not}
@@ -3346,7 +3347,9 @@ async def repick_cells(
         out["check"] = checked.as_trace()
     if calc and not any(word in search_norm(h) for word in calc for h in hits):
         return {**out, "cells": False, "fits": True, "blocked": f"계산이 필요한 지적 ({calc[0]})"}
-    fits = checked.fits if checked is not None else True
+    # 주제: 질문의 일상어('애 많이 낳는')가 칸에 글자로 안 닿아도, 판정 지적이 그 표의 칸을
+    # 가리키면(합계출산율) 표는 맞다고 본다 (11/27 측정 D-071: 이렇게 repick 이 고쳤다)
+    fits = checked is None or (checked.kind_ok and (checked.topic_ok or bool(hits)))
     if checked is not None and checked.cells:
         by = "검사: 앞 답과 다른 칸으로 이어짐" if checked.differs else "검사: 고를 칸이 있음"
         return {**out, "cells": True, "fits": fits, "blocked": None, "by": by}
