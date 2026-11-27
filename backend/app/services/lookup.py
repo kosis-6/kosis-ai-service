@@ -453,6 +453,7 @@ def _band_mismatch(spec, src, ages):
         "reason": f"{josa(name, '은는')} 표의 연령 구간이 질문한 {asked} 구간과 맞지 않아 "
         "그 값을 낼 수 없습니다.",
         "available_bands": labels,
+        "available_band_ranges": [list(b) for b in bands],
         "alternative": f"대신 볼 수 있는 구간: {', '.join(labels)}",
     }
 

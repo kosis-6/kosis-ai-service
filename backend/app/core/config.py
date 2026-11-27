@@ -91,6 +91,9 @@ class Settings(BaseSettings):
     llm_pick_together: bool = False
     search_plan: bool = True
     handoff_alternatives: bool = False
+    # 대안 답변: 답변 불가 대신 조건 하나(연도 · 연령 구간 · 지역 단위)를 가장 가까운 것으로 바꿔
+    # 값을 주고 첫 문장에 바꾼 것을 밝힌다 (docs/clarify_refusal_spec_2026-11-27.md)
+    alternative_answer: bool = True
     handoff_cell_llm: bool = True
 
     @field_validator("admin_allow_ips")
