@@ -1,6 +1,7 @@
 import { Link, Outlet } from "react-router-dom";
 import { Brand } from "../components/Brand";
 import { Icon } from "../components/Icon";
+import { Mascot } from "../components/Mascot";
 import "../styles/account.css";
 
 export function AccountLayout() {
@@ -9,9 +10,7 @@ export function AccountLayout() {
       <aside className="story">
         <Brand className="on-dark" />
         <div className="story-body">
-          <span className="story-art">
-            <span className="logo" role="img" aria-label="LIKE SNAKE 로고" />
-          </span>
+          <Mascot place="story" className="story-art" label="LIKE SNAKE 캐릭터" />
           <p className="story-title">
             일상 속 질문을,
             <br />
