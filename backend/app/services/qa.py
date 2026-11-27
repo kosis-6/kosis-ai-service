@@ -297,7 +297,15 @@ REGION_GROUPS = {
     "지방 광역시": ["부산", "대구", "광주광역시", "대전", "울산"],
     "지방광역시": ["부산", "대구", "광주광역시", "대전", "울산"],
     "특례시": ["경기 수원시", "경기 고양시", "경기 용인시", "경남 창원시(통합)", "경기 화성시"],
+    # '7개 광역시와 세종'처럼 광역시에 세종을 더한 말 (광역시는 6개: 세종까지 세어 7개로 말한다).
+    # '6대 광역시'보다 먼저 봐야 '6대 광역시와 세종'에서 세종이 빠지지 않는다 (11/27 차트 점검)
+    "광역시와 세종": ["부산", "대구", "인천", "광주광역시", "대전", "울산", "세종"],
+    "광역시랑 세종": ["부산", "대구", "인천", "광주광역시", "대전", "울산", "세종"],
+    "광역시하고 세종": ["부산", "대구", "인천", "광주광역시", "대전", "울산", "세종"],
+    "광역시 및 세종": ["부산", "대구", "인천", "광주광역시", "대전", "울산", "세종"],
+    "광역시·세종": ["부산", "대구", "인천", "광주광역시", "대전", "울산", "세종"],
     "6대 광역시": ["부산", "대구", "인천", "광주광역시", "대전", "울산"],
+    "6개 광역시": ["부산", "대구", "인천", "광주광역시", "대전", "울산"],
     "5대 광역시": ["부산", "대구", "인천", "광주광역시", "대전"],
     "광역시 전체": ["부산", "대구", "인천", "광주광역시", "대전", "울산"],
     "모든 광역시": ["부산", "대구", "인천", "광주광역시", "대전", "울산"],
@@ -313,7 +321,7 @@ SUM_WORDS = re.compile(
 COUNT_ASK = re.compile(r"몇\s*(명|건|가구|곳|개)|인구는|인구가|인구\s*수|수는|수가|건수")
 PCT_ASK = re.compile(r"%|퍼센트|비율|비중|몇\s*프로")
 COMPOSITION_WORDS = re.compile(r"구성|비중|비율|%|퍼센트|나누면|몇\s*프로")
-BY_REGION = re.compile(r"(구|시군구|시도|지역|시)\s*(별|마다)|\d+\s*개\s*(구|시군구)\s*중")
+BY_REGION = re.compile(r"(구|시군구|시군|시도|지역|시)\s*(별|마다)|\d+\s*개\s*(구|시군구)\s*중")
 BOTH_ENDS = re.compile(
     r"(높|많)\S*\s*\S*\s*(랑|와|과|하고)\s*.*(낮|적)|(낮|적)\S*\s*\S*\s*(랑|와|과|하고)\s*.*(높|많)"
 )
@@ -1205,6 +1213,17 @@ def correct(question, parsed, today=None):
             if kind == "value":
                 fix("type", "rank", "지역별 목록")
             _region_list(question, parsed, fix)
+    elif (
+        kind == "compare"
+        and BY_REGION.search(question)
+        and not is_comp
+        and len(indicators.find_regions(question)) <= 1
+    ):
+        # '시도별 … 비교' · '경기도 시군별 … 비교': 질문에 지역을 둘 이상 말하지 않았으면 비교가
+        # 아니라 지역별 목록이다. 11/27 차트 점검: HCX가 펼친 17개 시도를 질문에 없다고 막았고,
+        # '경기도 시군별'은 경기도 값 하나로 답했다
+        fix("type", "rank", "지역별 목록 (비교)")
+        _region_list(question, parsed, fix)
     elif kind == "composition" and not is_comp:
         population = sp is None or sp["name"] == "총인구"
         if not (population and COMPOSITION_WORDS.search(question) and not ages):
@@ -1889,6 +1908,16 @@ def _full_region_names(question, parsed, fix):
             if indicators.resolve_region(longer[0]).get("status") == "ok":
                 r = longer[0]
         out.append(r)
+    # 함께 말한 지역이 모두 시도면 '광주'처럼 시도 · 시군구 둘 다인 이름은 시도로 (값 조회의
+    # indicators 규칙과 같다). 추이 · 비교는 지역을 하나씩 조회해 그 규칙이 안 걸렸다:
+    # 11/27 차트 점검 '서울 부산 대구 인천 광주 대전 울산 출생아 수 추이'가 광주를 되물었다
+    for i, r in enumerate(out if len(out) > 1 else []):
+        if indicators.resolve_region(r, sigungu=True)["status"] != "ambiguous_region":
+            continue
+        if indicators._all_sido(o for j, o in enumerate(out) if j != i):
+            reg = indicators.resolve_region(r)
+            if reg["status"] == "ok" and reg["kind"] == "시도":
+                out[i] = reg["region_name"]
     if out != regions:
         fix("regions", out, "질문의 정식 지역 이름")
 
@@ -2097,6 +2126,9 @@ def _region_list(question, parsed, fix):
             fix("sido", sido, "지역별 목록의 범위")
         if regions:
             fix("regions", [], "지역별 목록")
+    elif regions and not indicators.find_regions(question):
+        # '시도별': 질문에 지역 이름이 없는데 HCX가 시도를 펼쳐 적었으면 전체 시도 목록으로
+        fix("regions", [], "지역별 목록")
     if re.search(r"(별|마다)", question) and parsed.get("top"):
         fix("top", None, "지역별 목록은 전체")
 
