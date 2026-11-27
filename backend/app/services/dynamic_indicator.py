@@ -1089,11 +1089,23 @@ def _name(
     strip_age: bool = False,
     unit: str = "",
     target: str = "",
+    question: str = "",
+    tbl_nm: str = "",
 ) -> str:
     named = [d for d in dims if d.no in plan.matched and d.no not in plan.bands]
+    table_cohort = COHORT_AXIS.search(_norm(tbl_nm))
+    asked_cohort = bool(table_cohort and table_cohort[1] in _norm(question))
+    if asked_cohort:
+        cohort_dims = {
+            d.no
+            for d in dims
+            if COHORT_AXIS.search(_norm(d.name))
+            or (d.no == 0 and sum(bool(COHORT_YEAR.match(n)) for n in d.codes.values()) > 1)
+        }
+        named = [d for d in named if d.no not in cohort_dims]
     named = [d for d in named if len(d.codes) > 1] or named
     words = [d.codes[plan.matched[d.no]] for d in named]
-    words = words or [dims[0].codes[plan.pick[0]]]
+    words = words or ([dims[0].codes[plan.pick[0]]] if not asked_cohort else [])
     if unit:
         tail = re.compile(rf"\s*\(\s*{re.escape(unit)}\s*\)\s*$")
         words = [tail.sub("", w) or w for w in words]
@@ -1272,7 +1284,7 @@ def build(
     )
     places = [cell for _, cell in chosen_places]
     name = _place_name(
-        _name(parsed, dims, plan, counted, strip_age, unit, target),
+        _name(parsed, dims, plan, counted, strip_age, unit, target, question, tbl_nm),
         mentions,
         places,
         target,

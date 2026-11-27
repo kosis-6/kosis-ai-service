@@ -98,6 +98,7 @@ def test_observation_year_does_not_select_an_entry_cohort(monkeypatch, fake_tabl
     spec, reason = d.build(table, "2025년에 입국한 외국인은 몇 명?", parsed, {0: "Y25"})
     assert spec is not None, reason
     assert spec["sources"][0]["item_id"] == "Y25"
+    assert spec["name"] == "외국인 수"
 
 
 def test_ratio_of_sex_within_table() -> None:
