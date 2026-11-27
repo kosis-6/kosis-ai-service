@@ -2,9 +2,6 @@ import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { AdminGate } from "./admin/AdminGate";
 import { AccountLayout } from "./pages/AccountLayout";
 import { ChatPage } from "./pages/ChatPage";
-import { LoginPage } from "./pages/LoginPage";
-import { SignupDonePage } from "./pages/SignupDonePage";
-import { SignupPage } from "./pages/SignupPage";
 
 export function App() {
   return (
@@ -12,10 +9,11 @@ export function App() {
       <Routes>
         <Route path="/" element={<ChatPage />} />
         <Route path="/c/:sessionId" element={<ChatPage />} />
+        {/* 로그인 · 회원가입은 한 장에서 덮개가 밀리며 바뀐다: 두 화면을 AccountLayout이 함께 그린다 */}
         <Route element={<AccountLayout />}>
-          <Route path="/login" element={<LoginPage />} />
-          <Route path="/signup" element={<SignupPage />} />
-          <Route path="/signup/done" element={<SignupDonePage />} />
+          <Route path="/login" />
+          <Route path="/signup" />
+          <Route path="/signup/done" />
         </Route>
         <Route path="/admin" element={<AdminGate view="sessions" />} />
         <Route path="/admin/searches" element={<AdminGate view="searches" />} />

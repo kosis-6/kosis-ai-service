@@ -122,7 +122,7 @@ class Figure(BaseModel):
 
 
 class QuestionClarification(BaseModel):
-    kind: Literal["local_region", "move_scope", "table_cell", "alternative"]
+    kind: Literal["local_region", "move_scope", "table_cell", "alternative", "report_choice"]
     prompt: str
     options: list[str] = Field(default_factory=list)
 
@@ -181,3 +181,13 @@ class AskResponse(BaseModel):
         default=None, description="이 답의 기록 id (로그인한 사용자만). 보고서에 담을 때 쓴다"
     )
     reportable: bool = Field(default=False, description="보고서에 담을 수 있는 답인가")
+    report_offer: dict[str, Any] | None = Field(
+        default=None,
+        description="보고서 제안 칩 {topic, count}. 같은 지표의 담을 수 있는 답이 세 번째일 때"
+        " 대화마다 한 번",
+    )
+    report: dict[str, Any] | None = Field(
+        default=None,
+        description="보고서 경로(request_type=report)에서 바뀐 뒤의 보고서"
+        " (/reports/{id} 응답과 같은 모양)",
+    )

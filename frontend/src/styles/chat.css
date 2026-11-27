@@ -197,16 +197,15 @@ body[data-page="chat"] {
 .welcome > :nth-child(3), .welcome > :nth-child(4) { animation-delay: 100ms; }
 .welcome > :nth-child(5) { animation-delay: 150ms; }
 .welcome > :nth-child(6) { animation-delay: 200ms; }
+/* 첫 화면 인사: LIKE SNAKE 캐릭터. 그림자는 바닥에 선 듯 아래로만 */
 .emblem {
-  display: grid;
-  place-items: center;
-  width: 72px;
-  height: 72px;
+  display: block;
+  width: auto;
+  height: 120px;
   margin-bottom: 4px;
-  border-radius: 20px;
-  background: var(--logo-paper);
+  object-fit: contain;
+  filter: drop-shadow(0 10px 12px rgb(23 59 46 / .12));
 }
-.emblem .logo { height: 48px; border-radius: 0; }
 .welcome-title { font-size: 36px; font-weight: 600; line-height: 48px; letter-spacing: -0.02em; }
 .welcome-title em { color: var(--sage); font-style: normal; }
 .welcome-text { color: var(--muted); line-height: 22px; }
@@ -251,10 +250,14 @@ body[data-page="chat"] {
   place-items: center;
   width: 32px;
   height: 32px;
-  border-radius: 8px;
-  background: var(--logo-paper);
+  overflow: hidden;
+  border-radius: 50%;
+  background: var(--accent-soft);
 }
-.avatar .logo { height: 24px; border-radius: 0; }
+.avatar .mascot-face { display: block; width: 100%; height: 100%; }
+/* 답을 찾는 동안 캐릭터가 고개를 살짝 갸웃한다 (동작 줄이기 설정이면 base.css가 멈춘다) */
+.typing .avatar .mascot-face { transform-origin: 40% 75%; animation: tilt 1.1s ease-in-out infinite alternate; }
+@keyframes tilt { from { transform: rotate(-5deg); } to { transform: rotate(5deg) translateY(-1px); } }
 .reply { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 12px; }
 .msg.bot:not(.typing, .error) .reply > * { animation: rise var(--slow) var(--ease) both; }
 .msg.bot .reply > :nth-child(2) { animation-delay: 60ms; }
@@ -612,14 +615,29 @@ button.pill:active { transform: scale(0.97); }
 .alt-card h3 { font-size: 16px; font-weight: 600; line-height: 24px; }
 .alt-card .btn { height: 40px; }
 .sheet-body > .btn.secondary { height: 52px; white-space: normal; }
+.report-picks { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.report-pick { display: flex; align-items: flex-start; gap: 12px; padding: 16px 20px; border-radius: 16px; background: var(--panel); cursor: pointer; }
+.report-pick input { flex: none; width: 16px; height: 16px; margin: 2px 0 0; accent-color: var(--accent); }
+.report-pick-text { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.report-pick-q { font-size: 14px; font-weight: 600; line-height: 20px; }
+.report-pick-a { color: var(--muted); font-size: 13px; line-height: 20px; }
+.report-actions { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+/* 보고서 미리보기: 만든 보고서를 문서 한 장 크기로 먼저 보여 준다 */
+.sheet.doc { width: min(1040px, calc(100vw - 32px)); height: calc(100dvh - 32px); max-height: none; padding: 24px 32px 32px; }
+.sheet.doc[open] { display: flex; flex-direction: column; }
+.sheet.doc .sheet-head { margin-bottom: 12px; }
+.sheet.doc .sheet-body { flex: 1; min-height: 0; gap: 12px; }
+.report-view-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
+.report-view-bar .sheet-text { flex: 1; min-width: 180px; text-align: right; }
+.report-view-bar .text-btn { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; line-height: 20px; }
+.report-frame { flex: 1; min-height: 0; width: 100%; border: 0; border-radius: 16px; background: var(--panel); }
 
 @media (min-width: 861px) and (max-height: 860px) {
   .head { min-height: 72px; padding: 12px 32px; }
   .log { padding-block: 8px; }
   .composer { padding-top: 8px; padding-bottom: 20px; }
   .welcome { gap: 8px; }
-  .emblem { width: 56px; height: 56px; border-radius: 16px; }
-  .emblem .logo { height: 36px; }
+  .emblem { height: 88px; }
   .welcome-title { font-size: 30px; line-height: 40px; }
   .examples { margin-top: 8px; }
   .examples-grid { gap: 8px; }
@@ -655,12 +673,15 @@ button.pill:active { transform: scale(0.97); }
   .composer textarea::placeholder { font-size: 13px; }
   .composer-note { font-size: 11px; line-height: 16px; }
   .sheet { padding: 24px; }
+  .sheet.doc { width: 100vw; height: 100dvh; max-width: none; margin: 0; padding: 16px; border-radius: 0; }
+  .report-view-bar .sheet-text { order: 3; flex-basis: 100%; text-align: left; }
+  .report-view-bar .btn.primary { margin-left: auto; }
+  .report-frame { border-radius: 12px; }
 }
 
 @media (max-width: 560px) {
   .welcome { gap: 8px; }
-  .emblem { width: 56px; height: 56px; border-radius: 16px; }
-  .emblem .logo { height: 40px; }
+  .emblem { height: 88px; }
   .welcome-title { font-size: 28px; line-height: 36px; }
   .welcome-text { font-size: 13px; line-height: 20px; }
   .examples-grid { gap: 8px; }
@@ -668,7 +689,6 @@ button.pill:active { transform: scale(0.97); }
   .example-cat { font-size: 11px; line-height: 16px; }
   .example-q { font-size: 13px; line-height: 20px; }
   .avatar { width: 28px; height: 28px; }
-  .avatar .logo { height: 20px; }
 }
 
 @media (max-width: 860px) {
@@ -690,3 +710,11 @@ button.pill:active { transform: scale(0.97); }
   .send::after { inset: -2px; }
   .more-examples::after { inset: -14px 0; }
 }
+
+/* 보고서 제안 칩 */
+.report-offer {
+  display: flex; flex-direction: column; gap: 8px; padding: 10px 14px;
+  border: 1px solid var(--accent-mid); border-radius: 14px; background: var(--accent-soft);
+  font-size: 14px; color: var(--ink);
+}
+.report-offer p { margin: 0; }

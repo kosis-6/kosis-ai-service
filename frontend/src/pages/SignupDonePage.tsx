@@ -1,9 +1,7 @@
 import { Link } from "react-router-dom";
 import { Icon } from "../components/Icon";
-import { usePage } from "../components/usePage";
 
 export function SignupDonePage() {
-  usePage("account", "가입 완료");
   return (
     <section className="view done">
       <span className="done-mark">

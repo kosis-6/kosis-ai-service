@@ -46,6 +46,13 @@ class Unbound:
     cond: str
     value: str
     why: str
+    # 칸을 골라 달라고 되물을 수 있으면 그 분류와 후보 칸.
+    # said = 질문이 이 분류를 가리켰는데 칸이 여럿 (바로 되묻기).
+    # 아니면 질문이 말하지 않은 분류에 합계 칸이 없음 (recell이 먼저, 못 하면 되묻기)
+    dim: int | None = None
+    dim_name: str = ""
+    options: list[tuple[str, str]] = field(default_factory=list)
+    said: bool = False
 
 
 @dataclass
@@ -71,7 +78,7 @@ class Binding:
         return {
             "status": self.status,
             "bound": [_compact(asdict(b)) for b in self.bound],
-            "unbound": [asdict(u) for u in self.unbound],
+            "unbound": [_compact(asdict(u)) for u in self.unbound],
             **({"skipped": self.skipped} if self.skipped else {}),
         }
 
@@ -205,7 +212,8 @@ def bind(
                 out.bound.append(Bound("age", label, "value", no, codes, [d.codes[codes[0]]]))
             else:
                 names = ", ".join(d.codes[c] for c in codes)
-                out.unbound.append(Unbound("age", label, f"그 연령이 든 칸이 여럿 ({names})"))
+                why = f"그 연령이 든 칸이 여럿 ({names})"
+                out.unbound.append(_askable("age", label, why, d, codes, said=True))
         elif _age_span(info.get("tbl_nm") or "") == age:
             out.bound.append(Bound("age", label, "table", note="표 이름의 연령 범위"))
         else:
@@ -256,7 +264,7 @@ def bind(
             out.bound.append(Bound("word", " · ".join(names), "value", d.no, codes, names))
         elif codes:
             names = ", ".join(d.codes[c] for c in codes)
-            out.unbound.append(Unbound(d.name, names, "칸이 여럿 (되묻기)"))
+            out.unbound.append(_askable(d.name, names, "칸이 여럿 (되묻기)", d, codes, said=True))
         else:
             _bind_default(d, couple, age, out)
     _bind_topic(slots, parsed, sex, sex_dim, out)
@@ -437,9 +445,37 @@ def _bind_default(d: "di.Dim", couple: bool, age, out: Binding) -> None:
     elif couple and (code := di._couple_code(d)) and not age:
         by = "couple"
     else:
-        out.unbound.append(Unbound(d.name, "", "합계 칸이 없음 (되묻기)"))
+        out.unbound.append(_askable(d.name, "", "합계 칸이 없음 (되묻기)", d, list(d.codes)))
         return
     out.bound.append(Bound(d.name, d.codes[code], by, d.no, [code], [d.codes[code]]))
+
+
+def _askable(
+    cond: str, value: str, why: str, d: "di.Dim", codes: list[str], said: bool = False
+) -> Unbound:
+    if not 1 < len(codes) <= di.MAX_ASK_OPTIONS:
+        return Unbound(cond, value, why.replace("(되묻기)", "(칸이 많아 되묻지 않음)"))
+    options = [(c, d.codes[c]) for c in codes]
+    return Unbound(cond, value, why, d.no, d.name, options, said)
+
+
+def ask_of(b: Binding, unsaid: bool = False) -> "di.Ask | None":
+    """못 이은 조건이 모두 '칸 고르기'면 첫 분류를 되묻는다.
+
+    이은 칸은 고정해 두고, 답을 받은 뒤 다시 계산한다.
+
+    맞는 칸이 없는 조건이 하나라도 있으면 되묻지 않는다 (골라도 답이 안 나오므로 답변 불가 쪽).
+    unsaid=False면 질문이 가리킨 분류만 되묻는다. 합계 칸이 없는 분류는 recell이 먼저 본다.
+    """
+    if not b.unbound or any(not u.options or not (u.said or unsaid) for u in b.unbound):
+        return None
+    u = b.unbound[0]
+    forced = {
+        x.dim: x.codes[0]
+        for x in b.bound
+        if x.dim is not None and x.dim != u.dim and len(x.codes) == 1
+    }
+    return di.Ask(u.dim, u.dim_name, list(u.options), forced)
 
 
 SAME, DIFFER = "같음", "다름"

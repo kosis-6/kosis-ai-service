@@ -2,10 +2,8 @@ import { useState, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { login } from "../auth/client";
 import { Field } from "../components/Field";
-import { usePage } from "../components/usePage";
 
 export function LoginPage() {
-  usePage("account", "로그인");
   const navigate = useNavigate();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");

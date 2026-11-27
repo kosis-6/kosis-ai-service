@@ -2770,3 +2770,167 @@ def test_follow_up_keeps_user_specified_end_year(talk: Talk, monkeypatch, questi
     assert result["status"] == "ok"
     assert [p["year"] for p in result["result"]["series"]] == list(range(2020, 2025))
     assert {"name": "기간", "value": "2020~2024년", "source": "user"} in result["applied"]
+
+
+def test_verify_restate_does_not_repeat_recent_years(monkeypatch) -> None:
+    # LLM이 이미 '최근 10년간'을 썼으면 앞에 다시 붙인 '최근 10년'과 겹치지 않게 지운다
+    monkeypatch.setattr(s, "recent_years", lambda q: 10)
+    cond = {"type": "trend", "indicator": "출생아 수", "regions": ["서울"]}
+    rel, q, _ = s.verify_restate(
+        {"relation": "followup", "question": "최근 10년간 서울 출생아 수 추이는?"},
+        cond,
+        "10년으로 늘려줘",
+    )
+    assert (rel, q) == ("followup", "최근 10년 서울 출생아 수 추이는?")
+
+
+def test_other_subject_question_puts_previous_region_and_period(monkeypatch) -> None:
+    # '혼인도 알려줘': 낱말만 표 검색어로 넣지 않고 직전 지역 · 기간을 붙여 질문 이해에 맡긴다
+    monkeypatch.setattr(
+        s.indicators,
+        "resolve_region",
+        lambda name: {"status": "ok" if name == "강남" else "unknown_region"},
+    )
+    value = {"type": "value", "indicator": "출생아 수", "regions": ["서울"], "year": 2025}
+    assert s.other_subject_question("혼인도 알려줘", value) == "2025년 서울 혼인도 알려줘"
+    rank = {"type": "rank", "indicator": "총인구", "level": "시군구", "sido": "경기도"}
+    rank["year"] = 2025
+    assert s.other_subject_question("이혼은?", rank) == "2025년 경기도 이혼은?"
+    # 지역 이름 · 지표 이름 · 묻는 말은 붙이지 않는다
+    assert s.other_subject_question("강남은?", value) is None
+    assert s.other_subject_question("사망자 수도 알려줘", value) is None
+    assert s.other_subject_question("몇명이야?", value) is None
+
+
+def test_inherit_judges_subject_by_what_was_said_alone() -> None:
+    # 붙인 질문에서도 사용자가 한 말('혼인도 알려줘')로 보고 앞 지표를 이어받지 않는다
+    prev = {"type": "value", "indicator": "출생아 수", "regions": ["서울"], "year": 2025}
+    parsed = {"type": "value", "regions": ["서울"], "year": 2025}
+    p, _ = s.inherit(parsed, {}, prev, {}, "2025년 서울 혼인도 알려줘", "혼인도 알려줘")
+    assert p.get("indicator") != "출생아 수" and p.get("term") == "혼인"
+
+
+# --- 대화 보고서: 변경 추출 · 이어 묻기 복원의 report 선택지 ---
+
+
+def test_parse_delta_reads_report() -> None:
+    d = s.parse_delta('{"request_type": "report", "changes": {}, "chart": null, "unclear": null}')
+    assert d["request_type"] == s.REPORT
+
+
+def test_restate_report_needs_no_question() -> None:
+    raw = '{"relation": "report", "question": "", "why": "지금까지 정리"}'
+    r = s.parse_restate(raw)
+    assert r["relation"] == s.REPORT
+    assert s.restate_outcome(r, raw) == s.REPORT
+
+
+REPORT_STATE = {
+    "conditions": {"type": "value", "indicator": "출생아 수", "regions": ["서울"], "year": 2025},
+    "sources": {},
+    "last": {"status": "ok"},
+}
+TURNS = [
+    {"id": 11, "question": "2025년 서울 출생아 수", "response": {
+        "reportable": True, "figure": {"kind": "value"},
+        "summary": {"headline": "2025년 서울 출생아 수는 45,516명입니다."}}},
+    {"id": 12, "question": "사망자도", "response": {
+        "reportable": True, "figure": {"kind": "value"},
+        "answer": "2025년 서울 사망자 수는 52,535명입니다.\n출처 …"}},
+]  # fmt: skip
+
+
+def _report_env(monkeypatch, turns):
+    monkeypatch.setattr(s, "_session_turns", lambda sid, uid: _async(turns))
+    s._session_now.set("sid-1")
+
+
+async def _async(value):
+    return value
+
+
+def test_report_turn_without_answers_says_so(monkeypatch) -> None:
+    _report_env(monkeypatch, [])
+    res, _, _ = asyncio.run(s._report_turn(REPORT_STATE, "지금까지 정리해줘", 7))
+    assert res["answer"] == s.REPORT_NO_TURNS and res["request_type"] == s.REPORT
+
+
+def test_report_turn_logged_out_lists_headlines(monkeypatch) -> None:
+    _report_env(monkeypatch, TURNS)
+    res, _, _ = asyncio.run(s._report_turn(REPORT_STATE, "지금까지 정리해줘", None))
+    assert "- 2025년 서울 출생아 수는 45,516명입니다." in res["answer"]
+    assert "- 2025년 서울 사망자 수는 52,535명입니다." in res["answer"]
+    assert s.REPORT_LOGIN in res["answer"] and res["result"]["report"] is None
+
+
+def test_report_turn_logged_in_makes_and_writes_report(monkeypatch) -> None:
+    _report_env(monkeypatch, TURNS)
+    made = {}
+
+    async def create(user_id, turn_ids=None, session_id=None, **_):
+        made.update(user_id=user_id, turn_ids=turn_ids, session_id=session_id)
+        return {"id": 5}
+
+    async def generate(user_id, report_id):
+        content = {
+            "title": "통계 분석 보고서",
+            "summary": [{"text": "서울 출생아 수는 45,516명입니다."}],
+            "analysis": [{"text": "사망자 수가 출생아 수보다 많습니다."}],
+            "limits": [],
+            "warnings": [],
+        }
+        return {"id": report_id, "status": "ready", "content": content}
+
+    monkeypatch.setattr(s.reports, "create", create)
+    monkeypatch.setattr(s.reports, "generate", generate)
+    res, _, _ = asyncio.run(s._report_turn(REPORT_STATE, "보고서로 만들어줘", 7))
+    assert made == {"user_id": 7, "turn_ids": [11, 12], "session_id": "sid-1"}
+    assert res["result"]["report"] == {"id": 5, "status": "ready"}
+    assert res["answer"].splitlines()[:3] == ["통계 분석 보고서", "", "요약"]
+    assert "- 사망자 수가 출생아 수보다 많습니다." in res["answer"]
+
+
+def test_report_turn_shows_report_error(monkeypatch) -> None:
+    _report_env(monkeypatch, TURNS)
+
+    async def create(*a, **k):
+        raise s.reports.ReportError("not_reportable", "검증된 수치로 답한 결과만 담을 수 있습니다.")
+
+    monkeypatch.setattr(s.reports, "create", create)
+    res, _, _ = asyncio.run(s._report_turn(REPORT_STATE, "보고서로 만들어줘", 7))
+    assert res["answer"] == "검증된 수치로 답한 결과만 담을 수 있습니다."
+
+
+def test_report_choice_from_change_extraction_goes_to_report(monkeypatch) -> None:
+    # 끔(변경 추출)에서 LLM이 report 를 고르면 대화 보고서로 간다
+    state = {
+        **REPORT_STATE,
+        "last": {"status": "ok", "answer": "…"},
+        "recent": ["2025년 서울 출생아 수"],
+    }
+    monkeypatch.setattr(s, "_chat", lambda prompt, system: _async('{"request_type": "report"}'))
+    called = {}
+
+    async def report_turn(st, q, uid):
+        called["q"] = q
+        return {"status": "ok", "answer": "보고서", "request_type": s.REPORT}, {}, None
+
+    monkeypatch.setattr(s, "_report_turn", report_turn)
+    res, _, _ = asyncio.run(s._turn(state, "앞에서 본 결과들 묶어서 정리해줘", None, 7))
+    assert called["q"] == "앞에서 본 결과들 묶어서 정리해줘" and res["request_type"] == s.REPORT
+
+
+def test_whole_talk_summary_falls_back_to_text_when_report_has_no_turns(monkeypatch) -> None:
+    # 로그인 사용자의 '지금까지 정리해줘': 보고서에 담을 답이 없으면 대화 전체 요약 글 (11/27)
+    state = {
+        **REPORT_STATE,
+        "last": {"status": "ok", "answer": "2025년 서울 출생아 수는 1명입니다."},
+        "history": ["2025년 서울 출생아 수는 1명입니다.", "2025년 부산 출생아 수는 2명입니다."],
+    }
+
+    async def report_turn(st, q, uid):
+        return {"status": "ok", "answer": s.REPORT_NO_TURNS, "request_type": s.REPORT}, {}, None
+
+    monkeypatch.setattr(s, "_report_turn", report_turn)
+    res, _, _ = asyncio.run(s._turn(state, "지금까지 요약해줘", None, 7))
+    assert res["request_type"] == s.SUMMARY and "지금까지 본 내용 2가지" in res["answer"]

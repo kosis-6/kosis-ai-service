@@ -58,6 +58,12 @@ async def _setup():
                 users[1],
                 {"status": "ok", "answer": "남의 답", "figure": FIG, "reportable": True},
             ),
+            # 같은 사용자의 다른 대화창 답: 한 보고서에 섞지 않는다
+            (
+                "talk2",
+                users[0],
+                {"status": "ok", "answer": "다른 대화 답", "figure": FIG, "reportable": True},
+            ),
         ]
         for i, (key, uid, response) in enumerate(rows):
             row = await conn.execute(
@@ -67,7 +73,7 @@ async def _setup():
                     " cast(:resp as jsonb)) returning id"
                 ),
                 {
-                    "sid": f"report-test-{tag}",
+                    "sid": f"report-test-{tag}" + ("-2" if key == "talk2" else ""),
                     "uid": uid,
                     "no": i + 1,
                     "msg": f"질문 {key}",
@@ -83,8 +89,8 @@ async def _teardown(tag, users):
 
     async with engine.begin() as conn:
         await conn.execute(
-            text("delete from app.chat_turns where session_id = :sid"),
-            {"sid": f"report-test-{tag}"},
+            text("delete from app.chat_turns where session_id like :sid"),
+            {"sid": f"report-test-{tag}%"},
         )
         await conn.execute(text("delete from app.users where id = any(:ids)"), {"ids": users})
 
@@ -95,7 +101,7 @@ def db():
         tag, users, turns = run(_setup())
     except Exception as e:  # DB가 없거나 마이그레이션 전
         pytest.skip(f"app 스키마 DB 없음: {e}")
-    yield SimpleNamespace(a=users[0], b=users[1], t=turns)
+    yield SimpleNamespace(a=users[0], b=users[1], t=turns, talk=f"report-test-{tag}")
     run(_teardown(tag, users))
 
 
@@ -192,10 +198,10 @@ def test_item_change_clears_generated_content(db):
 
 
 def test_draft_is_reused_then_new_after_generation(db):
-    first = run(r.add_to_draft(db.a, db.t["ok1"], "S1"))
+    first = run(r.add_to_draft(db.a, db.t["ok1"], db.talk))
     second = run(r.add_to_draft(db.a, db.t["ok2"]))
     assert first["id"] == second["id"] and len(second["items"]) == 2
-    assert second["session_id"] == "S1"
+    assert second["session_id"] == db.talk  # 대화는 답에서 정한다
 
     async def generated():
         from app.core.db import engine
@@ -209,6 +215,54 @@ def test_draft_is_reused_then_new_after_generation(db):
     run(generated())
     third = run(r.add_to_draft(db.a, db.t["ok3"]))
     assert third["id"] != first["id"]
+
+
+# ---- 한 대화의 답만 (대화창 [보고서]에서 그 대화의 답을 골라 만든다) --------------------
+
+
+def test_report_takes_its_conversation_from_the_answers(db):
+    rep = run(r.create(db.a, turn_ids=[db.t["ok1"], db.t["ok2"]]))
+    assert rep["session_id"] == db.talk  # 화면이 보내지 않아도 답에서 정한다
+
+
+def test_answers_of_another_conversation_are_refused(db):
+    """여러 대화의 답을 섞지 않는다 (11/26 결정: 한 대화창 안에서 골라 만든다)"""
+    with pytest.raises(ReportError) as e:
+        run(r.create(db.a, turn_ids=[db.t["ok1"], db.t["talk2"]]))
+    assert e.value.code == r.OTHER_TALK
+    assert run(r.listing(db.a))["total"] == 0  # 섞인 요청은 아무것도 만들지 않는다
+    rep = run(r.create(db.a, turn_ids=[db.t["ok1"]]))
+    with pytest.raises(ReportError) as e:
+        run(r.add_item(db.a, rep["id"], db.t["talk2"]))
+    assert e.value.code == r.OTHER_TALK
+    assert [i["turn_id"] for i in run(r.detail(db.a, rep["id"]))["items"]] == [db.t["ok1"]]
+
+
+def test_session_sent_by_the_screen_must_match_the_answers(db):
+    with pytest.raises(ReportError) as e:
+        run(r.create(db.a, turn_ids=[db.t["ok1"]], session_id="다른-대화"))
+    assert e.value.code == r.OTHER_TALK
+    with pytest.raises(ReportError):
+        run(r.add_to_draft(db.a, db.t["ok1"], "다른-대화"))
+
+
+def test_draft_is_kept_per_conversation(db):
+    """[보고서에 담기]가 사용자의 가장 최근 초안에 담아 다른 대화의 답과 섞였다"""
+    first = run(r.add_to_draft(db.a, db.t["ok1"]))
+    other = run(r.add_to_draft(db.a, db.t["talk2"]))
+    again = run(r.add_to_draft(db.a, db.t["ok2"]))
+    assert other["id"] != first["id"] and again["id"] == first["id"]
+    assert [i["turn_id"] for i in again["items"]] == [db.t["ok1"], db.t["ok2"]]
+    assert [i["turn_id"] for i in other["items"]] == [db.t["talk2"]]
+
+
+def test_empty_report_takes_the_conversation_of_its_first_answer(db):
+    rep = run(r.create(db.a))
+    assert rep["session_id"] is None
+    rep = run(r.add_item(db.a, rep["id"], db.t["ok1"]))
+    assert rep["session_id"] == db.talk
+    with pytest.raises(ReportError):
+        run(r.add_item(db.a, rep["id"], db.t["talk2"]))
 
 
 def test_concurrent_first_adds_make_one_draft(db):
@@ -303,12 +357,30 @@ def test_api_routes_pass_user(client):
 
 @pytest.mark.parametrize(
     ("code", "status"),
-    [("not_found", 404), ("not_reportable", 409), ("full", 409), ("bad_order", 422)],
+    [
+        ("not_found", 404),
+        ("not_reportable", 409),
+        ("full", 409),
+        ("bad_order", 422),
+        ("other_conversation", 409),
+    ],
 )
 def test_api_maps_errors(client, code, status):
     client.fake("add_item", error=ReportError(code, "이유"))
     res = client.put("/reports/5/items/9")
     assert res.status_code == status and res.json()["detail"] == "이유"
+
+
+def test_api_creates_and_generates_at_once(client):
+    """대화창 [보고서]: 고른 답으로 만들고 문장 생성까지 한 번에"""
+    client.fake("generate", {**READ, "status": "ready", "content": {"summary": "s"}})
+    res = client.post("/reports", json={"turn_ids": [1, 2], "generate": True})
+    assert res.status_code == 201 and res.json()["status"] == "ready"
+    assert [name for name, _ in client.calls] == ["create", "generate"]
+    assert client.calls[1][1] == (3, 5)  # 만든 보고서(id 5)를 그 사용자로 생성
+    client.calls.clear()
+    assert client.post("/reports", json={"turn_ids": [1]}).json()["status"] == "draft"
+    assert [name for name, _ in client.calls] == ["create"]
 
 
 def test_api_missing_report_is_404(client):
@@ -333,7 +405,7 @@ def test_generate_saves_content_and_status(db, monkeypatch):
 
     seen = []
 
-    async def write(title, purpose, items):
+    async def write(title, purpose, items, style=None):
         seen.append((title, purpose, [i["turn_id"] for i in items]))
         return {"summary": [{"text": "요약", "refs": ["r1"]}], "generated_by": "hcx"}
 
@@ -361,7 +433,7 @@ def test_generate_discards_when_items_changed_meanwhile(db, monkeypatch):
 
     rep = run(r.create(db.a, None, None, [db.t["ok1"]]))
 
-    async def write(title, purpose, items):
+    async def write(title, purpose, items, style=None):
         await r.add_item(db.a, rep["id"], db.t["ok2"])  # 만드는 동안 다른 탭에서 담음
         return {"summary": []}
 

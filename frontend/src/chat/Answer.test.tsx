@@ -38,13 +38,12 @@ describe("질문 의미 확인", () => {
   });
 });
 
-it("수치 계산 결과에는 보고서 보기를 표시하고 재사용 응답에서는 생략한다", () => {
+it("답마다 보고서 버튼을 두지 않는다 (보고서는 대화창 [보고서]에서 답을 골라 만든다)", () => {
   const data: AskResponse = {
     status: "ok", answer: "인구는 10명입니다.", parsed: {}, sources: [],
-    result: { status: "ok", value: 10 },
+    result: { status: "ok", value: 10 }, reportable: true, turn_id: 1,
   };
-  expect(render(data)).toContain("보고서 보기");
-  expect(render({ ...data, result: { status: "ok", reused: true } })).not.toContain("보고서 보기");
+  expect(render(data)).not.toContain("보고서");
 });
 
 describe("직전 답을 다시 쓰는 응답", () => {
@@ -72,5 +71,29 @@ describe("직전 답을 다시 쓰는 응답", () => {
     const html = render({ ...data, status: "chat", request_type: "chat", chart: null, answer: "네. 이어서 질문해 주세요." });
     expect(html).toContain("네. 이어서 질문해 주세요.");
     expect(html).not.toContain("보고서 보기");
+  });
+});
+
+describe("보고서 제안 칩 · 에이전트가 만든 보고서", () => {
+  const ok: AskResponse = {
+    status: "ok", answer: "서울 1인 가구는 1명입니다.", parsed: {}, sources: [], result: { status: "ok", value: 1 },
+    report_offer: { topic: "서울특별시 1인 가구 수", count: 3 },
+  } as AskResponse;
+  const with_ = (d: AskResponse, extra: object) => renderToStaticMarkup(
+    <Answer data={d} busy={false} onSend={vi.fn()} onOthers={vi.fn()} onAskAgain={vi.fn()} {...extra} />,
+  );
+
+  it("[보고서]를 쓸 수 있을 때만 만들기 · 고르기 · 괜찮아요 칩을 보여 준다", () => {
+    const html = with_(ok, { onReport: vi.fn() });
+    for (const word of ["서울특별시 1인 가구 수", "3개로 보고서를 만들까요?", "만들기", "고르기", "괜찮아요"]) {
+      expect(html).toContain(word);
+    }
+    expect(with_(ok, {})).not.toContain("만들까요");
+  });
+
+  it("에이전트가 만든 보고서는 [보고서 보기]로 앱 안에서 연다 (만들기 전이면 버튼 없음)", () => {
+    const made = { ...ok, report_offer: null, status: "report", request_type: "report", answer: "만들었어요." } as AskResponse;
+    expect(with_({ ...made, report: { id: 1, status: "ready" } } as AskResponse, { onShowReport: vi.fn() })).toContain("보고서 보기");
+    expect(with_({ ...made, report: { id: 1, status: "draft" } } as AskResponse, { onShowReport: vi.fn() })).not.toContain("보고서 보기");
   });
 });

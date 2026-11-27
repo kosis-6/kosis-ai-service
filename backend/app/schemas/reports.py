@@ -18,7 +18,9 @@ class ReportItemRead(BaseModel):
 
 class ReportRead(BaseModel):
     id: int
-    session_id: str | None = Field(default=None, description="만든 대화 (제안으로 만든 경우)")
+    session_id: str | None = Field(
+        default=None, description="답을 고른 대화. 보고서에는 한 대화의 답만 담는다"
+    )
     title: str
     purpose: str | None = None
     status: Literal["draft", "ready", "failed"] = Field(
@@ -50,9 +52,18 @@ class ReportCreate(BaseModel):
     title: str | None = Field(default=None, max_length=TITLE_MAX)
     purpose: str | None = Field(default=None, max_length=PURPOSE_MAX)
     turn_ids: list[int] = Field(
-        default_factory=list, max_length=MAX_ITEMS, description="처음부터 담을 답들"
+        default_factory=list,
+        max_length=MAX_ITEMS,
+        description="담을 답들. 모두 한 대화의 답이어야 한다 (다르면 409)",
     )
-    session_id: str | None = Field(default=None, max_length=64)
+    session_id: str | None = Field(
+        default=None,
+        max_length=64,
+        description="답을 고른 대화. 보내지 않아도 서버가 답에서 정하고, 보내면 맞는지만 본다",
+    )
+    generate: bool = Field(
+        default=False, description="true면 만들고 바로 문장까지 생성 (대화창 [보고서] 버튼)"
+    )
 
 
 class ReportUpdate(BaseModel):
@@ -65,4 +76,8 @@ class ReportUpdate(BaseModel):
 
 class DraftAdd(BaseModel):
     turn_id: int
-    session_id: str | None = Field(default=None, max_length=64)
+    session_id: str | None = Field(
+        default=None,
+        max_length=64,
+        description="답의 대화. 보내지 않아도 서버가 답에서 정하고, 보내면 맞는지만 본다",
+    )

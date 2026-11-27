@@ -3,7 +3,7 @@ import type { Applied, AskResponse, Parsed, Recommendation, SearchResponse } fro
 import { Icon } from "../components/Icon";
 import { safeUrl, splitLinks } from "./format";
 import { Reply, TopCard, type Send } from "./Reply";
-import { canReport, openReport } from "./report";
+import type { Report } from "./reports";
 
 const ChartCard = lazy(() => import("./Chart"));
 
@@ -54,34 +54,42 @@ function Conditions({ applied }: { applied: Applied[] }) {
 type Props = {
   data: AskResponse;
   busy: boolean;
+  /** 대화창 [보고서] 시트를 연다 (로그인 · 저장된 대화일 때만 넘어온다) */
+  onReport?: () => void;
+  /** 보고서 에이전트가 만든 보고서를 앱 안에서 본다 */
+  onShowReport?: (report: Report) => void;
   onSend: Send;
   onOthers: (recs: Recommendation[], parsed: Parsed) => void;
   onAskAgain: () => void;
 };
 
-function ReportButton({ data }: { data: AskResponse }) {
-  const [message, setMessage] = useState<string | null>(null);
+/** "지금까지 본 ○○ 통계로 보고서를 만들까요?" 칩. [만들기]는 말로 보내 보고서 에이전트가,
+ * [고르기]는 대화창 [보고서] 시트가 맡는다 */
+function ReportOffer({ data, busy, onReport, onSend }: { data: AskResponse; busy: boolean; onReport?: () => void; onSend: Send }) {
+  const [closed, setClosed] = useState(false);
+  const offer = data.report_offer;
+  if (!offer || !onReport || closed) return null;
   return (
-    <div>
-      <button type="button" className="btn secondary card-link" onClick={() => {
-        try {
-          const how = openReport(data);
-          setMessage(how === "saved"
-            ? "브라우저가 새 탭을 막아 보고서를 파일로 바로 저장했습니다. 새 탭으로 보려면 이 사이트의 팝업을 허용해 주세요."
-            : null);
-        } catch {
-          setMessage("보고서를 열지 못했습니다. 다시 시도해 주세요.");
-        }
-      }}>
-        보고서 보기
-      </button>
-      {message && <p role="alert">{message}</p>}
+    <div className="report-offer" role="group" aria-label="보고서 제안">
+      <p>
+        지금까지 본 <strong>{offer.topic}</strong> 통계 {offer.count}개로 보고서를 만들까요?
+      </p>
+      <div className="choices">
+        <button type="button" className="btn secondary" disabled={busy} onClick={() => { setClosed(true); onSend("보고서 만들어줘"); }}>
+          만들기
+        </button>
+        <button type="button" className="btn secondary" onClick={onReport}>
+          고르기
+        </button>
+        <button type="button" className="text-btn" disabled={busy} onClick={() => { setClosed(true); onSend("괜찮아요"); }}>
+          괜찮아요
+        </button>
+      </div>
     </div>
   );
 }
 
-export function Answer({ data, busy, onSend, onOthers, onAskAgain }: Props) {
-  const [reportView, setReportView] = useState<"line" | "bar" | "table">();
+export function Answer({ data, busy, onReport, onShowReport, onSend, onOthers, onAskAgain }: Props) {
   const notice = data.notice && <p className="answer-notice">{data.notice}</p>;
   const tables = data.tables;
   const clarification = data.clarification;
@@ -112,6 +120,7 @@ export function Answer({ data, busy, onSend, onOthers, onAskAgain }: Props) {
     );
   }
 
+  const made = data.request_type === "report" && (data.report as Report | null | undefined);
   if (data.status !== "ok") {
     return (
       <>
@@ -119,6 +128,11 @@ export function Answer({ data, busy, onSend, onOthers, onAskAgain }: Props) {
         <div className="bubble">
           <Linked text={data.answer} />
         </div>
+        {made && made.status === "ready" && onShowReport && (
+          <button type="button" className="btn secondary card-link" onClick={() => onShowReport(made)}>
+            보고서 보기
+          </button>
+        )}
         {clarification && options.length > 0 && (
           <div className="choices" role="group" aria-label="집계 범위 선택">
             {options.map((option) => (
@@ -152,12 +166,10 @@ export function Answer({ data, busy, onSend, onOthers, onAskAgain }: Props) {
         <Linked text={lead} />
       </div>
       <Conditions applied={data.applied ?? []} />
-      {canReport(data) && (
-        <ReportButton data={reportView && data.chart ? { ...data, chart: { ...data.chart, view: reportView } } : data} />
-      )}
+      <ReportOffer data={data} busy={busy} onReport={onReport} onSend={onSend} />
       {data.chart && (
         <Suspense fallback={<div className="chart-card chart-loading">차트를 그리고 있어요</div>}>
-          <ChartCard chart={data.chart} onViewChange={setReportView} />
+          <ChartCard chart={data.chart} />
         </Suspense>
       )}
       {detail && data.request_type !== "chart" && data.request_type !== "summary" && (

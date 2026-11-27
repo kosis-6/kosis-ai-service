@@ -1177,7 +1177,7 @@ def correct(question, parsed, today=None):
         parsed["grounded"] = (chosen in names) if chosen else None
         parsed.pop("ungrounded_by", None)
         if parsed["grounded"] is False:
-            # 질문에 지표 이름 · 별칭이 글자로 없을 뿐이다. 이 경우만 사전 문지기가 조건을 검사해
+            # 질문에 지표 이름 · 별칭이 글자로 없을 뿐이다. 이 경우만 사전 게이트가 조건을 검사해
             # 사전 답을 둘지 정한다 (사전 지름길 D1). 아래의 다른 이유는 검사 없이 넘긴다
             parsed["ungrounded_by"] = "name"
         population_question = without_survey(question)
@@ -2269,6 +2269,18 @@ def _read_question(question, parsed, fix):
     if parsed.get("type") == "rank":
         if LEVEL_CITY.search(question) and parsed.get("level") != "시":
             fix("level", "시", "전국 시 중 순위")
+        rank_regions = parsed.get("regions") or []
+        if (
+            parsed.get("level") in ("시군구", "시")
+            and not parsed.get("sido")
+            and len(rank_regions) == 1
+            and not re.search(r"몇\s*(?:위|등)|등수", question)
+            and indicators.resolve_region(rank_regions[0]).get("kind") == "시도"
+        ):
+            # 시군구 순위인데 시도 하나가 범위(sido)가 아닌 지역(regions)에만 들어온 모양:
+            # '경기도 내 시군구 인구 순위' · '… 낮은 순'이 전국 229곳으로 나갔다 (11/26)
+            fix("sido", rank_regions[0], "시도 안의 순위 범위")
+            fix("regions", [], "시도 안의 지역 순위")
         if ASCENDING.search(question) and not parsed.get("ascending"):
             fix("ascending", True, "가장 낮은 순위")
         elif (
@@ -4184,10 +4196,10 @@ async def answer(parsed, trace=None, question=""):
         if months and not has_values(result):
             _hard_ungrounded(parsed, "월별 값 없음")
             parsed["gate_reasons"] = ["월을 물었는데 사전 표에 월별 값이 없음"]
-            flow.add("사전 문지기", "넘김", parsed["gate_reasons"][0])
+            flow.add("사전 게이트", "넘김", parsed["gate_reasons"][0])
         settings = get_settings()
         # 사전 지름길 (D1): 질문에 지표 이름이 글자로 없어 '근거 없음'이 된 것은 바로 넘기지 않고
-        # 문지기가 조건을 검사한다. 조건을 모두 담았으면 사전 답을 둔다
+        # 사전 게이트가 조건을 검사한다. 조건을 모두 담았으면 사전 답을 둔다
         shortcut = parsed.get("grounded") is False and parsed.get("ungrounded_by") == "name"
         gate = (
             settings.binding_dict_gate
@@ -4203,7 +4215,7 @@ async def answer(parsed, trace=None, question=""):
                 if gate and rec.get("decision") == dict_binding.HAND_OFF:
                     parsed["grounded"] = False
                     parsed["gate_reasons"] = rec.get("reasons") or []
-                    flow.add("사전 문지기", "넘김", " · ".join(parsed["gate_reasons"])[:200])
+                    flow.add("사전 게이트", "넘김", " · ".join(parsed["gate_reasons"])[:200])
                 elif gate and shortcut and rec.get("decision") == dict_binding.KEEP:
                     parsed["grounded"] = True
                     parsed["dictionary_shortcut"] = True

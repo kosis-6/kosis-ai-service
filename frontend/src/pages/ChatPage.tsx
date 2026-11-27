@@ -9,9 +9,12 @@ import { EXAMPLE_CATEGORIES, EXAMPLES } from "../chat/examples";
 import { History } from "../chat/History";
 import { deleteConversation, getConversation, HistoryError, listConversations, replayed } from "../chat/conversations";
 import { AltCard } from "../chat/Reply";
+import { ReportPreview, ReportSheet } from "../chat/ReportSheet";
+import type { Report } from "../chat/reports";
 import { Sheet } from "../chat/Sheet";
 import { Brand } from "../components/Brand";
 import { Icon } from "../components/Icon";
+import { Mascot, MascotFace } from "../components/Mascot";
 import { usePage } from "../components/usePage";
 import "../styles/chat.css";
 
@@ -25,7 +28,9 @@ type NewMessage = Message extends infer M ? (M extends Message ? Omit<M, "id"> :
 type SheetState =
   | { kind: "others"; recs: Recommendation[]; parsed: Parsed }
   | { kind: "examples" }
-  | { kind: "history" };
+  | { kind: "history" }
+  | { kind: "report" }
+  | { kind: "report-view"; report: Report };
 
 const TEXT = {
   title: "인구 통계 안내",
@@ -63,6 +68,9 @@ export function ChatPage() {
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   const inChat = messages.length > 0 || opening;
+  const answers = messages.flatMap((m) => (m.kind === "answer" ? [m.data] : []));
+  // 보고서는 로그인한 사용자가 저장된 대화(주소에 대화 id)의 답으로 만든다
+  const canMakeReport = saved && routeId !== null && answers.length > 0 && !busy && !opening;
 
   useEffect(() => {
     document.body.classList.toggle("in-chat", inChat);
@@ -290,6 +298,11 @@ export function ChatPage() {
           <Brand className="only-narrow" />
           <div className="head-actions">
             <p className="source only-wide">KOSIS 데이터 기반</p>
+            {canMakeReport && (
+              <button type="button" className="btn quiet head-btn" onClick={() => setSheet({ kind: "report" })}>
+                보고서
+              </button>
+            )}
             <button type="button" className="btn quiet head-btn only-narrow in-chat-only" onClick={reset}>
               새 대화
             </button>
@@ -331,9 +344,7 @@ export function ChatPage() {
         <main className="log" aria-live="polite" ref={logRef}>
           {!inChat && (
             <section className="welcome">
-              <span className="emblem">
-                <span className="logo" role="img" aria-label="LIKE SNAKE 로고" />
-              </span>
+              <Mascot place="welcome" className="emblem" label="LIKE SNAKE 캐릭터" />
               <h2 className="welcome-title">
                 어떤 통계가
                 <br />
@@ -375,7 +386,7 @@ export function ChatPage() {
             ) : (
               <div className={m.kind === "error" ? "msg bot error" : "msg bot"} key={m.id}>
                 <span className="avatar" aria-hidden="true">
-                  <span className="logo" />
+                  <MascotFace />
                 </span>
                 <div className="reply">
                   {m.kind === "error" ? (
@@ -384,6 +395,8 @@ export function ChatPage() {
                     <Answer
                       data={m.data}
                       busy={busy}
+                      onReport={canMakeReport ? () => setSheet({ kind: "report" }) : undefined}
+                      onShowReport={(report) => setSheet({ kind: "report-view", report })}
                       onSend={(text, selections) => void send(text, selections)}
                       onOthers={(recs, parsed) => setSheet({ kind: "others", recs, parsed })}
                       onAskAgain={() => inputRef.current?.focus()}
@@ -397,7 +410,7 @@ export function ChatPage() {
           {(busy || opening) && (
             <div className="msg bot typing">
               <span className="avatar" aria-hidden="true">
-                <span className="logo" />
+                <MascotFace />
               </span>
               <div className="reply">
                 <div className="bubble">
@@ -460,6 +473,14 @@ export function ChatPage() {
               {q}
             </button>
           ))}
+        </Sheet>
+      )}
+      {sheet?.kind === "report" && (
+        <ReportSheet sessionId={routeId} answers={answers} onClose={() => setSheet(null)} />
+      )}
+      {sheet?.kind === "report-view" && (
+        <Sheet title="보고서 미리보기" doc onClose={() => setSheet(null)}>
+          <ReportPreview report={sheet.report} onBack={() => setSheet(null)} />
         </Sheet>
       )}
       {sheet?.kind === "history" && (

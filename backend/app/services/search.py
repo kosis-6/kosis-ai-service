@@ -932,16 +932,7 @@ def find(
         }
 
     top = families[0]
-    others = [
-        {
-            "family_id": f["table"]["family_id"],
-            "family_name": f["table"]["family_name"],
-            "score": round(f["score"], 3),
-            "checks": f["checks"],
-            **_brief(f["table"]),
-        }
-        for f in families[1:TOP_FAMILIES]
-    ]
+    others = [_family_brief(f) for f in families[1:TOP_FAMILIES]]
     result["other_families"] = others
     if (
         allow_clarify
@@ -964,15 +955,39 @@ def find(
             ]  # fmt: skip
             return {**result, "status": "ambiguous", "reason": REGION_ASK}
     if len(families) > 1 and top["score"] - families[1]["score"] < gap:
-        close = [o for o in others if top["score"] - o["score"] < gap]
-        result["options"] = [
-            {"family_id": top["table"]["family_id"], "family_name": top["table"]["family_name"],
-             "score": round(top["score"], 3), **_brief(top["table"])},
-            *close,
+        # 점수가 거의 같은 묶음은 사용자에게 거기서 거기로 보여 되묻지 않는다 (11/26).
+        # 조건 ✘가 적고 ✔가 많은 묶음을 고르고, 같으면 점수 순 (= 원래 1위)
+        close = [f for f in families[:TOP_FAMILIES] if top["score"] - f["score"] < gap]
+        best = max(close, key=_condition_fit)
+        result["close_families"] = [
+            {"family_id": f["table"]["family_id"], "family_name": f["table"]["family_name"],
+             "score": round(f["score"], 3), "checks": f["checks"]}
+            for f in close
         ]  # fmt: skip
-        return {**result, "status": "ambiguous", "reason": "비슷한 통계표 묶음이 여럿입니다"}
+        if best is not top:
+            chosen = best["table"]["family_id"]
+            rest = [_family_brief(top), *others]
+            result["other_families"] = [o for o in rest if o["family_id"] != chosen]
+        top = best
 
     return finish(result, tables, top["table"]["family_id"], top["score"], allow_clarify)
+
+
+def _condition_fit(f: dict[str, Any]) -> tuple[int, int, float]:
+    checks = f.get("checks") or {}
+    failed = sum(1 for v in checks.values() if v is False)
+    passed = sum(1 for v in checks.values() if v is True)
+    return -failed, passed, f["score"]
+
+
+def _family_brief(f: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "family_id": f["table"]["family_id"],
+        "family_name": f["table"]["family_name"],
+        "score": round(f["score"], 3),
+        "checks": f["checks"],
+        **_brief(f["table"]),
+    }
 
 
 def confirmed_guesses(

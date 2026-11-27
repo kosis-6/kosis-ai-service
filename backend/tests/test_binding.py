@@ -403,3 +403,35 @@ def test_binding_retry_with_only_default_cells_is_not_rejected() -> None:
     assert got is not None and got.pick == {0: "T1", 1: "0"} and not got.matched
     got, why = d.choose("가구 몇 가구", {}, [items, sex], None, forced)
     assert got is not None or why
+
+
+def test_ask_of_only_when_every_left_condition_is_a_choice(monkeypatch) -> None:
+    items = Dim(0, "항목", {"1": "인구"})
+    kind = Dim(2, "종류별", {"1": "가", "2": "나", "3": "다"})
+    _table(monkeypatch, [items, kind])
+    b = binding.bind("T", "인구", {}, _slots(items=["인구"]))
+    blank = next(u for u in b.unbound if u.cond == "종류별")
+    assert blank.options and not blank.said
+    # 질문이 말하지 않은 분류: recell이 먼저, 그다음에야 되묻기
+    assert binding.ask_of(b) is None
+    ask = binding.ask_of(b, unsaid=True)
+    assert ask is not None and ask.dim_no == 2 and ask.dim_name == "종류별"
+    assert [c for c, _ in ask.options] == ["1", "2", "3"] and ask.forced == {0: "1"}
+
+    many = Dim(2, "종류별", {str(i): f"칸{i}" for i in range(d.MAX_ASK_OPTIONS + 1)})
+    _table(monkeypatch, [items, many])
+    b = binding.bind("T", "인구", {}, _slots(items=["인구"]))
+    assert binding.ask_of(b, unsaid=True) is None
+    assert "칸이 많아 되묻지 않음" in b.unbound[0].why
+
+
+def test_ask_of_said_choice_and_never_with_a_missing_cell() -> None:
+    kind = Dim(2, "종류별", {"1": "통근", "2": "통학"})
+    said = binding._askable("종류별", "통근, 통학", "칸이 여럿 (되묻기)", kind, ["1", "2"], True)
+    b = binding.Binding(
+        "T", bound=[binding.Bound("item", "인구", "value", 0, ["T1"], ["인구"])], unbound=[said]
+    )
+    ask = binding.ask_of(b)
+    assert ask is not None and ask.dim_no == 2 and ask.forced == {0: "T1"}
+    b.unbound.append(binding.Unbound("item", "농업", "맞는 칸 없음"))
+    assert binding.ask_of(b) is None and binding.ask_of(b, unsaid=True) is None

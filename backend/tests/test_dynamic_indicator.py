@@ -2492,3 +2492,25 @@ def test_ratio_with_same_numerator_and_denominator_is_refused() -> None:
     src = {"table": "X", "item_id": "T1", "filters": {}}
     spec, why = d._ratio({"name": "비율"}, src, plan, [items, sex], {"sex": "여"})
     assert spec is None and "같은 칸" in why
+
+
+def test_binding_asks_when_question_cells_are_many(computed, fake_table, monkeypatch) -> None:
+    # 규칙이 못 고른 표에서 칸잇기가 '질문이 가리킨 칸이 여럿'만 남기면 답변 불가가 아니라 되묻기
+    from app.core.config import get_settings
+    from app.services import binding
+
+    monkeypatch.setattr(get_settings(), "binding_use", True)
+    computed["fail"] = {"A"}
+    fake_table["tables"]["A"] = (ONE_PERSON, 1, "시군구")
+    items = ONE_PERSON[0]
+    many = binding._askable("항목", "남자, 여자", "칸이 여럿 (되묻기)", items, ["T10", "T20"], True)
+    monkeypatch.setattr(binding, "bind", lambda *a, **k: binding.Binding("A", unbound=[many]))
+    cands = [_cand("A", 1, picked=True, checks={"year": True}, review={"match": "partial"})]
+    trace: dict = {}
+    res = asyncio.run(d.compute_from_handoff(Q1, BASE, _found(cands), trace))
+    assert res["status"] == "clarify_question"
+    clar = res["clarification"]
+    assert clar["kind"] == "table_cell" and clar["options"] == ["남자", "여자"]
+    assert clar["context"]["dim_no"] == 0
+    step = next(s for s in trace["dynamic"] if s.get("tbl_id") == "A")
+    assert step["binding_skip"] == "되묻기 (항목)"

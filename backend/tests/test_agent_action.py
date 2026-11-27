@@ -41,7 +41,7 @@ def test_target_reason_dictionary_path_reroutes_then_requeries() -> None:
     assert (b.name, b.fallback) == (aa.REQUERY, aa.RETABLE)
 
 
-def test_target_reason_search_path_sure_top_and_cell_failure_goes_recell() -> None:
+def test_target_reason_search_path_sure_top_and_cell_failure_goes_repick() -> None:
     res = {
         **SEARCH_RES,
         "trace": {"dynamic": [{"tbl_id": "T1", "skip": "질문의 말과 맞는 칸이 없음"}]},
@@ -49,7 +49,7 @@ def test_target_reason_search_path_sure_top_and_cell_failure_goes_recell() -> No
     a = aa.choose(
         _verdict("대상이 다름"), res, _found({"year": True, "region_level": True}, "exact")
     )
-    assert (a.name, a.fallback) == (aa.RECELL, aa.REPLAN)
+    assert (a.name, a.fallback) == (aa.REPICK, aa.REPLAN)
 
 
 def test_target_reason_search_path_unsure_top_goes_retable() -> None:
