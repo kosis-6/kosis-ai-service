@@ -37,6 +37,7 @@ from app.services import (
     qa,
     question_clarify,
     refusal,
+    reports,
     search_llm,
     slots,
     table_guide,
@@ -60,13 +61,14 @@ FOLLOW_MAX_TOKENS = 512
 DETAIL = "detail"
 SOURCE = "source"
 CHAT = "chat"
-NEW, CHANGE, CHART, SUMMARY, REPLY, UNCLEAR = (
+NEW, CHANGE, CHART, SUMMARY, REPLY, UNCLEAR, REPORT = (
     "new",
     "change",
     "chart",
     "summary",
     "reply",
     "unclear",
+    "report",
 )
 TABLES = "tables"
 ASK_INDICATOR = "asked_place"
@@ -579,13 +581,21 @@ def complete_question(question: str) -> bool:
 
 
 def inherit(
-    parsed: dict, sources: dict, prev: dict, prev_sources: dict, question: str = ""
+    parsed: dict,
+    sources: dict,
+    prev: dict,
+    prev_sources: dict,
+    question: str = "",
+    said_alone: str = "",
 ) -> tuple[dict, dict]:
+    """said_alone: 직전 지역 · 기간을 붙이기 전 사용자가 한 말 ('혼인도 알려줘').
+    붙인 질문('2025년 서울 혼인도 알려줘')에서는 낱말 하나만 말했는지 알 수 없어 이 말로 본다"""
     p, s = copy.deepcopy(parsed), dict(sources)
     kind = p.get("type")
     if kind in NO_CONDITIONS or prev.get("type") in NO_CONDITIONS:
         return p, s
-    word = said_other_subject(question, p.get("regions")) if question else None
+    alone = said_alone or question
+    word = said_other_subject(alone, p.get("regions")) if alone else None
     if word and not names_indicator(question, p):
         # 앞 지표 대신 말한 낱말로: 지표가 없으면 계산 단계가 그 낱말로 표를 찾는다
         if not p.get("indicator") and not p.get("term"):
@@ -1352,7 +1362,7 @@ def parse_delta(raw: str) -> dict:
     changes = data.get("changes") if isinstance(data.get("changes"), dict) else {}
     unclear = data.get("unclear")
     unclear = unclear.strip() if isinstance(unclear, str) and unclear.strip() else None
-    if kind not in (CHANGE, CHART, SUMMARY, NEW):
+    if kind not in (CHANGE, CHART, SUMMARY, NEW, REPORT):
         kind = NEW
     chart = data.get("chart") if data.get("chart") in CHART_VIEWS else None
     # HCX가 그림 모양을 조건에 넣기도 한다 ("type": "bar" · "chart": "table"). 맞지 않는 type이
@@ -1367,7 +1377,7 @@ def parse_delta(raw: str) -> dict:
     return {"request_type": kind, "changes": changes, "chart": chart, "unclear": unclear}
 
 
-RESTATE_RELATIONS = ("followup", "new", "unclear")
+RESTATE_RELATIONS = ("followup", "new", "unclear", REPORT)
 RELATIVE_WORD = re.compile(r"(?:작년|지난해|재작년|올해|금년)(?:에|의|은|는)?\s*")
 
 
@@ -1410,6 +1420,8 @@ def verify_restate(r: dict, conditions: dict, question: str) -> tuple[str, str, 
         # "최근 5년은?"의 기간도 코드가 센다: HCX가 "2023년부터 2020년까지"처럼 거꾸로 적었다 (C08).
         # 숫자 연도를 지우고 '최근 N년'을 앞에 두면 새 질문 경로가 자료 마지막 해까지 N개 해로 푼다
         bare = re.sub(r"\d{4}\s*년\s*(?:부터|에서|~|까지|과|와|이랑|에)?\s*", "", restored)
+        # LLM이 이미 쓴 '최근 N년(간)'도 지운다: 앞에 다시 붙이면 '최근 10년 최근 10년간'이 된다
+        bare = re.sub(r"최근\s*\d{1,2}\s*년\s*(?:간|동안|치)?\s*", "", bare)
         bare = re.sub(r"\s{2,}", " ", bare).strip()
         return relation, f"최근 {n}년 {bare}", f"상대 기간은 코드로 최근 {n}년"
     if year := follow_year(question, conditions):
@@ -1447,6 +1459,8 @@ def restate_outcome(r: dict, raw: str | None) -> str:
       (11/25 대화 셋 C25 "거기는 작년에?": why "새로 언급한 대상이 없음", 문장 비움)"""
     if not qa._json_objects(raw or ""):
         return "failed"
+    if r.get("relation") == REPORT:  # 지금까지의 답을 묶어 달라는 말: 문장이 없는 게 정상
+        return REPORT
     if r.get("relation") == "unclear" or not r.get("question"):
         return "unclear"
     return "ok" if r.get("relation") else "failed"
@@ -1502,6 +1516,9 @@ async def _restated(
         said = f"원문: {raw}" if raw else r.get("why") or "응답 없음"
         flow.add("이어 묻기 판단", "실패", f"{said} → 기존 경로")
         return None
+    if outcome == REPORT:
+        flow.add("이어 묻기 판단", REPORT, r.get("why") or "지금까지의 답을 묶어 달라는 말")
+        return await _report_turn(state, question, user_id)
     if outcome == "unclear":
         r = {**r, "relation": "unclear"}
     relation, restored, note = verify_restate(r, state["conditions"], question)
@@ -1709,7 +1726,11 @@ async def _household_age_ratio(question: str) -> dict | None:
 
 
 async def _new(
-    question: str, state: dict | None, *, scoped_age_ratio: bool = False
+    question: str,
+    state: dict | None,
+    *,
+    scoped_age_ratio: bool = False,
+    said_alone: str = "",
 ) -> tuple[dict, dict, str | None]:
     kept: dict[str, Any] = {}
     prev = state["conditions"] if state and state.get("conditions") else None
@@ -1723,7 +1744,7 @@ async def _new(
         kept["sources"] = sources_of(question, parsed)
         if prev:
             parsed, kept["sources"] = inherit(
-                parsed, kept["sources"], prev, state["sources"], question
+                parsed, kept["sources"], prev, state["sources"], question, said_alone
             )
         if scoped_age_ratio:
             parsed.update(unsupported=True, cross=None, indicators=None, dynamic_spec=None)
@@ -2153,7 +2174,13 @@ async def _turn(
     view = chart_request(question) if has_last else None
     delta = None
     if has_last and view is None and await asyncio.to_thread(whole_talk_summary_request, question):
-        # 대화 전체 요약: 변경 추출이 요약으로 읽어도 직전 답만 요약했다 (11/26 리뷰)
+        # 대화 전체 요약: 변경 추출이 요약으로 읽어도 직전 답만 요약했다 (11/26 리뷰).
+        # 로그인 사용자는 대화 보고서로 (변경 추출의 report 선택지와 같은 길, 11/27). 보고서에 담을
+        # 답이 없거나 로그인하지 않았으면 대화 전체 요약 글
+        if user_id is not None:
+            res, sources, notice = await _report_turn(state, question, user_id)
+            if res.get("answer") != REPORT_NO_TURNS:
+                return res, sources, notice
         flow.add("후속 질문", "대화 전체 요약", f"답 {len(state.get('history') or [1])}개")
         return _reuse(state, whole_talk_text(state), None, SUMMARY), state["sources"], None
     if has_last and view is None and await asyncio.to_thread(detail_request, question):
@@ -2242,6 +2269,9 @@ async def _turn(
             # 그림 모양은 아래에서 다시 계산한 답에 코드가 붙인다
             asked = condition_part(question) if chart_shape(question) else question
             delta = await extract(state, asked, trace)
+            if delta["request_type"] == REPORT and has_last:
+                flow.add("후속 질문", REPORT, "지금까지의 답을 묶어 달라는 말")
+                return await _report_turn(state, question, user_id)
             if (
                 delta["request_type"] == CHANGE
                 and "indicator" not in delta["changes"]
@@ -2309,6 +2339,9 @@ async def _turn(
             None,
         )
 
+    if asked := other_subject_question(question, state["conditions"]):
+        flow.add("다른 지표 후속 질문", "직전 지역 · 기간을 붙임", asked)
+        return await _new(asked, state, said_alone=question)
     return await _new(question, state)
 
 
@@ -2321,6 +2354,120 @@ def with_asked_shape(res: dict, question: str, read: str | None) -> str | None:
         return None
     res["chart"], cannot = reshape(res["chart"], shape)
     return f"{cannot}. {chart_name(res['chart'])}로 보여 드립니다." if cannot else None
+
+
+def other_subject_question(question: str, conditions: dict) -> str | None:
+    """'혼인도 알려줘'처럼 사전이 모르는 낱말 하나만 말한 후속 질문이면 직전 지역 · 기간을 앞에 붙인
+    질문 ('2025년 서울 혼인도 알려줘'). 무엇을 물었는지(혼인 → 혼인 건수)는 질문 이해가 읽는다.
+    낱말만 표 검색어로 넣으면 사전 지표('혼인 건수')를 두고 표 안내 · 칸 되묻기로 끝났다 (11/26).
+    낱말이 지역 이름이면('강남은?') 지역을 바꾼 말이라 붙이지 않는다"""
+    if not (word := said_other_subject(question)) or names_indicator(question, {}):
+        return None
+    if indicators.resolve_region(word).get("status") == "ok":
+        return None
+    where = " ".join(conditions.get("regions") or [])
+    if not where and conditions.get("type") == "rank":
+        where = conditions.get("sido") or ""
+    lead = " ".join(x for x in (period_text(conditions), where) if x)
+    return f"{lead} {question.strip()}" if lead else None
+
+
+REPORT_NO_TURNS = (
+    "이 대화에는 아직 보고서로 묶을 수 있는 답이 없습니다."
+    " 통계 수치를 물어본 뒤 다시 말씀해 주세요."
+)
+REPORT_LOGIN = "로그인하면 이 내용을 보고서로 저장하고 분석 문장까지 만들 수 있습니다."
+
+
+async def _session_turns(session_id: str, user_id: int | None) -> list[dict]:
+    """이 대화에서 보고서에 담을 수 있는 답(reportable · figure) → [{id, question, response}].
+    순서대로, 최근 reports.MAX_ITEMS 개"""
+    from app.core.db import engine
+
+    owner = "user_id = :uid" if user_id is not None else "user_id is null"
+    async with engine.begin() as conn:
+        rows = await conn.execute(
+            text(
+                "select id, message as question, response from app.chat_turns"
+                f" where session_id = :sid and {owner} order by turn_no, id"
+            ),
+            {"sid": session_id, "uid": user_id},
+        )
+        turns = [dict(r) for r in rows.mappings()]
+    kept = [
+        t for t in turns if (t["response"] or {}).get("reportable") and t["response"].get("figure")
+    ]
+    return kept[-reports.MAX_ITEMS :]
+
+
+def report_text(content: dict) -> str:
+    """보고서 content(report_writer.write)를 답 글로"""
+    lines = [content.get("title") or reports.DEFAULT_TITLE]
+    for name, key in (("요약", "summary"), ("분석", "analysis")):
+        if said := [s["text"] for s in content.get(key) or [] if s.get("text")]:
+            lines += ["", name, *[f"- {t}" for t in said]]
+    if limits := [x for x in content.get("limits") or [] if x]:
+        lines += ["", "한계", *[f"- {x}" for x in limits]]
+    lines += [f"※ {w}" for w in content.get("warnings") or []]
+    return "\n".join(lines)
+
+
+def headlines_text(turns: list[dict]) -> str:
+    """로그인하지 않은 대화: 각 답의 요약 첫 문장을 차례로 (코드가 만든 문장이라 숫자가 그대로)"""
+    lines = ["지금까지의 답을 정리했습니다."]
+    for t in turns:
+        response = t["response"] or {}
+        head = ((response.get("summary") or {}).get("headline") or "").strip()
+        lines.append(f"- {head or lead(response.get('answer') or '')}")
+    return "\n".join([*lines, "", REPORT_LOGIN])
+
+
+async def _report_turn(
+    state: dict, question: str, user_id: int | None
+) -> tuple[dict, dict, str | None]:
+    """'지금까지 물어본 거 정리해줘': 이 대화의 답을 모아 보고서로 (변경 추출 · 이어 묻기 복원의
+    report 선택지). 로그인 사용자는 보고서를 만들어 저장하고 문장을 만든다(reports.create ·
+    generate, 화면 [보고서] 버튼과 같은 함수). 로그인하지 않았으면 저장 없이 요약 문장을 모은다"""
+    sid = _session_now.get()
+    turns = await _session_turns(sid, user_id) if sid else []
+    res = {
+        "status": "ok",
+        "answer": REPORT_NO_TURNS,
+        "parsed": state["conditions"],
+        "result": {"status": "ok", "reused": True, "report": None},
+        "sources": [],
+        "chart": None,
+        "summary": None,
+        "request_type": REPORT,
+        "trace": {},
+    }
+    if not turns:
+        flow.add("대화 보고서", "담을 답 없음", "")
+        return res, state["sources"], None
+    if user_id is None:
+        res["answer"] = headlines_text(turns)
+        flow.add("대화 보고서", "요약 모음", f"답 {len(turns)}개 (로그인 안 함)")
+        return res, state["sources"], None
+    try:
+        made = await reports.create(user_id, turn_ids=[t["id"] for t in turns], session_id=sid)
+        done = await asyncio.wait_for(
+            reports.generate(user_id, made["id"]), timeout=get_settings().report_timeout
+        )
+    except reports.ReportError as e:
+        res["answer"] = e.message
+        flow.add("대화 보고서", "실패", e.message)
+        return res, state["sources"], None
+    except TimeoutError:
+        res["answer"] = headlines_text(turns).replace(
+            REPORT_LOGIN, "보고서 문장을 만드는 데 시간이 오래 걸려 각 답의 요약만 보여 드립니다."
+        )
+        res["result"]["report"] = {"id": made["id"], "status": "draft"}
+        flow.add("대화 보고서", "시간 초과", f"보고서 {made['id']} 초안만 저장")
+        return res, state["sources"], None
+    res["answer"] = report_text(done.get("content") or {})
+    res["result"]["report"] = {"id": done["id"], "status": done.get("status")}
+    flow.add("대화 보고서", done.get("status"), f"보고서 {done['id']} · 답 {len(turns)}개")
+    return res, state["sources"], None
 
 
 def next_state(state: dict | None, question: str, res: dict, sources: dict) -> dict:
@@ -2424,6 +2571,7 @@ async def _attach_tables(res: dict, state: dict | None, question: str, user_id: 
     if res.get("tables") is not None or res.get("request_type") in (
         CHART,
         SUMMARY,
+        REPORT,
         DETAIL,
         SOURCE,
         UNCLEAR,
@@ -2820,6 +2968,8 @@ DICTIONARY_ANSWERED = (
 
 # 이 턴의 통계표 찾기 결과 (답 판정이 다시 계산할 때 다시 찾지 않게). handle 이 턴마다 비운다
 _found_now: ContextVar[dict | None] = ContextVar("ask_found_now", default=None)
+# 지금 대화의 session_id: 대화 보고서(_report_turn)가 이 대화의 답을 모을 때 쓴다
+_session_now: ContextVar[str | None] = ContextVar("ask_session_now", default=None)
 # 다시 계산이 값을 못 냈을 때 그 이유 (status · 되묻기).
 # _recompute · _replan_compute 가 두고 _judged 가 읽는다
 _retry_outcome: ContextVar[dict | None] = ContextVar("ask_retry_outcome", default=None)
@@ -3401,6 +3551,7 @@ async def handle(
         if moved:
             sid, state, expired = new_id(), None, False
         _found_now.set(None)
+        _session_now.set(sid)
         res, sources, notice = await _turn(state, question, selections, user_id)
         if res.get("request_type") == NEW:
             # 새 질문도 함께 말한 차트 모양으로 ('부산 출생아 수 최근 5년 막대그래프로').

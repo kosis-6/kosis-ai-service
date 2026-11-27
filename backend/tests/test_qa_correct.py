@@ -1815,3 +1815,21 @@ def test_rank_without_regions_is_missing_data_not_an_error() -> None:
 
     r = lookup.rank(indicators.spec("출생아 수"), 2025, "시군구", "서울특별시 강남구")
     assert r["status"] == "missing_data" and "순위를 매길 지역이 없습니다" in r["reason"]
+
+
+def test_rank_with_one_sido_in_regions_becomes_scope() -> None:
+    # '경기도 내 시군구 인구 순위': 시도가 범위(sido) 아닌 지역(regions)에만 오면 전국 229곳이 됐다
+    for q in ("2025년 경기도 내 시군구 인구 순위는?", "2025년 경기도 시군구 인구 낮은 순 순위는?"):
+        p = qa.correct(
+            q,
+            parsed(type="rank", indicator="총인구", regions=["경기도"], level="시군구", year=2025),
+            TODAY,
+        )
+        assert p["sido"] == "경기도" and not p.get("regions"), q
+    # 시군구가 들어온 것 · 등수를 물은 것은 그대로
+    p = qa.correct(
+        "2025년 수원시 인구는 경기도 시군구 중 몇 위?",
+        parsed(type="rank", indicator="총인구", regions=["수원시"], level="시군구", year=2025),
+        TODAY,
+    )
+    assert not p.get("sido") or p.get("target")
