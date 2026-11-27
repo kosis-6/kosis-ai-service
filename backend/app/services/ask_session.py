@@ -40,6 +40,7 @@ from app.services import (
     reports,
     search_llm,
     slots,
+    table_check,
     table_guide,
     timeref,
     understand_merged,
@@ -3080,10 +3081,11 @@ _found_now: ContextVar[dict | None] = ContextVar("ask_found_now", default=None)
 # 지금 대화의 session_id: 대화 보고서(_report_turn)가 이 대화의 답을 모을 때 쓴다
 _session_now: ContextVar[str | None] = ContextVar("ask_session_now", default=None)
 # 다시 계산이 값을 못 냈을 때 그 이유 (status · 되묻기).
-# _recompute · _replan_compute 가 두고 _judged 가 읽는다
+# _retable · _repick_compute · _replan_compute 가 두고 _judged 가 읽는다
 _retry_outcome: ContextVar[dict | None] = ContextVar("ask_retry_outcome", default=None)
 # 고리 끝 경우 1 (값은 냈는데 판정이 거절, 처음 답 유지)에 붙이는 한 줄 — 11/25 세진 확정 문구
 CAUTION = "※ 이 답은 질문의 조건과 다를 수 있습니다."
+NO_VALUE_ENTRY = "값 없음"  # 판정 고리에 값 없는 실패로 들어온 답 (record["entry"])
 
 
 def _keep(found: dict) -> dict:
@@ -3102,52 +3104,72 @@ def judgeable(res: dict) -> bool:
     )
 
 
-def without_tables(found: dict, used: set[str]) -> dict | None:
-    """찾은 후보에서 이미 답에 쓴 표를 뺀 꾸러미 (다음 후보로 다시 계산할 때).
-    지표가 여럿인 질문이거나, 쓴 표가 후보에 없거나, 남는 후보가 없으면 None"""
+def without_tables(found: dict, used: set[str], strict: bool = True) -> dict | None:
+    """찾은 후보에서 이미 쓴 표를 뺀 꾸러미 (다른 표로 다시 계산할 때). 남는 후보가 없거나 지표가
+    여럿인 질문이면 None. strict: 쓴 표가 후보에 없어도(뺀 것이 없어도) None — 표 경로 답은
+    그 답의 표가 후보에 있어야 한다. 사전 답 · 값 없는 실패는 strict=False (사전 표는 후보에
+    없을 수 있다)"""
     targets = (found.get("handoff") or {}).get("targets") or []
     if len(targets) != 1:
         return None
     cands = targets[0].get("candidates") or []
     rest = [{**c, "picked": False, "review": None} for c in cands if c.get("tbl_id") not in used]
-    if not rest or len(rest) == len(cands):
+    if not rest or (strict and len(rest) == len(cands)):
         return None
+    if len(rest) == len(cands):
+        return found
     out = copy.deepcopy(found)
     out["handoff"]["targets"][0]["candidates"] = rest
     return out
 
 
-async def _recompute(
+def _valued(res: dict) -> bool:
+    return (res.get("result") or {}).get("status") == "ok"
+
+
+def used_tables(res: dict) -> set[str]:
+    """retable 이 뺄 표: 답에 쓴 표 · repick 이 본 표 · 사전 지표의 출처 표 ·
+    (값 없는 실패면) 이미 계산해 본 후보 (검토가 다른 표를 골라 건너뛴 표는 빼지 않는다)"""
+    parsed = res.get("parsed") or {}
+    trace = res.get("trace") or {}
+    used = {s.get("tbl_id") for s in res.get("sources") or [] if s.get("tbl_id")}
+    if repicked := ((trace.get("answer_judge") or {}).get("repick") or {}).get("tbl_id"):
+        used.add(repicked)
+    if not parsed.get("dynamic_spec"):
+        spec = indicators.spec(parsed.get("indicator") or "")
+        used |= {src.get("table") for src in (spec or {}).get("sources") or [] if src.get("table")}
+    if not _valued(res):
+        used |= {
+            st.get("tbl_id")
+            for st in trace.get("dynamic") or []
+            if st.get("tbl_id") and st.get("skip") != dynamic_indicator.EXACT_SKIP
+        }
+    return {t for t in used if t}
+
+
+async def _retable(
     res: dict, state: dict | None, asked: str, user_id: int | None
 ) -> tuple[dict | None, str]:
-    """판정이 틀렸다고 본 답을 다른 방법으로 한 번 다시 계산한 답 → (답, 방법). 못 하면 (None, 방법)
-    통계표에서 계산한 답   그 표를 빼고 다음 후보로
-    사전 지표로 답한 답    원래 질문 그대로 통계표 찾기로 (검색어를 새로 쓰지 않는다:
-                          11/22 Gemma 가 새로 쓴 검색어는 정답 표 1위를 42 → 29로 줄였다)"""
+    """retable: 쓴 표를 빼고 다른 표로 한 번 다시 계산한 답 → (답, 방법). 못 하면 (None, 방법).
+    꾸러미가 있으면 남은 후보로, 없으면 원래 질문 그대로 통계표 찾기 (검색어를 새로 쓰지 않는다:
+    11/22 Gemma 가 새로 쓴 검색어는 정답 표 1위를 42 → 29로 줄였다). 옛 retable(다음 후보) ·
+    reroute(사전 답 → 통계표 찾기로)를 합쳤다 (설계 2-2 · 2-3)"""
     parsed = res.get("parsed") or {}
+    via_search = bool(parsed.get("dynamic_spec"))
+    if _valued(res) and not via_search and not indicators.spec(parsed.get("indicator") or ""):
+        return None, "다시 계산할 방법 없음"
     sid = res.get("search_session") or (state or {}).get("search_session")
     sid = sid or table_guide.new_search_session()
     found = _found_now.get()
+    how = "다음 후보 표" if found is not None else "통계표 찾기로"
+    if found is None:
+        found = _keep(await table_guide.find_tables(asked, sid, None, user_id))
+    rest = without_tables(found, used_tables(res), strict=via_search and _valued(res))
+    if rest is None:
+        return None, how
     trace: dict = {}
-    if parsed.get("dynamic_spec"):
-        how = "다음 후보 표"
-        used = {s.get("tbl_id") for s in res.get("sources") or [] if s.get("tbl_id")}
-        judged = (res.get("trace") or {}).get("answer_judge") or {}
-        if repicked := (judged.get("repick") or {}).get("tbl_id"):
-            used.add(repicked)  # repick 이 이미 칸을 다시 본 표도 뺀다 (같은 표 두 번 안 함)
-        if found is None:
-            found = _keep(await table_guide.find_tables(asked, sid, None, user_id))
-        found = without_tables(found, used)
-        if found is None:
-            return None, how
-    elif indicators.spec(parsed.get("indicator") or ""):
-        how = "통계표 찾기로"
-        if found is None:
-            found = _keep(await table_guide.find_tables(asked, sid, None, user_id))
-    else:
-        return None, "다시 계산할 방법 없음"
     base = {**parsed, "dynamic_spec": None}
-    computed = await dynamic_indicator.compute_from_handoff(asked, base, found, trace)
+    computed = await dynamic_indicator.compute_from_handoff(asked, base, rest, trace)
     if not computed or computed.get("status") != "ok" or computed.get("clarification"):
         _retry_outcome.set(_outcome_of(computed))
         return None, how
@@ -3161,10 +3183,15 @@ def repick_target(res: dict, found: dict | None) -> tuple[dict, str] | None:
     """repick 이 다시 볼 표 하나 → (후보 표, 고른 이유). 없으면 None.
     표 경로    값을 낸 표. 아래 순위 표가 값을 냈으면 1위 표 (1위가 칸에서 막혔던 것)
     사전 경로  사전 지표의 출처 표 (칸은 고정하지 않고 칸 잇기 → recell 로 다시 고른다)
+    값 없음    1위 후보 표
     설계: docs/agent_redesign_2026-11-26.md 2-5 '검사할 표' · 2-7"""
     parsed = res.get("parsed") or {}
     trace = res.get("trace") or {}
     sources = [s.get("tbl_id") for s in res.get("sources") or [] if s.get("tbl_id")]
+    if not _valued(res):
+        # 값 없는 실패: 1위 후보 표 (칸에서 막힌 표를 칸 잇기 → recell 로 다시)
+        top = agent_action.picked_candidate(found)
+        return (dict(top), "값 없음: 1위 후보 표") if top else None
     if parsed.get("dynamic_spec"):
         used = ((trace.get("handoff") or {}).get("used") or {}).get("tbl_id") or next(
             iter(sources), None
@@ -3267,36 +3294,67 @@ def repick_blocked(res: dict, verdict: dict) -> str | None:
     return None
 
 
-async def repick_cells(res: dict, verdict: dict, found: dict | None) -> dict:
-    """repick 근거: 다시 볼 표에 판정 지적을 고칠 칸이 있나
-    → {"cells": bool, "blocked": 이유 | None, "tbl_id", "by", "hits"}.
-      판정의 missing 이 그 표의 칸 이름에 닿음 (앞 답의 칸 · 주제어 칸 빼고)  → 칸 있음
-      아래 순위 표가 답했고 계산 기록에 칸 실패 흔적(1위가 칸에서 막힘)     → 칸 있음
-      여러 지표 · 복합 답, 또는 계산이 필요한 지적                         → blocked (repick 안 함)
-    검사 단계(설계 2-5 cells_exist)가 들어오면 그것으로 바꾼다"""
+def _check_table(res: dict, entry: dict, found: dict | None, asked: str):
+    """다시 볼 표 하나를 검사 (table_check). 질문 조건은 꾸러미의 해석을 칸 잇기에 넘긴다"""
+    parsed = res.get("parsed") or {}
+    u = ((found or {}).get("handoff") or {}).get("understanding") or {}
+    q = parsed
+    if u:
+        with contextlib.suppress(Exception):
+            q, _ = dynamic_indicator.to_parsed(u, parsed, question=asked)
+    slots = {
+        "conditions": u.get("conditions") or {},
+        "topic": u.get("topic"),
+        "table_words": [entry.get("tbl_nm"), entry.get("target")],
+    }
+    dims, _, _ = dynamic_indicator.schema(entry["tbl_id"])
+    used = _used_codes(res, entry["tbl_id"], dims)
+    unit = (res.get("result") or {}).get("unit") if _valued(res) else None
+    return table_check.check(entry["tbl_id"], asked, q, slots, used, unit)
+
+
+async def repick_cells(
+    res: dict, verdict: dict, found: dict | None, asked: str | None = None
+) -> dict:
+    """행동 고르기의 근거: 다시 볼 표를 검사(table_check)해 칸을 다시 고르면 고칠 수 있나
+    → {"cells", "fits", "blocked", "tbl_id", "by", "check", "hits"}.
+      cells   검사의 differs · cells_exist, 또는 판정 지적이 칸에 닿음(앞 답 칸 · 주제어 빼고),
+              또는 아래 순위 표가 답했고 1위가 칸에서 막힘
+      fits    값 종류 · 주제가 맞음 ('대상이 다름'일 때 repick 조건)
+      blocked 여러 지표 · 복합 답, 또는 계산이 필요한 판정 지적 → repick 안 함"""
     if why_not := repick_blocked(res, verdict):
-        return {"cells": False, "blocked": why_not, "by": why_not}
+        return {"cells": False, "fits": True, "blocked": why_not, "by": why_not}
     picked = repick_target(res, found)
     if picked is None:
-        return {"cells": False, "blocked": None, "by": "다시 볼 표 없음"}
+        return {"cells": False, "fits": True, "blocked": None, "by": "다시 볼 표 없음"}
     entry, why = picked
     tbl_id = entry["tbl_id"]
-    missing = str(verdict.get("missing") or "").strip()
-    hits: list[str] = []
-    if missing:
-        try:
-            hits = await run_in_threadpool(_fix_cells, res, tbl_id, missing)
-        except Exception:
-            logger.info("repick 칸 확인: 표 구조 없음 %s", tbl_id)
-    out = {"tbl_id": tbl_id, "hits": hits[:5]}
+    out: dict = {"tbl_id": tbl_id, "why": why}
+    judged = str(verdict.get("reason") or "") not in agent_action.NO_VALUE
+    missing = str(verdict.get("missing") or "").strip() if judged else ""
     calc = [m.group(0) for m in CALC_ASKED.finditer(missing)]
+    hits: list[str] = []
+    checked = None
+    try:
+        if missing:
+            hits = await run_in_threadpool(_fix_cells, res, tbl_id, missing)
+        checked = await run_in_threadpool(_check_table, res, entry, found, asked or "")
+    except Exception:
+        logger.info("검사 못 함: 표 구조 없음 %s", tbl_id)
+    out["hits"] = hits[:5]
+    if checked is not None:
+        out["check"] = checked.as_trace()
     if calc and not any(word in search_norm(h) for word in calc for h in hits):
-        return {**out, "cells": False, "blocked": f"계산이 필요한 지적 ({calc[0]})", "by": "계산"}
+        return {**out, "cells": False, "fits": True, "blocked": f"계산이 필요한 지적 ({calc[0]})"}
+    fits = checked.fits if checked is not None else True
+    if checked is not None and checked.cells:
+        by = "검사: 앞 답과 다른 칸으로 이어짐" if checked.differs else "검사: 고를 칸이 있음"
+        return {**out, "cells": True, "fits": fits, "blocked": None, "by": by}
     if hits:
-        return {**out, "cells": True, "blocked": None, "by": "판정 지적이 칸에 닿음"}
+        return {**out, "cells": True, "fits": fits, "blocked": None, "by": "판정 지적이 칸에 닿음"}
     if why.startswith("아래 순위") and agent_action.failed_at_cell(res.get("trace")):
-        return {**out, "cells": True, "blocked": None, "by": "1위 표가 칸에서 막힘"}
-    return {**out, "cells": False, "blocked": None, "by": "고칠 칸을 못 찾음"}
+        return {**out, "cells": True, "fits": fits, "blocked": None, "by": "1위 표가 칸에서 막힘"}
+    return {**out, "cells": False, "fits": fits, "blocked": None, "by": "고칠 칸을 못 찾음"}
 
 
 async def _repick_compute(
@@ -3439,6 +3497,12 @@ def _loop_end(res: dict, record: dict, how: str, asked_back: dict | None, asked:
     attempts = record.get("attempts") or []
     real = [a for a in attempts if a.get("how") not in (None, "give_up", "timeout")]
     kind = res.get("request_type")
+    if record.get("entry") == NO_VALUE_ENTRY and asked_back is None:
+        # 값 없는 실패로 들어왔다: 처음 답(통계표 안내 · 사유)을 그대로 낸다. 주의 문구 · 다른
+        # 답변 불가로 바꾸지 않는다
+        record["end"] = {"how": how, "case": "처음 답 그대로 (값 없음)"}
+        flow.add("고리 끝", "처음 답 그대로", f"{how}: 값 없는 실패를 고치지 못함")
+        return
     if asked_back is not None:
         record["end"] = {"how": how, "case": "되묻기"}
         flow.add("고리 끝", "되묻기", f"{how}: 다시 계산이 낸 되묻기를 전달")
@@ -3481,6 +3545,17 @@ def _refusal_answer(res: dict, code: str, why: str) -> dict:
     }
 
 
+async def _act(
+    name: str, res: dict, verdict: dict, state: dict | None, asked: str, user_id: int | None
+) -> tuple[dict | None, str]:
+    """행동 하나 실행 (설계 2-3: 행동마다 함수)"""
+    if name == agent_action.REPICK:
+        return await _repick_compute(res, verdict, asked)
+    if name == agent_action.REPLAN:
+        return await _replan_compute(res, verdict, asked, user_id)
+    return await _retable(res, state, asked, user_id)
+
+
 async def _retry(
     action,
     res: dict,
@@ -3490,23 +3565,53 @@ async def _retry(
     user_id: int | None,
     done: set[str] | None = None,
 ) -> tuple[dict | None, str]:
-    """행동대로 한 번 다시 계산. replan · repick 이 다시 계산하지 못하면 대체 행동(표 · 경로)으로
-    떨어진다. requery 는 호출부가 아직 없어 바로 대체 행동으로 간다.
+    """행동대로 한 번 다시 계산. 다시 계산하지 못하면 같은 회에 대체 행동(action.fallback)을 한다.
     done: 쓴 행동 (대체도 적는다)"""
-    if action.name == agent_action.REPLAN:
-        again, how = await _replan_compute(res, verdict, asked, user_id)
-        if again is not None or action.fallback is None:
-            return again, how
-        flow.add("다시 계산", "대체", f"{how}: 새 계획 없음 → {action.fallback}")
-    elif action.name == agent_action.REPICK:
-        llm_ok = bool(action.detail.get("llm", True))
-        again, how = await _repick_compute(res, verdict, asked, llm_ok)
-        if again is not None or action.fallback is None:
-            return again, how
-        flow.add("다시 계산", "대체", f"{how}: 칸을 다시 고르지 못함 → {action.fallback}")
-    if done is not None and action.fallback:
+    again, how = await _act(action.name, res, verdict, state, asked, user_id)
+    if again is not None or action.fallback is None:
+        return again, how
+    flow.add("다시 계산", "대체", f"{how}: 다시 계산하지 못함 → {action.fallback}")
+    if done is not None:
         done.add(action.fallback)  # 대체 행동으로 떨어졌다: 그 행동도 쓴 것으로
-    return await _recompute(res, state, asked, user_id)
+    return await _act(action.fallback, res, verdict, state, asked, user_id)
+
+
+FROM_TABLES = "tables"
+
+
+def failed_retryable(res: dict) -> str | None:
+    """값 없는 실패 입구 (설계 2-8): 표 경로가 값을 못 내고 통계표 안내로 끝난 새 질문 → 실패 이유.
+    refusal.finalize 가 통계표 안내를 partial_match(후보 조건 일부 ✘)로 바꾼 것도 들인다.
+    되묻기 · 진짜 답변 불가(비공개 · 범위 밖 · 모집단 · 연령 구간) · 사전 경로 실패 · 여러 지표 ·
+    계산을 시도하지 않은 통계표 안내는 들이지 않는다.
+    꾸러미(_found_now)와 계산 기록이 있어야 한다"""
+    if res.get("request_type") not in (NEW, REPLY) or res.get("clarification"):
+        return None
+    status = res.get("status")
+    came = ((res.get("trace") or {}).get("refusal") or {}).get("from")
+    if not (status == FROM_TABLES or (status == "partial_match" and came == FROM_TABLES)):
+        return None
+    if repick_blocked(res, {}):
+        return None
+    found = _found_now.get()
+    if agent_action.picked_candidate(found) is None:
+        return None
+    steps = (res.get("trace") or {}).get("dynamic") or []
+    if not steps:
+        return None  # 계산을 시도하지 않은 통계표 안내 (통계표 자체를 물음 · 고정 안내 · 표 고르기)
+    tried = [st for st in steps if st.get("skip") != dynamic_indicator.EXACT_SKIP]
+    if status == "partial_match" or (
+        tried and all(str(st.get("skip") or "").startswith("통계표 찾기 조건") for st in tried)
+    ):
+        return agent_action.NO_VALUE_CHECKS
+    return agent_action.NO_VALUE_CELLS
+
+
+def _failure_missing(res: dict) -> str:
+    """값 없는 실패의 '빠진 것': 계산 기록의 실패 이유 (recell 에 판정 지적 대신 넘긴다)"""
+    steps = (res.get("trace") or {}).get("dynamic") or []
+    skips = [str(st["skip"]) for st in steps if st.get("skip")]
+    return " · ".join(dict.fromkeys(skips))[:200]
 
 
 async def _judged(res: dict, state: dict | None, question: str, user_id: int | None) -> None:
@@ -3514,45 +3619,55 @@ async def _judged(res: dict, state: dict | None, question: str, user_id: int | N
     계산한다. 다시 한 답이 판정을 통과할 때만 바꾸고, 아니면 처음 답을 그대로 낸다 (11/22 판정은
     맞는 답 107 중 12를 잘못 막았다. 그때 잃는 것을 줄인다). '답할 수 없는 질문' 판정은 기록만
     한다 (답변 불가는 따로 구현한다). 판정 내용은 trace["answer_judge"]"""
-    if not answer_judge.enabled() or not judgeable(res):
-        return
+    judging = answer_judge.enabled()
+    failure = None
+    if not (judging and judgeable(res)):
+        failure = failed_retryable(res) if get_settings().agent_on_failure else None
+        if failure is None:
+            return
     asked = res.get("question") or question
-    first = await answer_judge.verdict(asked, res.get("parsed"), res.get("result"))
-    if first is None:
-        return
-    record: dict = {"first": first}
+    if failure is None:
+        first = await answer_judge.verdict(asked, res.get("parsed"), res.get("result"))
+        if first is None:
+            return
+        record: dict = {"first": first}
+        flow.add("답 판정", first["verdict"], f"{first['reason']} · {first['missing']}")
+    else:
+        # 값 없는 실패 (설계 2-8): Gemma 판정 없이 코드의 실패 이유로 행동을 고른다
+        first = {"verdict": "retry", "reason": failure, "missing": _failure_missing(res)}
+        record = {"first": first, "entry": NO_VALUE_ENTRY}
+        flow.add("값 없는 실패", failure, first["missing"] or "-")
     res.setdefault("trace", {})["answer_judge"] = record
-    flow.add("답 판정", first["verdict"], f"{first['reason']} · {first['missing']}")
     if first["verdict"] != "retry":
         return
-    # 행동 고르기 (N9, 코드 규칙): 판정 이유 · 답의 경로 · 1위 후보의 ✔/✘로 다음 행동을 정한다.
-    # 행동 고리 (N9 → 다시 계산 → 판정, 설계서 4-1 · 4-5): 첫 행동이 실패하거나 다시 한 답도
-    # 판정에 걸리면 다음 행동으로 이어 간다. 상한은 agent_action(다시 2회 · LLM 1회)과 60초.
-    # 호출부가 있는 행동은 replan(_replan_compute) · repick(_repick_compute) · reroute · retable
-    # (둘 다 _recompute) · give_up. requery는 이름만 기록하고 fallback으로 떨어진다.
-    # repick 근거(그 표에 고칠 칸이 있나)는 이유가 '조건이 빠짐 · 대상이 다름'일 때만 본다.
-    # repick 의 recell 은 replan 과 따로 센다 (repick 은 질문당 한 번이라 recell 도 1회)
+    # 행동 고르기 (agent_action 3-3, 코드 규칙): 판정 · 실패 이유 × 검사(table_check)로 행동을
+    # 정한다. 행동 넷 repick(칸) → retable(표) → replan(계획) → give_up, 좁은 것부터.
+    # 첫 행동이 실패하거나 다시 한 답도 판정에 걸리면 다음 행동으로 이어 간다.
+    # 상한은 agent_action(다시 2회 · replan 1회 · repick recell 은 따로 1회)과 60초.
+    # 검사는 이유가 '조건이 빠짐 · 대상이 다름 · 값 없음(칸)'일 때만 돌린다
     verdict = first
     tried = llm_tried = 0
+    no_value = failure is not None
     done: set[str] = set()
     attempts: list[dict] = []
     record["attempts"] = attempts
     asked_back: dict | None = None  # 다시 계산이 낸 되묻기 (고리 끝 경우 3)
     started = time.monotonic()
     while True:
-        cells, blocked = False, False
+        cells, fits, blocked = False, True, False
         if verdict.get("reason") in agent_action.REPICK_REASONS and agent_action.REPICK not in done:
-            evidence = await repick_cells(res, verdict, _found_now.get())
-            cells, blocked = bool(evidence["cells"]), bool(evidence.get("blocked"))
+            evidence = await repick_cells(res, verdict, _found_now.get(), asked)
+            cells, fits = bool(evidence["cells"]), bool(evidence.get("fits", True))
+            blocked = bool(evidence.get("blocked"))
             record.setdefault("repick_cells", []).append(evidence)
+        llm_tried = int(agent_action.REPLAN in done)  # 대체로 돈 replan 도 센다
         action = agent_action.choose(
             verdict,
-            res,
-            _found_now.get(),
             tried,
             llm_tried,
             frozenset(done),
             cells=cells,
+            fits=fits,
             repick_ok=not blocked,
         )
         attempt: dict = {"action": action.as_trace()}
@@ -3570,8 +3685,6 @@ async def _judged(res: dict, state: dict | None, question: str, user_id: int | N
             return _loop_end(res, record, "timeout", asked_back, asked)
         done.add(action.name)
         tried += 1
-        if action.name in agent_action.LLM_ACTIONS:
-            llm_tried += 1
         _retry_outcome.set(None)
         try:
             again, how = await _retry(action, res, verdict, state, asked, user_id, done)
@@ -3597,11 +3710,27 @@ async def _judged(res: dict, state: dict | None, question: str, user_id: int | N
                 continue
             flow.add("다시 계산", "실패", f"{how}: 계산하지 못함 → 다음 행동")
             continue
+        if no_value and again.get("status") != "ok":
+            # 값 없는 실패를 다른 답변 불가 · 값 없는 답으로 바꾸지 않는다 (처음 답이 이미 표 안내)
+            flow.add("다시 계산", "실패", f"{how}: {again.get('status')} → 다음 행동")
+            attempt["fail_status"] = again.get("status")
+            continue
         if again.get("status") in refusal.TEMPLATES:
+            if no_value:
+                # 값 없는 실패를 다른 답변 불가로 바꾸지 않는다 (처음 답이 이미 표 안내 · 사유)
+                flow.add(
+                    "다시 계산", "실패", f"{how}: 답변 불가 사유 {again['status']} → 다음 행동"
+                )
+                attempt["fail_status"] = again["status"]
+                continue
             # 다시 계산이 답변 불가 사유로 끝남: 판정 없이 그 사유로 바꾼다 (설계서 4절 B-1 예외)
             flow.add(
                 "답변 불가 사유", again["status"], f"{how}: {refusal.NAMES.get(again['status'])}"
             )
+            second = None
+        elif no_value and not judging:
+            # 판정을 끈 채 값 없는 실패를 고쳤다: 값이 없던 답을 그 값으로 바꾼다
+            flow.add("다시 계산", "판정 없이 받음", f"{how}: 처음 답에 값이 없었음")
             second = None
         else:
             second = await answer_judge.verdict(asked, again.get("parsed"), again.get("result"))
