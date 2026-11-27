@@ -1,4 +1,5 @@
-import type { Applied, AskResponse, Chart, Source } from "../api/types";
+import type { Applied, AskResponse, Chart, ChartView, Source } from "../api/types";
+import { authFetch } from "../auth/client";
 import { postJson } from "./api";
 
 // 보고서 하나에 담을 수 있는 답 수 (서버 app/services/reports.py MAX_ITEMS와 같다)
@@ -65,6 +66,14 @@ export function pickable(answers: AskResponse[]): Pick[] {
 }
 
 /** 고른 답(한 대화의 답만)으로 보고서를 만들고 문장 생성까지 한 번에 */
-export function createReport(sessionId: string | null, turnIds: number[]): Promise<Report> {
-  return postJson<Report>("/reports", { session_id: sessionId, turn_ids: turnIds, generate: true });
+export function createReport(sessionId: string | null, turnIds: number[], chartViews: Record<number, ChartView>): Promise<Report> {
+  return postJson<Report>("/reports", {
+    session_id: sessionId, turn_ids: turnIds, generate: true, chart_views: chartViews,
+  });
+}
+
+export async function getReport(id: number, signal: AbortSignal): Promise<Report> {
+  const res = await authFetch(`/reports/${id}`, { signal });
+  if (!res.ok) throw new Error("보고서를 불러오지 못했어요.");
+  return (await res.json()) as Report;
 }

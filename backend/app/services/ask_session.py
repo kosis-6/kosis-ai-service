@@ -1245,12 +1245,14 @@ def redraw(chart: dict | None, view: str, status: str | None) -> tuple[dict | No
     """직전 차트를 view 모양으로. 그 모양으로 못 그리면 그릴 수 있는 기본 모양과 이유를 준다.
     되묻지 않는다: 무엇을 원하는지(그림 바꾸기)는 분명하다"""
     if not chart:
+        prefix = f"{CHART_CANNOT[view]}. " if view in ("scatter", "pie") else ""
         if status == "ok":
             return None, (
-                "직전 답은 값이 하나라 그래프로 그릴 수 없습니다. '최근 5년 추이로'처럼 기간을 "
-                "넓히거나 '서울도 같이'처럼 지역을 더하면 그래프로 보여 드립니다."
+                f"{prefix}직전 답은 값이 하나라 그래프로 그릴 수 없습니다. "
+                "'최근 5년 추이로'처럼 기간을 넓히거나 '서울도 같이'처럼 지역을 더하면 "
+                "그래프로 보여 드립니다."
             )
-        return None, "직전 답에는 그래프로 그릴 수치가 없습니다."
+        return None, f"{prefix}직전 답에는 그래프로 그릴 수치가 없습니다."
     shown, cannot = reshape(chart, view)
     if cannot:
         return shown, f"{cannot}. {chart_name(shown)}로 보여 드립니다."
@@ -2214,12 +2216,13 @@ async def _turn(
     if not usable:
         return await _new(question, None)
 
+    has_talk_request = not _talk_split_inner.get() and talk_summary_words(question)
     if (
         HOUSEHOLD_AGE_RATIO.fullmatch(question)
         or qa.housing_population_condition(question)
         or qa.birth_sex_ratio_reference(question)
         or qa.BIRTH_SEX_RATIO_WORDS.search(question)
-        or await asyncio.to_thread(complete_question, question)
+        or (not has_talk_request and await asyncio.to_thread(complete_question, question))
     ):
         return await _new(question, state)
 
@@ -2238,12 +2241,7 @@ async def _turn(
     has_last = bool((state.get("last") or {}).get("answer"))
     view = chart_request(question) if has_last else None
     delta = None
-    if (
-        has_last
-        and view is None
-        and not _talk_split_inner.get()
-        and await asyncio.to_thread(talk_summary_words, question)
-    ):
+    if has_last and view is None and has_talk_request:
         # 대화 정리 말이 있으면 LLM 이 요청 목록으로 나눈다 (11/27): 정리만이면 정리, 정리 + 새
         # 질문이면 둘 다. 예전에는 정규식이 문장 전체를 요약으로 보거나(뒤의 '혼인도 구해줘'를 버림)
         # 지표 · 지역이 있으면 요약이 아니라고 봐 요약을 버렸다. LLM 이 실패하면 예전 규칙대로
@@ -2524,17 +2522,15 @@ async def _talk_and_ask(
         res, sources, notice = await _turn(state, asked, selections, user_id)
     finally:
         _talk_split_inner.reset(token)
-    first = next(r["kind"] for r in reqs)
-    parts = [summary_res.get("answer") or "", res.get("answer") or ""]
-    if first == "question":
-        parts.reverse()
-    res["answer"] = "\n\n".join(p for p in parts if p).strip()
     res.setdefault("trace", {}).update(split_trace)
     res["talk_summary"] = {
+        "answer": summary_res.get("answer") or "",
+        "first": reqs[0]["kind"],
         "request_type": summary_res.get("request_type"),
-        "report": (summary_res.get("result") or {}).get("report"),
         "asked": asked,
     }
+    if report := summary_res.get("report_ref"):
+        res["report_ref"] = report
     return res, sources, notice
 
 
@@ -2577,11 +2573,11 @@ async def _report_turn(
         res["answer"] = headlines_text(turns).replace(
             REPORT_LOGIN, "보고서 문장을 만드는 데 시간이 오래 걸려 각 답의 요약만 보여 드립니다."
         )
-        res["result"]["report"] = {"id": made["id"], "status": "draft"}
+        res["report_ref"] = res["result"]["report"] = {"id": made["id"], "status": "draft"}
         flow.add("대화 보고서", "시간 초과", f"보고서 {made['id']} 초안만 저장")
         return res, state["sources"], None
     res["answer"] = report_text(done.get("content") or {})
-    res["result"]["report"] = {"id": done["id"], "status": done.get("status")}
+    res["report_ref"] = res["result"]["report"] = {"id": done["id"], "status": done["status"]}
     flow.add("대화 보고서", done.get("status"), f"보고서 {done['id']} · 답 {len(turns)}개")
     return res, state["sources"], None
 
@@ -3670,18 +3666,30 @@ async def handle(
             sid, state, expired = new_id(), None, False
         # 보고서 말은 에이전트로 (#249 의 '정리해줘' 보고서는 _turn 안에서 따로 간다)
         if listed and report_router.wants(question, state):
-            return await _agent_turn(sid, state, question, user_id, steps, calls, expired, moved)
+            standalone_stat = bool(
+                report_router.STAT_REQUEST.search(question)
+                and await asyncio.to_thread(indicators.find_in_text, question)
+            )
+            if report_router.wants(question, state, standalone_stat=standalone_stat):
+                return await _agent_turn(
+                    sid, state, question, user_id, steps, calls, expired, moved
+                )
+            if state and (agent := report_router.agent_state(state)).get("pending"):
+                state = {**state, "report_agent": {**agent, "pending": None, "candidates": []}}
         _found_now.set(None)
         _session_now.set(sid)
         res, sources, notice = await _turn(state, question, selections, user_id)
+        talk = res.get("talk_summary")
+        report_ref = res.get("report_ref")
+        asked = talk["asked"] if talk else question
         if res.get("request_type") == NEW:
             # 새 질문도 함께 말한 차트 모양으로 ('부산 출생아 수 최근 5년 막대그래프로').
             # 새 질문 경로는 여러 곳에서 나가 여기서 한 번 붙인다 (조건 변경은 _turn이 붙인다)
-            told = with_asked_shape(res, question, None)
+            told = with_asked_shape(res, asked, None)
             notice = " ".join(filter(None, [notice, told])) or None
-        await _attach_tables(res, state, question, user_id)
-        await refusal.finalize(res, question)
-        await _judged(res, state, question, user_id)
+        await _attach_tables(res, state, asked, user_id)
+        await refusal.finalize(res, asked)
+        await _judged(res, state, asked, user_id)
         if "summary" not in res:  # 직전 답을 다시 쓴 응답(_reuse)은 그 요약을 이미 들고 있다
             res["summary"] = _summary(res.get("result"))
         _attach_figure(res)
@@ -3701,6 +3709,14 @@ async def handle(
         after["user_id"] = user_id
         if listed:
             report_offer.update(state, res, after, user_id)
+        if talk:
+            parts = [talk["answer"], res.get("answer") or ""]
+            if talk["first"] == "question":
+                parts.reverse()
+            res["answer"] = "\n\n".join(p for p in parts if p).strip()
+            res["talk_summary"] = talk
+        if report_ref:
+            res["report_ref"] = report_ref
         res.setdefault("question", question)
         res["session_id"] = sid
         res["applied"] = (

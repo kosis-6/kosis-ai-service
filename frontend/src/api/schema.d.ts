@@ -721,6 +721,8 @@ export interface components {
              * @default false
              */
             reportable?: boolean;
+            report_ref?: components["schemas"]["ReportReference"] | null;
+            talk_summary?: components["schemas"]["TalkSummary"] | null;
         };
         /** AuditList */
         AuditList: {
@@ -1444,6 +1446,18 @@ export interface components {
              * @description 함께 알릴 주의 (추계값, 인과 판단 안 함 등. 최대 2개)
              */
             cautions?: string[];
+        };
+        /** ReportReference */
+        ReportReference: {
+            id: number;
+            status: "draft" | "ready" | "failed";
+        };
+        /** TalkSummary */
+        TalkSummary: {
+            answer: string;
+            first: "summary" | "question";
+            request_type?: string | null;
+            asked: string;
         };
         /** Token */
         Token: {

@@ -112,9 +112,11 @@ def _lines(result: dict) -> dict | None:
 def _keep_ends(rows: list[dict]) -> list[dict]:
     """MAX_BARS개로 줄이되 가장 높은 곳 · 가장 낮은 곳은 남긴다 (답 문장이 둘을 말한다).
     11/27 차트 점검: 17개 시도 비교에서 '가장 낮은 지역은 세종'이라 하고 막대에는 세종이 없었다"""
+    # 비교 본문과 같은 순서로 동률을 처리한다. 최댓값은 앞, 최솟값은 뒤의 지역을 보존한다.
+    ordered = range(len(rows))
     ends = {
-        max(range(len(rows)), key=lambda i: rows[i]["value"]),
-        min(range(len(rows)), key=lambda i: rows[i]["value"]),
+        max(ordered, key=lambda i: rows[i]["value"]),
+        min(reversed(ordered), key=lambda i: rows[i]["value"]),
     }
     rest = [i for i in range(len(rows)) if i not in ends][: MAX_BARS - len(ends)]
     return [rows[i] for i in sorted(ends | set(rest))]

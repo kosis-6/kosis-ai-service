@@ -2891,8 +2891,16 @@ def test_report_turn_logged_in_makes_and_writes_report(monkeypatch) -> None:
     res, _, _ = asyncio.run(s._report_turn(REPORT_STATE, "보고서로 만들어줘", 7))
     assert made == {"user_id": 7, "turn_ids": [11, 12], "session_id": "sid-1"}
     assert res["result"]["report"] == {"id": 5, "status": "ready"}
+    assert res["report_ref"] == {"id": 5, "status": "ready"}
     assert res["answer"].splitlines()[:3] == ["통계 분석 보고서", "", "요약"]
     assert "- 사망자 수가 출생아 수보다 많습니다." in res["answer"]
+
+
+def test_scatter_notice_when_last_result_has_no_chart() -> None:
+    chart, answer = s.redraw(None, "scatter", "ok")
+    assert chart is None
+    assert answer.startswith("산점도는 지원하지 않습니다.")
+    assert "값이 하나" in answer and "최근 5년 추이" in answer
 
 
 def test_report_turn_shows_report_error(monkeypatch) -> None:
@@ -2969,7 +2977,7 @@ def _talk_state() -> dict:
     }
 
 
-def test_talk_split_summary_then_question_answers_both(monkeypatch) -> None:
+def test_talk_split_summary_then_question_answers_both(monkeypatch, ask_sessions) -> None:
     """'앞에서 본 거 정리해주고 혼인도 구해줘': 정리 글 + 질문 부분만 다시 계산한 답 (11/27)"""
     asked: list[str] = []
 
@@ -2987,14 +2995,15 @@ def test_talk_split_summary_then_question_answers_both(monkeypatch) -> None:
 
     monkeypatch.setattr(s, "split_talk", split)
     monkeypatch.setattr(s, "_turn", turn)
-    res, _, _ = asyncio.run(s._turn(_talk_state(), "앞에서 본 거 정리해주고 혼인도 구해줘"))
+    ask_sessions["sessions"]["talk"] = {**_talk_state(), "user_id": None}
+    res = asyncio.run(s.handle("talk", "앞에서 본 거 정리해주고 혼인도 구해줘"))
     assert asked == ["혼인도 구해줘"]
     assert res["answer"].startswith("지금까지 본 내용 2가지")
     assert res["answer"].endswith("2025년 서울 혼인 건수는 3건입니다.")
     assert res["request_type"] == s.NEW and res["talk_summary"]["asked"] == "혼인도 구해줘"
 
 
-def test_talk_split_question_first_keeps_spoken_order(monkeypatch) -> None:
+def test_talk_split_question_first_keeps_spoken_order(monkeypatch, ask_sessions) -> None:
     async def split(question, trace):
         return [
             {"kind": "question", "text": "서울 출생아 수 구하고"},
@@ -3010,8 +3019,60 @@ def test_talk_split_question_first_keeps_spoken_order(monkeypatch) -> None:
 
     monkeypatch.setattr(s, "split_talk", split)
     monkeypatch.setattr(s, "_turn", turn)
-    res, _, _ = asyncio.run(s._turn(_talk_state(), "서울 출생아 수 구하고 지금까지 본 거 요약해줘"))
+    ask_sessions["sessions"]["talk"] = {**_talk_state(), "user_id": None}
+    res = asyncio.run(s.handle("talk", "서울 출생아 수 구하고 지금까지 본 거 요약해줘"))
     assert res["answer"].startswith("새 답") and "지금까지 본 내용 2가지" in res["answer"]
+
+
+def test_talk_summary_and_report_remain_after_new_question_refusal(monkeypatch, ask_sessions):
+    from app.schemas.ask import AskResponse
+
+    question = "지금까지 요약해주고 해운대동 혼인 건수도 구해줘"
+    asked = "해운대동 혼인 건수 구해줘"
+    summary = {
+        "answer": "이전 대화 보고서",
+        "request_type": s.REPORT,
+        "report_ref": {"id": 5, "status": "ready"},
+    }
+    real_turn = s._turn
+
+    async def split(q, trace):
+        return [{"kind": "summary", "text": ""}, {"kind": "question", "text": asked}]
+
+    async def turn(state, q, selections=None, user_id=None):
+        if s._talk_split_inner.get():
+            assert q == asked
+            return (
+                {
+                    "status": "unknown_region",
+                    "answer": "임시 응답",
+                    "request_type": s.NEW,
+                    "result": {"status": "unknown_region", "region": "해운대동"},
+                    "parsed": {},
+                    "sources": [],
+                },
+                {},
+                None,
+            )
+        return await real_turn(state, q, selections, user_id)
+
+    async def attach(res, state, q, uid):
+        assert q == asked
+        res.pop("talk_summary")
+        res.pop("report_ref")
+
+    ask_sessions["sessions"]["talk"] = {**_talk_state(), "user_id": 7}
+    monkeypatch.setattr(s, "_turn", turn)
+    monkeypatch.setattr(s, "split_talk", split)
+    monkeypatch.setattr(s, "_talk_summary", lambda *args: _async((summary, {}, None)))
+    monkeypatch.setattr(s, "_attach_tables", attach)
+    response = AskResponse.model_validate(asyncio.run(s.handle("talk", question, 7)))
+
+    assert response.status == "no_region_level"
+    assert response.answer.startswith("이전 대화 보고서\n\n")
+    assert "해운대동" in response.answer and "읍면동" in response.answer
+    assert response.report_ref.model_dump() == summary["report_ref"]
+    assert response.talk_summary.asked == asked
 
 
 def test_talk_split_failure_with_indicator_keeps_the_old_path(monkeypatch) -> None:

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import type { AskResponse, ConversationRead, Parsed, Recommendation } from "../api/types";
+import type { AskResponse, ChartView, ConversationRead, Parsed, Recommendation } from "../api/types";
 import { logout } from "../auth/client";
 import { useUser } from "../auth/useUser";
 import { Answer } from "../chat/Answer";
@@ -90,6 +90,14 @@ export function ChatPage() {
 
   function add(message: NewMessage) {
     setMessages((prev) => [...prev, { ...message, id: nextId.current++ } as Message]);
+  }
+
+  function changeChartView(messageId: number, chartView: ChartView) {
+    setMessages((prev) => prev.map((message) =>
+      message.id === messageId && message.kind === "answer" && message.data.chart
+        ? { ...message, data: { ...message.data, chart: { ...message.data.chart, view: chartView } } }
+        : message,
+    ));
   }
 
   const refreshHistory = useCallback(async () => {
@@ -397,6 +405,7 @@ export function ChatPage() {
                       busy={busy}
                       onReport={canMakeReport ? () => setSheet({ kind: "report" }) : undefined}
                       onShowReport={(report) => setSheet({ kind: "report-view", report })}
+                      onChartViewChange={(chartView) => changeChartView(m.id, chartView)}
                       onSend={(text, selections) => void send(text, selections)}
                       onOthers={(recs, parsed) => setSheet({ kind: "others", recs, parsed })}
                       onAskAgain={() => inputRef.current?.focus()}

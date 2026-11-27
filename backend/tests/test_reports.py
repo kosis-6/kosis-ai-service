@@ -48,7 +48,17 @@ async def _setup():
             users.append(row.scalar_one())
         turns = {}
         rows = [
-            ("ok1", users[0], {"status": "ok", "answer": "답1", "figure": FIG, "reportable": True}),
+            (
+                "ok1",
+                users[0],
+                {
+                    "status": "ok",
+                    "answer": "답1",
+                    "figure": FIG,
+                    "reportable": True,
+                    "chart": {"type": "line", "rows": [{"label": "2024", "value": 10}]},
+                },
+            ),
             ("ok2", users[0], {"status": "ok", "answer": "답2", "figure": FIG, "reportable": True}),
             ("ok3", users[0], {"status": "ok", "answer": "답3", "figure": FIG, "reportable": True}),
             ("bad", users[0], {"status": "ok", "answer": "일부만", "figure": FIG}),
@@ -130,6 +140,15 @@ def test_snapshot_survives_turn_deletion(db):
     again = run(r.detail(db.a, rep["id"]))
     assert again["items"][0]["snapshot"]["answer"] == "답1"
     assert again["title"] == r.DEFAULT_TITLE
+
+
+def test_create_saves_selected_chart_view_without_changing_the_answer(db):
+    selected = run(r.create(db.a, turn_ids=[db.t["ok1"]], chart_views={db.t["ok1"]: "bar"}))
+    original = run(r.create(db.a, turn_ids=[db.t["ok1"]]))
+    saved = run(r.detail(db.a, selected["id"]))
+    chart = original["items"][0]["snapshot"]["chart"]
+    assert "view" not in chart
+    assert saved["items"][0]["snapshot"]["chart"] == {**chart, "view": "bar"}
 
 
 @pytest.mark.parametrize(
@@ -374,9 +393,12 @@ def test_api_maps_errors(client, code, status):
 def test_api_creates_and_generates_at_once(client):
     """대화창 [보고서]: 고른 답으로 만들고 문장 생성까지 한 번에"""
     client.fake("generate", {**READ, "status": "ready", "content": {"summary": "s"}})
-    res = client.post("/reports", json={"turn_ids": [1, 2], "generate": True})
+    res = client.post(
+        "/reports", json={"turn_ids": [1, 2], "generate": True, "chart_views": {"2": "bar"}}
+    )
     assert res.status_code == 201 and res.json()["status"] == "ready"
     assert [name for name, _ in client.calls] == ["create", "generate"]
+    assert client.calls[0][1][-1] == {2: "bar"}
     assert client.calls[1][1] == (3, 5)  # 만든 보고서(id 5)를 그 사용자로 생성
     client.calls.clear()
     assert client.post("/reports", json={"turn_ids": [1]}).json()["status"] == "draft"

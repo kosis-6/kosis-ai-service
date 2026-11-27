@@ -19,6 +19,9 @@ MAX_ASK_STAT = 3
 # 사용자 말에 이런 요청이 있어야 그 도구가 움직인다
 # (LLM이 시키지 않은 일을 하지 않게, 개발셋 R03 · R04)
 ASKS_WRITE = re.compile(r"만들|써|쓰|작성|정리|생성|보고서로")
+ASKS_REVISE = re.compile(
+    r"짧게|간단|간결|길게|자세|요약|문체|말투|어투|표현|다듬|줄여|늘려|다시\s*(?:써|쓰|정리|작성)"
+)
 # "아니 서울 거" · "부산 말고 서울"은 바꿔 담으라는 말 (개발셋 R15)
 ASKS_ADD = re.compile(r"담|넣|추가|포함|만들|써|작성|정리|보고서로|^\s*아니|말고")
 # "그거 · 이거"는 바로 앞 답 하나 (개발셋 R15). "다 · 모두 · 전부"가 있으면 여럿
@@ -132,9 +135,7 @@ async def describe(ctx: Ctx, turn_ids: list[int]) -> list[dict]:
 async def current_report(ctx: Ctx) -> dict | None:
     if ctx.report is not None:
         return ctx.report
-    found = await reports.listing(ctx.user_id, limit=1)
-    if found["reports"]:
-        ctx.report = await reports.detail(ctx.user_id, found["reports"][0]["id"])
+    ctx.report = await reports.latest_for_conversation(ctx.user_id, ctx.sid)
     return ctx.report
 
 
@@ -326,11 +327,17 @@ async def write_report(
         return {"error": "담긴 결과가 없습니다. 먼저 add_item 으로 담으세요"}
     if title or purpose:
         report = await reports.update(ctx.user_id, report["id"], title=title, purpose=purpose)
+    return await _generate(ctx, report["id"], style)
+
+
+async def _generate(ctx: Ctx, report_id: int, style: str | None) -> dict:
     try:
-        ctx.report = await reports.generate(ctx.user_id, report["id"], style)
+        ctx.report = await reports.generate(ctx.user_id, report_id, style)
     except ReportError as e:
         return {"error": e.message}
     content = ctx.report.get("content") or {}
+    if ctx.report["status"] != "ready":
+        return {"error": content.get("error") or "보고서 문장을 만들지 못했습니다."}
     return {
         "status": ctx.report["status"],
         "summary": [s["text"] for s in content.get("summary") or []][:3],
@@ -339,10 +346,12 @@ async def write_report(
 
 
 async def revise_text(ctx: Ctx, style: str = "") -> dict:
+    if not ASKS_REVISE.search(ctx.question):
+        return {"error": "사용자가 보고서 문장 수정을 요청하지 않았습니다."}
     report = await current_report(ctx)
     if not report or report["status"] != "ready":
         return {"error": "아직 만든 보고서가 없습니다. write_report 를 먼저 부르세요"}
-    return await write_report(ctx, style=style or None)
+    return await _generate(ctx, report["id"], style or ctx.question)
 
 
 async def decline_offer(ctx: Ctx) -> dict:

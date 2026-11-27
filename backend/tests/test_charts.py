@@ -217,6 +217,17 @@ def test_long_comparison_keeps_the_highest_and_lowest() -> None:
     assert "가장 높은 곳과 가장 낮은 곳은 포함" in chart["note"]
 
 
+def test_long_comparison_keeps_the_same_tied_lowest_as_the_answer() -> None:
+    from app.services import qa
+
+    values = [{"region": f"지역{i}", "value": 17 - i if i < 15 else 1} for i in range(17)]
+    result = {**BASE, "year": 2024, "values": values, "gap": 16, "gap_unit": BASE["unit"]}
+    chart = charts.build(result)
+    assert "가장 낮은 지역은 지역16" in qa.summary(result)
+    assert len(chart["rows"]) == charts.MAX_BARS
+    assert chart["rows"][-1]["label"] == "지역16"
+
+
 def test_ranking_cut_stays_the_top_fifteen() -> None:
     """순위는 위에서부터 자른다 (중간에 꼴찌를 끼우면 순위가 이어지지 않는다)"""
     chart = _bars("ranking", charts.MAX_BARS + 5)

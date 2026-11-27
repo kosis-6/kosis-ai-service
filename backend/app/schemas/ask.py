@@ -127,6 +127,18 @@ class QuestionClarification(BaseModel):
     options: list[str] = Field(default_factory=list)
 
 
+class TalkSummary(BaseModel):
+    answer: str
+    first: Literal["summary", "question"]
+    request_type: str | None = None
+    asked: str
+
+
+class ReportReference(BaseModel):
+    id: int
+    status: Literal["draft", "ready", "failed"]
+
+
 class AskResponse(BaseModel):
     clarification: QuestionClarification | None = Field(
         default=None,
@@ -191,3 +203,5 @@ class AskResponse(BaseModel):
         description="보고서 경로(request_type=report)에서 바뀐 뒤의 보고서"
         " (/reports/{id} 응답과 같은 모양)",
     )
+    report_ref: ReportReference | None = None
+    talk_summary: TalkSummary | None = None

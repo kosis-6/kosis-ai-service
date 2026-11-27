@@ -17,6 +17,8 @@ REPLAY_KEYS = (
     "summary",
     "figure",
     "reportable",
+    "report_ref",
+    "talk_summary",
     "sources",
 )
 
