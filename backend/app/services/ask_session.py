@@ -17,7 +17,7 @@ from starlette.concurrency import run_in_threadpool
 
 from app.agent import replan
 from app.core.config import get_settings
-from app.prompts.qa import FOLLOW_SYSTEM, RESTATE_SYSTEM
+from app.prompts.qa import FOLLOW_SYSTEM, RESTATE_SYSTEM, TALK_SPLIT_SYSTEM
 from app.services import (
     agegroup,
     agent_action,
@@ -1164,6 +1164,65 @@ def whole_talk_summary_request(question: str) -> bool:
     )
 
 
+TALK_MAX_CHARS = 100
+TALK_KINDS = ("summary", "question")
+
+
+def talk_summary_words(question: str) -> bool:
+    """요약 · 정리 말(대화 전체를 가리키는)이 문장 어디에든 있나. 문장을 자르지 않고 LLM 에 맡길지만
+    정한다 (split_talk). 지표 · 지역 · 연도가 함께 있어도 막지 않는다 ('지금까지 요약해주고 서울
+    출생아 수도 구해줘', 11/27)"""
+    q = question.strip()
+    return len(q) <= TALK_MAX_CHARS and bool(WHOLE_TALK.search(q))
+
+
+def parse_requests(raw: str) -> list[dict] | None:
+    """split_talk 의 LLM 답 → [{kind, text}] (말한 순서). 쓸 수 없으면 None"""
+    objects = qa._json_objects(raw or "")
+    items = (objects[0] if objects else {}).get("requests")
+    if not isinstance(items, list) or not items:
+        return None
+    out: list[dict] = []
+    for it in items:
+        if not isinstance(it, dict) or it.get("kind") not in TALK_KINDS:
+            return None
+        text = str(it.get("text") or "").strip()
+        if it["kind"] == "question" and not text:
+            return None
+        if it["kind"] == "summary" and any(o["kind"] == "summary" for o in out):
+            continue
+        out.append({"kind": it["kind"], "text": text if it["kind"] == "question" else ""})
+    return out
+
+
+async def split_talk(question: str, trace: dict) -> list[dict] | None:
+    """'앞에서 본 거 정리해주고 혼인도 구해줘'처럼 대화 정리와 새 질문이 섞인 말 → 요청 목록
+    (LLM 1회). 정규식으로 자르면 어순이 섞인 말을 놓쳐 LLM 에 맡긴다 (11/27 세진). 실패하면 None"""
+    try:
+        raw = await _chat(question, TALK_SPLIT_SYSTEM)
+    except Exception as e:
+        trace["talk_split"] = {"error": f"{type(e).__name__}: {e}"[:160]}
+        return None
+    reqs = parse_requests(raw)
+    trace["talk_split"] = {"raw": raw[:300], "requests": reqs}
+    return reqs
+
+
+async def _talk_summary(state: dict, question: str, user_id: int | None):
+    """대화 정리: 로그인 사용자는 대화 보고서(_report_turn), 담을 답이 없거나 로그인하지 않았으면
+    대화 전체 요약 글"""
+    if user_id is not None:
+        res, sources, notice = await _report_turn(state, question, user_id)
+        if res.get("answer") != REPORT_NO_TURNS:
+            return res, sources, notice
+    flow.add("후속 질문", "대화 전체 요약", f"답 {len(state.get('history') or [1])}개")
+    return _reuse(state, whole_talk_text(state), None, SUMMARY), state["sources"], None
+
+
+# 정리 + 질문으로 나눈 뒤 질문 부분을 다시 _turn 에 넣을 때 또 나누지 않게
+_talk_split_inner: ContextVar[bool] = ContextVar("ask_talk_split_inner", default=False)
+
+
 def whole_talk_text(state: dict) -> str:
     said = state.get("history") or [answer_line(state["last"])]
     if len(said) == 1:
@@ -2173,16 +2232,35 @@ async def _turn(
     has_last = bool((state.get("last") or {}).get("answer"))
     view = chart_request(question) if has_last else None
     delta = None
-    if has_last and view is None and await asyncio.to_thread(whole_talk_summary_request, question):
-        # 대화 전체 요약: 변경 추출이 요약으로 읽어도 직전 답만 요약했다 (11/26 리뷰).
-        # 로그인 사용자는 대화 보고서로 (변경 추출의 report 선택지와 같은 길, 11/27). 보고서에 담을
-        # 답이 없거나 로그인하지 않았으면 대화 전체 요약 글
-        if user_id is not None:
-            res, sources, notice = await _report_turn(state, question, user_id)
-            if res.get("answer") != REPORT_NO_TURNS:
-                return res, sources, notice
-        flow.add("후속 질문", "대화 전체 요약", f"답 {len(state.get('history') or [1])}개")
-        return _reuse(state, whole_talk_text(state), None, SUMMARY), state["sources"], None
+    if (
+        has_last
+        and view is None
+        and not _talk_split_inner.get()
+        and await asyncio.to_thread(talk_summary_words, question)
+    ):
+        # 대화 정리 말이 있으면 LLM 이 요청 목록으로 나눈다 (11/27): 정리만이면 정리, 정리 + 새
+        # 질문이면 둘 다. 예전에는 정규식이 문장 전체를 요약으로 보거나(뒤의 '혼인도 구해줘'를 버림)
+        # 지표 · 지역이 있으면 요약이 아니라고 봐 요약을 버렸다. LLM 이 실패하면 예전 규칙대로
+        split_trace: dict = {}
+        reqs = await split_talk(question, split_trace)
+        flow.add(
+            "후속 질문",
+            "정리 말 나누기",
+            str((split_trace.get("talk_split") or {}).get("requests")),
+        )
+        asks = [r["text"] for r in reqs or [] if r["kind"] == "question"]
+        wants = reqs is not None and any(r["kind"] == "summary" for r in reqs)
+        whole = await asyncio.to_thread(whole_talk_summary_request, question)
+        if reqs is None or not asks:
+            # 정리만인지는 예전 규칙을 따른다: LLM 이 '서울 인구 전체 정리해줘'(지표 · 지역이 있는
+            # 말)도 대화 정리로 읽었다 (11/27 확인). LLM 은 정리 + 질문을 나누는 데만 쓴다
+            wants, asks = whole, []
+        if wants and not asks:
+            res, sources, notice = await _talk_summary(state, question, user_id)
+            res.setdefault("trace", {}).update(split_trace)
+            return res, sources, notice
+        if wants and asks:
+            return await _talk_and_ask(state, question, reqs, selections, user_id, split_trace)
     if has_last and view is None and await asyncio.to_thread(detail_request, question):
         last = state["last"]
         return _reuse(state, last["answer"], last.get("chart"), DETAIL), state["sources"], None
@@ -2420,6 +2498,38 @@ def headlines_text(turns: list[dict]) -> str:
         head = ((response.get("summary") or {}).get("headline") or "").strip()
         lines.append(f"- {head or lead(response.get('answer') or '')}")
     return "\n".join([*lines, "", REPORT_LOGIN])
+
+
+async def _talk_and_ask(
+    state: dict,
+    question: str,
+    reqs: list[dict],
+    selections: dict | None,
+    user_id: int | None,
+    split_trace: dict,
+) -> tuple[dict, dict, str | None]:
+    """정리 + 새 질문: 정리는 지금까지의 답으로, 질문은 그 말만 원래 후속 질문 흐름으로 계산하고
+    말한 순서대로 답을 잇는다. 직전 답(state.last)은 질문의 답이 된다 (handle 의 next_state)"""
+    summary_res, _, _ = await _talk_summary(state, question, user_id)
+    asked = " ".join(r["text"] for r in reqs if r["kind"] == "question")
+    flow.add("후속 질문", "정리 + 질문", asked)
+    token = _talk_split_inner.set(True)
+    try:
+        res, sources, notice = await _turn(state, asked, selections, user_id)
+    finally:
+        _talk_split_inner.reset(token)
+    first = next(r["kind"] for r in reqs)
+    parts = [summary_res.get("answer") or "", res.get("answer") or ""]
+    if first == "question":
+        parts.reverse()
+    res["answer"] = "\n\n".join(p for p in parts if p).strip()
+    res.setdefault("trace", {}).update(split_trace)
+    res["talk_summary"] = {
+        "request_type": summary_res.get("request_type"),
+        "report": (summary_res.get("result") or {}).get("report"),
+        "asked": asked,
+    }
+    return res, sources, notice
 
 
 async def _report_turn(
