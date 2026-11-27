@@ -2918,3 +2918,19 @@ def test_report_choice_from_change_extraction_goes_to_report(monkeypatch) -> Non
     monkeypatch.setattr(s, "_report_turn", report_turn)
     res, _, _ = asyncio.run(s._turn(state, "앞에서 본 결과들 묶어서 정리해줘", None, 7))
     assert called["q"] == "앞에서 본 결과들 묶어서 정리해줘" and res["request_type"] == s.REPORT
+
+
+def test_whole_talk_summary_falls_back_to_text_when_report_has_no_turns(monkeypatch) -> None:
+    # 로그인 사용자의 '지금까지 정리해줘': 보고서에 담을 답이 없으면 대화 전체 요약 글 (11/27)
+    state = {
+        **REPORT_STATE,
+        "last": {"status": "ok", "answer": "2025년 서울 출생아 수는 1명입니다."},
+        "history": ["2025년 서울 출생아 수는 1명입니다.", "2025년 부산 출생아 수는 2명입니다."],
+    }
+
+    async def report_turn(st, q, uid):
+        return {"status": "ok", "answer": s.REPORT_NO_TURNS, "request_type": s.REPORT}, {}, None
+
+    monkeypatch.setattr(s, "_report_turn", report_turn)
+    res, _, _ = asyncio.run(s._turn(state, "지금까지 요약해줘", None, 7))
+    assert res["request_type"] == s.SUMMARY and "지금까지 본 내용 2가지" in res["answer"]

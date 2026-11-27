@@ -2174,7 +2174,13 @@ async def _turn(
     view = chart_request(question) if has_last else None
     delta = None
     if has_last and view is None and await asyncio.to_thread(whole_talk_summary_request, question):
-        # 대화 전체 요약: 변경 추출이 요약으로 읽어도 직전 답만 요약했다 (11/26 리뷰)
+        # 대화 전체 요약: 변경 추출이 요약으로 읽어도 직전 답만 요약했다 (11/26 리뷰).
+        # 로그인 사용자는 대화 보고서로 (변경 추출의 report 선택지와 같은 길, 11/27). 보고서에 담을
+        # 답이 없거나 로그인하지 않았으면 대화 전체 요약 글
+        if user_id is not None:
+            res, sources, notice = await _report_turn(state, question, user_id)
+            if res.get("answer") != REPORT_NO_TURNS:
+                return res, sources, notice
         flow.add("후속 질문", "대화 전체 요약", f"답 {len(state.get('history') or [1])}개")
         return _reuse(state, whole_talk_text(state), None, SUMMARY), state["sources"], None
     if has_last and view is None and await asyncio.to_thread(detail_request, question):
