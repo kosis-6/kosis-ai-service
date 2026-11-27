@@ -140,8 +140,24 @@ def test_hybrid_candidates_and_thresholds() -> None:
     result = se.find(tables, s, dense=[0.30, 0.31, 0.29])
     assert len(result["candidates"]) == 3 and result["status"] == "out_of_scope"
     result = se.find(tables, s, dense=[0.600, 0.598, 0.30])
-    assert result["status"] == "ambiguous"
-    assert [o["family_id"] for o in result["options"]] == ["FA", "FB"]
+    # 점수가 거의 같은 묶음은 되묻지 않고 고른다 (조건이 같으면 원래 1위)
+    assert result["status"] in ("ok", "partial_match") and result["family"]["family_id"] == "FA"
+    assert [f["family_id"] for f in result["close_families"]] == ["FA", "FB"]
+
+
+def test_close_families_pick_the_one_meeting_conditions(monkeypatch) -> None:
+    tables = _three_families()
+    by = {t["tbl_id"]: t for t in tables}
+    rows = [
+        {"table": by["A"], "score": 0.600, "keyword": 0.0, "dense": 0.6, "checks": {"sex": False}},
+        {"table": by["B"], "score": 0.598, "keyword": 0.0, "dense": 0.598, "checks": {"sex": True}},
+        {"table": by["C"], "score": 0.300, "keyword": 0.0, "dense": 0.3, "checks": {}},
+    ]
+    monkeypatch.setattr(se, "rank", lambda *a, **k: rows)
+    result = se.find(tables, _slots("인구", "인구"), dense=[0.6, 0.598, 0.3])
+    assert result["status"] != "ambiguous" and result["family"]["family_id"] == "FB"
+    assert [f["family_id"] for f in result["close_families"]] == ["FA", "FB"]
+    assert [o["family_id"] for o in result["other_families"]] == ["FA", "FC"]
 
 
 def test_rule_conditions_projection_spouse_exclude() -> None:

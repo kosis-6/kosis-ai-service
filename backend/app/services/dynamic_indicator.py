@@ -2020,6 +2020,9 @@ async def _compute_target(
             sub["dynamic"][-1]["binding_skip"] = (
                 b.status if b.status != binding.BOUND else "연산 둘"
             )
+            if (ask := binding.ask_of(b)) is not None:
+                sub["dynamic"][-1]["binding_skip"] = f"되묻기 ({ask.dim_name})"
+                return None, ask
             if b.status == binding.PARTIAL:
                 sub["_partial"] = (b, sub["dynamic"][-1])
             return None, None
@@ -2055,16 +2058,20 @@ async def _compute_target(
         from app.services import binding, recell
 
         partial = sub.pop("_partial", None)
-        if partial is None or not get_settings().binding_recell:
+        if partial is None:
             return None, None
         b, step = partial
+        # recell이 뜻으로도 잇지 못하면, 남은 조건이 모두 칸 고르기일 때 되묻는다
+        fallback = binding.ask_of(b, unsaid=True)
+        if not get_settings().binding_recell:
+            return None, fallback
         left = _recell_budget.get()
         if left is None:
             left = [MAX_RECELL]
             _recell_budget.set(left)
         if left[0] <= 0:
             step["recell_skip"] = f"질문당 recell 상한({MAX_RECELL}회)"
-            return None, None
+            return None, fallback
         left[0] -= 1
         try:
             fixed = await recell.fix(question, entry.get("tbl_nm"), b, u.get("topic"), step)
@@ -2075,9 +2082,11 @@ async def _compute_target(
                 )
         except Exception:
             logger.exception("recell 실패: %s", entry["tbl_id"])
-            return None, None
+            return None, fallback
         if plan is None:
-            return None, None
+            if fallback is not None:
+                step["recell_skip"] = f"뜻으로도 잇지 못함 → 되묻기 ({fallback.dim_name})"
+            return None, fallback
         notice = ". ".join(n for n in (notice, fixed.notice) if n) or None
         return await run_binding(entry, plan, q_used, sub, slots, notice, "binding+recell")
 
@@ -2094,9 +2103,12 @@ async def _compute_target(
             logger.exception("칸 고르기 LLM 뒤 잇기 실패: %s", tbl_id)
             return None, None
         if plan is None:
+            ask = binding.ask_of(b)
             if sub["dynamic"]:
-                sub["dynamic"][-1]["binding_skip"] = b.status
-            return None, None
+                sub["dynamic"][-1]["binding_skip"] = (
+                    f"되묻기 ({ask.dim_name})" if ask is not None else b.status
+                )
+            return None, ask
         slots_b = {
             **slots_llm,
             "cells_by_binding": True,
@@ -2368,11 +2380,34 @@ async def answer_choice(question: str, context: dict, code: str, trace: dict) ->
     tbl_id = context["tbl_id"]
     trace.setdefault("dynamic", [])
     res, ask = await _try(tbl_id, None, question, parsed, trace, forced)
+    if res is None and ask is None:
+        res, ask = await _choice_by_binding(question, parsed, tbl_id, forced, trace)
     if res is None and ask is not None:
         return ask_answer(question, parsed, tbl_id, context.get("tbl_nm") or tbl_id, ask, forced)
     if res is not None:
         await _remember(parsed, tbl_id, {}, res)
     return res
+
+
+async def _choice_by_binding(question: str, parsed: dict, tbl_id: str, forced: dict, trace: dict):
+    """칸잇기가 낸 되묻기는 규칙이 못 고른 표다. 고른 칸을 고정하고 칸잇기로 한 번 더 계산."""
+    from app.core.config import get_settings
+    from app.services import binding
+
+    if not get_settings().binding_use:
+        return None, None
+    try:
+        b = await run_in_threadpool(binding.bind, tbl_id, question, parsed, None, forced)
+        plan = await run_in_threadpool(binding.retry_plan, b, question, parsed)
+    except Exception:
+        logger.exception("되묻기 답을 잇기로 계산 실패: %s", tbl_id)
+        return None, None
+    if plan is None:
+        return None, binding.ask_of(b, unsaid=True)
+    slots = {"cells_by_binding": True, "binding_multi": plan.multi, "binding_quiet": plan.quiet}
+    res, ask = await _try(tbl_id, None, question, plan.parsed, trace, plan.forced, slots)
+    trace["dynamic"][-1]["by"] = "binding"
+    return res, ask
 
 
 async def cached_answer(question: str, parsed: dict, trace: dict) -> dict | None:
