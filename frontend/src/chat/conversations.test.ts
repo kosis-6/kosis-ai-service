@@ -3,7 +3,7 @@ import { createElement } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { pickable } from "./reports";
 import { Answer } from "./Answer";
-import { replayed, saveChartView, when } from "./conversations";
+import { createChartViewQueue, replayed, saveChartView, when } from "./conversations";
 
 const calls: { url: string; init?: RequestInit }[] = [];
 vi.mock("../auth/client", () => ({
@@ -70,6 +70,27 @@ describe("화면에서 바꾼 차트 모양 남기기", () => {
 
   it("서버가 받지 않으면 알린다", async () => {
     await expect(saveChartView("A_1", 9, "bar")).rejects.toThrow();
+  });
+
+  it.each([false, true])("느린 첫 저장이 마지막 선택을 덮어쓰지 않는다 (첫 저장 실패: %s)", async (fail) => {
+    let finishFirst!: () => void;
+    const first = new Promise<void>((resolve, reject) => {
+      finishFirst = () => fail ? reject(new Error("network")) : resolve();
+    });
+    const persist = vi.fn<typeof saveChartView>().mockResolvedValue(undefined).mockReturnValueOnce(first);
+    const queue = createChartViewQueue(persist);
+    const bar = queue.save("A_1", 7, "bar").catch(() => {});
+    const table = queue.save("A_1", 7, "table");
+    const complete = vi.fn();
+    const waiting = queue.wait("A_1").then(complete);
+    await queue.wait("other");
+    expect(persist.mock.calls).toEqual([["A_1", 7, "bar"]]);
+    expect(complete).not.toHaveBeenCalled();
+
+    finishFirst();
+    await Promise.all([bar, table, waiting]);
+    expect(persist.mock.calls).toEqual([["A_1", 7, "bar"], ["A_1", 7, "table"]]);
+    expect(complete).toHaveBeenCalledOnce();
   });
 });
 

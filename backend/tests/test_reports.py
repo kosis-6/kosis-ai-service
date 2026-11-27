@@ -16,10 +16,14 @@ from sqlalchemy import text
 from app.api.deps import get_current_user
 from app.core.db import get_session
 from app.main import app
+from app.services import ask_session, conversations
 from app.services import reports as r
 from app.services.reports import ReportError
 
 FIG = {"label": "2020년 서울 1인가구", "value": 1, "unit": "가구", "kind": "value"}
+ASK_STORAGE = {
+    name: getattr(ask_session, name) for name in ("load", "save", "log_turn", "turn_writer")
+}
 
 
 def run(coro):
@@ -154,14 +158,65 @@ def test_create_saves_selected_chart_view_without_changing_the_answer(db):
 def test_chart_view_chosen_on_screen_reaches_every_report_path(db):
     """화면에서 바꾼 모양은 그 답에 남아, 말로 만든 보고서(담기 · '정리해줘')도 그 모양으로 그린다.
     [보고서] 시트만 chart_views 를 보내 '보고서 만들어줘'로 만들면 꺾은선으로 돌아갔다"""
-    from app.services import conversations
-
     assert run(conversations.set_chart_view(db.a, db.talk, db.t["ok1"], "bar")) == "ok"
     drafted = run(r.add_to_draft(db.a, db.t["ok1"]))  # 보고서 에이전트 · 제안 칩의 담기
     assert drafted["items"][0]["snapshot"]["chart"]["view"] == "bar"
     made = run(r.create(db.a, turn_ids=[db.t["ok1"]]))  # '정리해줘' 보고서
     assert made["items"][0]["snapshot"]["chart"]["view"] == "bar"
     assert run(_response(db.t["ok1"]))["chart"]["view"] == "bar"  # 다시 연 대화가 그리는 답
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_detail_reuses_the_latest_answers_saved_chart_view(db, legacy, monkeypatch):
+    for name, service in ASK_STORAGE.items():
+        monkeypatch.setattr(ask_session, name, service)
+    monkeypatch.setattr(ask_session.indicators, "find_in_text", lambda _: [])
+    monkeypatch.setattr(ask_session.indicators, "find_regions", lambda _: [])
+
+    async def exercise():
+        sid = db.talk + "-detail"
+        question = "부산 출생아 수 추이를 알려줘"
+        chart = {
+            "type": "line",
+            "title": "부산 출생아 수",
+            "category": "연도",
+            "unit": "명",
+            "rows": [{"label": "2023", "value": 10}, {"label": "2024", "value": 12}],
+        }
+        first = {
+            "status": "ok",
+            "request_type": "new",
+            "answer": "출생아 수 추이",
+            "chart": chart,
+            "parsed": {"type": "trend", "indicator": "출생아 수", "regions": ["부산광역시"]},
+        }
+        latest = {**first, "chart": dict(chart)}
+        before = ask_session.next_state(None, question, first, {})
+        before["user_id"] = db.a
+        after = {**ask_session.next_state(before, question, latest, {}), "user_id": db.a}
+        try:
+            await ask_session._save(sid, before, first, None, question, db.a)
+            await ask_session._save(sid, after, latest, before, question, db.a)
+            if legacy:
+                after["last"].pop("chart_turn_id")
+                await ask_session.save(sid, after)
+            assert await conversations.set_chart_view(db.a, sid, latest["turn_id"], "bar") == "ok"
+            assert await conversations.set_chart_view(db.a, sid, first["turn_id"], "table") == "ok"
+
+            detail = await ask_session.handle(sid, "자세히 말해줘", db.a)
+            assert detail["request_type"] == "detail"
+            assert detail["chart"] == {**chart, "view": "bar"}
+            history = await conversations.detail(db.a, sid)
+            assert history["turns"][-1]["response"]["turn_id"] == detail["turn_id"]
+
+            assert await conversations.set_chart_view(db.a, sid, detail["turn_id"], "table") == "ok"
+            ask_session.STATE_CACHE.delete(sid)
+            again = await ask_session.handle(sid, "자세히 말해줘", db.a)
+            assert again["chart"] == {**chart, "view": "table"}
+        finally:
+            await conversations.delete(db.a, sid)
+
+    run(exercise())
 
 
 async def _response(turn_id):
@@ -175,8 +230,6 @@ async def _response(turn_id):
 
 
 def test_chart_view_is_kept_only_for_own_drawable_charts(db):
-    from app.services import conversations
-
     assert run(conversations.set_chart_view(db.b, db.talk, db.t["ok1"], "bar")) == "missing"
     assert run(conversations.set_chart_view(db.a, db.talk, db.t["ok2"], "bar")) == "missing"
     assert run(conversations.set_chart_view(db.a, "other-talk", db.t["ok1"], "bar")) == "missing"

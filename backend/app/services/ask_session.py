@@ -1272,17 +1272,14 @@ def chart_name(chart: dict, view: str | None = None) -> str:
 def reshape(chart: dict, view: str) -> tuple[dict, str | None]:
     """차트를 view 모양으로 → (차트, 못 그린 이유). 못 그리면 그릴 수 있는 기본 모양으로 둔다"""
     kind = chart["type"]
-    if view == "table":
-        return {**chart, "view": "table"}, None
-    # parts(구성비)는 화면이 view 없이 기본 차트로 그린다
-    shown = {**chart, "view": None if kind == "parts" else kind}
-    if view == "bar" and kind == "line":
-        if charts.crowded(chart):
-            count = len(chart["series"])
-            return shown, f"{count}개 지역을 막대로 그리면 겹쳐 읽기 어렵습니다"
-        return {**chart, "view": "bar"}, None
-    if view in (kind, "chart") or (view == "bar" and kind == "parts"):
+    shown = {**chart, "view": "bar" if kind == "parts" else kind}
+    if view == "chart":
         return shown, None
+    if charts.view_fits(chart, view):
+        return {**chart, "view": view}, None
+    if view == "bar" and kind == "line":
+        count = len(chart["series"])
+        return shown, f"{count}개 지역을 막대로 그리면 겹쳐 읽기 어렵습니다"
     return shown, CHART_CANNOT[view]
 
 
@@ -3664,6 +3661,8 @@ async def handle(
             sid = new_id()
         if moved:
             sid, state, expired = new_id(), None, False
+        if user_id is not None and state is not None:
+            await _restore_chart_view(sid, state, user_id)
         # 보고서 말은 에이전트로 (#249 의 '정리해줘' 보고서는 _turn 안에서 따로 간다)
         if listed and report_router.wants(question, state):
             standalone_stat = bool(
@@ -3799,6 +3798,19 @@ async def _load(session_id: str) -> tuple[dict | None, bool]:
         return None, False
 
 
+async def _restore_chart_view(sid: str, state: dict, user_id: int) -> None:
+    last = state.get("last") or {}
+    if not (chart := last.get("chart")):
+        return
+    try:
+        # 차트 보기는 캐시된 대화 상태와 별도로 저장되므로 원본 턴에서 읽는다.
+        view = await conversations.chart_view(user_id, sid, state.get("turn_no") or 0, last)
+        if view and charts.view_fits(chart, view):
+            last["chart"] = {**chart, "view": view}
+    except (SQLAlchemyError, OSError):
+        logger.exception("직전 차트 보기 읽기 실패")
+
+
 async def _save(
     sid: str,
     after: dict,
@@ -3816,9 +3828,12 @@ async def _save(
                 # 다시 생겨 지운 대화가 목록에 되살아났다 (11/26 리뷰)
                 logger.info("답을 만드는 사이 지운 대화라 저장하지 않음")
                 return
-            await save(sid, after, conn)
             turn_no = after.get("turn_no") or 1
             turn_id = await log_turn(sid, user_id, turn_no, question, res, before, after, conn)
+            last = after.get("last") or {}
+            if user_id is not None and res.get("chart") and last.get("chart") is res["chart"]:
+                last["chart_turn_id"] = turn_id
+            await save(sid, after, conn)
             if user_id is not None and listed:  # 보고서 에이전트의 따로 조회는 목록에 남기지 않는다
                 await conversations.touch(sid, user_id, question, conn)
         if user_id is not None:

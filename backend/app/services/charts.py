@@ -17,9 +17,11 @@ def crowded(chart: dict) -> bool:
 
 def view_fits(chart: dict, view: str) -> bool:
     """화면에서 고른 보기(line · bar · table)로 이 차트를 그릴 수 있는가.
-    표는 늘, 같은 모양은 그대로, 막대는 겹치지 않는 꺾은선만 (선이 많으면 막대 보기가 없다)"""
+    구성비는 막대로 그린다. 지역별 꺾은선이 많으면 막대 보기가 없다"""
     kind = chart.get("type")
-    return view in ("table", kind) or (view == "bar" and kind == "line" and not crowded(chart))
+    if view == "bar":
+        return kind in ("bar", "parts") or (kind == "line" and not crowded(chart))
+    return view == "table" or view == kind == "line"
 
 
 def _title(*parts: Any) -> str:

@@ -451,7 +451,7 @@ export default function ChartCard({ chart, onViewChange }: { chart: Chart; onVie
           ["table", "표"],
         ]
       : [
-          [chart.type === "bar" ? "bar" : "line", "차트"],
+          ["bar", "차트"],
           ["table", "표"],
         ];
   const asked = views.find(([key]) => key === chart.view)?.[0];

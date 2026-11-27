@@ -7,7 +7,7 @@ import { Answer } from "../chat/Answer";
 import { ask } from "../chat/api";
 import { EXAMPLE_CATEGORIES, EXAMPLES } from "../chat/examples";
 import { History } from "../chat/History";
-import { deleteConversation, getConversation, HistoryError, listConversations, replayed, saveChartView } from "../chat/conversations";
+import { createChartViewQueue, deleteConversation, getConversation, HistoryError, listConversations, replayed } from "../chat/conversations";
 import { AltCard } from "../chat/Reply";
 import { ReportPreview, ReportSheet } from "../chat/ReportSheet";
 import type { Report } from "../chat/reports";
@@ -57,6 +57,7 @@ export function ChatPage() {
   const [question, setQuestion] = useState("");
   const [sheet, setSheet] = useState<SheetState | null>(null);
   const [history, setHistory] = useState<ConversationRead[] | null>(null);
+  const [chartViews] = useState(createChartViewQueue);
 
   const saved = user !== null;
 
@@ -104,7 +105,7 @@ export function ChatPage() {
     const data = target?.kind === "answer" ? target.data : null;
     const sessionOf = data?.session_id ?? routeId;
     if (saved && sessionOf && data?.turn_id != null && data.chart) {
-      void saveChartView(sessionOf, data.turn_id, chartView).catch(() => {});
+      void chartViews.save(sessionOf, data.turn_id, chartView).catch(() => {});
     }
   }
 
@@ -134,6 +135,8 @@ export function ChatPage() {
     const v = view.current;
     setOpening(true);
     try {
+      await chartViews.wait(id);
+      if (v !== view.current) return;
       const found = await getConversation(id);
       if (v !== view.current) return;
       const restored: Message[] = [];
@@ -174,12 +177,15 @@ export function ChatPage() {
     const q = text.trim();
     if (!q || busyRef.current || opening) return;
     const v = view.current;
+    const sid = sessionId.current;
     busyRef.current = true;
     setBusy(true);
     add({ kind: "user", text: q });
     try {
+      if (sid) await chartViews.wait(sid);
+      if (v !== view.current) return;
       const has = selections && Object.keys(selections).length > 0;
-      const data = await ask({ question: q, session_id: sessionId.current, ...(has ? { selections } : {}) });
+      const data = await ask({ question: q, session_id: sid, ...(has ? { selections } : {}) });
       if (v !== view.current) {
         void refreshHistory();
         return;

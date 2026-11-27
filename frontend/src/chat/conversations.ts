@@ -38,6 +38,30 @@ export async function saveChartView(sessionId: string, turnId: number, view: Cha
   if (!res.ok) throw new HistoryError(res.status);
 }
 
+export function createChartViewQueue(persist = saveChartView) {
+  const pending = new Map<string, Map<number, Promise<void>>>();
+
+  return {
+    save(sessionId: string, turnId: number, view: ChartView): Promise<void> {
+      const turns = pending.get(sessionId) ?? new Map<number, Promise<void>>();
+      pending.set(sessionId, turns);
+      const previous = turns.get(turnId);
+      const write = () => persist(sessionId, turnId, view);
+      const request = previous ? previous.then(write) : write();
+      const settled = request.catch(() => {});
+      turns.set(turnId, settled);
+      void settled.then(() => {
+        if (turns.get(turnId) === settled) turns.delete(turnId);
+        if (turns.size === 0) pending.delete(sessionId);
+      });
+      return request;
+    },
+    async wait(sessionId: string): Promise<void> {
+      await Promise.all(pending.get(sessionId)?.values() ?? []);
+    },
+  };
+}
+
 export function replayed(turn: ConversationTurn, sessionId: string): AskResponse {
   const saved = turn.response as Partial<AskResponse>;
   return {

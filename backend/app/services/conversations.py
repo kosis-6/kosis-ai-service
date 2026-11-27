@@ -1,8 +1,9 @@
+import json
 from typing import Any
 
 from sqlalchemy import text
 
-from app.services.log_redaction import mask
+from app.services.log_redaction import mask, redact
 
 TITLE_MAX = 60
 REPLAY_KEYS = (
@@ -120,8 +121,8 @@ async def detail(user_id: int, session_id: str) -> dict[str, Any] | None:
     items = []
     for t in turns:
         response = t["response"] or {"answer": t["answer"]}
-        if response.get("reportable"):
-            # 저장할 때는 id가 아직 없다. 다시 연 답도 [보고서에 담기]를 쓸 수 있게 붙인다
+        if response.get("reportable") or response.get("chart"):
+            # 다시 연 답에서도 보고서에 담거나 차트 보기를 저장할 수 있게 한다
             response = {**response, "turn_id": t["id"]}
         items.append(
             {
@@ -146,6 +147,30 @@ async def rename(user_id: int, session_id: str, title: str) -> bool:
             {"sid": session_id, "uid": user_id, "title": title_of(title)},
         )
     return done.rowcount > 0
+
+
+async def chart_view(user_id: int, session_id: str, turn_no: int, last: dict) -> str | None:
+    """직전 차트를 그린 턴에서 최신 보기 설정을 읽는다."""
+    from app.core.db import engine
+
+    params = {"sid": session_id, "uid": user_id}
+    query = (
+        "select response->'chart'->>'view' from app.chat_turns"
+        " where session_id = :sid and user_id = :uid"
+    )
+    if turn_id := last.get("chart_turn_id"):
+        query += " and id = :tid"
+        params["tid"] = turn_id
+    else:
+        # 턴 ID를 기록하기 전의 대화는 보기 설정을 뺀 차트로 원본 턴을 찾는다.
+        params.update(turn_no=turn_no, chart=json.dumps(redact(last["chart"]), ensure_ascii=False))
+        query += (
+            " and turn_no <= :turn_no"
+            " and (response->'chart') - 'view' = cast(:chart as jsonb) - 'view'"
+            " order by turn_no desc, id desc limit 1"
+        )
+    async with engine.begin() as conn:
+        return (await conn.execute(text(query), params)).scalar()
 
 
 async def set_chart_view(user_id: int, session_id: str, turn_id: int, view: str) -> str:
