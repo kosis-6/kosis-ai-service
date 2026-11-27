@@ -3404,9 +3404,10 @@ async def handle(
             sid = new_id()
         if moved:
             sid, state, expired = new_id(), None, False
-        _found_now.set(None)
+        # 보고서 말은 에이전트로 (#249 의 '정리해줘' 보고서는 _turn 안에서 따로 간다)
         if listed and report_router.wants(question, state):
             return await _agent_turn(sid, state, question, user_id, steps, calls, expired, moved)
+        _found_now.set(None)
         res, sources, notice = await _turn(state, question, selections, user_id)
         if res.get("request_type") == NEW:
             # 새 질문도 함께 말한 차트 모양으로 ('부산 출생아 수 최근 5년 막대그래프로').
