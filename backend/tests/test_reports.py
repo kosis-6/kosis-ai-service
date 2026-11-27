@@ -405,7 +405,7 @@ def test_generate_saves_content_and_status(db, monkeypatch):
 
     seen = []
 
-    async def write(title, purpose, items):
+    async def write(title, purpose, items, style=None):
         seen.append((title, purpose, [i["turn_id"] for i in items]))
         return {"summary": [{"text": "요약", "refs": ["r1"]}], "generated_by": "hcx"}
 
@@ -433,7 +433,7 @@ def test_generate_discards_when_items_changed_meanwhile(db, monkeypatch):
 
     rep = run(r.create(db.a, None, None, [db.t["ok1"]]))
 
-    async def write(title, purpose, items):
+    async def write(title, purpose, items, style=None):
         await r.add_item(db.a, rep["id"], db.t["ok2"])  # 만드는 동안 다른 탭에서 담음
         return {"summary": []}
 

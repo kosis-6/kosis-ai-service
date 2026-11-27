@@ -8,6 +8,10 @@ export type EmailCodeSent = Schemas["EmailCodeSent"];
 export type AskRequest = Schemas["AskRequest"];
 export type AskResponse = Omit<Schemas["AskResponse"], "tables"> & {
   tables?: (Partial<SearchResponse> & { recommendations: Recommendation[] }) | null;
+  /** "보고서 만들까요?" 제안 칩 (같은 지표를 세 번째로 담을 수 있게 답했을 때 대화마다 한 번) */
+  report_offer?: { topic: string; count: number } | null;
+  /** 보고서 에이전트(request_type report)가 바꾼 뒤의 보고서 (/reports/{id} 응답과 같은 모양) */
+  report?: Record<string, unknown> | null;
 };
 export type Chart = Schemas["Chart"];
 export type ChartRow = Schemas["ChartRow"];

@@ -9,7 +9,8 @@ import { EXAMPLE_CATEGORIES, EXAMPLES } from "../chat/examples";
 import { History } from "../chat/History";
 import { deleteConversation, getConversation, HistoryError, listConversations, replayed } from "../chat/conversations";
 import { AltCard } from "../chat/Reply";
-import { ReportSheet } from "../chat/ReportSheet";
+import { ReportPreview, ReportSheet } from "../chat/ReportSheet";
+import type { Report } from "../chat/reports";
 import { Sheet } from "../chat/Sheet";
 import { Brand } from "../components/Brand";
 import { Icon } from "../components/Icon";
@@ -27,7 +28,8 @@ type SheetState =
   | { kind: "others"; recs: Recommendation[]; parsed: Parsed }
   | { kind: "examples" }
   | { kind: "history" }
-  | { kind: "report" };
+  | { kind: "report" }
+  | { kind: "report-view"; report: Report };
 
 const TEXT = {
   title: "인구 통계 안내",
@@ -394,6 +396,8 @@ export function ChatPage() {
                     <Answer
                       data={m.data}
                       busy={busy}
+                      onReport={canMakeReport ? () => setSheet({ kind: "report" }) : undefined}
+                      onShowReport={(report) => setSheet({ kind: "report-view", report })}
                       onSend={(text, selections) => void send(text, selections)}
                       onOthers={(recs, parsed) => setSheet({ kind: "others", recs, parsed })}
                       onAskAgain={() => inputRef.current?.focus()}
@@ -474,6 +478,11 @@ export function ChatPage() {
       )}
       {sheet?.kind === "report" && (
         <ReportSheet sessionId={routeId} answers={answers} onClose={() => setSheet(null)} />
+      )}
+      {sheet?.kind === "report-view" && (
+        <Sheet title="보고서 미리보기" doc onClose={() => setSheet(null)}>
+          <ReportPreview report={sheet.report} onBack={() => setSheet(null)} />
+        </Sheet>
       )}
       {sheet?.kind === "history" && (
         <Sheet title="지난 대화" narrow onClose={() => setSheet(null)}>
