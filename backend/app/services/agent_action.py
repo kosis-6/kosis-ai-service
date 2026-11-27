@@ -1,47 +1,64 @@
-"""행동 고르기 (N9): 답 판정이 '다시'를 냈을 때 다음에 무엇을 할지 코드 규칙으로 정한다
+"""행동 고르기 (N9): 답이 틀렸거나(판정 '다시') 값을 못 냈을 때 다음 행동을 코드 규칙으로 정한다
 
-판정(answer_judge)은 답이 틀렸는지와 그 이유만 낸다. 틀렸을 때 무엇을 해야 고쳐지는지는 이유와
-답이 어디서 왔는지에 따라 다르다. 11/22 실험에서 이유를 보지 않고 모두 '새 검색어로 다시 찾기'를
-했더니 정답 표 1위가 42 → 29로 줄었다: 깨뜨린 19건 중 13건은 표는 이미 맞고 칸 · 계산이 막힌
-답이었다. 그래서 행동을 여섯으로 나누고 코드가 고른다 (LLM 호출 없음).
+설계: docs/agent_redesign_2026-11-26.md 2-2 · 2-4 · 3-3. 행동은 **다시 하는 단계** 기준 넷이고,
+좁은 것부터 쓴다 (repick 칸 → retable 표 → replan 계획 · 검색어 → give_up).
 
-  행동      돌아가는 단계     언제
-  replan    계산 계획        이유가 형태 · 조건 · 계산 (표는 맞는데 계산 방법이 틀림)
-  requery   표 찾기          이유가 대상이고 사전 경로 (사전이 엉뚱한 지표로 받음, 후보가 없음)
-  retable   표 고르기        표 찾기 경로, 1위에 ✘가 있거나 검토가 exact가 아님 → 다음 후보
-  repick    칸 고르기        표 찾기 경로, 1위 조건 모두 ✔ + 검토 exact인데 칸 · 계산이 막힘
-                             (같은 표에서 칸만 다시. 호출부가 들어오기 전에는 replan으로 떨어짐.
-                             표 계산 안의 recell(services/recell.py, 뜻으로 잇기)과는 다른 것)
-  reroute   경로             사전 경로인데 표 찾기를 아직 안 거침
-                             (지금 _recompute의 '통계표 찾기로')
-  give_up   —                위 어느 것도 아니거나 상한 초과 → 처음 답 유지 또는 답변 불가 사유
+  행동      다시 하는 단계   하는 일 (ask_session)                               LLM
+  repick    칸               같은 표(사전 표 포함)에서 칸 잇기 → 지적 넘긴 recell  recell 1회(따로)
+  retable   표               쓴 표를 빼고 다른 표로 (_retable). 꾸러미가 있으면    없음
+                             남은 후보, 없으면 원래 질문으로 찾음. 검색어는 그대로
+  replan    계획 · 검색어    Gemma 가 계획을 고쳐 새로 찾고 계산 (_replan_compute)  Gemma 1회
+  give_up   —                _loop_end                                            —
 
-이 모듈은 행동 이름과 근거만 돌려준다. 실제 호출은 ask_session._judged가 한다. 지금 돌아가는
-행동은 replan(agent/replan.py) · reroute · retable · give_up이고, requery · repick은 이름만 내고
-호출부가 비어 있어 대체 행동으로 떨어진다 (재검색 게이트 · 연결 단계가 들어오면 채운다).
-설계: 인계_2026-11-17/A_설계서.md 4절.
+옛 행동 reroute 는 retable 에, requery 는 replan 에 합쳤다.
+
+규칙 (3-3). '칸 있음'은 검사(table_check)의 differs · cells_exist, '맞음'은 kind_ok · topic_ok:
+
+  판정 이유 · 실패                    검사                     행동      안 되면
+  조건이 빠짐                         칸 있음                  repick    retable
+  조건이 빠짐                         칸 없음                  retable   replan
+  대상이 다름                         칸 있음 · 값 종류 · 주제  repick    retable
+  대상이 다름                         그 밖                    retable   replan
+  계산이 빠짐 · 형태가 다름 · 기간이 다름  —                    replan    retable
+  값 없음: 칸 일부만 이어짐            칸 있음                  repick    retable
+  값 없음: 칸 일부만 이어짐            칸 없음                  retable   replan
+  값 없음: 후보 모두 조건 ✘            —                        replan    give_up
+  답할 수 없는 질문 · 한도 초과        —                        give_up   —
+
+같은 행동은 두 번 쓰지 않는다. 앞 행동이 다 쓰였으면 사다리의 남은 행동으로 간다
+(retable 뒤에도 대상이 다름 → replan). 이 모듈은 행동 이름과 근거만 돌려준다 (LLM 호출 없음).
 """
 
 from dataclasses import dataclass, field
 from typing import Any
 
-REPLAN, REQUERY, RETABLE, REPICK, REROUTE, GIVE_UP = (
-    "replan", "requery", "retable", "repick", "reroute", "give_up",
-)  # fmt: skip
-ACTIONS = (REPLAN, REQUERY, RETABLE, REPICK, REROUTE, GIVE_UP)
-# 판정 이유 → 계산 방법 문제 (표를 바꿔도 안 풀린다)
-PLAN_REASONS = ("형태가 다름", "조건이 빠짐", "계산이 빠짐")
-MAX_RETRIES = 2  # 질문당 다시 계산 상한 (B 측정: 한 번에 15 ~ 17초)
-MAX_LLM_RETRIES = 1  # 그중 replan · requery(Gemma 호출)는 합쳐 1회
+REPICK, RETABLE, REPLAN, GIVE_UP = "repick", "retable", "replan", "give_up"
+ACTIONS = (REPICK, RETABLE, REPLAN, GIVE_UP)
+LADDER = (REPICK, RETABLE, REPLAN)  # 좁은 것부터
+
+# 판정 이유 (app/prompts/answer_judge.py REASONS)
+MISSING, TARGET, UNANSWERABLE = "조건이 빠짐", "대상이 다름", "답할 수 없는 질문"
+PLAN_REASONS = ("계산이 빠짐", "형태가 다름", "기간이 다름")
+# 값 없는 실패 (판정 없이 코드가 실패 기록으로 낸 이유, ask_session.failed_retryable)
+NO_VALUE_CELLS = "값 없음: 칸 일부만 이어짐"
+NO_VALUE_CHECKS = "값 없음: 후보 모두 조건 ✘"
+NO_VALUE = (NO_VALUE_CELLS, NO_VALUE_CHECKS)
+# 이 이유일 때만 '칸 있음'을 본다 (검사를 돌린다)
+REPICK_REASONS = (MISSING, TARGET, NO_VALUE_CELLS)
+
+MAX_RETRIES = 2  # 질문당 다시 계산 상한 (B 측정: 한 번에 15 ~ 17초). 대체 행동은 같은 회에 든다
+MAX_LLM_RETRIES = 1  # 그중 replan(Gemma 호출)은 1회
+# repick 의 recell(HCX)은 위 한도와 따로 센다: repick 은 질문당 한 번이라 recell 도 1회.
+# 표가 틀린 답에 repick 이 recell 을 써도 replan 기회가 남는다 (11/27 결정)
 MAX_SECONDS = 60  # 판정 시작부터 (설계서 4-5). 넘으면 지금까지 얻은 것으로 끝낸다
-LLM_ACTIONS = ("replan", "requery")
+LLM_ACTIONS = (REPLAN,)
 
 
 @dataclass
 class Action:
     name: str
     why: str
-    fallback: str | None = None  # 호출부가 없거나 실패하면 떨어질 행동
+    fallback: str | None = None  # 이 행동이 다시 계산하지 못하면 같은 회에 이어 할 행동
     detail: dict[str, Any] = field(default_factory=dict)
 
     def as_trace(self) -> dict[str, Any]:
@@ -49,22 +66,12 @@ class Action:
 
 
 def picked_candidate(found: dict | None) -> dict | None:
-    """넘기기 꾸러미에서 탐색이 고른 1위 후보 (없으면 첫 후보)"""
+    """넘기기 꾸러미에서 탐색이 고른 1위 후보 (없으면 첫 후보). 지표가 여럿이면 None"""
     targets = ((found or {}).get("handoff") or {}).get("targets") or []
     if len(targets) != 1:
         return None
     cands = targets[0].get("candidates") or []
     return next((c for c in cands if c.get("picked")), cands[0] if cands else None)
-
-
-def top_is_sure(cand: dict | None) -> bool:
-    """1위가 '조건 모두 ✔ + 검토 exact'인가 (표는 맞다고 봐도 되는 근거)"""
-    if not cand:
-        return False
-    checks = cand.get("checks") or {}
-    return (
-        bool(checks) and all(checks.values()) and (cand.get("review") or {}).get("match") == "exact"
-    )
 
 
 def failed_at_cell(trace: dict | None) -> bool:
@@ -76,102 +83,74 @@ def failed_at_cell(trace: dict | None) -> bool:
     return False
 
 
+def _rule(reason: str, cells: bool, fits: bool) -> tuple[tuple[str, ...], str]:
+    """판정 이유 · 실패 × 검사 → (행동 순서, 근거). 3-3 표"""
+    if reason == MISSING:
+        if cells:
+            return (REPICK, RETABLE), f"'{reason}' + 그 표에 고칠 칸 있음 → 같은 표에서 칸 다시"
+        return (RETABLE, REPLAN), f"'{reason}'인데 그 표에 고칠 칸 없음 → 다른 표"
+    if reason == TARGET:
+        if cells and fits:
+            return (REPICK, RETABLE), f"'{reason}' + 칸 있음 · 값 종류 · 주제 맞음 → 칸 다시"
+        return (RETABLE, REPLAN), f"'{reason}' → 다른 표"
+    if reason in PLAN_REASONS:
+        return (REPLAN, RETABLE), f"'{reason}': 계산 계획 문제 → 계획 다시"
+    if reason == NO_VALUE_CELLS:
+        if cells:
+            return (REPICK, RETABLE), "값 없음 · 칸이 일부만 이어짐 + 칸 있음 → 칸 다시"
+        return (RETABLE, REPLAN), "값 없음 · 칸이 일부만 이어짐 + 칸 없음 → 다른 표"
+    if reason == NO_VALUE_CHECKS:
+        return (REPLAN, GIVE_UP), "값 없음 · 후보 모두 조건 ✘ → 계획 · 검색어 다시"
+    return (RETABLE, REPLAN), f"이유 없음('{reason or '-'}') → 다른 표"
+
+
 def choose(
     verdict: dict[str, Any],
-    res: dict[str, Any],
-    found: dict | None,
     tried: int = 0,
     llm_tried: int = 0,
     done: frozenset[str] = frozenset(),
+    *,
+    cells: bool = False,
+    fits: bool = True,
+    repick_ok: bool = True,
 ) -> Action:
-    """판정 결과 · 답 · 꾸러미 → 다음 행동.
+    """판정(또는 값 없는 실패) 이유 · 검사 → 다음 행동.
 
-    tried: 지금까지 다시 계산한 횟수, llm_tried: 그중 LLM 행동 횟수, done: 이미 쓴 행동
-    (같은 행동은 두 번 하지 않는다. 설계서 4-5 "같은 표 · 같은 계획 · 같은 검색어 안 함")
+    tried: 지금까지 다시 계산한 횟수, llm_tried: 그중 replan 횟수, done: 이미 쓴 행동
+    cells: 다시 볼 표에 고칠 칸이 있나, fits: 값 종류 · 주제가 맞나,
+    repick_ok: False 면 repick 을 고르지 않는다 (여러 지표 · 복합 답, 계산이 필요한 지적).
+    셋 다 ask_session.repick_cells (검사 table_check)
     """
+    reason = str(verdict.get("reason") or "")
+    if reason == UNANSWERABLE:
+        return Action(GIVE_UP, "판정 refuse: 답변 불가 사유로")
     if tried >= MAX_RETRIES:
         return Action(GIVE_UP, f"다시 계산 상한({MAX_RETRIES}회)")
-    reason = str(verdict.get("reason") or "")
-    parsed = res.get("parsed") or {}
-    via_search = bool(parsed.get("dynamic_spec"))
-    cand = picked_candidate(found)
-    llm_ok = llm_tried < MAX_LLM_RETRIES
-    if done and llm_ok and REPLAN not in done:
-        # 코드 행동(reroute · retable)이 실패했거나 그 답도 틀렸다: 이유가 무엇이든 계획을 다시
-        # 세운다. 대상이 다른 경우 replan 은 search 도 고친다 (4-3). not_computable 이 나오는 길
-        why = f"앞 행동({' · '.join(sorted(done))}) 뒤에도 틀림 → 계획 다시"
-        return Action(REPLAN, why, fallback=_next(done | {REPLAN}, llm_ok, via_search))
-    action = _choose(reason, res, found, cand, via_search, llm_ok)
-    if action.name in done:
-        nxt = _next(done, llm_ok, via_search)
-        after = _next(done | {nxt}, llm_ok, via_search) if nxt != GIVE_UP else None
-        return Action(nxt, f"{action.name}은 이미 함 → 다음 행동", fallback=after)
-    if action.fallback in done:
-        action.fallback = _next(done | {action.name}, llm_ok, via_search)
-        if action.fallback == GIVE_UP:
-            action.fallback = None
-    return action
+    order, why = _rule(reason, cells and repick_ok, fits)
+    if GIVE_UP not in order:
+        # 규칙의 두 행동이 다 쓰였으면 사다리의 남은 행동으로 (retable 뒤에도 대상이 다름 → replan)
+        order = order + tuple(a for a in (RETABLE, REPLAN) if a not in order)
 
+    def usable(name: str) -> bool:
+        if name == GIVE_UP:
+            return True
+        if name in done:
+            return False
+        if name == REPLAN and llm_tried >= MAX_LLM_RETRIES:
+            return False
+        return not (name == REPICK and not (cells and repick_ok))
 
-def _next(done: frozenset[str] | set[str], llm_ok: bool, via_search: bool) -> str:
-    """쓰지 않은 행동 중 다음 것: replan(LLM 남았을 때) → retable(표) · reroute(사전) → give_up"""
-    order = ([REPLAN] if llm_ok else []) + (
-        [RETABLE, REROUTE] if via_search else [REROUTE, RETABLE]
-    )
-    return next((a for a in order if a not in done), GIVE_UP)
-
-
-def _choose(
-    reason: str, res: dict[str, Any], found: dict | None, cand, via_search: bool, llm_ok: bool
-) -> Action:
-    """판정 이유 × 경로 × 1위 후보 상태 → 행동 (설계서 4-2 표)"""
-
-    if reason in PLAN_REASONS:
-        if llm_ok:
-            return Action(
-                REPLAN,
-                f"판정 이유 '{reason}': 계산 계획 문제",
-                fallback=RETABLE if via_search else REROUTE,
-            )
-        return Action(
-            RETABLE if via_search else REROUTE, f"'{reason}'이지만 LLM 행동 상한 → 표 · 경로만"
-        )
-
-    if reason == "기간이 다름":
-        # 연도는 코드 규칙표(timeref)가 세므로 LLM 계획 전에 그 규칙을 다시 태운다.
-        # 여기서는 replan으로 넘기되 호출부가 먼저 timeref를 다시 돌리게 표시한다
-        # (11/24: timeref는 해석 때 이미 돌아 다시 돌려도 같다. 호출부는 지금 바로 replan으로 간다)
-        if llm_ok:
-            return Action(
-                REPLAN,
-                "판정 이유 '기간이 다름': 연도 규칙 다시 → 안 되면 계획",
-                fallback=RETABLE if via_search else REROUTE,
-                detail={"rerun_timeref": True},
-            )
-        return Action(GIVE_UP, "'기간이 다름'인데 LLM 행동 상한")
-
-    if reason == "대상이 다름":
-        if not via_search:
-            # 사전이 엉뚱한 지표로 받은 경우. 표 찾기를 안 거쳤으면 경로부터 바꾼다
-            # (지금 _recompute). 표 찾기까지 거쳤는데도 틀리면 후보에 정답이 없는 것
-            # → 검색어 다시 (게이트 통과)
-            if found is None:
-                return Action(REROUTE, "사전 경로, 표 찾기 안 거침 → 통계표 찾기로")
-            if llm_ok:
-                return Action(
-                    REQUERY, "사전 경로, 표 찾기 후보에도 없음 → 검색어 다시", fallback=RETABLE
-                )
-            return Action(RETABLE, "'대상이 다름'이지만 LLM 행동 상한 → 다음 후보")
-        if top_is_sure(cand) and failed_at_cell(res.get("trace")):
-            # 표는 맞는데 칸 · 계산이 막힘. 11/22 실험에서 이 경우에 재검색하면 깨졌다
-            return Action(
-                REPICK,
-                "1위 조건 모두 ✔ · 검토 exact인데 칸 · 계산 실패 → 같은 표에서 칸 다시",
-                fallback=REPLAN if llm_ok else RETABLE,
-            )
-        return Action(RETABLE, "표 찾기 경로, 1위가 확실하지 않음 → 다음 후보")
-
-    if reason == "답할 수 없는 질문":
-        return Action(GIVE_UP, "판정 refuse: 답변 불가 사유로")
-
-    return Action(RETABLE if via_search else REROUTE, f"이유 없음('{reason or '-'}') → 기본 행동")
+    left = [a for a in order if usable(a)]
+    if not left or left[0] == GIVE_UP:
+        gone = [a for a in order if a != GIVE_UP]
+        return Action(GIVE_UP, f"{why} · 쓸 행동이 없음 (이미 함 · 상한: {' · '.join(gone)})")
+    name = left[0]
+    if name != order[0]:
+        why = f"{why} · {order[0]}은 이미 함 · 상한 → {name}"
+    nxt = next((a for a in left[1:] if a != GIVE_UP), None)
+    detail: dict[str, Any] = {}
+    if name == REPICK:
+        detail["llm"] = True
+    if reason == "기간이 다름" and name == REPLAN:
+        detail["rerun_timeref"] = True
+    return Action(name, why, fallback=nxt, detail=detail)
