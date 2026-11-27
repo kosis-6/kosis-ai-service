@@ -166,9 +166,35 @@ def test_dictionary_repick_falls_back_to_tables() -> None:
     assert (a.name, a.fallback) == (agent_action.REPICK, agent_action.REROUTE)
 
 
-def test_repick_without_llm_left_still_runs_binding_only() -> None:
+def test_repick_recell_is_counted_apart_from_replan() -> None:
+    """repick 의 recell 은 replan 한도와 따로 센다: replan 을 이미 했어도 recell 까지 한다"""
     a = agent_action.choose(VERDICT, _res(), _found("T1"), llm_tried=1, cells=True)
-    assert a.name == agent_action.REPICK and a.detail == {"llm": False}
+    assert a.name == agent_action.REPICK and a.detail == {"llm": True}
+
+
+def test_blocked_repick_is_not_chosen_even_by_the_old_rule() -> None:
+    a = agent_action.choose(VERDICT, _res(), _found("T1"), cells=True, repick_ok=False)
+    assert a.name != agent_action.REPICK
+    res = {**_res(), "trace": {"dynamic": [{"tbl_id": "T1", "skip": "맞는 칸 없음"}]}}
+    found = {
+        "handoff": {
+            "targets": [
+                {
+                    "candidates": [
+                        {
+                            "tbl_id": "T1",
+                            "picked": True,
+                            "checks": {"year": True},
+                            "review": {"match": "exact"},
+                        }
+                    ]
+                }
+            ]
+        }
+    }
+    target = {**VERDICT, "reason": "대상이 다름"}
+    assert agent_action.choose(target, res, found).name == agent_action.REPICK
+    assert agent_action.choose(target, res, found, repick_ok=False).name != agent_action.REPICK
 
 
 def test_period_and_shape_reasons_do_not_repick() -> None:
@@ -296,7 +322,7 @@ def test_no_llm_left_stops_after_binding(table: dict) -> None:
     table["bind"], table["cells"] = _bound("0"), ["성별=계"]
     out, trace = _repick(llm=False)
     assert out is None and table["recell_calls"] == []
-    assert trace["repick"]["recell"] == "LLM 행동 상한"
+    assert trace["repick"]["recell"] == "LLM 상한"
 
 
 def test_repick_does_not_spend_the_table_path_recell_budget(table: dict) -> None:
@@ -307,15 +333,105 @@ def test_repick_does_not_spend_the_table_path_recell_budget(table: dict) -> None
     assert out is not None
 
 
-# ---------------------------------------------------------------- 판정 고리에서 LLM 한도
+def test_binding_that_leaves_only_cell_choices_asks_back(table: dict) -> None:
+    """칸을 다시 고르지 못했고 남은 조건이 칸 고르기뿐이면 되묻기 답을 낸다"""
+    from app.services.binding import Unbound
+
+    table["bind"] = Binding(
+        "DT_S",
+        unbound=[
+            Unbound(
+                "성별", "", "합계 칸이 없음 (되묻기)", 1, "성별", [("1", "남자"), ("2", "여자")]
+            )
+        ],
+    )
+    out, trace = _repick(llm=False)
+    assert out["clarification"] and trace["repick"]["ask"] == "성별"
+    assert "used" not in trace["handoff"]
 
 
-def test_repick_recell_counts_as_the_llm_action(monkeypatch: pytest.MonkeyPatch) -> None:
-    """repick 이 recell 을 불렀으면 그 뒤에는 replan(Gemma)을 고르지 않는다"""
+# -------------------------------------------------------- 거르기: 여러 지표 · 계산 · 근거 칸
+
+
+def test_multi_indicator_and_composite_answers_are_blocked() -> None:
+    split = _res(result={"status": "ok", "split_by": "indicator", "split": []})
+    assert ask_session.repick_blocked(split, VERDICT) == "여러 지표 · 복합 답"
+    composite = _res(parsed={"indicator": "x", "composite": True})
+    assert ask_session.repick_blocked(composite, VERDICT)
+    two = _res(parsed={"indicator": "x", "indicators": ["a", "b"]})
+    assert ask_session.repick_blocked(two, VERDICT)
+    assert ask_session.repick_blocked(_res(), VERDICT) is None
+
+
+BIRTH = [
+    Dim(0, "항목", {"T1": "출생아수(명)", "T2": "출생성비(명)", "T3": "혼인건수 (건)"}),
+    Dim(1, "성별", {"0": "계", "1": "남자", "2": "여자"}),
+    Dim(2, "행정구역별", {"00": "전국"}),
+]
+
+
+@pytest.fixture
+def birth(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(di, "schema", lambda tbl_id: (BIRTH, 2, ""))
+    monkeypatch.setattr(ask_session.indicators, "spec", lambda name: None)
+
+
+def _cells(res: dict, missing: str) -> dict:
+    verdict = {**VERDICT, "reason": "대상이 다름", "missing": missing}
+    return asyncio.run(ask_session.repick_cells(res, verdict, None))
+
+
+def test_cell_named_in_the_hint_is_evidence(birth) -> None:
+    res = _res(trace={"dynamic": [{"tbl_id": "T1", "cells": "항목 출생아수(명)", "status": "ok"}]})
+    out = _cells(res, "출생아 수가 아니라 출생성비를 써야 함")
+    assert out["cells"] is True and out["hits"] == ["출생성비(명)"]
+
+
+def test_cells_the_wrong_answer_used_are_not_evidence(birth) -> None:
+    res = _res(trace={"dynamic": [{"tbl_id": "T1", "cells": "출생아수(명) · 계", "status": "ok"}]})
+    out = _cells(res, "여자를 물었는데 출생아수 전체로 답함")
+    assert out["hits"] == ["여자"]
+    out = _cells(res, "출생아수(명)만 씀")
+    assert out["cells"] is False and out["hits"] == []
+
+
+def test_dictionary_item_and_topic_cells_are_not_evidence(
+    birth, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spec = {"sources": [{"table": "T1", "item_id": "T3"}]}
+    monkeypatch.setattr(ask_session.indicators, "spec", lambda name: spec)
+    res = _res(parsed={"indicator": "출생아수"})
+    out = _cells(res, "혼인건수와 출생아수가 아님")
+    assert out["cells"] is False and out["hits"] == []
+
+
+def test_single_cell_dimension_is_not_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
+    one = [Dim(0, "항목", {"T1": "혼인"}), *BIRTH[1:]]
+    monkeypatch.setattr(di, "schema", lambda tbl_id: (one, 2, ""))
+    monkeypatch.setattr(ask_session.indicators, "spec", lambda name: None)
+    out = _cells(_res(), "결혼한 사람 수를 물었으나 혼인 건수로 답함")
+    assert out["cells"] is False and out["hits"] == []
+
+
+def test_hint_that_needs_a_calculation_blocks_repick(birth) -> None:
+    out = _cells(_res(), "혼인건수를 출생아로 나눈 비율을 구해야 함")
+    assert out["cells"] is False and out["blocked"].startswith("계산이 필요한 지적")
+
+
+def test_calculation_word_that_names_a_cell_is_not_blocked(birth) -> None:
+    out = _cells(_res(), "출생 성비를 써야 함")
+    assert out["cells"] is True and out["blocked"] is None
+
+
+# -------------------------------------------------------- 판정 고리: repick recell 과 replan
+
+
+def test_repick_recell_does_not_use_up_replan(monkeypatch: pytest.MonkeyPatch) -> None:
+    """repick 이 recell 까지 하고 실패해도 그 뒤 replan(Gemma)을 쓸 수 있다"""
     seen: list[str] = []
 
     async def cells(res, verdict, found):
-        return {"cells": True, "tbl_id": "T1", "by": "시험"}
+        return {"cells": True, "blocked": None, "tbl_id": "T1", "by": "시험"}
 
     async def repick(res, verdict, asked, llm_ok=True):
         seen.append("repick")
@@ -341,7 +457,35 @@ def test_repick_recell_counts_as_the_llm_action(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(ask_session, "_replan_compute", replan)
     res = {**_res(), "request_type": ask_session.NEW, "answer": "처음 답"}
     asyncio.run(ask_session._judged(res, None, "q", None))
-    assert "replan" not in seen and seen[0] == "repick"
+    assert seen[:3] == ["repick", "recompute", "replan"]
     record = res["trace"]["answer_judge"]
     assert record["repick_cells"][0]["cells"] is True
     assert record["attempts"][0]["action"]["action"] == agent_action.REPICK
+
+
+def test_blocked_evidence_keeps_repick_out_of_the_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[str] = []
+
+    async def cells(res, verdict, found):
+        return {"cells": False, "blocked": "여러 지표 · 복합 답", "by": "여러 지표 · 복합 답"}
+
+    async def repick(res, verdict, asked, llm_ok=True):
+        seen.append("repick")
+        return None, "같은 표에서 칸 다시"
+
+    async def other(*a, **k):
+        seen.append("other")
+        return None, "다른 행동"
+
+    async def verdict(question, parsed, result):
+        return {**VERDICT, "reason": "대상이 다름"}
+
+    monkeypatch.setattr(answer_judge, "enabled", lambda: True)
+    monkeypatch.setattr(answer_judge, "verdict", verdict)
+    monkeypatch.setattr(ask_session, "repick_cells", cells)
+    monkeypatch.setattr(ask_session, "_repick_compute", repick)
+    monkeypatch.setattr(ask_session, "_recompute", other)
+    monkeypatch.setattr(ask_session, "_replan_compute", other)
+    res = {**_res(), "request_type": ask_session.NEW, "answer": "처음 답"}
+    asyncio.run(ask_session._judged(res, None, "q", None))
+    assert "repick" not in seen and seen

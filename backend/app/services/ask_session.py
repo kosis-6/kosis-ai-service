@@ -3198,39 +3198,113 @@ def wrong_cells(res: dict, tbl_id: str) -> str | None:
     )
 
 
-def _missing_hits_cell(tbl_id: str, missing: str) -> bool:
-    """판정이 빠졌다고 본 말이 그 표의 칸(합계 · 지역 제외) 이름에 닿는가"""
+# 칸만 바꿔서는 못 만드는 지적 (나누기 · 더하기 · 견주기 · 빼기가 필요): repick 하지 않는다.
+# 그 말이 칸 이름에도 있으면(예: '출생성비' 칸) 계산이 아니라 그 칸을 가리킨 것으로 본다
+CALC_ASKED = re.compile(
+    r"비율|비중|배수|성비|차이|격차|비교|견주|합산|합계를|더해|더하|나누|나눠|빼고|빼야|제외|"
+    r"중에서만|증감|변화량|상승폭|감소분"
+)
+_UNIT_TAIL = re.compile(r"\s*\([^)]*\)\s*$")
+
+
+def _used_codes(res: dict, tbl_id: str, dims: list) -> set[tuple[int, str]]:
+    """틀렸다고 판정된 답이 그 표에서 쓴 칸 (분류 번호, 코드).
+    표 경로는 계산 기록의 칸 이름으로, 사전 답은 사전 지표의 출처 항목(item_id)으로"""
+    out: set[tuple[int, str]] = set()
+    wrong = wrong_cells(res, tbl_id) or ""
+    spec = indicators.spec((res.get("parsed") or {}).get("indicator") or "")
+    items = {
+        str(src.get("item_id"))
+        for src in (spec or {}).get("sources") or []
+        if src.get("table") == tbl_id and src.get("item_id")
+    }
+    for d in dims:
+        for code, name in d.codes.items():
+            if (wrong and name and name in wrong) or code in items:
+                out.add((d.no, code))
+    return out
+
+
+def _fix_cells(res: dict, tbl_id: str, missing: str) -> list[str]:
+    """판정이 빠졌다고 본 말이 닿는 그 표의 칸 이름 (합계 · 지역 제외). 아래는 근거로 치지 않는다:
+      앞 답이 쓴 칸     지적이 틀린 칸을 말한 것 ('남자 조건만 반영됨', '무국적자 수로 답함')
+      지표 이름 같은 칸  주제어에 닿은 것 ('조사망률을 사용함')
+      칸이 하나뿐인 분류 다시 고를 칸이 없다 ('혼인' 항목 하나짜리 표)
+    표 이름은 보지 않는다: 여러 항목을 나열한 표 이름(출생아수 · 출생성비 …)이 맞는 칸까지 가린다.
+    A1 판정 '다시' 71건에서 닿은 14건 중 맞는 칸은 1건뿐이었다 (나머지가 위 두 경우 · 계산)"""
     dims, region_dim, _ = dynamic_indicator.schema(tbl_id)
-    return bool(dynamic_indicator._text_hits(missing, dims, {region_dim}))
+    used = _used_codes(res, tbl_id, dims)
+    topic = search_norm((res.get("parsed") or {}).get("indicator") or "")
+    by_no = {d.no: d for d in dims}
+    out = []
+    for no, codes in dynamic_indicator._text_hits(missing, dims, {region_dim}).items():
+        for code in codes:
+            name = by_no[no].codes[code]
+            n = search_norm(_UNIT_TAIL.sub("", name))
+            if (no, code) in used or not n or len(by_no[no].codes) == 1:
+                continue  # 칸이 하나뿐인 분류는 다시 고를 칸이 없다 (계산 기록에도 안 남는다)
+            if topic and (n in topic or topic in n):
+                continue
+            out.append(name)
+    return out
+
+
+def search_norm(text: str) -> str:
+    return re.sub(r"\s+", "", text or "")
+
+
+def repick_blocked(res: dict, verdict: dict) -> str | None:
+    """repick 을 아예 하지 않을 답 → 이유. 여러 지표 · 복합 답은 표 하나로 다시 계산하면 나머지
+    지표가 사라진다. 계산이 필요한 지적은 칸만 바꿔서 고칠 수 없다 (칸 이름에 그 말이 있으면 예외는
+    repick_cells 가 본다)"""
+    parsed = res.get("parsed") or {}
+    if (
+        (res.get("result") or {}).get("split_by") == "indicator"
+        or parsed.get("composite")
+        or len(parsed.get("indicators") or []) > 1
+    ):
+        return "여러 지표 · 복합 답"
+    return None
 
 
 async def repick_cells(res: dict, verdict: dict, found: dict | None) -> dict:
-    """repick 근거: 다시 볼 표에 판정 지적을 고칠 칸이 있나 → {"cells": bool, "tbl_id", "by"}.
-      판정의 missing 이 그 표의 칸 이름에 닿음                         → 칸 있음
-      아래 순위 표가 답했고 계산 기록에 칸 실패 흔적(1위가 칸에서 막힘) → 칸 있음
+    """repick 근거: 다시 볼 표에 판정 지적을 고칠 칸이 있나
+    → {"cells": bool, "blocked": 이유 | None, "tbl_id", "by", "hits"}.
+      판정의 missing 이 그 표의 칸 이름에 닿음 (앞 답의 칸 · 주제어 칸 빼고)  → 칸 있음
+      아래 순위 표가 답했고 계산 기록에 칸 실패 흔적(1위가 칸에서 막힘)     → 칸 있음
+      여러 지표 · 복합 답, 또는 계산이 필요한 지적                         → blocked (repick 안 함)
     검사 단계(설계 2-5 cells_exist)가 들어오면 그것으로 바꾼다"""
+    if why_not := repick_blocked(res, verdict):
+        return {"cells": False, "blocked": why_not, "by": why_not}
     picked = repick_target(res, found)
     if picked is None:
-        return {"cells": False, "by": "다시 볼 표 없음"}
+        return {"cells": False, "blocked": None, "by": "다시 볼 표 없음"}
     entry, why = picked
     tbl_id = entry["tbl_id"]
     missing = str(verdict.get("missing") or "").strip()
+    hits: list[str] = []
     if missing:
         try:
-            if await run_in_threadpool(_missing_hits_cell, tbl_id, missing):
-                return {"cells": True, "tbl_id": tbl_id, "by": "판정 지적이 칸에 닿음"}
+            hits = await run_in_threadpool(_fix_cells, res, tbl_id, missing)
         except Exception:
             logger.info("repick 칸 확인: 표 구조 없음 %s", tbl_id)
+    out = {"tbl_id": tbl_id, "hits": hits[:5]}
+    calc = [m.group(0) for m in CALC_ASKED.finditer(missing)]
+    if calc and not any(word in search_norm(h) for word in calc for h in hits):
+        return {**out, "cells": False, "blocked": f"계산이 필요한 지적 ({calc[0]})", "by": "계산"}
+    if hits:
+        return {**out, "cells": True, "blocked": None, "by": "판정 지적이 칸에 닿음"}
     if why.startswith("아래 순위") and agent_action.failed_at_cell(res.get("trace")):
-        return {"cells": True, "tbl_id": tbl_id, "by": "1위 표가 칸에서 막힘"}
-    return {"cells": False, "tbl_id": tbl_id, "by": "고칠 칸을 못 찾음"}
+        return {**out, "cells": True, "blocked": None, "by": "1위 표가 칸에서 막힘"}
+    return {**out, "cells": False, "blocked": None, "by": "고칠 칸을 못 찾음"}
 
 
 async def _repick_compute(
     res: dict, verdict: dict, asked: str, llm_ok: bool = True
 ) -> tuple[dict | None, str]:
     """repick: 표는 맞는데 칸이 틀린 답을 같은 표에서 칸만 다시 골라 계산한 답 → (답, 방법).
-    칸 잇기 → (판정 지적을 넘긴) recell 순서. llm_ok 가 아니면 recell 은 부르지 않는다.
+    칸 잇기 → (판정 지적을 넘긴) recell 순서. recell 은 replan 의 LLM 한도와 따로 센다
+    (llm_ok=False 는 시험 · 끄기용). 칸 잇기가 되묻기만 남기면 그 되묻기를 결과로 남긴다.
     다시 고르지 못하면 (None, 방법) → _retry 가 대체 행동으로 간다.
     기록: res["trace"]["answer_judge"]["repick"] (표 · 고른 이유 · 앞 칸 · 칸 잇기 · recell)
     설계: docs/agent_redesign_2026-11-26.md 2-2 · 2-7"""
@@ -3456,7 +3530,8 @@ async def _judged(res: dict, state: dict | None, question: str, user_id: int | N
     # 판정에 걸리면 다음 행동으로 이어 간다. 상한은 agent_action(다시 2회 · LLM 1회)과 60초.
     # 호출부가 있는 행동은 replan(_replan_compute) · repick(_repick_compute) · reroute · retable
     # (둘 다 _recompute) · give_up. requery는 이름만 기록하고 fallback으로 떨어진다.
-    # repick 근거(그 표에 고칠 칸이 있나)는 이유가 '조건이 빠짐 · 대상이 다름'일 때만 본다
+    # repick 근거(그 표에 고칠 칸이 있나)는 이유가 '조건이 빠짐 · 대상이 다름'일 때만 본다.
+    # repick 의 recell 은 replan 과 따로 센다 (repick 은 질문당 한 번이라 recell 도 1회)
     verdict = first
     tried = llm_tried = 0
     done: set[str] = set()
@@ -3465,13 +3540,20 @@ async def _judged(res: dict, state: dict | None, question: str, user_id: int | N
     asked_back: dict | None = None  # 다시 계산이 낸 되묻기 (고리 끝 경우 3)
     started = time.monotonic()
     while True:
-        cells = None
+        cells, blocked = False, False
         if verdict.get("reason") in agent_action.REPICK_REASONS and agent_action.REPICK not in done:
             evidence = await repick_cells(res, verdict, _found_now.get())
-            cells = evidence["cells"]
+            cells, blocked = bool(evidence["cells"]), bool(evidence.get("blocked"))
             record.setdefault("repick_cells", []).append(evidence)
         action = agent_action.choose(
-            verdict, res, _found_now.get(), tried, llm_tried, frozenset(done), cells=bool(cells)
+            verdict,
+            res,
+            _found_now.get(),
+            tried,
+            llm_tried,
+            frozenset(done),
+            cells=cells,
+            repick_ok=not blocked,
         )
         attempt: dict = {"action": action.as_trace()}
         attempts.append(attempt)
@@ -3498,8 +3580,6 @@ async def _judged(res: dict, state: dict | None, question: str, user_id: int | N
             attempt["error"] = True
             record.setdefault("retry", {"error": True})
             return
-        if action.name == agent_action.REPICK and (record.get("repick") or {}).get("llm"):
-            llm_tried += 1  # repick 이 recell(HCX)을 불렀다: LLM 행동 한도에 센다
         attempt.update(how=how, computed=again is not None)
         if again is not None:  # 버려도 무엇이었는지 · 판정이 무엇을 봤는지 남긴다
             attempt["answer"] = lead(again.get("answer") or "")[:200]

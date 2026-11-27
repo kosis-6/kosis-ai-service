@@ -2320,10 +2320,21 @@ async def _compute_target(
                 return res
         else:
             record["binding"] = f"다시 계산할 칸 없음 ({b.status})"
-        if not repick.get("llm", True) or not get_settings().binding_recell:
-            record["recell"] = "LLM 행동 상한" if not repick.get("llm", True) else "꺼짐"
+
+        def ask_or_none() -> dict | None:
+            """칸을 다시 고르지 못했다: 못 이은 조건이 모두 칸 고르기면 되묻기 (판정 고리가
+            다른 행동도 실패하면 이 되묻기를 낸다. 고리 끝 경우 3), 아니면 None"""
             merge(sub)
-            return None
+            ask = binding.ask_of(b, unsaid=True)
+            if ask is None:
+                return None
+            record["ask"] = ask.dim_name
+            name = entry.get("tbl_nm") or entry["tbl_id"]
+            return ask_answer(question, q, entry["tbl_id"], name, ask)
+
+        if not repick.get("llm", True) or not get_settings().binding_recell:
+            record["recell"] = "LLM 상한" if not repick.get("llm", True) else "꺼짐"
+            return ask_or_none()
         step: dict = {}
         record["recell_log"] = step
         try:
@@ -2334,12 +2345,10 @@ async def _compute_target(
         except Exception:
             logger.exception("repick recell 실패: %s", entry["tbl_id"])
             record["recell"] = "오류"
-            merge(sub)
-            return None
+            return ask_or_none()
         if plan is None:
             record["recell"] = "뜻으로도 잇지 못함"
-            merge(sub)
-            return None
+            return ask_or_none()
         notice = ". ".join(n for n in (notice, fixed.notice) if n) or None
         res, _ = await run_binding(entry, plan, q, sub, slots, notice, "repick+recell")
         merge(sub)
@@ -2350,7 +2359,7 @@ async def _compute_target(
         trace["handoff"]["tried"] = 1
         with partial_table.shared_tables():
             res = await repick_one(entry)
-        if res is not None:
+        if is_ok(res):
             trace["handoff"]["used"] = {"tbl_id": entry["tbl_id"], "kind": "repick"}
         return res
 

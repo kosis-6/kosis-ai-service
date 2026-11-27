@@ -30,7 +30,7 @@ def _actions(monkeypatch: pytest.MonkeyPatch, *names: str) -> None:
     """행동 고르기를 정해진 순서로 (마지막은 give_up)"""
     seq = iter([*names, agent_action.GIVE_UP])
 
-    def choose(verdict, res, found, tried, llm_tried, done, cells=False):
+    def choose(verdict, res, found, tried, llm_tried, done, cells=False, repick_ok=True):
         return agent_action.Action(next(seq), "시험")
 
     monkeypatch.setattr(agent_action, "choose", choose)
