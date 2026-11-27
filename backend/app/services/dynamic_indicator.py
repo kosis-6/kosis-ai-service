@@ -1054,6 +1054,26 @@ def _sex_override(plan: Plan, sex: str) -> dict:
     return {"item_id": code} if d.no == 0 else {"filters": {d.col: code}}
 
 
+COHORT_AXIS = re.compile(r"(입국|귀화|출생|혼인|전입|전출)(?:기준)?(?:연도|년도|시기)")
+COHORT_YEAR = re.compile(r"^(?:19|20)\d{2}(?:\D|$)")
+
+
+def _cohort_dimensions(question: str, tbl_nm: str, dims: list[Dim]) -> list[Dim]:
+    """코호트를 말하지 않으면 수록 연도가 코호트의 연도 칸을 고르지 못하게 한다."""
+    out = []
+    asked = _norm(question)
+    for d in dims:
+        axis = COHORT_AXIS.search(_norm(d.name))
+        if not axis and d.no == 0 and sum(bool(COHORT_YEAR.match(n)) for n in d.codes.values()) > 1:
+            axis = COHORT_AXIS.search(_norm(tbl_nm))
+        if not axis or axis[1] in asked or (axis[1] == "출생" and qa.slots.birth_years(question)):
+            out.append(d)
+        else:
+            codes = {c: n for c, n in d.codes.items() if _norm(n) in TOTAL_NAMES or is_subtotal(n)}
+            out.append(Dim(d.no, d.name, codes))
+    return out
+
+
 def _without_age_words(term: str) -> str:
     for start, end, _ in sorted(qa.age_spans(term), reverse=True):
         rest = re.sub(r"^\s*(사이|까지|의)", "", term[end:])
@@ -1116,6 +1136,10 @@ def build(
     forced: dict[int, str] | None = None,
     slots: dict | None = None,
 ) -> tuple[dict | None, "str | Ask | None"]:
+    if (population := indicators.population_spec(question)) and (
+        _norm(indicators._survey_of(tbl_id) or "") != _norm(population["population_survey"])
+    ):
+        return None, f"'{population['name']}'의 집계 대상과 다른 조사"
     dims, region_dim, level = schema(tbl_id)
     if not dims or dims[0].no != 0:
         return None, "항목 정보가 없음"
@@ -1136,6 +1160,9 @@ def build(
         tbl_nm = lookup._table(tbl_id)["tbl_nm"]
     except Exception:
         tbl_nm = ""
+    dims = _cohort_dimensions(question, tbl_nm, dims)
+    if any(not d.codes for d in dims):
+        return None, "코호트를 지정하지 않았는데 전체를 집계한 칸이 없음"
     target = _table_target(tbl_nm)
     housing = qa.housing_population_condition(question) or parsed.get("housing_condition")
     if housing and "고령자" in target:
@@ -1162,6 +1189,8 @@ def build(
         logger.exception("부부 단위 표 확인 실패: %s", tbl_id)
         couple = False
     multi = (slots or {}).get("binding_multi")
+    if multi and any(d.no == multi[0] and not set(multi[1]) <= d.codes.keys() for d in dims):
+        multi = None
     quiet = (slots or {}).get("binding_quiet")
     # 숫자 구간 축의 구간 합: "2.5kg 미만" · "고령산모(35세 이상)"가 덮는 칸들을 그 축에 잇는다
     items = list(((slots or {}).get("conditions") or {}).get("items") or [])
@@ -2861,7 +2890,7 @@ def parts_answer(parsed: dict, spec: dict, question: str) -> dict:
         "region": first.get("region"),
         "value": value,
         "categories": rows,
-        **{k: first.get(k) for k in ("source", "basis", "tbl_id", "url")},
+        **{k: first.get(k) for k in ("source", "basis", "tbl_id", "url", "is_projection")},
     }
     notes = [spec.get("note")] if spec.get("note") else []
     tail = [f"※ {n}" for n in notes]

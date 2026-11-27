@@ -218,10 +218,12 @@ def answer_text(
         return "\n".join(lines)
 
     slots = result["slots"]
-    lines = [
-        f"요청하신 통계는 ‘{rec['survey_nm']}’에서 확인할 수 있습니다.",
-        f"추천 통계표: {rec['tbl_nm']} ({rec['org_nm']}, {rec['period']}년)",
-    ]
+    head = (
+        "질문의 모든 조건을 충족하는 통계표를 확인하지 못했습니다."
+        if status == "partial_match"
+        else f"요청하신 통계는 ‘{rec['survey_nm']}’에서 확인할 수 있습니다."
+    )
+    lines = [head, f"추천 통계표: {rec['tbl_nm']} ({rec['org_nm']}, {rec['period']}년)"]
     if rec["checks"]:
         marks = [f"{check_label(k, slots)} {'✔' if ok else '✘'}" for k, ok in rec["checks"].items()]
         lines.append("조건 확인: " + " · ".join(marks))

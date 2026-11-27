@@ -1051,6 +1051,8 @@ def _localized_question(question):
 
 def correct(question, parsed, today=None):
     question = _localized_question(question)
+    if population := indicators.population_spec(question):
+        parsed["population_survey"] = population["population_survey"]
     birth_ratio, birth_ratio_base = birth_sex_ratio_reference(question) or (None, None)
     if birth_ratio is None and BIRTH_SEX_RATIO_WORDS.search(question):
         birth_ratio = BIRTH_SEX_RATIO
@@ -1154,6 +1156,9 @@ def correct(question, parsed, today=None):
         ):
             names = {"외국인주민 수"}
         name = _pick_indicator(question, names)
+        if name is None and len(asked_indicators(question)) <= 1:
+            if population := indicators.population_spec(question):
+                name = population["name"]
         current = indicators.canonical_name(parsed.get("indicator") or "")
         if name and current != name:
             said = name == "총인구" and current is None and _says_other_indicator(question, parsed)

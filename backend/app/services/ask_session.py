@@ -178,6 +178,8 @@ def period_text(c: dict) -> str | None:
         return f"{start}년 {months[0]}월~{end}년 {months[1]}월"
     if c.get("type") == "trend" and start and end:
         return f"{start}~{end}년" if start != end else f"{start}년"
+    if c.get("type") == "rank" and c.get("change_from") and c.get("year"):
+        return f"{c['change_from']}년 → {c['year']}년"
     return f"{c['year']}년" if c.get("year") else None
 
 
@@ -229,6 +231,8 @@ def effective(parsed: dict, result: dict) -> dict:
         _clear_period_questions(c)
     elif result.get("status") == "ok" and result.get("year"):
         c["year"] = result["year"]
+        if "ranking" in result:
+            c["change_from"] = result.get("change_from")
     if sex_not_split(parsed, result):
         c["sex"] = "계"
     return c
@@ -398,14 +402,16 @@ def _retype(c: dict, changed: set[str]) -> None:
         return
     count = len(c.get("regions") or [])
     span = bool(c.get("start_year") and c.get("end_year") and c["start_year"] != c["end_year"])
-    if count >= 1 and span:
+    if span:
         c["type"] = "trend"
     elif count > 1:
         c["type"] = "compare"
     elif count == 1:
         c["type"] = "value"
-    elif kind != "rank":
+    elif "regions" in changed:
         c["type"] = "rank"
+    else:
+        c["type"] = "value"
 
 
 CONTEXT_YEAR = [
@@ -2442,7 +2448,8 @@ async def _turn(
                     and "regions" in changed
                     and conditions.get("dynamic_spec")
                 )
-                if status in table_guide.SEARCH_INSTEAD or retry_region:
+                retry_period = "period" in changed and status == "out_of_range"
+                if status in table_guide.SEARCH_INSTEAD or retry_region or retry_period:
                     res["search_question"] = inherited_question(conditions)
                 sources = {**state["sources"], **{k: "user" for k in changed if k in LABELS}}
                 return res, sources, with_asked_shape(res, question, delta.get("chart"))
@@ -2809,9 +2816,11 @@ def searchable_after(res: dict) -> bool:
         return False
     if (
         kind == CHANGE
-        and status in REGION_RETRY_STATUSES
         and res.get("search_question")
-        and (res.get("parsed") or {}).get("dynamic_spec")
+        and (
+            status == "out_of_range"
+            or (status in REGION_RETRY_STATUSES and (res.get("parsed") or {}).get("dynamic_spec"))
+        )
     ):
         return True
     return (

@@ -78,6 +78,28 @@ def test_value_picks_item_by_name_and_totals_elsewhere() -> None:
     assert spec["dynamic"] and d.OTHER_TABLE_NOTE == spec["note"]
 
 
+def test_registration_population_rejects_a_census_candidate(monkeypatch) -> None:
+    monkeypatch.setattr(indicators, "_survey_of", lambda tbl_id: "인구총조사")
+    spec, reason = d.build("DT_1PN2002", "33~38세 미혼 등록외국인 수", BASE)
+    assert spec is None and "집계 대상과 다른 조사" in reason
+
+
+def test_observation_year_does_not_select_an_entry_cohort(monkeypatch, fake_table) -> None:
+    table = "DT_ENTRY"
+    title = "성, 연령 및 입국연도별 외국인 - 시도"
+    dims = [d.Dim(0, "항목", {"TOTAL": "외국인 - 계", "Y24": "2024", "Y25": "2025"})]
+    fake_table["tables"][table] = (dims, None, "전국")
+    fake_table["units"][table] = ("명", True)
+    monkeypatch.setattr(lookup, "_table", lambda tbl_id: {"tbl_nm": title})
+    parsed = {**BASE, "indicator": "외국인 수", "regions": [], "year": 2025}
+    spec, reason = d.build(table, "2025년 외국인은 몇 명?", parsed, {0: "Y25"})
+    assert spec is not None, reason
+    assert spec["sources"][0]["item_id"] == "TOTAL"
+    spec, reason = d.build(table, "2025년에 입국한 외국인은 몇 명?", parsed, {0: "Y25"})
+    assert spec is not None, reason
+    assert spec["sources"][0]["item_id"] == "Y25"
+
+
 def test_ratio_of_sex_within_table() -> None:
     spec = build("서울 1인 가구 중 여성 비율", indicator="1인 가구 중 여성 비율", sex="여")
     src = spec["sources"][0]

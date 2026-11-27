@@ -174,6 +174,12 @@ def tables_answer(found: dict, refused: dict | None = None) -> dict:
         found = {**found, "answer": "\n".join(lines)}
     elif refused and found["status"] in ("ok", "partial_match"):
         lines.append("이 통계는 아직 수치를 바로 계산하지 못해 통계표를 안내합니다.")
+    if parsed.get("population_survey") and found["status"] in ("ok", "partial_match"):
+        lines = [
+            "질문의 집계 대상과 조건을 확인할 수치를 찾지 못했습니다.",
+            "아래는 관련 통계표입니다.",
+        ]
+        found = {**found, "answer": "\n".join(lines)}
     return {
         "status": found["status"] if found["status"] in REFUSED else "tables",
         "answer": "\n".join(lines),
