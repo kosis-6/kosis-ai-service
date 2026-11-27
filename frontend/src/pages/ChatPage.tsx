@@ -13,6 +13,7 @@ import { ReportSheet } from "../chat/ReportSheet";
 import { Sheet } from "../chat/Sheet";
 import { Brand } from "../components/Brand";
 import { Icon } from "../components/Icon";
+import { Mascot, MascotFace } from "../components/Mascot";
 import { usePage } from "../components/usePage";
 import "../styles/chat.css";
 
@@ -341,9 +342,7 @@ export function ChatPage() {
         <main className="log" aria-live="polite" ref={logRef}>
           {!inChat && (
             <section className="welcome">
-              <span className="emblem">
-                <span className="logo" role="img" aria-label="LIKE SNAKE 로고" />
-              </span>
+              <Mascot place="welcome" className="emblem" label="LIKE SNAKE 캐릭터" />
               <h2 className="welcome-title">
                 어떤 통계가
                 <br />
@@ -385,7 +384,7 @@ export function ChatPage() {
             ) : (
               <div className={m.kind === "error" ? "msg bot error" : "msg bot"} key={m.id}>
                 <span className="avatar" aria-hidden="true">
-                  <span className="logo" />
+                  <MascotFace />
                 </span>
                 <div className="reply">
                   {m.kind === "error" ? (
@@ -407,7 +406,7 @@ export function ChatPage() {
           {(busy || opening) && (
             <div className="msg bot typing">
               <span className="avatar" aria-hidden="true">
-                <span className="logo" />
+                <MascotFace />
               </span>
               <div className="reply">
                 <div className="bubble">

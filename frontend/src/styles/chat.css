@@ -197,16 +197,15 @@ body[data-page="chat"] {
 .welcome > :nth-child(3), .welcome > :nth-child(4) { animation-delay: 100ms; }
 .welcome > :nth-child(5) { animation-delay: 150ms; }
 .welcome > :nth-child(6) { animation-delay: 200ms; }
+/* 첫 화면 인사: LIKE SNAKE 캐릭터. 그림자는 바닥에 선 듯 아래로만 */
 .emblem {
-  display: grid;
-  place-items: center;
-  width: 72px;
-  height: 72px;
+  display: block;
+  width: auto;
+  height: 120px;
   margin-bottom: 4px;
-  border-radius: 20px;
-  background: var(--logo-paper);
+  object-fit: contain;
+  filter: drop-shadow(0 10px 12px rgb(23 59 46 / .12));
 }
-.emblem .logo { height: 48px; border-radius: 0; }
 .welcome-title { font-size: 36px; font-weight: 600; line-height: 48px; letter-spacing: -0.02em; }
 .welcome-title em { color: var(--sage); font-style: normal; }
 .welcome-text { color: var(--muted); line-height: 22px; }
@@ -251,10 +250,14 @@ body[data-page="chat"] {
   place-items: center;
   width: 32px;
   height: 32px;
-  border-radius: 8px;
-  background: var(--logo-paper);
+  overflow: hidden;
+  border-radius: 50%;
+  background: var(--accent-soft);
 }
-.avatar .logo { height: 24px; border-radius: 0; }
+.avatar .mascot-face { display: block; width: 100%; height: 100%; }
+/* 답을 찾는 동안 캐릭터가 고개를 살짝 갸웃한다 (동작 줄이기 설정이면 base.css가 멈춘다) */
+.typing .avatar .mascot-face { transform-origin: 40% 75%; animation: tilt 1.1s ease-in-out infinite alternate; }
+@keyframes tilt { from { transform: rotate(-5deg); } to { transform: rotate(5deg) translateY(-1px); } }
 .reply { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 12px; }
 .msg.bot:not(.typing, .error) .reply > * { animation: rise var(--slow) var(--ease) both; }
 .msg.bot .reply > :nth-child(2) { animation-delay: 60ms; }
@@ -634,8 +637,7 @@ button.pill:active { transform: scale(0.97); }
   .log { padding-block: 8px; }
   .composer { padding-top: 8px; padding-bottom: 20px; }
   .welcome { gap: 8px; }
-  .emblem { width: 56px; height: 56px; border-radius: 16px; }
-  .emblem .logo { height: 36px; }
+  .emblem { height: 88px; }
   .welcome-title { font-size: 30px; line-height: 40px; }
   .examples { margin-top: 8px; }
   .examples-grid { gap: 8px; }
@@ -679,8 +681,7 @@ button.pill:active { transform: scale(0.97); }
 
 @media (max-width: 560px) {
   .welcome { gap: 8px; }
-  .emblem { width: 56px; height: 56px; border-radius: 16px; }
-  .emblem .logo { height: 40px; }
+  .emblem { height: 88px; }
   .welcome-title { font-size: 28px; line-height: 36px; }
   .welcome-text { font-size: 13px; line-height: 20px; }
   .examples-grid { gap: 8px; }
@@ -688,7 +689,6 @@ button.pill:active { transform: scale(0.97); }
   .example-cat { font-size: 11px; line-height: 16px; }
   .example-q { font-size: 13px; line-height: 20px; }
   .avatar { width: 28px; height: 28px; }
-  .avatar .logo { height: 20px; }
 }
 
 @media (max-width: 860px) {
