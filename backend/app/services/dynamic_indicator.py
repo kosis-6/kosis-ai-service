@@ -23,6 +23,7 @@ from app.services import (
     lookup,
     partial_table,
     plan_cache,
+    progress,
     qa,
     search,
     search_answer,
@@ -1871,6 +1872,7 @@ def handoff_notice(entry: dict, understanding: dict, combine: dict, found_notice
 async def compute_from_handoff(
     question: str, parsed: dict, found: dict, trace: dict
 ) -> dict | None:
+    progress.now(progress.COMPUTE)
     h = found.get("handoff")
     if not h:
         return await answer(question, parsed, found, trace)

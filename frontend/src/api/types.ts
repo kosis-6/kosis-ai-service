@@ -6,6 +6,7 @@ export type Token = Schemas["Token"];
 export type UserRead = Schemas["UserRead"];
 export type EmailCodeSent = Schemas["EmailCodeSent"];
 export type AskRequest = Schemas["AskRequest"];
+export type AskProgress = Schemas["AskProgress"];
 export type AskResponse = Omit<Schemas["AskResponse"], "tables"> & {
   tables?: (Partial<SearchResponse> & { recommendations: Recommendation[] }) | null;
   /** "보고서 만들까요?" 제안 칩 (같은 지표를 세 번째로 담을 수 있게 답했을 때 대화마다 한 번) */
