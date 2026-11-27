@@ -4,13 +4,11 @@ import type { EmailCodeSent } from "../api/types";
 import { post } from "../auth/client";
 import { PASSWORD_RULE, passwordProblem } from "../auth/rules";
 import { Field, type Note } from "../components/Field";
-import { usePage } from "../components/usePage";
 
 type Notes = Partial<Record<"nickname" | "email" | "code" | "password" | "confirm", Note>>;
 type Step = "idle" | "sent" | "verified";
 
 export function SignupPage() {
-  usePage("account", "회원가입");
   const navigate = useNavigate();
 
   const [nickname, setNickname] = useState("");
