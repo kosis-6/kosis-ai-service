@@ -33,6 +33,7 @@ NUMBER = re.compile(r"\d+(?:[.,]\d+)*")
 ACTION = re.compile(r'"action"\s*:\s*"(\w+)"')
 COUNT = re.compile(r"\d{1,2}\s*(개|번째|가지)")  # 담은 개수 · 순서는 통계 값이 아니다
 DONE_FALLBACK = "요청한 내용을 처리했어요. 내 보고서에서 확인해 주세요."
+ACTION_FAILED = "요청한 보고서 작업을 완료하지 못했어요."
 # 이 행동이 성공하면 그 요청은 끝낸다 (HCX 가 맞게 담은 뒤에도 다른 행동을 이어 가며 결과를 망쳤다,
 # 개발셋 R15). 보고서를 만들어 달라고 했거나 정정의 빼기 뒤에는 이어 간다
 SMALL_EDITS = {"add_item", "remove_item", "reorder", "set_title"}
@@ -145,6 +146,8 @@ async def _loop(ctx: tools.Ctx, trace: list[dict]) -> dict[str, Any]:
         invalid = 0
         if action in tools.ENDINGS:
             trace.append({"action": action, "args": args})
+            if action == "finish" and failed:
+                return {"end": "finish", "message": ACTION_FAILED, "seen": seen}
             return {"end": action, **args, "seen": seen}
         tool = tools.TOOLS[action]
         params = inspect.signature(tool).parameters
@@ -157,12 +160,24 @@ async def _loop(ctx: tools.Ctx, trace: list[dict]) -> dict[str, Any]:
             result = {"error": f"args 가 맞지 않습니다: {e}"}
         trace.append({"action": action, "args": args, "result": result})
         error = isinstance(result, dict) and result.get("error") and not result.get("added")
+        if action == "revise_text":
+            if error:
+                message = ACTION_FAILED
+            elif result.get("unchanged"):
+                message = result["unchanged"]
+            else:
+                message = (
+                    "보고서를 더 짧게 줄였어요."
+                    if result.get("shortened")
+                    else "보고서 문장을 수정했어요."
+                )
+            return {"end": "finish", "message": message, "seen": seen}
         if action in SMALL_EDITS and not error and _done_after(action, ctx):
             return {"end": "finish", "message": _report_line(ctx), "seen": seen + _report_line(ctx)}
         if (
             error and failed == action
         ):  # 같은 행동이 두 번 연속 막히면 그만 (같은 실패를 되풀이하지 않게)
-            return {"end": "finish", "message": "", "seen": seen}
+            return {"end": "finish", "message": ACTION_FAILED, "seen": seen}
         failed = action if error else None
         observation = json.dumps(result, ensure_ascii=False, default=str)
         seen += observation

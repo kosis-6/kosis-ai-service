@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import type { AskResponse, ConversationRead, Parsed, Recommendation } from "../api/types";
+import type { AskResponse, ChartView, ConversationRead, Parsed, Recommendation } from "../api/types";
 import { logout } from "../auth/client";
 import { useUser } from "../auth/useUser";
 import { Answer } from "../chat/Answer";
 import { ask } from "../chat/api";
 import { EXAMPLE_CATEGORIES, EXAMPLES } from "../chat/examples";
 import { History } from "../chat/History";
-import { deleteConversation, getConversation, HistoryError, listConversations, replayed } from "../chat/conversations";
+import { createChartViewQueue, deleteConversation, getConversation, HistoryError, lastChartView, listConversations, replayed } from "../chat/conversations";
 import { AltCard } from "../chat/Reply";
 import { ReportPreview, ReportSheet } from "../chat/ReportSheet";
 import type { Report } from "../chat/reports";
@@ -57,6 +57,7 @@ export function ChatPage() {
   const [question, setQuestion] = useState("");
   const [sheet, setSheet] = useState<SheetState | null>(null);
   const [history, setHistory] = useState<ConversationRead[] | null>(null);
+  const [chartViews] = useState(createChartViewQueue);
 
   const saved = user !== null;
 
@@ -92,6 +93,22 @@ export function ChatPage() {
     setMessages((prev) => [...prev, { ...message, id: nextId.current++ } as Message]);
   }
 
+  function changeChartView(messageId: number, chartView: ChartView) {
+    setMessages((prev) => prev.map((message) =>
+      message.id === messageId && message.kind === "answer" && message.data.chart
+        ? { ...message, data: { ...message.data, chart: { ...message.data.chart, view: chartView } } }
+        : message,
+    ));
+    // 서버의 답에도 남긴다: 말로 만든 보고서와 다시 연 대화가 이 모양을 쓴다.
+    // 잠깐 실패하면 큐가 다시 보낸다. 끝내 남기지 못해도 화면은 그대로 두고, [보고서] 시트는 chart_views로 따로 보낸다
+    const target = messages.find((message) => message.id === messageId);
+    const data = target?.kind === "answer" ? target.data : null;
+    const sessionOf = data?.session_id ?? routeId;
+    if (saved && sessionOf && data?.turn_id != null && data.chart) {
+      void chartViews.save(sessionOf, data.turn_id, chartView).catch(() => {});
+    }
+  }
+
   const refreshHistory = useCallback(async () => {
     if (!saved) return;
     try {
@@ -118,6 +135,8 @@ export function ChatPage() {
     const v = view.current;
     setOpening(true);
     try {
+      await chartViews.wait(id);
+      if (v !== view.current) return;
       const found = await getConversation(id);
       if (v !== view.current) return;
       const restored: Message[] = [];
@@ -158,12 +177,22 @@ export function ChatPage() {
     const q = text.trim();
     if (!q || busyRef.current || opening) return;
     const v = view.current;
+    const sid = sessionId.current;
     busyRef.current = true;
     setBusy(true);
     add({ kind: "user", text: q });
     try {
+      if (sid) await chartViews.wait(sid);
+      if (v !== view.current) return;
       const has = selections && Object.keys(selections).length > 0;
-      const data = await ask({ question: q, session_id: sessionId.current, ...(has ? { selections } : {}) });
+      // 로그인한 대화는 서버가 답에 저장한 보기를 읽는다. 로그인하지 않았으면 화면의 보기를 보낸다
+      const chartView = saved ? undefined : lastChartView(answers);
+      const data = await ask({
+        question: q,
+        session_id: sid,
+        ...(has ? { selections } : {}),
+        ...(chartView ? { chart_view: chartView } : {}),
+      });
       if (v !== view.current) {
         void refreshHistory();
         return;
@@ -397,6 +426,7 @@ export function ChatPage() {
                       busy={busy}
                       onReport={canMakeReport ? () => setSheet({ kind: "report" }) : undefined}
                       onShowReport={(report) => setSheet({ kind: "report-view", report })}
+                      onChartViewChange={(chartView) => changeChartView(m.id, chartView)}
                       onSend={(text, selections) => void send(text, selections)}
                       onOthers={(recs, parsed) => setSheet({ kind: "others", recs, parsed })}
                       onAskAgain={() => inputRef.current?.focus()}

@@ -13,6 +13,7 @@ from sqlalchemy import text
 from app.agent import report_agent as ra
 from app.agent import report_router as router
 from app.agent import report_tools as tools
+from app.services import reports
 
 FIG = {
     "label": "2020년 서울특별시 1인가구",
@@ -63,6 +64,15 @@ def run(coro):
 )
 def test_router(q, state, expected):
     assert router.wants(q, state) is expected
+
+
+def test_standalone_stat_exits_report_confirmation():
+    state = {"turn_no": 3, "report_agent": {"pending": {"question": "어떤 주제인가요?"}}}
+    assert not router.wants("2024년 부산 출생아 수 알려줘", state, standalone_stat=True)
+    assert router.wants(
+        "2024년 부산 출생아 수 알려주고 보고서에 담아줘", state, standalone_stat=True
+    )
+    assert router.wants("부산 출생아 수", state)
 
 
 # ---- DB 준비 ------------------------------------------------------------------------------
@@ -288,12 +298,9 @@ def test_step_limit(db, monkeypatch):
 
 
 def test_invented_numbers_in_message_are_replaced(db, monkeypatch):
-    sid, uid, (t1, _, _) = db
-    script(
-        monkeypatch,
-        [act("add_item", turn_ids=[t1]), act("finish", message="서울은 약 140만 가구예요.")],
-    )
-    res = run(ra.run("이거 보고서에 담아줘", sid, {"turn_no": 3}, uid))
+    sid, uid, _ = db
+    script(monkeypatch, [act("finish", message="서울은 약 140만 가구예요.")])
+    res = run(ra.run("보고서에 뭐 있어?", sid, {"turn_no": 3}, uid))
     assert res["answer"] == ra.DONE_FALLBACK
     script(monkeypatch, [act("finish", message="서울은 1,390,701가구예요.")])
     ok = run(ra.run("보고서에 뭐 있어?", sid, {"turn_no": 3}, uid))
@@ -472,7 +479,52 @@ def test_same_failing_action_twice_stops(db, monkeypatch):
     script(monkeypatch, [act("write_report")] * ra.MAX_STEPS)
     res = run(ra.run("순서 바꿔줘", sid, {"turn_no": 3}, uid))
     assert [s["action"] for s in res["trace"]["report_agent"]["steps"]] == ["write_report"] * 2
-    assert res["answer"] == ra.DONE_FALLBACK
+    assert res["answer"] == ra.ACTION_FAILED
+
+
+def test_report_agent_edits_only_the_current_conversation(db, monkeypatch):
+    sid, uid, (t1, _, _) = db
+    current = run(reports.create(uid, title="현재 대화", turn_ids=[t1], session_id=sid))
+    other = run(reports.create(uid, title="다른 대화", session_id=f"{sid}-other"))
+    script(monkeypatch, [act("set_title", title="수정된 보고서")])
+
+    res = run(ra.run("보고서 제목을 바꿔줘", sid, {"turn_no": 3}, uid))
+
+    assert res["report"]["id"] == current["id"]
+    assert res["report"]["title"] == "수정된 보고서"
+    assert run(reports.detail(uid, other["id"]))["title"] == "다른 대화"
+
+
+@pytest.mark.parametrize("can_shorten", [True, False])
+def test_revise_is_terminal_and_reports_the_actual_outcome(db, monkeypatch, can_shorten):
+    sid, uid, (t1, _, _) = db
+    draft = run(reports.create(uid, turn_ids=[t1], session_id=sid))
+    ready = {**draft, "status": "ready"}
+    generated = []
+
+    async def latest(user, session):
+        assert (user, session) == (uid, sid)
+        return ready
+
+    async def generate(user, report_id, style, *, shorten=False):
+        generated.append((user, report_id, style, shorten))
+        if not can_shorten:
+            raise reports.ReportError(reports.NOT_SHORTER, reports.ALREADY_SHORT)
+        return {**ready, "content": {"summary": [{"text": "짧은 요약"}]}}
+
+    monkeypatch.setattr(reports, "latest_for_conversation", latest)
+    monkeypatch.setattr(reports, "generate", generate)
+    calls = script(monkeypatch, [act("revise_text", style="한 문장"), act("write_report")])
+    res = run(ra.run("보고서 좀 짧게 해줘", sid, {"turn_no": 3}, uid))
+
+    assert generated == [(uid, draft["id"], "한 문장", True)]
+    assert len(calls) == 1
+    if can_shorten:
+        assert res["answer"] == "보고서를 더 짧게 줄였어요."
+        assert res["report"]["content"]["summary"] == [{"text": "짧은 요약"}]
+    else:
+        assert res["answer"] == reports.ALREADY_SHORT
+        assert res["report"] == ready
 
 
 def test_correction_can_add():

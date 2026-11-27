@@ -96,4 +96,19 @@ describe("보고서 제안 칩 · 에이전트가 만든 보고서", () => {
     expect(with_({ ...made, report: { id: 1, status: "ready" } } as AskResponse, { onShowReport: vi.fn() })).toContain("보고서 보기");
     expect(with_({ ...made, report: { id: 1, status: "draft" } } as AskResponse, { onShowReport: vi.fn() })).not.toContain("보고서 보기");
   });
+
+  it("새 질문이 거절돼도 함께 생성한 보고서와 요약을 표시한다", () => {
+    const html = with_({
+      ...ok,
+      report_offer: null,
+      status: "no_region_level",
+      request_type: "new",
+      answer: "앞에서 본 내용입니다.\n\n읍면동 단위로는 이 통계가 집계되지 않습니다.",
+      report_ref: { id: 5, status: "ready" },
+      talk_summary: { answer: "앞에서 본 내용입니다.", first: "summary", asked: "해운대동 혼인 건수" },
+    }, { onShowReport: vi.fn() });
+    expect(html).toContain("앞에서 본 내용입니다.");
+    expect(html).toContain("읍면동 단위");
+    expect(html).toContain("보고서 보기");
+  });
 });

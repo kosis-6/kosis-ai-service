@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -38,3 +38,7 @@ class ConversationDetail(BaseModel):
 
 class ConversationRename(BaseModel):
     title: str = Field(min_length=1, max_length=TITLE_MAX)
+
+
+class ChartViewUpdate(BaseModel):
+    view: Literal["line", "bar", "table"] = Field(description="화면에서 고른 차트 보기")

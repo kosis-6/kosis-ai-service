@@ -217,6 +217,17 @@ def test_long_comparison_keeps_the_highest_and_lowest() -> None:
     assert "가장 높은 곳과 가장 낮은 곳은 포함" in chart["note"]
 
 
+def test_long_comparison_keeps_the_same_tied_lowest_as_the_answer() -> None:
+    from app.services import qa
+
+    values = [{"region": f"지역{i}", "value": 17 - i if i < 15 else 1} for i in range(17)]
+    result = {**BASE, "year": 2024, "values": values, "gap": 16, "gap_unit": BASE["unit"]}
+    chart = charts.build(result)
+    assert "가장 낮은 지역은 지역16" in qa.summary(result)
+    assert len(chart["rows"]) == charts.MAX_BARS
+    assert chart["rows"][-1]["label"] == "지역16"
+
+
 def test_ranking_cut_stays_the_top_fifteen() -> None:
     """순위는 위에서부터 자른다 (중간에 꼴찌를 끼우면 순위가 이어지지 않는다)"""
     chart = _bars("ranking", charts.MAX_BARS + 5)
@@ -267,3 +278,17 @@ def test_region_lines_are_crowded_only_past_six() -> None:
 
     assert lines(charts.MAX_LINES)["crowded"] is False
     assert lines(charts.MAX_LINES + 1)["crowded"] is True
+
+
+def test_view_fits_matches_what_the_screen_offers():
+    line = {"type": "line", "series": ["서울", "부산"]}
+    crowded_line = {"type": "line", "crowded": True}
+    bar = {"type": "bar"}
+    assert all(charts.view_fits(line, v) for v in ("line", "bar", "table"))
+    assert not charts.view_fits(crowded_line, "bar")  # 선이 많으면 막대 보기가 없다
+    assert charts.view_fits(crowded_line, "table")
+    assert charts.view_fits(bar, "bar") and not charts.view_fits(bar, "line")
+    # 구성비의 [차트] 버튼은 막대를 보낸다. 꺾은선을 보내 표 → 차트 저장이 409로 거절됐다
+    parts = {"type": "parts"}
+    assert charts.view_fits(parts, "bar") and charts.view_fits(parts, "table")
+    assert not charts.view_fits(parts, "line")

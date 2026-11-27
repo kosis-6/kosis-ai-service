@@ -1,8 +1,9 @@
+import json
 from typing import Any
 
 from sqlalchemy import text
 
-from app.services.log_redaction import mask
+from app.services.log_redaction import mask, redact
 
 TITLE_MAX = 60
 REPLAY_KEYS = (
@@ -17,6 +18,8 @@ REPLAY_KEYS = (
     "summary",
     "figure",
     "reportable",
+    "report_ref",
+    "talk_summary",
     "sources",
 )
 
@@ -118,8 +121,8 @@ async def detail(user_id: int, session_id: str) -> dict[str, Any] | None:
     items = []
     for t in turns:
         response = t["response"] or {"answer": t["answer"]}
-        if response.get("reportable"):
-            # 저장할 때는 id가 아직 없다. 다시 연 답도 [보고서에 담기]를 쓸 수 있게 붙인다
+        if response.get("reportable") or response.get("chart"):
+            # 다시 연 답에서도 보고서에 담거나 차트 보기를 저장할 수 있게 한다
             response = {**response, "turn_id": t["id"]}
         items.append(
             {
@@ -144,6 +147,61 @@ async def rename(user_id: int, session_id: str, title: str) -> bool:
             {"sid": session_id, "uid": user_id, "title": title_of(title)},
         )
     return done.rowcount > 0
+
+
+async def chart_view(user_id: int, session_id: str, turn_no: int, last: dict) -> str | None:
+    """직전 차트를 그린 턴에서 최신 보기 설정을 읽는다."""
+    from app.core.db import engine
+
+    params = {"sid": session_id, "uid": user_id}
+    query = (
+        "select response->'chart'->>'view' from app.chat_turns"
+        " where session_id = :sid and user_id = :uid"
+    )
+    if turn_id := last.get("chart_turn_id"):
+        query += " and id = :tid"
+        params["tid"] = turn_id
+    else:
+        # 턴 ID를 기록하기 전의 대화는 보기 설정을 뺀 차트로 원본 턴을 찾는다.
+        params.update(turn_no=turn_no, chart=json.dumps(redact(last["chart"]), ensure_ascii=False))
+        query += (
+            " and turn_no <= :turn_no"
+            " and (response->'chart') - 'view' = cast(:chart as jsonb) - 'view'"
+            " order by turn_no desc, id desc limit 1"
+        )
+    async with engine.begin() as conn:
+        return (await conn.execute(text(query), params)).scalar()
+
+
+async def set_chart_view(user_id: int, session_id: str, turn_id: int, view: str) -> str:
+    """화면에서 바꾼 차트 모양(꺾은선 · 막대 · 표)을 그 답에 남긴다 → "ok" · "missing" · "unfit".
+    보고서는 이 답(chat_turns.response)을 복사해 만들어서, 남기지 않으면 말로 만든 보고서
+    ('보고서 만들어줘' · 제안 칩 · '정리해줘')와 다시 연 대화가 처음 모양으로 돌아갔다"""
+    from app.core.db import engine
+    from app.services import charts
+
+    async with engine.begin() as conn:
+        row = await conn.execute(
+            text(
+                "select response from app.chat_turns"
+                " where id = :tid and session_id = :sid and user_id = :uid for update"
+            ),
+            {"tid": turn_id, "sid": session_id, "uid": user_id},
+        )
+        response = row.scalar()
+        chart = (response or {}).get("chart")
+        if not isinstance(chart, dict):
+            return "missing"
+        if not charts.view_fits(chart, view):
+            return "unfit"
+        await conn.execute(
+            text(
+                "update app.chat_turns set response = jsonb_set(response, '{chart,view}',"
+                " to_jsonb(cast(:view as text))) where id = :tid"
+            ),
+            {"view": view, "tid": turn_id},
+        )
+    return "ok"
 
 
 async def delete(user_id: int, session_id: str) -> bool:

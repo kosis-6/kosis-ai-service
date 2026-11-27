@@ -1,9 +1,9 @@
-import { lazy, Suspense, useState } from "react";
-import type { Applied, AskResponse, Parsed, Recommendation, SearchResponse } from "../api/types";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import type { Applied, AskResponse, ChartView, Parsed, Recommendation, SearchResponse } from "../api/types";
 import { Icon } from "../components/Icon";
 import { safeUrl, splitLinks } from "./format";
 import { Reply, TopCard, type Send } from "./Reply";
-import type { Report } from "./reports";
+import { getReport, type Report } from "./reports";
 
 const ChartCard = lazy(() => import("./Chart"));
 
@@ -58,6 +58,7 @@ type Props = {
   onReport?: () => void;
   /** 보고서 에이전트가 만든 보고서를 앱 안에서 본다 */
   onShowReport?: (report: Report) => void;
+  onChartViewChange?: (view: ChartView) => void;
   onSend: Send;
   onOthers: (recs: Recommendation[], parsed: Parsed) => void;
   onAskAgain: () => void;
@@ -89,11 +90,55 @@ function ReportOffer({ data, busy, onReport, onSend }: { data: AskResponse; busy
   );
 }
 
-export function Answer({ data, busy, onReport, onShowReport, onSend, onOthers, onAskAgain }: Props) {
+function ReportLink({ report, id, onShow }: { report?: Report; id?: number; onShow: (report: Report) => void }) {
+  const request = useRef<AbortController | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(false);
+  useEffect(() => () => request.current?.abort(), []);
+
+  async function open() {
+    if (report) {
+      onShow(report);
+      return;
+    }
+    if (id == null || loading) return;
+    const pending = new AbortController();
+    request.current = pending;
+    setLoading(true);
+    setError(false);
+    try {
+      const loaded = await getReport(id, pending.signal);
+      if (!pending.signal.aborted) {
+        if (loaded.status === "ready") onShow(loaded);
+        else setError(true);
+      }
+    } catch {
+      if (!pending.signal.aborted) setError(true);
+    } finally {
+      if (!pending.signal.aborted) setLoading(false);
+    }
+  }
+
+  return (
+    <>
+      <button type="button" className="btn secondary card-link" disabled={loading} onClick={() => void open()}>
+        보고서 보기
+      </button>
+      {error && <p role="alert">보고서를 열지 못했어요. 다시 시도해 주세요.</p>}
+    </>
+  );
+}
+
+export function Answer({ data, busy, onReport, onShowReport, onChartViewChange, onSend, onOthers, onAskAgain }: Props) {
   const notice = data.notice && <p className="answer-notice">{data.notice}</p>;
   const tables = data.tables;
   const clarification = data.clarification;
   const options = clarification?.options ?? [];
+  const report = data.report as Report | undefined;
+  const reportId = data.report_ref?.status === "ready" ? data.report_ref.id : undefined;
+  const reportButton = onShowReport && (report?.status === "ready" || reportId != null) && (
+    <ReportLink report={report?.status === "ready" ? report : undefined} id={reportId} onShow={onShowReport} />
+  );
 
   if ((data.status === "tables" || data.result?.status === "tables") && tables) {
     const search: SearchResponse = {
@@ -111,16 +156,17 @@ export function Answer({ data, busy, onReport, onShowReport, onSend, onOthers, o
         {notice}
         <Reply
           data={search}
+          fullAnswer={Boolean(data.talk_summary && search.clarify)}
           busy={busy}
           onSend={onSend}
           onOthers={onOthers}
           onAskAgain={onAskAgain}
         />
+        {reportButton}
       </>
     );
   }
 
-  const made = data.request_type === "report" && (data.report as Report | null | undefined);
   if (data.status !== "ok") {
     return (
       <>
@@ -128,11 +174,7 @@ export function Answer({ data, busy, onReport, onShowReport, onSend, onOthers, o
         <div className="bubble">
           <Linked text={data.answer} />
         </div>
-        {made && made.status === "ready" && onShowReport && (
-          <button type="button" className="btn secondary card-link" onClick={() => onShowReport(made)}>
-            보고서 보기
-          </button>
-        )}
+        {reportButton}
         {clarification && options.length > 0 && (
           <div className="choices" role="group" aria-label="집계 범위 선택">
             {options.map((option) => (
@@ -155,7 +197,7 @@ export function Answer({ data, busy, onReport, onShowReport, onSend, onOthers, o
     );
   }
 
-  const { lead, detail } = splitAnswer(data.answer);
+  const { lead, detail } = data.talk_summary ? { lead: data.answer, detail: "" } : splitAnswer(data.answer);
   const cards = tables?.recommendations ?? [];
   const carded = new Set(cards.map((c) => c.tbl_id));
   const sources = data.sources.filter((s) => !s.tbl_id || !carded.has(s.tbl_id));
@@ -166,10 +208,11 @@ export function Answer({ data, busy, onReport, onShowReport, onSend, onOthers, o
         <Linked text={lead} />
       </div>
       <Conditions applied={data.applied ?? []} />
+      {reportButton}
       <ReportOffer data={data} busy={busy} onReport={onReport} onSend={onSend} />
       {data.chart && (
         <Suspense fallback={<div className="chart-card chart-loading">차트를 그리고 있어요</div>}>
-          <ChartCard chart={data.chart} />
+          <ChartCard chart={data.chart} onViewChange={onChartViewChange} />
         </Suspense>
       )}
       {detail && data.request_type !== "chart" && data.request_type !== "summary" && (

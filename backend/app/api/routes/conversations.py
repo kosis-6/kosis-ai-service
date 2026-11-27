@@ -3,7 +3,12 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response
 
 from app.api.deps import CurrentUser
-from app.schemas.conversations import ConversationDetail, ConversationList, ConversationRename
+from app.schemas.conversations import (
+    ChartViewUpdate,
+    ConversationDetail,
+    ConversationList,
+    ConversationRename,
+)
 from app.services import conversations
 
 
@@ -39,6 +44,24 @@ async def rename_conversation(
 ) -> Response:
     if not await conversations.rename(user.id, session_id, body.title):
         raise NOT_FOUND
+    return Response(status_code=204)
+
+
+@router.put(
+    "/{session_id}/turns/{turn_id}/chart-view", summary="답의 차트 모양 남기기", status_code=204
+)
+async def set_chart_view(
+    session_id: SessionId,
+    turn_id: Annotated[int, Path(ge=1)],
+    body: ChartViewUpdate,
+    user: CurrentUser,
+) -> Response:
+    """화면에서 꺾은선 · 막대 · 표를 바꾸면 그 답에 남긴다 (보고서 · 다시 연 대화가 쓴다)"""
+    done = await conversations.set_chart_view(user.id, session_id, turn_id, body.view)
+    if done == "missing":
+        raise HTTPException(status_code=404, detail="차트가 있는 답이 없습니다.")
+    if done == "unfit":
+        raise HTTPException(status_code=409, detail="이 차트는 그 모양으로 그릴 수 없습니다.")
     return Response(status_code=204)
 
 

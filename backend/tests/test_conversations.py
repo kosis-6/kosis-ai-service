@@ -120,6 +120,13 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
         return user_id == owner and session_id == "A_1"
 
     monkeypatch.setattr(c, "delete", delete)
+
+    async def set_chart_view(user_id, session_id, turn_id, view):
+        if user_id != owner or session_id != "A_1" or turn_id != 7:
+            return "missing"
+        return "unfit" if view == "bar" else "ok"
+
+    monkeypatch.setattr(c, "set_chart_view", set_chart_view)
     app.dependency_overrides[get_session] = no_db
     yield TestClient(app)
     app.dependency_overrides.clear()
@@ -154,3 +161,16 @@ def test_login_required_and_inputs_checked(client: TestClient) -> None:
     assert client.get("/conversations/A_1;drop").status_code == 422
     assert client.patch("/conversations/A_1", json={"title": ""}).status_code == 422
     assert client.patch("/conversations/A_1", json={"title": "가" * 61}).status_code == 422
+
+
+def test_chart_view_is_saved_on_own_answer(client: TestClient) -> None:
+    url = "/conversations/A_1/turns/7/chart-view"
+    assert client.put(url, json={"view": "table"}).status_code == 401
+    login(3)
+    assert client.put(url, json={"view": "table"}).status_code == 204
+    assert client.put(url, json={"view": "bar"}).status_code == 409  # 그 모양으로 못 그리는 차트
+    assert client.put(url, json={"view": "pie"}).status_code == 422
+    other = "/conversations/A_1/turns/8/chart-view"
+    assert client.put(other, json={"view": "line"}).status_code == 404
+    login(9)
+    assert client.put(url, json={"view": "table"}).status_code == 404
