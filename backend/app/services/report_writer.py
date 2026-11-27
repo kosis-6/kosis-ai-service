@@ -293,7 +293,9 @@ def _fallback(items: list[dict]) -> dict[str, list[dict]]:
     return {"summary": lines, "analysis": []}
 
 
-async def write(title: str, purpose: str | None, snapshots: list[dict]) -> dict[str, Any]:
+async def write(
+    title: str, purpose: str | None, snapshots: list[dict], style: str | None = None
+) -> dict[str, Any]:
     """보고서 content. snapshots 는 report_items 행({turn_id, snapshot})을 순서대로"""
     items = report_compare.items_of(snapshots)
     if not items:
@@ -304,7 +306,10 @@ async def write(title: str, purpose: str | None, snapshots: list[dict]) -> dict[
         {"role": "system", "content": prompt.SYSTEM},
         {
             "role": "user",
-            "content": json.dumps(llm_input(title, purpose, items, cmp), ensure_ascii=False),
+            "content": json.dumps(
+                {**llm_input(title, purpose, items, cmp), **({"style": style} if style else {})},
+                ensure_ascii=False,
+            ),
         },
     ]
     sections, dropped, how, warnings = None, [], get_settings().report_llm, []

@@ -1,7 +1,7 @@
 import type { AskRequest, AskResponse } from "../api/types";
 import { authFetch } from "../auth/client";
 
-async function postJson<T>(url: string, body: unknown): Promise<T> {
+export async function postJson<T>(url: string, body: unknown): Promise<T> {
   const res = await authFetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

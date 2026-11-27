@@ -1,9 +1,10 @@
 import { useEffect, useRef, type ReactNode } from "react";
 import { Icon } from "../components/Icon";
 
-type Props = { title: string; narrow?: boolean; onClose: () => void; children: ReactNode };
+// doc: 문서 한 장을 크게 보여 주는 창 (보고서 미리보기)
+type Props = { title: string; narrow?: boolean; doc?: boolean; onClose: () => void; children: ReactNode };
 
-export function Sheet({ title, narrow, onClose, children }: Props) {
+export function Sheet({ title, narrow, doc, onClose, children }: Props) {
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     const dialog = ref.current;
@@ -12,7 +13,7 @@ export function Sheet({ title, narrow, onClose, children }: Props) {
   return (
     <dialog
       ref={ref}
-      className={narrow ? "sheet narrow" : "sheet"}
+      className={doc ? "sheet doc" : narrow ? "sheet narrow" : "sheet"}
       aria-labelledby="sheet-title"
       onClose={onClose}
       onClick={(e) => {

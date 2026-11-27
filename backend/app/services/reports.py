@@ -34,6 +34,8 @@ FULL = "full"
 BAD_ORDER = "bad_order"
 CHANGED = "changed"
 EMPTY = "empty"
+OTHER_TALK = "other_conversation"
+OTHER_TALK_MESSAGE = "보고서에는 한 대화의 답만 담을 수 있습니다. 이 답은 다른 대화에서 나왔습니다."
 
 
 def clean_title(title: str | None) -> str:
@@ -92,7 +94,7 @@ async def _touch(conn, report_id: int) -> None:
 async def _turn(conn, user_id: int, turn_id: int) -> dict:
     row = await conn.execute(
         text(
-            "select id, message as question, response, created_at from app.chat_turns"
+            "select id, session_id, message as question, response, created_at from app.chat_turns"
             " where id = :tid and user_id = :uid"
         ),
         {"tid": turn_id, "uid": user_id},
@@ -124,6 +126,7 @@ async def _add(conn, user_id: int, report_id: int, turn_id: int) -> bool:
     if n >= MAX_ITEMS:
         raise ReportError(FULL, f"보고서에는 결과를 {MAX_ITEMS}개까지 담을 수 있습니다.")
     turn = await _turn(conn, user_id, turn_id)
+    await _same_talk(conn, report_id, turn["session_id"])
     await conn.execute(
         text(
             "insert into app.report_items (report_id, turn_id, sort_order, snapshot)"
@@ -137,6 +140,30 @@ async def _add(conn, user_id: int, report_id: int, turn_id: int) -> bool:
         },
     )
     return True
+
+
+async def _same_talk(conn, report_id: int, session_id: str) -> None:
+    """보고서는 한 대화의 답으로만 만든다: 대화창의 [보고서]에서 그 대화의 답을 골라 만든다.
+    보고서의 대화는 담긴 답에서 정해진다 (아직 없으면 이 답의 대화로)"""
+    row = await conn.execute(
+        text("select session_id from app.reports where id = :rid"), {"rid": report_id}
+    )
+    current = row.scalar()
+    if current is None:
+        await conn.execute(
+            text("update app.reports set session_id = :sid where id = :rid"),
+            {"sid": session_id, "rid": report_id},
+        )
+    elif current != session_id:
+        raise ReportError(OTHER_TALK, OTHER_TALK_MESSAGE)
+
+
+def _talk_of(turns: list[dict], asked: str | None) -> str | None:
+    """고른 답들의 대화. 여러 대화가 섞였거나 화면이 보낸 대화와 다르면 거절한다"""
+    talks = {t["session_id"] for t in turns}
+    if len(talks) > 1 or (asked and talks and asked not in talks):
+        raise ReportError(OTHER_TALK, "보고서에는 한 대화의 답만 담을 수 있습니다.")
+    return next(iter(talks), None) or asked
 
 
 async def _full(conn, user_id: int, report_id: int) -> dict:
@@ -158,6 +185,8 @@ async def create(
     from app.core.db import engine
 
     async with engine.begin() as conn:
+        # 보고서의 대화는 고른 답에서 정한다 (화면이 보낸 session_id는 맞는지만 본다)
+        turns = [await _turn(conn, user_id, tid) for tid in dict.fromkeys(turn_ids or [])]
         row = await conn.execute(
             text(
                 "insert into app.reports (user_id, session_id, title, purpose)"
@@ -165,7 +194,7 @@ async def create(
             ),
             {
                 "uid": user_id,
-                "sid": session_id,
+                "sid": _talk_of(turns, session_id),
                 "title": clean_title(title),
                 "purpose": clean_purpose(purpose),
             },
@@ -263,7 +292,8 @@ async def add_item(user_id: int, report_id: int, turn_id: int) -> dict:
 
 
 async def add_to_draft(user_id: int, turn_id: int, session_id: str | None = None) -> dict:
-    """[보고서에 담기] 버튼: 가장 최근 초안에 담는다. 초안이 없으면 만든다"""
+    """[보고서에 담기] 버튼: 그 답이 나온 대화의 가장 최근 초안에 담는다. 초안이 없으면 만든다.
+    보고서는 한 대화의 답으로만 만든다: 다른 대화의 초안에 섞지 않는다"""
     from app.core.db import engine
 
     async with engine.begin() as conn:
@@ -272,22 +302,24 @@ async def add_to_draft(user_id: int, turn_id: int, session_id: str | None = None
         await conn.execute(
             text("select id from app.users where id = :uid for update"), {"uid": user_id}
         )
+        # 담지 못할 답이면 빈 초안을 만들지 않는다. 대화는 답에서 정한다
+        talk = _talk_of([await _turn(conn, user_id, turn_id)], session_id)
         row = await conn.execute(
             text(
-                "select id from app.reports where user_id = :uid and status = 'draft'"
-                " and content is null order by updated_at desc limit 1 for update"
+                "select id from app.reports where user_id = :uid and session_id = :sid"
+                " and status = 'draft' and content is null"
+                " order by updated_at desc limit 1 for update"
             ),
-            {"uid": user_id},
+            {"uid": user_id, "sid": talk},
         )
         report_id = row.scalar()
         if report_id is None:
-            await _turn(conn, user_id, turn_id)  # 담지 못할 답이면 빈 초안을 만들지 않는다
             row = await conn.execute(
                 text(
                     "insert into app.reports (user_id, session_id, title)"
                     " values (:uid, :sid, :title) returning id"
                 ),
-                {"uid": user_id, "sid": session_id, "title": DEFAULT_TITLE},
+                {"uid": user_id, "sid": talk, "title": DEFAULT_TITLE},
             )
             report_id = row.scalar_one()
         if await _add(conn, user_id, report_id, turn_id):
@@ -321,7 +353,7 @@ async def delete(user_id: int, report_id: int) -> bool:
     return gone.rowcount > 0
 
 
-async def generate(user_id: int, report_id: int) -> dict:
+async def generate(user_id: int, report_id: int, style: str | None = None) -> dict:
     """담긴 결과로 보고서 문장을 만들어 content에 저장한다. 생성 중 항목이 바뀌면 저장하지 않는다"""
     from app.core.db import engine
     from app.services import report_writer
@@ -333,7 +365,9 @@ async def generate(user_id: int, report_id: int) -> dict:
     seen = [(i["turn_id"], i["sort_order"]) for i in report["items"]]
     stamp = report["updated_at"]
     try:
-        content = await report_writer.write(report["title"], report["purpose"], report["items"])
+        content = await report_writer.write(
+            report["title"], report["purpose"], report["items"], style
+        )
         status = "ready"
     except ValueError as e:
         content, status = {"error": str(e)}, "failed"

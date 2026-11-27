@@ -1,68 +1,139 @@
+/* 로그인 · 회원가입: 가운데 카드 한 장에 두 폼이 같은 자리에 겹쳐 있고, 초록 덮개가 옆으로 밀리며 바꾼다.
+   폼 · 덮개 반반이라 덮개는 왼쪽으로, 폼은 오른쪽으로 자기 폭만큼 움직인다.
+   (.account는 대화 화면 사이드바의 계정 줄이 쓰고 CSS가 한 파일로 묶여 겹쳐서 .entry로 둔다) */
 body[data-page="account"] {
-  display: flex;
-  gap: 20px;
   height: auto;
   min-height: 100dvh;
-  padding: 20px;
+  padding: 32px 20px;
 }
-
-.story {
-  flex: 0 0 auto;
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  gap: 20px;
-  width: min(520px, 38%);
-  padding: 40px;
-  border-radius: 24px;
-  background: var(--accent);
-  color: var(--panel);
-}
-.brand.on-dark { color: var(--panel); }
-.brand.on-dark .brand-tag { color: var(--accent-mid); }
-.story-body { display: flex; flex-direction: column; gap: 24px; }
-.story-body > * { animation: rise var(--slow) var(--ease) both; }
-.story-body > :nth-child(2) { animation-delay: 60ms; }
-.story-body > :nth-child(3) { animation-delay: 120ms; }
-.story-body > :nth-child(4) { animation-delay: 180ms; }
-.story-art {
-  display: grid;
-  place-items: center;
-  width: 240px;
-  height: 240px;
-  border-radius: 24px;
-  background: var(--logo-paper);
-}
-.story-art .logo { height: 186px; border-radius: 0; background-image: url("../assets/like-snake-symbol.png"); }
-.story-title { font-size: 32px; font-weight: 600; line-height: 44px; letter-spacing: -0.02em; }
-.story-text { color: var(--accent-mid); line-height: 22px; }
-.story-topics { display: flex; gap: 8px; margin: 0; padding: 0; list-style: none; }
-.story-topics li {
-  display: grid;
-  place-items: center;
-  height: 32px;
-  padding: 0 16px;
-  border-radius: 8px;
-  background: var(--accent-hover);
-  font-size: 12px;
-  font-weight: 500;
-}
-.story-foot { color: var(--accent-mid); font-size: 12px; line-height: 16px; white-space: pre; }
-
-.panel {
-  flex: 1;
-  min-width: 0;
+/* 위쪽 자리는 로그인 카드가 화면 가운데 오게 고정한다: 회원가입으로 카드가 늘어날 때 위 줄 · 카드 윗변은
+   그대로 두고 아래로만 늘어난다 (가운데 맞춤이면 화면 전체가 위로 밀려 움직임이 하나 더 생겼다) */
+.entry-page {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 24px;
-  padding: 40px;
+  gap: 16px;
+  min-height: calc(100dvh - 64px);
+  padding-top: max(0px, calc(50dvh - 306px));
+}
+.entry-top, .entry { width: min(800px, 100%); }
+.entry-top { display: flex; align-items: center; }
+.entry {
+  --slide: 640ms cubic-bezier(0.65, 0, 0.35, 1);
+  position: relative;
+  height: var(--entry-h, auto);
+  min-height: 480px;
+  overflow: hidden;
   border-radius: 24px;
   background: var(--workspace);
+  /* 높이 애니메이션은 카드 하나가 한 번(0.64초)만 다시 배치돼 감수한다. 없으면 회원가입 높이로 툭 커진다 */
+  transition: height var(--slide);
 }
+
+/* 두 폼은 카드 왼쪽 반에 겹쳐 있다. 카드 높이는 보이는 쪽 폼에 맞춘다 (AccountLayout이 --entry-h로 준다).
+   늘어나는 동안 폼이 카드보다 길면 위에서부터 보이게 한다 (safe center) */
+.side {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 50%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: safe center;
+  padding: 30px 40px;
+  background: var(--workspace);
+  transition: transform var(--slide), opacity var(--slide);
+}
+.side.in { z-index: 2; }
+.side.up { z-index: 1; opacity: 0; }
+.is-up .side.in { transform: translateX(100%); }
+.is-up .side.up { z-index: 5; opacity: 1; transform: translateX(100%); animation: swap var(--slide); }
+/* 회원가입 폼은 덮개가 반쯤 지나갈 때 앞으로 나온다 (그 전에는 로그인 폼 뒤) */
+@keyframes swap {
+  0%, 49.99% { z-index: 1; opacity: 0; }
+  50%, 100% { z-index: 5; opacity: 1; }
+}
+
+.cover {
+  position: absolute;
+  inset: 0 0 0 50%;
+  z-index: 10;
+  overflow: hidden;
+  transition: transform var(--slide);
+}
+.is-up .cover { transform: translateX(-100%); }
+/* 덮개 안쪽은 두 장(로그인 권유 · 가입 권유)을 이어 붙인 띠: 덮개와 반대로 밀려 보이는 장이 바뀐다 */
+.cover-track {
+  position: relative;
+  left: -100%;
+  width: 200%;
+  height: 100%;
+  background: var(--accent);
+  color: var(--panel);
+  transition: transform var(--slide);
+}
+.is-up .cover-track { transform: translateX(50%); }
+.cover-panel {
+  position: absolute;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  width: 50%;
+  height: 100%;
+  padding: 36px 40px;
+  text-align: center;
+  transition: transform var(--slide);
+}
+.cover-panel.to-in { left: 0; transform: translateX(-20%); }
+.is-up .cover-panel.to-in { transform: none; }
+.cover-panel.to-up { right: 0; }
+.is-up .cover-panel.to-up { transform: translateX(20%); }
+/* LIKE SNAKE 캐릭터: 진한 초록 위에 바로 세운다 */
+.cover-art {
+  display: block;
+  width: auto;
+  height: 136px;
+  margin-bottom: 8px;
+  object-fit: contain;
+  filter: drop-shadow(0 14px 18px rgb(0 0 0 / .28));
+}
+.cover-title { font-size: 24px; font-weight: 600; line-height: 32px; letter-spacing: -0.02em; text-wrap: balance; }
+.cover-text { color: var(--accent-mid); font-size: 14px; line-height: 21px; }
+.btn.ghost {
+  min-width: 152px;
+  height: 44px;
+  margin-top: 12px;
+  border: 1px solid rgb(255 255 255 / .6);
+  color: var(--panel);
+  transition: background-color var(--fast) var(--ease), border-color var(--fast) var(--ease), box-shadow var(--fast) var(--ease), transform var(--fast) var(--ease);
+}
+.btn.ghost:hover { border-color: var(--panel); background: rgb(255 255 255 / .08); }
+.btn.ghost:focus-visible { outline: 2px solid var(--accent-mid); outline-offset: 3px; }
+/* 넓은 화면에서는 덮개 버튼이 오가기를 맡는다. 폼 아래 글자 링크는 휴대폰에서만 */
+.side .switch { display: none; }
+
+/* 카드 안 폼은 참고 시안처럼 작게: 칸 44px, 간격을 좁힌다 (휴대폰은 아래 규칙대로) */
+@media (min-width: 861px) {
+  .entry .view { gap: 14px; max-width: none; }
+  .entry .form-head { gap: 4px; }
+  .entry .view h1 { font-size: 26px; line-height: 34px; }
+  .entry .lead { font-size: 13px; line-height: 20px; }
+  .entry .fields { gap: 10px; }
+  .entry .field { gap: 4px; }
+  .entry .field-box { height: 44px; padding: 0 14px; border-radius: 10px; }
+  .entry .btn.block { height: 46px; }
+  .entry .agrees { gap: 2px; }
+  .entry .done { gap: 16px; }
+  .entry .done-mark { width: 64px; height: 64px; border-radius: 20px; }
+  .entry .done h1 { font-size: 24px; line-height: 32px; }
+}
+
 .m-head { display: none; }
 .back {
-  align-self: flex-start;
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -186,10 +257,89 @@ body[data-page="account"] {
 .later { color: var(--muted); font-size: 13px; line-height: 20px; text-decoration: none; }
 .later:hover { color: var(--ink); }
 
+/* 깊이: 빛은 위에서. 채우는 칸 · 빈 체크칸은 파인 것(음각), 누르는 버튼 · 칩은 솟은 것(양각).
+   이 화면에만 둔다 (대화 화면 버튼 · 칸은 그대로) */
+body[data-page="account"] {
+  --carve: #f2f5ef;
+  --carve-edge: #dbe3d8;
+  --carved: inset 0 1px 2px rgb(23 59 46 / .10), inset 0 2px 6px rgb(23 59 46 / .04), 0 1px 0 rgb(255 255 255 / .9);
+  --raised-dark: inset 0 1px 0 rgb(255 255 255 / .16), inset 0 -1px 0 rgb(0 0 0 / .28),
+    0 1px 2px rgb(25 46 39 / .24), 0 8px 16px -6px rgb(25 46 39 / .45);
+  --pressed-dark: inset 0 2px 5px rgb(0 0 0 / .35), 0 1px 0 rgb(255 255 255 / .6);
+}
+.entry { box-shadow: inset 0 1px 0 rgb(255 255 255 / .9), 0 1px 2px rgb(23 59 46 / .06), 0 10px 24px rgb(23 59 46 / .06), 0 30px 70px rgb(23 59 46 / .12); }
+
+/* 칸: 카드보다 살짝 어둡게 파고, 아래 테두리에 빛이 걸린다. 누르면 하얗게 떠오르며 초록 테두리 */
+body[data-page="account"] .field-box {
+  border-color: var(--carve-edge);
+  background: var(--carve);
+  box-shadow: var(--carved);
+  transition: background-color var(--fast) var(--ease), border-color var(--fast) var(--ease), box-shadow var(--fast) var(--ease);
+}
+body[data-page="account"] .field-box:focus-within {
+  border-color: var(--sage);
+  background: var(--panel);
+  box-shadow: inset 0 1px 2px rgb(23 59 46 / .06), 0 0 0 3px rgb(95 137 112 / .2);
+}
+body[data-page="account"] .field.invalid .field-box { border-color: var(--bad); box-shadow: var(--carved); }
+
+/* 파인 칸 안에 솟은 작은 칩 */
+body[data-page="account"] .field-btn {
+  padding: 4px 10px;
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: inset 0 1px 0 #fff, 0 1px 2px rgb(23 59 46 / .16), 0 2px 6px -2px rgb(23 59 46 / .14);
+  transition: box-shadow var(--fast) var(--ease), transform var(--fast) var(--ease);
+}
+body[data-page="account"] .field-btn:hover:not(:disabled) { text-decoration: none; box-shadow: inset 0 1px 0 #fff, 0 2px 4px rgb(23 59 46 / .18), 0 4px 10px -2px rgb(23 59 46 / .16); }
+body[data-page="account"] .field-btn:active:not(:disabled) { transform: translateY(1px); box-shadow: inset 0 1px 3px rgb(23 59 46 / .18); }
+body[data-page="account"] .field-btn:disabled { background: none; box-shadow: none; }
+
+/* 버튼: 위 테두리는 밝고 아래는 어둡게 솟는다. 누르면 안으로 들어간다 */
+body[data-page="account"] .btn.primary {
+  background: linear-gradient(180deg, #24443a 0%, var(--accent) 100%);
+  box-shadow: var(--raised-dark);
+  transition: background-color var(--fast) var(--ease), box-shadow var(--fast) var(--ease), transform var(--fast) var(--ease);
+}
+body[data-page="account"] .btn.primary:hover { background: linear-gradient(180deg, #2c5a4a 0%, var(--accent-hover) 100%); }
+body[data-page="account"] .btn.primary:active:not(:disabled) { transform: translateY(1px); box-shadow: var(--pressed-dark); }
+body[data-page="account"] .btn.primary:disabled { background: var(--accent-mid); box-shadow: none; }
+
+/* 체크칸: 비었을 때는 파이고, 고르면 솟는다 */
+body[data-page="account"] .agree input { border-color: var(--carve-edge); background-color: var(--carve); box-shadow: inset 0 1px 2px rgb(23 59 46 / .14); }
+body[data-page="account"] .agree input:checked { border-color: var(--accent); background-color: var(--accent); box-shadow: inset 0 1px 0 rgb(255 255 255 / .18), 0 1px 2px rgb(25 46 39 / .3); }
+
+/* 덮개: 캐릭터 뒤로 빛이 모이고, 밀릴 때 폼 위에 그림자를 드리운다 */
+.cover { box-shadow: 0 0 40px rgb(0 0 0 / .28); }
+.cover-panel { background: radial-gradient(circle at 50% 36%, rgb(95 137 112 / .32) 0%, rgb(95 137 112 / 0) 52%); }
+.cover-title { text-shadow: 0 1px 0 rgb(0 0 0 / .3); }
+.btn.ghost {
+  background: rgb(255 255 255 / .04);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / .14), 0 1px 0 rgb(0 0 0 / .25), 0 8px 18px -8px rgb(0 0 0 / .55);
+}
+.btn.ghost:active { transform: translateY(1px); box-shadow: inset 0 2px 5px rgb(0 0 0 / .4); }
+
+/* 가입 완료 표시: 솟은 배지 */
+body[data-page="account"] .done-mark { box-shadow: inset 0 1px 0 #fff, 0 1px 2px rgb(23 59 46 / .12), 0 10px 20px -8px rgb(23 59 46 / .25); }
+
 @media (max-width: 860px) {
-  body[data-page="account"] { display: block; padding: 0; background: var(--workspace); }
-  .story, .back, .panel-foot { display: none; }
-  .panel { min-height: 100dvh; padding: 0; border-radius: 0; gap: 0; }
+  body[data-page="account"] { padding: 0; background: var(--workspace); }
+  .entry-page { display: block; min-height: 100dvh; padding-top: 0; }
+  .entry-top, .cover, .panel-foot { display: none; }
+  .entry { width: 100%; height: auto; min-height: 0; overflow: visible; border-radius: 0; box-shadow: none; }
+  /* 덮개 없이 보이는 쪽 하나만: 밀기 · 겹치기를 모두 끈다 */
+  .entry .side.in, .entry .side.up {
+    position: static;
+    width: 100%;
+    height: auto;
+    padding: 0;
+    opacity: 1;
+    transform: none;
+    animation: none;
+    background: none;
+  }
+  .is-up .side.in, .entry:not(.is-up) .side.up { display: none; }
+  .side .switch { display: block; }
   .m-head {
     flex: none;
     display: flex;

@@ -15,7 +15,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.concurrency import run_in_threadpool
 
-from app.agent import replan
+from app.agent import replan, report_offer, report_router
 from app.core.config import get_settings
 from app.prompts.qa import FOLLOW_SYSTEM, RESTATE_SYSTEM, TALK_SPLIT_SYSTEM
 from app.services import (
@@ -3293,7 +3293,7 @@ async def _retry(
     done: set[str] | None = None,
 ) -> tuple[dict | None, str]:
     """행동대로 한 번 다시 계산. replan 이 새 계획을 못 내면 대체 행동(표 · 경로)으로 떨어진다.
-    requery · recell 은 호출부가 아직 없어 바로 대체 행동으로 간다. done: 쓴 행동 (대체도 적는다)"""
+    requery · repick 은 호출부가 아직 없어 바로 대체 행동으로 간다. done: 쓴 행동 (대체도 적는다)"""
     if action.name == agent_action.REPLAN:
         again, how = await _replan_compute(res, verdict, asked, user_id)
         if again is not None or action.fallback is None:
@@ -3321,12 +3321,10 @@ async def _judged(res: dict, state: dict | None, question: str, user_id: int | N
     if first["verdict"] != "retry":
         return
     # 행동 고르기 (N9, 코드 규칙): 판정 이유 · 답의 경로 · 1위 후보의 ✔/✘로 다음 행동을 정한다.
-    # 호출부가 있는 행동은 replan(_replan_compute) · reroute · retable(둘 다 _recompute) · give_up.
-    # requery · recell은 이름만 기록하고 fallback으로 떨어진다 (게이트 · 연결 단계가 들어오면)
     # 행동 고리 (N9 → 다시 계산 → 판정, 설계서 4-1 · 4-5): 첫 행동이 실패하거나 다시 한 답도
     # 판정에 걸리면 다음 행동으로 이어 간다. 상한은 agent_action(다시 2회 · LLM 1회)과 60초.
     # 호출부가 있는 행동은 replan(_replan_compute) · reroute · retable(둘 다 _recompute) · give_up.
-    # requery · recell은 이름만 기록하고 fallback으로 떨어진다 (게이트 · 연결 단계가 들어오면)
+    # requery · repick은 이름만 기록하고 fallback으로 떨어진다 (게이트 · 연결 단계가 들어오면)
     verdict = first
     tried = llm_tried = 0
     done: set[str] = set()
@@ -3650,7 +3648,9 @@ async def handle(
     question: str,
     user_id: int | None = None,
     selections: dict | None = None,
+    listed: bool = True,
 ) -> dict:
+    """listed=False: 지난 대화 목록에 남기지 않는다 (보고서 에이전트가 따로 조회할 때)"""
     sid = session_id or new_id()
     steps = flow.start()
     calls = llm_calls.start()
@@ -3662,6 +3662,9 @@ async def handle(
             sid = new_id()
         if moved:
             sid, state, expired = new_id(), None, False
+        # 보고서 말은 에이전트로 (#249 의 '정리해줘' 보고서는 _turn 안에서 따로 간다)
+        if listed and report_router.wants(question, state):
+            return await _agent_turn(sid, state, question, user_id, steps, calls, expired, moved)
         _found_now.set(None)
         _session_now.set(sid)
         res, sources, notice = await _turn(state, question, selections, user_id)
@@ -3690,6 +3693,8 @@ async def handle(
             )
         after = next_state(state, question, res, sources)
         after["user_id"] = user_id
+        if listed:
+            report_offer.update(state, res, after, user_id)
         res.setdefault("question", question)
         res["session_id"] = sid
         res["applied"] = (
@@ -3712,7 +3717,51 @@ async def handle(
         flow.add("최종 답", res.get("status"), f"{res.get('request_type') or ''} · {first_line}")
         res.setdefault("trace", {})["flow"] = list(steps)
         res["trace"]["llm_calls"] = list(calls)
-        await _save(sid, after, res, state, question, user_id)
+        await _save(sid, after, res, state, question, user_id, listed)
+    return res
+
+
+async def _agent_turn(
+    sid: str,
+    state: dict | None,
+    question: str,
+    user_id: int | None,
+    steps: list,
+    calls: list,
+    expired: bool,
+    moved: bool,
+) -> dict:
+    """보고서 경로 (명세서 7장). 앞 질문의 조건은 그대로 둬서 다음 통계 질문이 이어진다"""
+    from app.agent import report_agent
+
+    res = await report_agent.run(question, sid, state, user_id)
+    mine = res.pop("report_agent_state")
+    prev = state or {}
+    turn_no = (prev.get("turn_no") or 0) + 1
+    before = prev.get("report_agent") or {}
+    after = {
+        **prev,
+        "turn_no": turn_no,
+        "user_id": user_id,
+        "report_agent": {**before, **mine, "last_turn": turn_no},
+    }
+    notes = []
+    if expired:
+        notes.append("시간이 지나 이전 조건이 초기화됐습니다.")
+    if moved:
+        notes.append("로그인 상태가 바뀌어 새 대화로 시작했습니다.")
+    record = res["trace"]["report_agent"]
+    flow.add(
+        "보고서 에이전트",
+        record["end"],
+        " → ".join(str(x.get("action")) for x in record["steps"]) or "-",
+    )
+    res.update(
+        session_id=sid, applied=[], notice=" ".join(notes) or None, figure=None, reportable=False
+    )
+    res["trace"]["flow"] = list(steps)
+    res["trace"]["llm_calls"] = list(calls)
+    await _save(sid, after, res, state, question, user_id)
     return res
 
 
@@ -3729,7 +3778,13 @@ async def _load(session_id: str) -> tuple[dict | None, bool]:
 
 
 async def _save(
-    sid: str, after: dict, res: dict, before: dict | None, question: str, user_id
+    sid: str,
+    after: dict,
+    res: dict,
+    before: dict | None,
+    question: str,
+    user_id,
+    listed: bool = True,
 ) -> None:
     continuing = user_id is not None and before is not None
     try:
@@ -3742,7 +3797,7 @@ async def _save(
             await save(sid, after, conn)
             turn_no = after.get("turn_no") or 1
             turn_id = await log_turn(sid, user_id, turn_no, question, res, before, after, conn)
-            if user_id is not None:
+            if user_id is not None and listed:  # 보고서 에이전트의 따로 조회는 목록에 남기지 않는다
                 await conversations.touch(sid, user_id, question, conn)
         if user_id is not None:
             res["turn_id"] = turn_id  # 저장이 끝난 로그인 답만 보고서에 담을 수 있다

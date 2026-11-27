@@ -131,15 +131,11 @@ def test_finished_session_does_not_treat_next_input_as_answer(chat) -> None:
     assert chat.searched == [TARGET_Q, "시도별 혼인"]
 
 
-def test_family_choice_by_number_then_member_question(chat) -> None:
+def test_close_families_are_picked_without_asking(chat) -> None:
     first = chat("외국인 현황")
-    assert first["status"] == "ambiguous"
-    options = first["options"]
-    assert len(options) >= 2
-
-    done = chat("2번")
-    assert done["family"]["family_id"] == options[1]["family_id"]
-    assert done["status"] in ("ok", "partial_match")
+    assert first["status"] in ("ok", "partial_match")
+    assert len(first["close_families"]) >= 2
+    assert first["family"]["family_id"] == first["close_families"][0]["family_id"]
     assert chat.searched == ["외국인 현황"]
 
 
