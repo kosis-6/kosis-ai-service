@@ -3045,3 +3045,26 @@ def test_talk_split_summary_only_follows_the_old_rule(monkeypatch) -> None:
     monkeypatch.setattr(s, "_new", new)
     res, _, _ = asyncio.run(s._turn(_talk_state(), "서울 인구 전체 정리해줘"))
     assert called.get("q") is not None and res["request_type"] != s.SUMMARY
+
+
+def _split(*names: str) -> dict:
+    parts = [{"status": "ok", "indicator": n, "ranking": []} for n in names]
+    return {"status": "ok", "result": {"status": "ok", "split_by": "indicator", "split": parts}}
+
+
+def test_composite_answer_that_drops_an_indicator_keeps_the_dictionary() -> None:
+    """11/27 PR 2: '출생아 수와 사망자 수 상위 5개 시도'를 사전이 지표마다 목록으로 냈는데
+    복합 계획이 마지막 단계(사망자 수)만 남겼다"""
+    dictionary = _split("출생아 수", "사망자 수")
+    last_step = {"status": "ok", "result": {"status": "ok", "indicator": "사망자 수"}}
+    assert s._indicators_dropped_by(dictionary, last_step) == {"출생아 수"}
+
+
+def test_composite_answer_with_a_new_measure_is_kept() -> None:
+    """지표 사이를 계산한 복합 답('사망자 수 - 출생아 수')은 사전 답의 일부가 아니라 그대로 쓴다"""
+    dictionary = _split("출생아 수", "사망자 수")
+    computed = {"status": "ok", "result": {"status": "ok", "indicator": "사망자 수 - 출생아 수"}}
+    assert s._indicators_dropped_by(dictionary, computed) == set()
+    single = {"status": "ok", "result": {"status": "ok", "indicator": "출생아 수"}}
+    assert s._indicators_dropped_by(single, single) == set()
+    assert s._indicators_dropped_by(dictionary, _split("출생아 수", "사망자 수")) == set()

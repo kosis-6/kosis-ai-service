@@ -1894,9 +1894,35 @@ async def _composite(question: str, res: dict, state: dict | None) -> dict | Non
             "sources": [],
             "trace": trace,
         }
+    if dropped := _indicators_dropped_by(res, alt):
+        # 사전이 물은 지표를 모두 답했는데 복합 계획의 답이 그 일부만 담으면 사전 답을 둔다.
+        # 11/27 PR 2: '출생아 수와 사망자 수 상위 5개 시도'를 사전이 지표마다 목록으로 냈는데
+        # 복합 계획(get → rank → get → rank)이 마지막 단계(사망자 수)만 남겼다
+        trace["composite_kept_dictionary"] = {"dropped": sorted(dropped)}
+        return None
     alt["search_session"] = sid
     alt["trace"] = trace
     return alt
+
+
+def _answered_indicators(result: dict | None) -> set[str]:
+    result = result or {}
+    if result.get("split_by") == "indicator":
+        return {p.get("indicator") for p in result.get("split") or [] if p.get("status") == "ok"}
+    if result.get("status") == "ok" and result.get("indicator"):
+        return {result["indicator"]}
+    return set()
+
+
+def _indicators_dropped_by(res: dict, alt: dict) -> set[str]:
+    """사전 답이 지표마다 답한 것 중 복합 답에 없는 지표 (복합 답이 사전 답의 일부일 때만)"""
+    if res.get("status") != "ok":
+        return set()
+    mine = _answered_indicators(res.get("result"))
+    theirs = _answered_indicators(alt.get("result"))
+    if len(mine) < 2 or not theirs or not theirs < mine:
+        return set()
+    return mine - theirs
 
 
 async def _separate_measures(question, measures, state, user_id):

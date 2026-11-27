@@ -24,7 +24,6 @@ def first_group(q):
         ("호남권 인구", "호남권", 3),
         ("충청권 인구", "충청권", 4),
         ("광역시 전체 인구", "광역시 전체", 6),
-        ("6개 광역시 인구", "6개 광역시", 6),
     ],
 )
 def test_region_groups_2(q, group, n):
@@ -102,24 +101,49 @@ def test_population_modifier_still_works():
 METROS_6 = ["부산", "대구", "인천", "광주광역시", "대전", "울산"]
 
 
+def group_regions(q):
+    return qa._with_named_regions(q, *qa.region_group(q))[1]
+
+
+@pytest.mark.needs_data  # 따로 말한 지역을 resolve_region으로 확인한다
 @pytest.mark.parametrize(
     ("q", "members"),
     [
         # 11/27 차트 점검: '7개 광역시와 세종'을 묶음으로 못 읽어 지역 확인 실패
         ("7개 광역시와 세종의 출생아 수 추이", [*METROS_6, "세종"]),
+        ("6개 광역시 인구", METROS_6),
         ("6대 광역시와 세종 인구", [*METROS_6, "세종"]),
-        ("광역시랑 세종 인구 비교", [*METROS_6, "세종"]),
-        ("광역시 및 세종 인구", [*METROS_6, "세종"]),
         # PR 리뷰: '5대 광역시와 세종'에 울산이 끼어 7곳이 됐다 (5대 광역시 + 세종 = 6곳)
         ("5대 광역시와 세종 인구 비교", [*qa.REGION_GROUPS["5대 광역시"], "세종"]),
         ("지방 광역시와 세종 인구", [*qa.REGION_GROUPS["지방 광역시"], "세종"]),
+        # 세종만이 아니라 묶음 밖에서 따로 말한 지역은 모두 더한다
+        ("수도권과 강원 인구", [*qa.REGION_GROUPS["수도권"], "강원"]),
+        ("영남과 제주 인구 비교", [*qa.REGION_GROUPS["영남"], "제주"]),
+        # 묶음에 이미 든 지역은 두 번 넣지 않는다
+        ("수도권과 서울 인구", qa.REGION_GROUPS["수도권"]),
+        ("5대 광역시 인구", qa.REGION_GROUPS["5대 광역시"]),
     ],
 )
-def test_metro_group_and_sejong(q, members):
-    word, found = qa._metro_and_sejong(q)
-    assert found == members and word in q
+def test_group_and_named_regions(q, members):
+    assert group_regions(q) == members
 
 
-def test_metro_without_sejong_keeps_its_group():
-    assert qa._metro_and_sejong("5대 광역시 인구") is None
-    assert first_group("5대 광역시 인구") == "5대 광역시"
+def test_counted_words_without_a_group_are_not_groups():
+    assert qa.region_group("17개 시도 인구") is None
+    assert qa.region_group("부산광역시 인구") is None
+
+
+@pytest.mark.needs_data
+@pytest.mark.parametrize(
+    ("q", "label"),
+    [
+        # 더한 지역이 있으면 묶음 이름도 질문의 말로 ('수도권은 … 강원 기준'이라 하지 않게)
+        ("수도권과 강원 인구 비교", "수도권과 강원"),
+        ("5대 광역시와 세종 인구 비교", "5대 광역시와 세종"),
+        ("7개 광역시와 세종의 출생아 수 추이", "7개 광역시와 세종"),
+        ("수도권과 서울 인구", "수도권"),
+        ("5대 광역시 인구", "5대 광역시"),
+    ],
+)
+def test_group_label_names_the_added_regions(q, label):
+    assert qa._with_named_regions(q, *qa.region_group(q))[0] == label

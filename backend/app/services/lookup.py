@@ -715,7 +715,16 @@ def compare(spec, regions, year, sex="계", ages=None):
 
 
 def rank(
-    spec, year, level="시도", sido=None, top=None, ascending=False, sex="계", ages=None, target=None
+    spec,
+    year,
+    level="시도",
+    sido=None,
+    top=None,
+    ascending=False,
+    sex="계",
+    ages=None,
+    target=None,
+    within=None,
 ):
     src, err = _pick(spec, "시도" if level == "시도" and not sido else "시군구", year, year, sex)
     if err:
@@ -728,7 +737,7 @@ def rank(
             "indicator": spec["name"],
             "reason": f"{josa(spec['name'], '은는')} 질문한 연령 구간으로 나눈 자료가 없습니다.",
         }
-    cond = ind_mod.rank_where(level, sido)
+    cond = ind_mod.rank_where(level, sido, within)
     if isinstance(cond, dict):
         return {**cond, "indicator": spec["name"]}
     where, params, scope = cond
