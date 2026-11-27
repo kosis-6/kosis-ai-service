@@ -3132,6 +3132,9 @@ async def _recompute(
     if parsed.get("dynamic_spec"):
         how = "다음 후보 표"
         used = {s.get("tbl_id") for s in res.get("sources") or [] if s.get("tbl_id")}
+        judged = (res.get("trace") or {}).get("answer_judge") or {}
+        if repicked := (judged.get("repick") or {}).get("tbl_id"):
+            used.add(repicked)  # repick 이 이미 칸을 다시 본 표도 뺀다 (같은 표 두 번 안 함)
         if found is None:
             found = _keep(await table_guide.find_tables(asked, sid, None, user_id))
         found = without_tables(found, used)
@@ -3154,14 +3157,126 @@ async def _recompute(
     return again, how
 
 
-async def _repick_compute(res: dict, verdict: dict, asked: str) -> tuple[dict | None, str]:
+def repick_target(res: dict, found: dict | None) -> tuple[dict, str] | None:
+    """repick 이 다시 볼 표 하나 → (후보 표, 고른 이유). 없으면 None.
+    표 경로    값을 낸 표. 아래 순위 표가 값을 냈으면 1위 표 (1위가 칸에서 막혔던 것)
+    사전 경로  사전 지표의 출처 표 (칸은 고정하지 않고 칸 잇기 → recell 로 다시 고른다)
+    설계: docs/agent_redesign_2026-11-26.md 2-5 '검사할 표' · 2-7"""
+    parsed = res.get("parsed") or {}
+    trace = res.get("trace") or {}
+    sources = [s.get("tbl_id") for s in res.get("sources") or [] if s.get("tbl_id")]
+    if parsed.get("dynamic_spec"):
+        used = ((trace.get("handoff") or {}).get("used") or {}).get("tbl_id") or next(
+            iter(sources), None
+        )
+        top = agent_action.picked_candidate(found)
+        if top and used and top.get("tbl_id") != used:
+            return dict(top), "아래 순위 표가 답함 → 1위 표"
+        if not used:
+            return None
+        cands = (((found or {}).get("handoff") or {}).get("targets") or [{}])[0].get("candidates")
+        cand = next((c for c in cands or [] if c.get("tbl_id") == used), None)
+        return (dict(cand) if cand else {"tbl_id": used}), "값을 낸 표"
+    spec = indicators.spec(parsed.get("indicator") or "")
+    tables = [src.get("table") for src in (spec or {}).get("sources") or [] if src.get("table")]
+    tbl = next((t for t in sources if t in tables), None) or next(iter(tables), None)
+    if not tbl:
+        return None
+    return {"tbl_id": tbl}, "사전 지표의 출처 표"
+
+
+def wrong_cells(res: dict, tbl_id: str) -> str | None:
+    """틀렸다고 판정된 답이 그 표에서 쓴 칸 (계산 기록의 cells). 사전 답이면 None"""
+    steps = (res.get("trace") or {}).get("dynamic") or []
+    return next(
+        (
+            st["cells"]
+            for st in reversed(steps)
+            if st.get("tbl_id") == tbl_id and st.get("cells") and st.get("status") == "ok"
+        ),
+        None,
+    )
+
+
+def _missing_hits_cell(tbl_id: str, missing: str) -> bool:
+    """판정이 빠졌다고 본 말이 그 표의 칸(합계 · 지역 제외) 이름에 닿는가"""
+    dims, region_dim, _ = dynamic_indicator.schema(tbl_id)
+    return bool(dynamic_indicator._text_hits(missing, dims, {region_dim}))
+
+
+async def repick_cells(res: dict, verdict: dict, found: dict | None) -> dict:
+    """repick 근거: 다시 볼 표에 판정 지적을 고칠 칸이 있나 → {"cells": bool, "tbl_id", "by"}.
+      판정의 missing 이 그 표의 칸 이름에 닿음                         → 칸 있음
+      아래 순위 표가 답했고 계산 기록에 칸 실패 흔적(1위가 칸에서 막힘) → 칸 있음
+    검사 단계(설계 2-5 cells_exist)가 들어오면 그것으로 바꾼다"""
+    picked = repick_target(res, found)
+    if picked is None:
+        return {"cells": False, "by": "다시 볼 표 없음"}
+    entry, why = picked
+    tbl_id = entry["tbl_id"]
+    missing = str(verdict.get("missing") or "").strip()
+    if missing:
+        try:
+            if await run_in_threadpool(_missing_hits_cell, tbl_id, missing):
+                return {"cells": True, "tbl_id": tbl_id, "by": "판정 지적이 칸에 닿음"}
+        except Exception:
+            logger.info("repick 칸 확인: 표 구조 없음 %s", tbl_id)
+    if why.startswith("아래 순위") and agent_action.failed_at_cell(res.get("trace")):
+        return {"cells": True, "tbl_id": tbl_id, "by": "1위 표가 칸에서 막힘"}
+    return {"cells": False, "tbl_id": tbl_id, "by": "고칠 칸을 못 찾음"}
+
+
+async def _repick_compute(
+    res: dict, verdict: dict, asked: str, llm_ok: bool = True
+) -> tuple[dict | None, str]:
     """repick: 표는 맞는데 칸이 틀린 답을 같은 표에서 칸만 다시 골라 계산한 답 → (답, 방법).
+    칸 잇기 → (판정 지적을 넘긴) recell 순서. llm_ok 가 아니면 recell 은 부르지 않는다.
     다시 고르지 못하면 (None, 방법) → _retry 가 대체 행동으로 간다.
-    설계: docs/agent_redesign_2026-11-26.md 2-2 · 2-7. 표 고르기 · 다시 계산은 다음 단계에서 채운다
-    """
+    기록: res["trace"]["answer_judge"]["repick"] (표 · 고른 이유 · 앞 칸 · 칸 잇기 · recell)
+    설계: docs/agent_redesign_2026-11-26.md 2-2 · 2-7"""
+    how = "같은 표에서 칸 다시"
     record = res.setdefault("trace", {}).setdefault("answer_judge", {})
-    record["repick"] = {"skip": "아직 구현 전"}
-    return None, "같은 표에서 칸 다시"
+    found = _found_now.get()
+    picked = repick_target(res, found)
+    if picked is None:
+        record["repick"] = {"skip": "다시 볼 표 없음"}
+        return None, how
+    entry, why = picked
+    if not entry.get("tbl_nm"):
+        with contextlib.suppress(Exception):
+            entry["tbl_nm"] = (await run_in_threadpool(lookup._table, entry["tbl_id"]))["tbl_nm"]
+    wrong = wrong_cells(res, entry["tbl_id"])
+    hint = {"reason": verdict.get("reason"), "missing": verdict.get("missing"), "wrong": wrong}
+    log: dict = {"tbl_id": entry["tbl_id"], "why": why, "wrong": wrong}
+    record["repick"] = log
+    flow.add("다시 계산", "repick", f"{entry['tbl_id']} ({why})")
+    parsed = res.get("parsed") or {}
+    base = {**parsed, "dynamic_spec": None}
+    # 사전 답은 꾸러미가 없을 수 있다: 해석은 비워 두고 질문 · parsed 로만 잇는다
+    usable = found if (found or {}).get("handoff") else {"handoff": {"understanding": {}}}
+    trace: dict = {}
+    computed = await dynamic_indicator.compute_from_handoff(
+        asked,
+        base,
+        usable,
+        trace,
+        repick={
+            "entry": entry,
+            "hint": hint,
+            "llm": llm_ok,
+            "same": lambda result: same_number(res.get("result"), result),
+        },
+    )
+    log.update(trace.get("repick") or {})
+    log["llm"] = bool((log.get("recell_log") or {}).get("recell"))
+    if not computed or computed.get("status") != "ok" or computed.get("clarification"):
+        _retry_outcome.set(_outcome_of(computed))
+        return None, how
+    again = dict(computed)
+    again.setdefault("trace", trace)
+    sid = res.get("search_session") or (found or {}).get("search_session")
+    again["search_session"] = sid or table_guide.new_search_session()
+    return again, how
 
 
 async def _replan_compute(
@@ -3310,7 +3425,8 @@ async def _retry(
             return again, how
         flow.add("다시 계산", "대체", f"{how}: 새 계획 없음 → {action.fallback}")
     elif action.name == agent_action.REPICK:
-        again, how = await _repick_compute(res, verdict, asked)
+        llm_ok = bool(action.detail.get("llm", True))
+        again, how = await _repick_compute(res, verdict, asked, llm_ok)
         if again is not None or action.fallback is None:
             return again, how
         flow.add("다시 계산", "대체", f"{how}: 칸을 다시 고르지 못함 → {action.fallback}")
@@ -3339,7 +3455,8 @@ async def _judged(res: dict, state: dict | None, question: str, user_id: int | N
     # 행동 고리 (N9 → 다시 계산 → 판정, 설계서 4-1 · 4-5): 첫 행동이 실패하거나 다시 한 답도
     # 판정에 걸리면 다음 행동으로 이어 간다. 상한은 agent_action(다시 2회 · LLM 1회)과 60초.
     # 호출부가 있는 행동은 replan(_replan_compute) · repick(_repick_compute) · reroute · retable
-    # (둘 다 _recompute) · give_up. requery는 이름만 기록하고 fallback으로 떨어진다
+    # (둘 다 _recompute) · give_up. requery는 이름만 기록하고 fallback으로 떨어진다.
+    # repick 근거(그 표에 고칠 칸이 있나)는 이유가 '조건이 빠짐 · 대상이 다름'일 때만 본다
     verdict = first
     tried = llm_tried = 0
     done: set[str] = set()
@@ -3348,8 +3465,13 @@ async def _judged(res: dict, state: dict | None, question: str, user_id: int | N
     asked_back: dict | None = None  # 다시 계산이 낸 되묻기 (고리 끝 경우 3)
     started = time.monotonic()
     while True:
+        cells = None
+        if verdict.get("reason") in agent_action.REPICK_REASONS and agent_action.REPICK not in done:
+            evidence = await repick_cells(res, verdict, _found_now.get())
+            cells = evidence["cells"]
+            record.setdefault("repick_cells", []).append(evidence)
         action = agent_action.choose(
-            verdict, res, _found_now.get(), tried, llm_tried, frozenset(done)
+            verdict, res, _found_now.get(), tried, llm_tried, frozenset(done), cells=bool(cells)
         )
         attempt: dict = {"action": action.as_trace()}
         attempts.append(attempt)
@@ -3376,6 +3498,8 @@ async def _judged(res: dict, state: dict | None, question: str, user_id: int | N
             attempt["error"] = True
             record.setdefault("retry", {"error": True})
             return
+        if action.name == agent_action.REPICK and (record.get("repick") or {}).get("llm"):
+            llm_tried += 1  # repick 이 recell(HCX)을 불렀다: LLM 행동 한도에 센다
         attempt.update(how=how, computed=again is not None)
         if again is not None:  # 버려도 무엇이었는지 · 판정이 무엇을 봤는지 남긴다
             attempt["answer"] = lead(again.get("answer") or "")[:200]

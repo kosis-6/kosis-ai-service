@@ -9,9 +9,9 @@
   replan    계산 계획        이유가 형태 · 조건 · 계산 (표는 맞는데 계산 방법이 틀림)
   requery   표 찾기          이유가 대상이고 사전 경로 (사전이 엉뚱한 지표로 받음, 후보가 없음)
   retable   표 고르기        표 찾기 경로, 1위에 ✘가 있거나 검토가 exact가 아님 → 다음 후보
-  repick    칸 고르기        표 찾기 경로, 1위 조건 모두 ✔ + 검토 exact인데 칸 · 계산이 막힘
-                             (같은 표에서 칸만 다시. 호출부가 들어오기 전에는 replan으로 떨어짐.
-                             표 계산 안의 recell(services/recell.py, 뜻으로 잇기)과는 다른 것)
+  repick    칸 고르기        이유가 조건 빠짐 · 대상이고 다시 볼 표에 고칠 칸이 있음, 또는 1위
+                             조건 모두 ✔ + 검토 exact인데 칸 · 계산이 막힘 (같은 표에서 칸 잇기
+                             → 판정 지적을 넘긴 recell. 안 되면 retable · reroute)
   reroute   경로             사전 경로인데 표 찾기를 아직 안 거침
                              (지금 _recompute의 '통계표 찾기로')
   give_up   —                위 어느 것도 아니거나 상한 초과 → 처음 답 유지 또는 답변 불가 사유
@@ -32,10 +32,12 @@ REPLAN, REQUERY, RETABLE, REPICK, REROUTE, GIVE_UP = (
 ACTIONS = (REPLAN, REQUERY, RETABLE, REPICK, REROUTE, GIVE_UP)
 # 판정 이유 → 계산 방법 문제 (표를 바꿔도 안 풀린다)
 PLAN_REASONS = ("형태가 다름", "조건이 빠짐", "계산이 빠짐")
+# 판정 이유 → 표는 맞고 칸이 틀렸을 수 있음 (그 표에 고칠 칸이 있으면 repick)
+REPICK_REASONS = ("조건이 빠짐", "대상이 다름")
 MAX_RETRIES = 2  # 질문당 다시 계산 상한 (B 측정: 한 번에 15 ~ 17초)
-MAX_LLM_RETRIES = 1  # 그중 replan · requery(Gemma 호출)는 합쳐 1회
+MAX_LLM_RETRIES = 1  # 그중 replan · requery(Gemma) · repick 의 recell(HCX)은 합쳐 1회
 MAX_SECONDS = 60  # 판정 시작부터 (설계서 4-5). 넘으면 지금까지 얻은 것으로 끝낸다
-LLM_ACTIONS = ("replan", "requery")
+LLM_ACTIONS = ("replan", "requery")  # 고를 때 센다. repick 은 recell 을 실제로 불렀을 때만 센다
 
 
 @dataclass
@@ -84,11 +86,13 @@ def choose(
     tried: int = 0,
     llm_tried: int = 0,
     done: frozenset[str] = frozenset(),
+    cells: bool = False,
 ) -> Action:
     """판정 결과 · 답 · 꾸러미 → 다음 행동.
 
     tried: 지금까지 다시 계산한 횟수, llm_tried: 그중 LLM 행동 횟수, done: 이미 쓴 행동
-    (같은 행동은 두 번 하지 않는다. 설계서 4-5 "같은 표 · 같은 계획 · 같은 검색어 안 함")
+    (같은 행동은 두 번 하지 않는다. 설계서 4-5 "같은 표 · 같은 계획 · 같은 검색어 안 함").
+    cells: 다시 볼 표에 판정 지적을 고칠 칸이 있나 (ask_session.repick_cells)
     """
     if tried >= MAX_RETRIES:
         return Action(GIVE_UP, f"다시 계산 상한({MAX_RETRIES}회)")
@@ -102,7 +106,7 @@ def choose(
         # 세운다. 대상이 다른 경우 replan 은 search 도 고친다 (4-3). not_computable 이 나오는 길
         why = f"앞 행동({' · '.join(sorted(done))}) 뒤에도 틀림 → 계획 다시"
         return Action(REPLAN, why, fallback=_next(done | {REPLAN}, llm_ok, via_search))
-    action = _choose(reason, res, found, cand, via_search, llm_ok)
+    action = _choose(reason, res, found, cand, via_search, llm_ok, cells)
     if action.name in done:
         nxt = _next(done, llm_ok, via_search)
         after = _next(done | {nxt}, llm_ok, via_search) if nxt != GIVE_UP else None
@@ -123,9 +127,25 @@ def _next(done: frozenset[str] | set[str], llm_ok: bool, via_search: bool) -> st
 
 
 def _choose(
-    reason: str, res: dict[str, Any], found: dict | None, cand, via_search: bool, llm_ok: bool
+    reason: str,
+    res: dict[str, Any],
+    found: dict | None,
+    cand,
+    via_search: bool,
+    llm_ok: bool,
+    cells: bool = False,
 ) -> Action:
     """판정 이유 × 경로 × 1위 후보 상태 → 행동 (설계서 4-2 표)"""
+
+    if reason in REPICK_REASONS and cells:
+        # 표는 맞고 칸이 틀린 답: 좁은 행동부터 (docs/agent_redesign_2026-11-26.md 2-6 · 3-3).
+        # 칸 잇기는 LLM 없이, 그래도 안 되면 recell(LLM 남았을 때만). 안 되면 표를 바꾼다
+        return Action(
+            REPICK,
+            f"판정 이유 '{reason}' + 그 표에 고칠 칸이 있음 → 같은 표에서 칸 다시",
+            fallback=RETABLE if via_search else REROUTE,
+            detail={"llm": llm_ok},
+        )
 
     if reason in PLAN_REASONS:
         if llm_ok:
@@ -168,7 +188,8 @@ def _choose(
             return Action(
                 REPICK,
                 "1위 조건 모두 ✔ · 검토 exact인데 칸 · 계산 실패 → 같은 표에서 칸 다시",
-                fallback=REPLAN if llm_ok else RETABLE,
+                fallback=RETABLE,
+                detail={"llm": llm_ok},
             )
         return Action(RETABLE, "표 찾기 경로, 1위가 확실하지 않음 → 다음 후보")
 
