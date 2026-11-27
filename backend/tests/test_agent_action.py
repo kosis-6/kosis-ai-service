@@ -49,7 +49,7 @@ def test_target_reason_search_path_sure_top_and_cell_failure_goes_repick() -> No
     a = aa.choose(
         _verdict("대상이 다름"), res, _found({"year": True, "region_level": True}, "exact")
     )
-    assert (a.name, a.fallback) == (aa.REPICK, aa.REPLAN)
+    assert (a.name, a.fallback) == (aa.REPICK, aa.RETABLE)
 
 
 def test_target_reason_search_path_unsure_top_goes_retable() -> None:

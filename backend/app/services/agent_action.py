@@ -9,16 +9,17 @@
   replan    계산 계획        이유가 형태 · 조건 · 계산 (표는 맞는데 계산 방법이 틀림)
   requery   표 찾기          이유가 대상이고 사전 경로 (사전이 엉뚱한 지표로 받음, 후보가 없음)
   retable   표 고르기        표 찾기 경로, 1위에 ✘가 있거나 검토가 exact가 아님 → 다음 후보
-  repick    칸 고르기        표 찾기 경로, 1위 조건 모두 ✔ + 검토 exact인데 칸 · 계산이 막힘
-                             (같은 표에서 칸만 다시. 호출부가 들어오기 전에는 replan으로 떨어짐.
-                             표 계산 안의 recell(services/recell.py, 뜻으로 잇기)과는 다른 것)
+  repick    칸 고르기        이유가 조건 빠짐 · 대상이고 다시 볼 표에 고칠 칸이 있음, 또는 1위
+                             조건 모두 ✔ + 검토 exact인데 칸 · 계산이 막힘 (같은 표에서 칸 잇기
+                             → 판정 지적을 넘긴 recell. 안 되면 retable · reroute)
   reroute   경로             사전 경로인데 표 찾기를 아직 안 거침
                              (지금 _recompute의 '통계표 찾기로')
   give_up   —                위 어느 것도 아니거나 상한 초과 → 처음 답 유지 또는 답변 불가 사유
 
 이 모듈은 행동 이름과 근거만 돌려준다. 실제 호출은 ask_session._judged가 한다. 지금 돌아가는
-행동은 replan(agent/replan.py) · reroute · retable · give_up이고, requery · repick은 이름만 내고
-호출부가 비어 있어 대체 행동으로 떨어진다 (재검색 게이트 · 연결 단계가 들어오면 채운다).
+행동은 replan(agent/replan.py) · repick(ask_session._repick_compute) · reroute · retable ·
+give_up이고, requery는 이름만 내고 호출부가 비어 있어 대체 행동으로 떨어진다. repick은 다시
+계산하지 못하면 대체 행동으로 간다 (docs/agent_redesign_2026-11-26.md).
 설계: 인계_2026-11-17/A_설계서.md 4절.
 """
 
@@ -31,8 +32,12 @@ REPLAN, REQUERY, RETABLE, REPICK, REROUTE, GIVE_UP = (
 ACTIONS = (REPLAN, REQUERY, RETABLE, REPICK, REROUTE, GIVE_UP)
 # 판정 이유 → 계산 방법 문제 (표를 바꿔도 안 풀린다)
 PLAN_REASONS = ("형태가 다름", "조건이 빠짐", "계산이 빠짐")
+# 판정 이유 → 표는 맞고 칸이 틀렸을 수 있음 (그 표에 고칠 칸이 있으면 repick)
+REPICK_REASONS = ("조건이 빠짐", "대상이 다름")
 MAX_RETRIES = 2  # 질문당 다시 계산 상한 (B 측정: 한 번에 15 ~ 17초)
 MAX_LLM_RETRIES = 1  # 그중 replan · requery(Gemma 호출)는 합쳐 1회
+# repick 의 recell(HCX)은 위 한도와 따로 센다: repick 은 질문당 한 번이라 recell 도 1회.
+# 표가 틀린 답에 repick 이 recell 을 써도 replan 기회가 남는다 (11/27 결정)
 MAX_SECONDS = 60  # 판정 시작부터 (설계서 4-5). 넘으면 지금까지 얻은 것으로 끝낸다
 LLM_ACTIONS = ("replan", "requery")
 
@@ -83,11 +88,15 @@ def choose(
     tried: int = 0,
     llm_tried: int = 0,
     done: frozenset[str] = frozenset(),
+    cells: bool = False,
+    repick_ok: bool = True,
 ) -> Action:
     """판정 결과 · 답 · 꾸러미 → 다음 행동.
 
     tried: 지금까지 다시 계산한 횟수, llm_tried: 그중 LLM 행동 횟수, done: 이미 쓴 행동
-    (같은 행동은 두 번 하지 않는다. 설계서 4-5 "같은 표 · 같은 계획 · 같은 검색어 안 함")
+    (같은 행동은 두 번 하지 않는다. 설계서 4-5 "같은 표 · 같은 계획 · 같은 검색어 안 함").
+    cells: 다시 볼 표에 판정 지적을 고칠 칸이 있나, repick_ok: False 면 repick 을 고르지 않는다
+    (여러 지표 · 복합 답, 계산이 필요한 지적. 둘 다 ask_session.repick_cells)
     """
     if tried >= MAX_RETRIES:
         return Action(GIVE_UP, f"다시 계산 상한({MAX_RETRIES}회)")
@@ -101,7 +110,7 @@ def choose(
         # 세운다. 대상이 다른 경우 replan 은 search 도 고친다 (4-3). not_computable 이 나오는 길
         why = f"앞 행동({' · '.join(sorted(done))}) 뒤에도 틀림 → 계획 다시"
         return Action(REPLAN, why, fallback=_next(done | {REPLAN}, llm_ok, via_search))
-    action = _choose(reason, res, found, cand, via_search, llm_ok)
+    action = _choose(reason, res, found, cand, via_search, llm_ok, cells and repick_ok, repick_ok)
     if action.name in done:
         nxt = _next(done, llm_ok, via_search)
         after = _next(done | {nxt}, llm_ok, via_search) if nxt != GIVE_UP else None
@@ -122,9 +131,26 @@ def _next(done: frozenset[str] | set[str], llm_ok: bool, via_search: bool) -> st
 
 
 def _choose(
-    reason: str, res: dict[str, Any], found: dict | None, cand, via_search: bool, llm_ok: bool
+    reason: str,
+    res: dict[str, Any],
+    found: dict | None,
+    cand,
+    via_search: bool,
+    llm_ok: bool,
+    cells: bool = False,
+    repick_ok: bool = True,
 ) -> Action:
     """판정 이유 × 경로 × 1위 후보 상태 → 행동 (설계서 4-2 표)"""
+
+    if reason in REPICK_REASONS and cells:
+        # 표는 맞고 칸이 틀린 답: 좁은 행동부터 (docs/agent_redesign_2026-11-26.md 2-6 · 3-3).
+        # 칸 잇기는 LLM 없이, 그래도 안 되면 recell (replan 한도와 따로 1회). 안 되면 표를 바꾼다
+        return Action(
+            REPICK,
+            f"판정 이유 '{reason}' + 그 표에 고칠 칸이 있음 → 같은 표에서 칸 다시",
+            fallback=RETABLE if via_search else REROUTE,
+            detail={"llm": True},
+        )
 
     if reason in PLAN_REASONS:
         if llm_ok:
@@ -162,12 +188,13 @@ def _choose(
                     REQUERY, "사전 경로, 표 찾기 후보에도 없음 → 검색어 다시", fallback=RETABLE
                 )
             return Action(RETABLE, "'대상이 다름'이지만 LLM 행동 상한 → 다음 후보")
-        if top_is_sure(cand) and failed_at_cell(res.get("trace")):
+        if repick_ok and top_is_sure(cand) and failed_at_cell(res.get("trace")):
             # 표는 맞는데 칸 · 계산이 막힘. 11/22 실험에서 이 경우에 재검색하면 깨졌다
             return Action(
                 REPICK,
                 "1위 조건 모두 ✔ · 검토 exact인데 칸 · 계산 실패 → 같은 표에서 칸 다시",
-                fallback=REPLAN if llm_ok else RETABLE,
+                fallback=RETABLE,
+                detail={"llm": True},
             )
         return Action(RETABLE, "표 찾기 경로, 1위가 확실하지 않음 → 다음 후보")
 
