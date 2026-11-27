@@ -44,21 +44,54 @@ export function lastChartView(answers: AskResponse[]): ChartView | undefined {
   return answers.findLast((answer) => answer.chart)?.chart?.view ?? undefined;
 }
 
-export function createChartViewQueue(persist = saveChartView) {
+/** 차트 보기 저장이 실패하면 이만큼(ms) 기다렸다가 다시 보낸다. 다시 보내지 않으면 화면은 바꾼
+ *  모양인데 서버에는 이전 모양이 남아, 후속 답 · 다시 연 대화 · 말로 만든 보고서가 이전 모양으로 그렸다.
+ *  질문은 저장이 끝나기를 기다리므로 다 합쳐 몇 초 안에 끝나게 둔다 */
+export const CHART_VIEW_RETRY_MS = [500, 1000, 2000];
+
+/** 다시 보내면 될 수 있는 실패만: 네트워크 오류(fetch가 던짐)와 서버 · 로그인 확인의 일시 오류.
+ *  로그아웃(401) · 지운 대화(404) · 그릴 수 없는 모양(409)은 다시 보내도 같다 */
+function retryable(error: unknown): boolean {
+  if (!(error instanceof HistoryError)) return true;
+  return error.status >= 500 || error.status === 408 || error.status === 429;
+}
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+export function createChartViewQueue(persist = saveChartView, retryMs = CHART_VIEW_RETRY_MS) {
   const pending = new Map<string, Map<number, Promise<void>>>();
+  const newest = new Map<string, number>();
+  let order = 0;
 
   return {
     save(sessionId: string, turnId: number, view: ChartView): Promise<void> {
       const turns = pending.get(sessionId) ?? new Map<number, Promise<void>>();
       pending.set(sessionId, turns);
       const previous = turns.get(turnId);
-      const write = () => persist(sessionId, turnId, view);
+      const key = `${sessionId}:${turnId}`;
+      const mine = ++order;
+      newest.set(key, mine);
+      // 다시 보내기 전에 같은 답을 또 바꿨으면 그만둔다: 뒤의 저장이 마지막 모양을 남긴다
+      const replaced = () => newest.get(key) !== mine;
+      const write = async () => {
+        for (let attempt = 0; ; attempt++) {
+          try {
+            await persist(sessionId, turnId, view);
+            return;
+          } catch (error) {
+            if (attempt >= retryMs.length || !retryable(error) || replaced()) throw error;
+            await sleep(retryMs[attempt]);
+            if (replaced()) throw error;
+          }
+        }
+      };
       const request = previous ? previous.then(write) : write();
       const settled = request.catch(() => {});
       turns.set(turnId, settled);
       void settled.then(() => {
         if (turns.get(turnId) === settled) turns.delete(turnId);
         if (turns.size === 0) pending.delete(sessionId);
+        if (newest.get(key) === mine) newest.delete(key);
       });
       return request;
     },

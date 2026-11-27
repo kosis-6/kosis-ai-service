@@ -100,7 +100,7 @@ export function ChatPage() {
         : message,
     ));
     // 서버의 답에도 남긴다: 말로 만든 보고서와 다시 연 대화가 이 모양을 쓴다.
-    // 남기지 못해도 화면은 그대로 두고, [보고서] 시트는 chart_views로 따로 보낸다
+    // 잠깐 실패하면 큐가 다시 보낸다. 끝내 남기지 못해도 화면은 그대로 두고, [보고서] 시트는 chart_views로 따로 보낸다
     const target = messages.find((message) => message.id === messageId);
     const data = target?.kind === "answer" ? target.data : null;
     const sessionOf = data?.session_id ?? routeId;

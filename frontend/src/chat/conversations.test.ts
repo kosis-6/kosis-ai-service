@@ -3,7 +3,7 @@ import { createElement } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { pickable } from "./reports";
 import { Answer } from "./Answer";
-import { createChartViewQueue, lastChartView, replayed, saveChartView, when } from "./conversations";
+import { createChartViewQueue, HistoryError, lastChartView, replayed, saveChartView, when } from "./conversations";
 
 const calls: { url: string; init?: RequestInit }[] = [];
 vi.mock("../auth/client", () => ({
@@ -91,6 +91,40 @@ describe("화면에서 바꾼 차트 모양 남기기", () => {
     await Promise.all([bar, table, waiting]);
     expect(persist.mock.calls).toEqual([["A_1", 7, "bar"], ["A_1", 7, "table"]]);
     expect(complete).toHaveBeenCalledOnce();
+  });
+
+  it("네트워크 · 서버 일시 오류로 저장이 실패하면 다시 보내 남긴다", async () => {
+    const persist = vi
+      .fn<typeof saveChartView>()
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockRejectedValueOnce(new HistoryError(503))
+      .mockResolvedValue(undefined);
+    await createChartViewQueue(persist, [0, 0, 0]).save("A_1", 7, "bar");
+    expect(persist.mock.calls).toEqual([["A_1", 7, "bar"], ["A_1", 7, "bar"], ["A_1", 7, "bar"]]);
+  });
+
+  it.each([401, 404, 409])("다시 보내도 같은 실패(%i)는 한 번으로 끝낸다", async (status) => {
+    const persist = vi.fn<typeof saveChartView>().mockRejectedValue(new HistoryError(status));
+    await expect(createChartViewQueue(persist, [0, 0, 0]).save("A_1", 7, "bar")).rejects.toThrow();
+    expect(persist).toHaveBeenCalledOnce();
+  });
+
+  it("계속 실패하면 정한 횟수만 다시 보내고, 기다리던 질문을 풀어 준다", async () => {
+    const persist = vi.fn<typeof saveChartView>().mockRejectedValue(new TypeError("Failed to fetch"));
+    const queue = createChartViewQueue(persist, [0, 0, 0]);
+    await expect(queue.save("A_1", 7, "bar")).rejects.toThrow();
+    expect(persist).toHaveBeenCalledTimes(4);
+    await queue.wait("A_1");
+  });
+
+  it("다시 보내려고 기다리는 사이 같은 답을 또 바꾸면 이전 모양은 그만 보낸다", async () => {
+    const persist = vi.fn<typeof saveChartView>().mockRejectedValueOnce(new TypeError("Failed to fetch")).mockResolvedValue(undefined);
+    const queue = createChartViewQueue(persist, [50, 50, 50]);
+    const bar = queue.save("A_1", 7, "bar").catch(() => {});
+    await new Promise((resolve) => setTimeout(resolve, 10)); // 첫 저장이 실패해 다시 보내기를 기다리는 중
+    const table = queue.save("A_1", 7, "table");
+    await Promise.all([bar, table]);
+    expect(persist.mock.calls).toEqual([["A_1", 7, "bar"], ["A_1", 7, "table"]]);
   });
 
   it("로그인하지 않은 대화는 마지막 차트의 보기를 질문과 함께 보낸다", () => {
