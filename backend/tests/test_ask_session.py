@@ -216,6 +216,8 @@ def test_pick_region_reply() -> None:
         ("테이블로 보여줘", "table"),
         ("선으로 보여줘", "line"),
         ("원그래프로 보여줘", "pie"),
+        ("산점도로 보여줘", "scatter"),
+        ("산포도로 바꿔줘", "scatter"),
         ("표 말고 그래프로", "chart"),
         ("그래프 말고 표로 보여줘", "table"),
         ("이거 막대그래프로 바꿔서 보여줄 수 있어?", "bar"),
@@ -281,6 +283,9 @@ def test_crowded_line_chart_is_not_said_to_be_bars() -> None:
         ("parts", "bar", None, "구성비 막대그래프로 바꿨습니다."),
         ("parts", "chart", None, "구성비 막대그래프로 보여 드립니다."),
         ("parts", "pie", None, "원그래프는 지원하지 않습니다. 구성비 막대그래프로 보여 드립니다."),
+        # 11/27 차트 점검: 산점도는 이유 없이 "막대그래프로 보여 드립니다."만 답했다
+        ("bar", "scatter", "bar", "산점도는 지원하지 않습니다. 막대그래프로 보여 드립니다."),
+        ("line", "scatter", "line", "산점도는 지원하지 않습니다. 꺾은선 그래프로 보여 드립니다."),
     ],
 )
 def test_redraw_shows_a_drawable_view(kind, view, shown, text) -> None:
