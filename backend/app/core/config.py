@@ -30,6 +30,12 @@ class Settings(BaseSettings):
     # 함께 켜지는 것: 조건이 모두 맞고 2위와 점수 차가 큰 1위 표는 검토(llm_pick)를 건너뛴다.
     # 기본은 끔 (ANSWER_JUDGE=true 로 켠다). GEMMA_BASE_URL 이 없으면 켜도 판정하지 않는다
     answer_judge: bool = False
+    # 값 없는 실패도 행동 고리로 (docs/agent_redesign_2026-11-26.md 2-8 · 3-3): 표 경로가 값을 못
+    # 내고 통계표 안내(또는 표 경로에서 온 partial_match)로 끝난 새 질문을 Gemma 판정 없이 실패
+    # 이유 + 검사(table_check)로 행동(repick · retable · replan)을 골라 다시 계산한다.
+    # ANSWER_JUDGE 와 따로 켠다 (판정을 끈 채로도 돈다: 고친 값을 판정 없이 받는다).
+    # 기본은 끔 (AGENT_ON_FAILURE=true 로 켠다). 측정 뒤 기본값을 정한다
+    agent_on_failure: bool = False
     # 이어 묻는 말 판단을 LLM이 먼저 (실험실 A_16, 11/25): 직전 질문 · 조건 · 답을 주고
     # followup / new / unclear 와 혼자 서는 완전한 질문 한 문장을 받아 새 질문 경로에 넣는다.
     # 켜지면 ratio_followup 부터 뒤의 코드 규칙(비율 후속 · 지역만 바꾸기 · 구별로 · 구성비로 ·
@@ -91,6 +97,9 @@ class Settings(BaseSettings):
     llm_pick_together: bool = False
     search_plan: bool = True
     handoff_alternatives: bool = False
+    # 대안 답변: 답변 불가 대신 조건 하나(연도 · 연령 구간 · 지역 단위)를 가장 가까운 것으로 바꿔
+    # 값을 주고 첫 문장에 바꾼 것을 밝힌다 (docs/clarify_refusal_spec_2026-11-27.md)
+    alternative_answer: bool = True
     handoff_cell_llm: bool = True
 
     @field_validator("admin_allow_ips")

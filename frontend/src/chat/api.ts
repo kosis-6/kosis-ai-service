@@ -1,4 +1,4 @@
-import type { AskRequest, AskResponse } from "../api/types";
+import type { AskProgress, AskRequest, AskResponse } from "../api/types";
 import { authFetch } from "../auth/client";
 
 export async function postJson<T>(url: string, body: unknown): Promise<T> {
@@ -21,4 +21,11 @@ export async function postJson<T>(url: string, body: unknown): Promise<T> {
 
 export function ask(body: AskRequest): Promise<AskResponse> {
   return postJson<AskResponse>("/ask", body);
+}
+
+/** 답을 기다리는 동안 서버가 거친 처리 단계 (마지막이 지금 하는 일). 못 읽으면 빈 목록 */
+export async function askProgress(progressId: string): Promise<string[]> {
+  const res = await fetch(`/ask/progress/${encodeURIComponent(progressId)}`);
+  if (!res.ok) return [];
+  return ((await res.json()) as AskProgress).steps;
 }

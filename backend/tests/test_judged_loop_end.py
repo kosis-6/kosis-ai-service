@@ -30,7 +30,7 @@ def _actions(monkeypatch: pytest.MonkeyPatch, *names: str) -> None:
     """행동 고르기를 정해진 순서로 (마지막은 give_up)"""
     seq = iter([*names, agent_action.GIVE_UP])
 
-    def choose(verdict, res, found, tried, llm_tried, done):
+    def choose(verdict, tried=0, llm_tried=0, done=frozenset(), **kw):
         return agent_action.Action(next(seq), "시험")
 
     monkeypatch.setattr(agent_action, "choose", choose)
@@ -190,7 +190,7 @@ def test_ok_verdict_leaves_the_answer_alone(monkeypatch: pytest.MonkeyPatch) -> 
 
 
 def test_recompute_reports_clarification_and_failure(monkeypatch: pytest.MonkeyPatch) -> None:
-    """_recompute 가 값을 못 내면 그 이유(status · 되묻기)를 _retry_outcome 에 둔다"""
+    """_retable 이 값을 못 내면 그 이유(status · 되묻기)를 _retry_outcome 에 둔다"""
     asking = {"status": "clarify_question", "clarification": {"kind": "table_cell"}}
     outs = iter([asking, {"status": "band_mismatch"}, None])
 
@@ -205,7 +205,7 @@ def test_recompute_reports_clarification_and_failure(monkeypatch: pytest.MonkeyP
     async def one(expected_status, expect_ask):
         ask_session._found_now.set(found)
         ask_session._retry_outcome.set(None)
-        again, how = await ask_session._recompute(res, None, "q", None)
+        again, how = await ask_session._retable(res, None, "q", None)
         out = ask_session._retry_outcome.get()
         assert again is None and how == "다음 후보 표"
         assert out["status"] == expected_status

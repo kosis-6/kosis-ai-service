@@ -18,7 +18,7 @@ from typing import Any
 
 from app.agent import plan_steps
 from app.prompts import composite as prompt
-from app.services import flow, llm_calls, plan_exec, search_llm
+from app.services import flow, llm_calls, plan_exec, progress, search_llm
 from app.services.plan_exec import PlanError, Table
 
 logger = logging.getLogger(__name__)
@@ -306,6 +306,8 @@ def _cell(t: Table, region: str) -> str:
 async def answer(question: str, parsed: dict, found: dict, trace: dict) -> dict | None:
     """복합 질문의 답. 계획을 못 세우거나 값을 못 내면 None (지금 경로의 답이 그대로 나간다)"""
     from app.services import qa
+
+    progress.now(progress.COMPUTE)
 
     h = (found or {}).get("handoff") or {}
     targets = [t for t in h.get("targets") or [] if (t.get("scope") or "in") == "in"]

@@ -453,6 +453,7 @@ def _band_mismatch(spec, src, ages):
         "reason": f"{josa(name, '은는')} 표의 연령 구간이 질문한 {asked} 구간과 맞지 않아 "
         "그 값을 낼 수 없습니다.",
         "available_bands": labels,
+        "available_band_ranges": [list(b) for b in bands],
         "alternative": f"대신 볼 수 있는 구간: {', '.join(labels)}",
     }
 
@@ -715,7 +716,16 @@ def compare(spec, regions, year, sex="계", ages=None):
 
 
 def rank(
-    spec, year, level="시도", sido=None, top=None, ascending=False, sex="계", ages=None, target=None
+    spec,
+    year,
+    level="시도",
+    sido=None,
+    top=None,
+    ascending=False,
+    sex="계",
+    ages=None,
+    target=None,
+    within=None,
 ):
     src, err = _pick(spec, "시도" if level == "시도" and not sido else "시군구", year, year, sex)
     if err:
@@ -728,7 +738,7 @@ def rank(
             "indicator": spec["name"],
             "reason": f"{josa(spec['name'], '은는')} 질문한 연령 구간으로 나눈 자료가 없습니다.",
         }
-    cond = ind_mod.rank_where(level, sido)
+    cond = ind_mod.rank_where(level, sido, within)
     if isinstance(cond, dict):
         return {**cond, "indicator": spec["name"]}
     where, params, scope = cond

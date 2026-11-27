@@ -26,8 +26,10 @@ from app.services import (
     load_queue,
     lookup,
     monthref,
+    progress,
     search_llm,
     slots,
+    substitute,
     table_cache,
     timeref,
     understand_merged,
@@ -75,6 +77,7 @@ def _cache_key(question, latest):
 
 
 async def understand(question, trace=None):
+    progress.now(progress.UNDERSTAND)
     lo, hi = await run_in_threadpool(indicators._data_years)
     use_cache = get_settings().question_cache
     key = _cache_key(question, hi)
@@ -313,7 +316,7 @@ SUM_WORDS = re.compile(
 COUNT_ASK = re.compile(r"몇\s*(명|건|가구|곳|개)|인구는|인구가|인구\s*수|수는|수가|건수")
 PCT_ASK = re.compile(r"%|퍼센트|비율|비중|몇\s*프로")
 COMPOSITION_WORDS = re.compile(r"구성|비중|비율|%|퍼센트|나누면|몇\s*프로")
-BY_REGION = re.compile(r"(구|시군구|시도|지역|시)\s*(별|마다)|\d+\s*개\s*(구|시군구)\s*중")
+BY_REGION = re.compile(r"(구|시군구|시군|시도|지역|시)\s*(별|마다)|\d+\s*개\s*(구|시군구)\s*중")
 BOTH_ENDS = re.compile(
     r"(높|많)\S*\s*\S*\s*(랑|와|과|하고)\s*.*(낮|적)|(낮|적)\S*\s*\S*\s*(랑|와|과|하고)\s*.*(높|많)"
 )
@@ -1205,6 +1208,31 @@ def correct(question, parsed, today=None):
             if kind == "value":
                 fix("type", "rank", "지역별 목록")
             _region_list(question, parsed, fix)
+    elif (
+        kind in ("compare", "trend")
+        and BY_REGION.search(question)
+        and not is_comp
+        and (years := _two_years_by_region(question, parsed))
+    ):
+        # '2020년과 2024년 경기도 시군별 인구 비교': 지역마다 두 해 값과 변화량. PR 리뷰: 한 해
+        # 순위로 바뀌어 두 연도를 안 썼고, 되돌리면 경기도 전체 추이 하나로 답했다
+        fix("type", "rank", "지역별 두 해 비교")
+        parsed["rank_by"] = "increase"
+        parsed["change_from"] = years[0]
+        fix("year", years[1], "두 해 중 나중 해")
+        parsed["start_year"] = parsed["end_year"] = None
+        _region_list(question, parsed, fix)
+    elif (
+        kind == "compare"
+        and BY_REGION.search(question)
+        and not is_comp
+        and _list_not_compare(question, parsed)
+    ):
+        # '시도별 … 비교' · '경기도 시군별 … 비교': 한 해 · 한 지표를 시도 하나(또는 전국) 안에서
+        # 물으면 비교가 아니라 지역별 목록이다. 11/27 차트 점검: HCX가 펼친 17개 시도를 질문에
+        # 없다고 막았고, '경기도 시군별'은 경기도 값 하나로 답했다
+        fix("type", "rank", "지역별 목록 (비교)")
+        _region_list(question, parsed, fix)
     elif kind == "composition" and not is_comp:
         population = sp is None or sp["name"] == "총인구"
         if not (population and COMPOSITION_WORDS.search(question) and not ages):
@@ -1342,7 +1370,9 @@ def correct(question, parsed, today=None):
                 parsed["also_asked_ages"]["age_note"] = note
             fix("ages", None, "연령은 함께 물은 지표의 조건")
             parsed["age_group"] = None
-    if len(names) > 1 and parsed.get("type") in ("value", "trend", "compare"):
+    # 목록(rank)도 지표마다 따로 계산해 합친다. PR 리뷰: '경기도 시군별 출생아 수와 사망자 수
+    # 비교'가 목록으로 바뀌면서 여기서 빠져 출생아 수만 남았다
+    if len(names) > 1 and parsed.get("type") in ("value", "trend", "compare", "rank"):
         parsed["indicators"] = names
     elif (
         BIRTH_PER_WOMAN.search(question)
@@ -1622,9 +1652,8 @@ def _plain_people_question(question):
 def population_modifier(question):
     if group := agegroup.resolve(question):
         question = question.replace(group.expr, " ")
-    for word in REGION_GROUPS:
-        if _group_in(word, question):
-            question = question.replace(word, " ")
+    if group := region_group(question):
+        question = question.replace(group[0], " ")
     if sub := find_sub_area(question):
         question = question.replace(sub[0], " ")
     for m in POPULATION_NOUN.finditer(question):
@@ -1889,6 +1918,16 @@ def _full_region_names(question, parsed, fix):
             if indicators.resolve_region(longer[0]).get("status") == "ok":
                 r = longer[0]
         out.append(r)
+    # 함께 말한 지역이 모두 시도면 '광주'처럼 시도 · 시군구 둘 다인 이름은 시도로 (값 조회의
+    # indicators 규칙과 같다). 추이 · 비교는 지역을 하나씩 조회해 그 규칙이 안 걸렸다:
+    # 11/27 차트 점검 '서울 부산 대구 인천 광주 대전 울산 출생아 수 추이'가 광주를 되물었다
+    for i, r in enumerate(out if len(out) > 1 else []):
+        if indicators.resolve_region(r, sigungu=True)["status"] != "ambiguous_region":
+            continue
+        if indicators._all_sido(o for j, o in enumerate(out) if j != i):
+            reg = indicators.resolve_region(r)
+            if reg["status"] == "ok" and reg["kind"] == "시도":
+                out[i] = reg["region_name"]
     if out != regions:
         fix("regions", out, "질문의 정식 지역 이름")
 
@@ -2082,12 +2121,60 @@ def _both_sexes(question):
     return len(genders) == 2 or (not genders and bool(SEX_SPLIT.search(question)))
 
 
+def _list_not_compare(question, parsed):
+    """'○○별 비교'를 한 해 지역별 목록으로 읽어도 되는가: 한 해이고, 범위가 시도 하나 ·
+    일반구가 있는 시 · 전국일 때. 두 해는 _two_years_by_region, 여러 지표는 지표마다 목록"""
+    start, end = parsed.get("start_year"), parsed.get("end_year")
+    if (start and end and start != end) or len(re.findall(r"\d{4}\s*년", question)) > 1:
+        return False
+    named = indicators.find_regions(question)
+    if len(named) > 1:
+        return False
+    scope_ok = all(indicators.resolve_region(n).get("kind") == "시도" for n in named)
+    return bool(scope_ok or _district_scope(question, parsed))
+
+
+WHOLE_PERIOD = re.compile(r"추이|흐름|추세|매년|해마다|연도별|년도별")
+
+
+def _two_years_by_region(question, parsed):
+    """'○○별'과 서로 다른 두 해만 물었으면 (앞 해, 뒤 해). 기간 전체('추이')는 None"""
+    start, end = parsed.get("start_year"), parsed.get("end_year")
+    if not (start and end and start != end) or WHOLE_PERIOD.search(question):
+        return None
+    named = indicators.find_regions(question)
+    if len(named) > 1:
+        return None
+    scope_ok = all(indicators.resolve_region(n).get("kind") == "시도" for n in named)
+    if not (scope_ok or _district_scope(question, parsed)):
+        return None
+    return min(start, end), max(start, end)
+
+
+BY_DISTRICT = re.compile(r"(?<![시군])구\s*(?:별|마다)")
+
+
+def _district_scope(question, parsed):
+    """'○○시 구별': 일반구가 있는 시를 말하고 구별로 물었으면 그 시 (아니면 None)"""
+    if not BY_DISTRICT.search(question):
+        return None
+    for name in [*indicators.find_regions(question), *(parsed.get("regions") or [])]:
+        if indicators.districts(name):
+            return indicators.resolve_region(name)["display"]
+    return None
+
+
 def _region_list(question, parsed, fix):
     regions = parsed.get("regions") or []
     level = "시도" if re.search(r"시도\s*(별|마다)", question) else "시군구"
     if parsed.get("level") != level:
         fix("level", level, "지역별 목록")
-    if level == "시군구":
+    if level == "시군구" and (city := _district_scope(question, parsed)):
+        # PR 리뷰: '수원시 구별'에서 시도만 범위로 남아 전국 시군구 순위로 넓어졌다
+        fix("within", city, "시 안의 구별 목록")
+        if regions:
+            fix("regions", [], "지역별 목록")
+    elif level == "시군구":
         found = indicators.find_regions(question)
         names = [*found, *regions, parsed.get("sido")]
         sido = next(
@@ -2097,6 +2184,9 @@ def _region_list(question, parsed, fix):
             fix("sido", sido, "지역별 목록의 범위")
         if regions:
             fix("regions", [], "지역별 목록")
+    elif regions and not indicators.find_regions(question):
+        # '시도별': 질문에 지역 이름이 없는데 HCX가 시도를 펼쳐 적었으면 전체 시도 목록으로
+        fix("regions", [], "지역별 목록")
     if re.search(r"(별|마다)", question) and parsed.get("top"):
         fix("top", None, "지역별 목록은 전체")
 
@@ -2110,13 +2200,49 @@ def _group_in(word, question):
     return any(GROUP_TAIL.match(question, m.end()) for m in re.finditer(re.escape(word), question))
 
 
-def _read_question(question, parsed, fix):
-    kind = parsed.get("type")
+# 개수를 붙여 부르는 묶음 ('7개 광역시'): 개수를 떼고 같은 이름의 '○○ 전체' 묶음으로 읽는다
+COUNTED_GROUP = re.compile(r"\d+\s*(?:개|대)\s*([가-힣]+?)(?=[와과랑및의은는이가을를에도만,·\s]|$)")
+
+
+def region_group(question):
+    """질문의 지역 묶음 → (질문 속 묶음 말, 지역들). 없으면 None"""
     for word, members in REGION_GROUPS.items():
         if _group_in(word, question):
-            fix("regions", members, f"'{word}'")
-            parsed["group"] = word
-            break
+            return word, members
+    for m in COUNTED_GROUP.finditer(question):
+        if (whole := f"{m[1]} 전체") in REGION_GROUPS:
+            return m[0], REGION_GROUPS[whole]
+    return None
+
+
+def _with_named_regions(question, word, members):
+    """묶음 말 밖에서 따로 말한 지역을 묶음에 더한다 ('5대 광역시와 세종' → 5대 광역시 + 세종).
+    → (묶음 이름, 지역들). 더한 지역이 있으면 이름은 질문의 그 말('수도권과 강원')이라
+    답이 '수도권은 … 강원 기준'처럼 강원을 수도권에 넣지 않는다.
+    11/27 PR 리뷰: 묶음을 찾으면 지역을 묶음으로 덮어써 따로 말한 지역을 버렸다"""
+    at = question.find(word)
+    rest = question.replace(word, " ")
+    have = {indicators.resolve_region(m).get("region_code") for m in members}
+    out, end = list(members), at + len(word)
+    for name in indicators.find_regions(rest):
+        reg = indicators.resolve_region(name)
+        if reg["status"] == "ok" and reg["region_code"] not in have:
+            have.add(reg["region_code"])
+            out.append(name)
+            if (i := question.find(name, at)) >= 0:
+                end = max(end, i + len(name))
+    if len(out) == len(members):
+        return word, out
+    label = question[at:end] if at >= 0 else ""
+    return (label if len(label) < len(word) + 12 else word), out
+
+
+def _read_question(question, parsed, fix):
+    kind = parsed.get("type")
+    if group := region_group(question):
+        word, regions = _with_named_regions(question, *group)
+        fix("regions", regions, f"'{word}'")
+        parsed["group"] = word
     if SUM_WORDS.search(question) or (parsed.get("group") and kind == "value"):
         parsed["aggregate"] = "sum"
     if parsed.get("group") and kind == "compare":
@@ -2541,7 +2667,37 @@ def compute(q):
     _add_definition_note(result)
     if result.get("sub_future") and not q.get("guess"):
         result["status"] = "out_of_range"
-    return result
+    return _substituted(q, result)
+
+
+def _dong_labels():
+    try:
+        return lookup._dim_labels(substitute.DONG_TABLE, "c1")
+    except Exception as e:  # 표가 아직 적재되지 않음 등
+        logger.warning("읍면동 목록 읽기 실패 → 지역 대안 없음: %s: %s", type(e).__name__, e)
+        return []
+
+
+def _substituted(q, result):
+    """답변 불가면 조건 하나를 가장 가까운 것으로 바꿔 한 번 더 계산한다 (대안 답변)"""
+    if not get_settings().alternative_answer:
+        return result
+    swap = substitute.plan(q, result, _dong_labels)
+    if swap is None:
+        return result
+    again = compute({**q, **swap.change, "substituted": True})
+    if again.get("status") != "ok" and (
+        more := substitute.follow(swap, {**q, **swap.change}, again)
+    ):
+        swap = more  # 생긴 해에도 수집 자료가 없으면 자료가 있는 첫해로 (같은 조건을 한 번 더)
+        again = compute({**q, **swap.change, "substituted": True})
+    if again.get("status") != "ok":
+        flow.add(
+            "대안 답변", "실패", f"{swap.name} {swap.before} → {swap.after}: {again.get('status')}"
+        )
+        return result
+    flow.add("대안 답변", "ok", f"{swap.name} {swap.before} → {swap.after}")
+    return substitute.mark(again, swap)
 
 
 def _monthly_empty(result):
@@ -2672,7 +2828,7 @@ def _compute(q):
         }
 
     names = q.get("indicators") or []
-    if len(names) > 1 and kind in ("value", "trend", "compare"):
+    if len(names) > 1 and kind in ("value", "trend", "compare", "rank"):
         measures = q.get("measure_conditions") or {}
 
         def each(extra=None):
@@ -2911,8 +3067,12 @@ def _compute(q):
 def _rank_by_change(q, hi):
     year = q.get("year") or hi
     n = (q.get("asked") or {}).get("recent") or 0
-    start = year - (n - 1 if n > 1 else 1)
+    # 질문의 시작 해('2015년 대비 2024년')가 있으면 그 해부터. 11/27 PR #261 점검: 2015년을
+    # 읽고도 쓰지 않아 2023 → 2024년 변화로 답했다
+    asked_start = q.get("start_year") if (q.get("start_year") or year) < year else None
+    start = q.get("change_from") or asked_start or year - (n - 1 if n > 1 else 1)
     base = {**q, "rank_by": None, "top": None, "type": "rank", "start_year": None, "end_year": None}
+    base.pop("change_from", None)
     base["asked"] = {k: v for k, v in (q.get("asked") or {}).items() if k != "recent"}
     now, before = compute({**base, "year": year}), compute({**base, "year": start})
     for part in (now, before):
@@ -2920,13 +3080,19 @@ def _rank_by_change(q, hi):
             return part
     prev = {r["region"]: r.get("value") for r in before.get("ranking") or []}
     rows = [
-        {"region": r["region"], "value": r["value"] - prev[r["region"]]}
+        {
+            "region": r["region"],
+            "value": _difference(r["value"], prev[r["region"]]),
+            "from": prev[r["region"]],
+            "to": r["value"],
+        }
         for r in now.get("ranking") or []
         if r.get("value") is not None and prev.get(r["region"]) is not None
     ]
     decrease = q["rank_by"] == "decrease"
     rows.sort(key=lambda r: r["value"], reverse=not decrease)
-    top = q.get("top") or 3
+    # 두 해를 직접 물은 지역별 비교('2020년과 2024년 … 시군별')는 모든 지역
+    top = q.get("top") or (len(rows) if q.get("change_from") else 3)
     out = {k: v for k, v in now.items() if k not in ("ranking", "notes")}
     out.update(
         ranking=[{**r, "rank": i} for i, r in enumerate(rows[:top], start=1)],
@@ -2934,12 +3100,37 @@ def _rank_by_change(q, hi):
         rank_by=q["rank_by"],
         change_from=start,
         order="감소 폭이 큰 순" if decrease else "증가 폭이 큰 순",
+        # 제목 · 차트에 두 해를 보인다 ('2024년 총인구 변화량'이 아니라 '2020년 → 2024년')
+        period_label=f"{start}년 → {year}년" if q.get("change_from") else now.get("period_label"),
         base_indicator=now.get("indicator"),
         indicator=f"{now.get('indicator')} 변화량",
+        # 변화량의 단위는 지표의 차이 단위 (비율이면 %p). 두 해의 값은 원래 단위로 보인다
+        unit=_change_unit(q, now),
+        value_unit=now.get("unit", ""),
         notes=[f"{start}년 → {year}년 변화량으로 순위를 매겼습니다", *(now.get("notes") or [])],
         kind="value",
     )
     return out
+
+
+def _decimals(v):
+    text = repr(v)
+    return len(text.split(".")[1]) if "." in text and "e" not in text else 0
+
+
+def _difference(a, b):
+    """두 값의 차이를 두 값의 소수 자리로 (14.65와 23.9의 차이가 9.249999999999998이 아니라 9.25)"""
+    diff = a - b
+    digits = max(_decimals(a), _decimals(b))
+    return round(diff, digits) if digits else int(diff)
+
+
+def _change_unit(q, result):
+    """변화량의 단위: 사전 지표면 그 지표의 차이 단위, 아니면 %는 %p"""
+    unit = result.get("unit", "")
+    if sp := indicators.spec(q.get("indicator")):
+        return lookup.diff_unit({**sp, "unit": unit})
+    return "%p" if unit == "%" else unit
 
 
 LIMIT_REASONS = {
@@ -3067,6 +3258,7 @@ def _compute_population(q, ind, kind, regions, year, sex, ages, hi):
             sex,
             ages,
             q.get("target"),
+            within=q.get("within"),
         )
     return {"status": "parse_error", "reason": f"알 수 없는 질문 유형: {kind}"}
 
@@ -3169,6 +3361,7 @@ def _compute_lookup(q, sp, kind, regions, year, sex, ages):
             sex,
             ages,
             q.get("target"),
+            within=q.get("within"),
         )
     return {"status": "parse_error", "reason": f"알 수 없는 질문 유형: {kind}"}
 
@@ -3753,6 +3946,8 @@ def _rank_text(r):
         last = items[-1]
         other = {"낮은": "높은", "높은": "낮은", "적은": "많은", "많은": "적은"}[order]
         other = f"가장 {other} 곳은"
+        if r.get("rank_by") == "increase":
+            other = "가장 많이 줄어든 곳은" if last["value"] < 0 else "가장 적게 늘어난 곳은"
         if r.get("indicator") == "순이동":
             other = "가장 많이 들어온(순유입이 가장 큰) 곳은"
             if r["order"] != "낮은 순":
@@ -3964,6 +4159,15 @@ def _body(r):
         lines = [
             f"{_when(r)} {name} {r['level']} 순위 ({r['order']}, 전체 {r['total_regions']}곳 중)"
         ]
+        if r.get("change_from") and r.get("rank_by"):
+            y0, y1, before = r["change_from"], r["year"], r.get("value_unit", unit)
+            lines += [
+                f"{x['rank']}. {x['region']}: {y0}년 {_num(x['from'], before)} → "
+                f"{y1}년 {_num(x['to'], before)} ({_signed(x['value'], unit)})"
+                for x in r["ranking"]
+                if "from" in x
+            ]
+            return lines
         lines += [f"{x['rank']}. {x['region']}: {_num(x['value'], unit)}" for x in r["ranking"]]
         return lines
     if "parts" in r:
@@ -4176,6 +4380,7 @@ def _add_data_end_note(parsed, result, today=None):
 
 
 async def answer(parsed, trace=None, question=""):
+    progress.now(progress.COMPUTE)
     trace = {} if trace is None else trace
     start = time.perf_counter()
     if ask_followup.needs_year(question) and indicators.spec(parsed.get("indicator") or ""):
@@ -4206,6 +4411,7 @@ async def answer(parsed, trace=None, question=""):
             and (parsed.get("grounded") is not False or shortcut)
             and not parsed.get("movement_route")
             and not parsed.get("cross")
+            and not result.get("changed_condition")  # 대안 답변은 바꾼 조건을 밝히고 답한다
         )
         if (gate or settings.binding_dict_shadow) and result.get("status") == "ok" and question:
             from app.services import dict_binding

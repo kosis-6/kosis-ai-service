@@ -16,6 +16,7 @@ MODEL = "HCX-007"
 MAX_TOKENS = 700
 MAX_CELLS = 80
 NOTE = "뜻으로 이음"
+JUDGE = "judge"  # repick: 판정이 빠졌다고 본 조건 (칸 잇기가 다 이었는데 답이 틀렸을 때)
 
 
 @dataclass
@@ -24,11 +25,17 @@ class Fix:
     notice: str | None
 
 
-def conditions(b: Binding, dims: list[di.Dim], topic: str | None) -> list[Unbound]:
+def conditions(
+    b: Binding, dims: list[di.Dim], topic: str | None, hint: dict | None = None
+) -> list[Unbound]:
+    """recell 이 칸을 골라야 할 조건. hint(repick 의 판정 지적)가 있고 못 이은 조건이 없으면
+    판정이 빠졌다고 본 것(missing)을 조건 하나로 넣는다: 칸 잇기는 다 이었는데 답이 틀린 경우"""
     names = {d.name for d in dims}
     out = [u for u in b.unbound if u.value]
     if not out and topic and any(u.cond in names for u in b.unbound):
         out = [Unbound("topic", topic, "지표 이름과 맞는 칸이 없음")]
+    if not out and hint and (said := str(hint.get("missing") or "").strip()):
+        out = [Unbound(JUDGE, said, f"판정: {hint.get('reason') or '답이 질문과 다름'}")]
     return out
 
 
@@ -39,6 +46,7 @@ def user_text(
     conds: list[Unbound],
     dims: list[di.Dim],
     region_dim: int | None,
+    hint: dict | None = None,
 ) -> str:
     bound = [
         f"{x.cond}={' · '.join(x.names) or x.value}"
@@ -49,6 +57,7 @@ def user_text(
         f"질문: {question}",
         f"통계표: {b.tbl_id} {tbl_nm or ''}".rstrip(),
         f"이미 정한 칸: {'; '.join(bound) or '-'}",
+        *_hint_lines(hint),
         "못 이은 조건:",
         *(f"{i}. {u.cond}='{u.value}' ({u.why})" for i, u in enumerate(conds, start=1)),
         "분류별 칸 (코드: 이름):",
@@ -61,6 +70,17 @@ def user_text(
         shown = ", ".join(f"{c}: {n}" for c, n in cells[:MAX_CELLS])
         lines.append(f"[{d.no}] {d.name}{cut}: {shown}")
     return "\n".join(lines)
+
+
+def _hint_lines(hint: dict | None) -> list[str]:
+    """repick: 앞 답이 틀렸다는 판정의 지적과 그 답이 쓴 칸 (같은 칸을 다시 고르지 않게)"""
+    if not hint:
+        return []
+    said = " — ".join(str(x) for x in (hint.get("reason"), hint.get("missing")) if x)
+    lines = [f"앞 답의 판정: {said}"] if said else []
+    if hint.get("wrong"):
+        lines.append(f"앞 답이 쓴 칸: {hint['wrong']}")
+    return lines
 
 
 @llm_calls.staged("recell")
@@ -123,7 +143,11 @@ def apply(
                 if not codes or any(c not in d.codes for c in codes):
                     return None
                 same = [x for x in bound if x.dim == d.no and x.by in ("value", "forced")]
-                if u.cond == "item" and same and all(x.cond == "item" for x in same):
+                if u.cond == JUDGE and same:
+                    # repick: 판정이 틀렸다고 본 답의 칸을 판정 지적대로 바꾼다
+                    for x in same:
+                        bound.remove(x)
+                elif u.cond == "item" and same and all(x.cond == "item" for x in same):
                     for x in same:
                         bound.remove(x)
                     codes = list(dict.fromkeys([c for x in same for c in x.codes] + codes))
@@ -164,17 +188,26 @@ def apply(
 
 
 async def fix(
-    question: str, tbl_nm: str | None, b: Binding, topic: str | None, step: dict[str, Any]
+    question: str,
+    tbl_nm: str | None,
+    b: Binding,
+    topic: str | None,
+    step: dict[str, Any],
+    hint: dict | None = None,
 ) -> Fix | None:
+    """못 이은 조건을 뜻으로 칸에 잇는다 (HCX 1회). hint: repick 일 때 판정의 지적
+    {"reason", "missing", "wrong"(앞 답이 쓴 칸)}"""
     dims, region_dim, _ = await run_in_threadpool(di.schema, b.tbl_id)
-    conds = conditions(b, dims, topic)
+    conds = conditions(b, dims, topic, hint)
     if not conds:
         return None
     log: dict[str, Any] = {"conds": [f"{u.cond}={u.value}" for u in conds]}
+    if hint:
+        log["hint"] = {k: v for k, v in hint.items() if v}
     step["recell"] = log
     start = time.perf_counter()
     try:
-        raw, llm = await judge(user_text(question, tbl_nm, b, conds, dims, region_dim))
+        raw, llm = await judge(user_text(question, tbl_nm, b, conds, dims, region_dim, hint))
     except Exception as e:
         logger.warning("recell LLM 실패: %s: %s", type(e).__name__, e)
         log["error"] = f"{type(e).__name__}: {e}"[:200]

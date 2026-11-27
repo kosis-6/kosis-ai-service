@@ -371,6 +371,17 @@ def test_handle_routes_report_and_keeps_conditions(monkeypatch, ask_sessions):
     assert saved["report_agent"]["last_turn"] == 3 and saved["report_agent"]["report_id"] == 9
 
 
+def test_handle_report_without_login_says_login_only(ask_sessions):
+    """로그인하지 않고 '보고서 만들어줘': 오류 없이 로그인한 사용자만 만들 수 있다고 답한다"""
+    from app.services import ask_session as s
+
+    ask_sessions["sessions"]["G_1"] = {"conditions": {}, "turn_no": 2, "user_id": None}
+    res = asyncio.run(s.handle("G_1", "보고서 만들어줘", None))
+    assert res["request_type"] == "report" and res["session_id"] == "G_1"
+    assert res["answer"] == tools.REFUSE_WHY["login"]
+    assert ask_sessions["sessions"]["G_1"]["turn_no"] == 3
+
+
 # ---- 보고서 제안 칩 (PR 6) ----------------------------------------------------------------
 
 

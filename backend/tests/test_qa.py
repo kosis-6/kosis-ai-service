@@ -497,7 +497,7 @@ def test_compute_population_rank_passes_the_asked_region(monkeypatch: pytest.Mon
     ranked = {"status": "ok", "indicator": "고령인구 비율", "unit": "%", "year": 2024}
     ranked.update(level="시도", order="높은 순", total_regions=2, ranking=ranking, target=target)
 
-    def fake_rank(*args):
+    def fake_rank(*args, **kwargs):
         calls.append(args)
         return dict(ranked)
 
