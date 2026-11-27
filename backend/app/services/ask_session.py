@@ -34,6 +34,7 @@ from app.services import (
     llm_calls,
     lookup,
     multi_indicator,
+    progress,
     qa,
     question_clarify,
     refusal,
@@ -2055,6 +2056,7 @@ async def _movement_tables(question: str, user_id: int | None, told: str | None 
 async def _turn(
     state: dict | None, question: str, selections: dict | None = None, user_id: int | None = None
 ) -> tuple[dict, dict, str | None]:
+    progress.now(progress.UNDERSTAND)
     if refusal.instruction_request(question):
         flow.add("통계 질문 검사", "not_statistics", "내부 지시 요청")
         return (
@@ -2537,6 +2539,7 @@ async def _report_turn(
     """'지금까지 물어본 거 정리해줘': 이 대화의 답을 모아 보고서로 (변경 추출 · 이어 묻기 복원의
     report 선택지). 로그인 사용자는 보고서를 만들어 저장하고 문장을 만든다(reports.create ·
     generate, 화면 [보고서] 버튼과 같은 함수). 로그인하지 않았으면 저장 없이 요약 문장을 모은다"""
+    progress.now(progress.REPORT)
     sid = _session_now.get()
     turns = await _session_turns(sid, user_id) if sid else []
     res = {
@@ -3310,6 +3313,7 @@ async def _judged(res: dict, state: dict | None, question: str, user_id: int | N
     한다 (답변 불가는 따로 구현한다). 판정 내용은 trace["answer_judge"]"""
     if not answer_judge.enabled() or not judgeable(res):
         return
+    progress.now(progress.CHECK)
     asked = res.get("question") or question
     first = await answer_judge.verdict(asked, res.get("parsed"), res.get("result"))
     if first is None:
@@ -3695,6 +3699,7 @@ async def handle(
         await _attach_tables(res, state, asked, user_id)
         await refusal.finalize(res, asked)
         await _judged(res, state, asked, user_id)
+        progress.now(progress.WRAP_UP)
         if "summary" not in res:  # 직전 답을 다시 쓴 응답(_reuse)은 그 요약을 이미 들고 있다
             res["summary"] = _summary(res.get("result"))
         _attach_figure(res)
@@ -3761,6 +3766,7 @@ async def _agent_turn(
     """보고서 경로 (명세서 7장). 앞 질문의 조건은 그대로 둬서 다음 통계 질문이 이어진다"""
     from app.agent import report_agent
 
+    progress.now(progress.REPORT)
     res = await report_agent.run(question, sid, state, user_id)
     mine = res.pop("report_agent_state")
     prev = state or {}

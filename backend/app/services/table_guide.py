@@ -5,7 +5,15 @@ from uuid import uuid4
 
 from app.agent import graph, multi
 from app.core.config import get_settings
-from app.services import flow, search, search_answer, search_llm, search_log, synonyms
+from app.services import (
+    flow,
+    progress,
+    search,
+    search_answer,
+    search_llm,
+    search_log,
+    synonyms,
+)
 from app.services import slots as slot_parser
 
 logger = logging.getLogger(__name__)
@@ -69,6 +77,7 @@ async def find_tables(
     /search(dialog.handle)와 같은 처리를 LangGraph 흐름(app/agent)으로 돌린다.
     새 질문이면 계획이 질문을 지표로 나누고, 지표가 여럿이면 지표마다 찾은 표를
     응답의 multi에 덧붙인다 (SEARCH_PLAN=false면 계획 없이 기존과 같은 결과만)"""
+    progress.now(progress.FIND_TABLE)
     trace: dict = {}
     result, response, error = None, None, None
     handle = multi.handle if get_settings().search_plan else graph.handle

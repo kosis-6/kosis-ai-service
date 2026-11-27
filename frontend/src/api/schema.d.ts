@@ -532,6 +532,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/ask/progress/{progress_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 답을 기다리는 동안 처리 단계 보기 */
+        get: operations["ask_progress_ask_progress__progress_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/conversations": {
         parameters: {
             query?: never;
@@ -621,6 +638,14 @@ export interface components {
              */
             source: "user" | "inherited" | "default";
         };
+        /** AskProgress */
+        AskProgress: {
+            /**
+             * Steps
+             * @description 지금까지 거친 처리 단계 (질문 이해 · 통계표 찾기 · 통계 조회·계산 · 답 검증 · 답변 정리 · 보고서 작성). 마지막이 지금 하는 일. 끝났거나 모르는 id면 빈 목록
+             */
+            steps: string[];
+        };
         /** AskRequest */
         AskRequest: {
             /**
@@ -645,6 +670,11 @@ export interface components {
              * @description 로그인하지 않은 화면에서 마지막 차트를 바꾼 보기 (꺾은선 · 막대 · 표). 저장할 곳이 없어 질문과 함께 보낸다. '자세히 말해줘'처럼 직전 차트를 다시 쓰는 답이 이 모양으로 그린다. 로그인한 대화는 답에 저장한 보기를 서버가 읽으므로 보내지 않는다
              */
             chart_view?: ("line" | "bar" | "table") | null;
+            /**
+             * Progress Id
+             * @description 화면이 만든 임의 id. 답을 기다리는 동안 GET /ask/progress/{progress_id}로 지금 하는 처리 단계를 읽는다
+             */
+            progress_id?: string | null;
         };
         /** AskResponse */
         AskResponse: {
@@ -2549,6 +2579,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AskResponse"];
+                };
+            };
+            /** @description 입력값이 규칙에 맞지 않음 */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    ask_progress_ask_progress__progress_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                progress_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 성공 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AskProgress"];
                 };
             };
             /** @description 입력값이 규칙에 맞지 않음 */

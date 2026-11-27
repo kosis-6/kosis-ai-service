@@ -12,6 +12,7 @@ import { AltCard } from "../chat/Reply";
 import { ReportPreview, ReportSheet } from "../chat/ReportSheet";
 import type { Report } from "../chat/reports";
 import { Sheet } from "../chat/Sheet";
+import { newProgressId, Waiting } from "../chat/Waiting";
 import { Brand } from "../components/Brand";
 import { Icon } from "../components/Icon";
 import { Mascot, MascotFace } from "../components/Mascot";
@@ -53,6 +54,7 @@ export function ChatPage() {
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [busy, setBusy] = useState(false);
+  const [progressId, setProgressId] = useState<string | null>(null);
   const [opening, setOpening] = useState(false);
   const [question, setQuestion] = useState("");
   const [sheet, setSheet] = useState<SheetState | null>(null);
@@ -178,7 +180,9 @@ export function ChatPage() {
     if (!q || busyRef.current || opening) return;
     const v = view.current;
     const sid = sessionId.current;
+    const pid = newProgressId();
     busyRef.current = true;
+    setProgressId(pid);
     setBusy(true);
     add({ kind: "user", text: q });
     try {
@@ -192,6 +196,7 @@ export function ChatPage() {
         session_id: sid,
         ...(has ? { selections } : {}),
         ...(chartView ? { chart_view: chartView } : {}),
+        progress_id: pid,
       });
       if (v !== view.current) {
         void refreshHistory();
@@ -443,10 +448,14 @@ export function ChatPage() {
                 <MascotFace />
               </span>
               <div className="reply">
-                <div className="bubble">
-                  {opening ? "지난 대화를 불러오고 있어요" : text.typing}
-                  <span className="dots" />
-                </div>
+                {opening ? (
+                  <div className="bubble">
+                    지난 대화를 불러오고 있어요
+                    <span className="dots" />
+                  </div>
+                ) : (
+                  <Waiting key={progressId} progressId={progressId} fallback={text.typing} />
+                )}
               </div>
             </div>
           )}

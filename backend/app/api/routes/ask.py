@@ -1,13 +1,14 @@
 import logging
 import math
 import time
+from typing import Annotated
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Path
 
 from app.api.deps import OptionalUser
 from app.core.stats_db import StatsNotLoadedError
-from app.schemas.ask import AskRequest, AskResponse
-from app.services import ask_session, qa
+from app.schemas.ask import AskProgress, AskRequest, AskResponse, ProgressId
+from app.services import ask_session, progress, qa
 from app.services.hcx_client import HcxError
 
 router = APIRouter(tags=["질문 답변"])
@@ -20,6 +21,7 @@ async def ask(body: AskRequest, user: OptionalUser) -> AskResponse:
     start = time.perf_counter()
     res, error = None, None
     question = body.question
+    progress.begin(body.progress_id)
     try:
         res = await ask_session.handle(
             body.session_id,
@@ -52,6 +54,7 @@ async def ask(body: AskRequest, user: OptionalUser) -> AskResponse:
         error = f"{type(e).__name__}: {e}"
         raise
     finally:
+        progress.end(body.progress_id)
         elapsed_ms = round((time.perf_counter() - start) * 1000)
         try:
             qa.log_request(question, res, error, elapsed_ms, user_id=user.id if user else None)
@@ -60,3 +63,8 @@ async def ask(body: AskRequest, user: OptionalUser) -> AskResponse:
         except OSError:
             logger.exception("요청 기록 실패")
     return AskResponse(**res)
+
+
+@router.get("/ask/progress/{progress_id}", summary="답을 기다리는 동안 처리 단계 보기")
+async def ask_progress(progress_id: Annotated[ProgressId, Path()]) -> AskProgress:
+    return AskProgress(steps=progress.get(progress_id))

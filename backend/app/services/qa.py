@@ -26,6 +26,7 @@ from app.services import (
     load_queue,
     lookup,
     monthref,
+    progress,
     search_llm,
     slots,
     table_cache,
@@ -75,6 +76,7 @@ def _cache_key(question, latest):
 
 
 async def understand(question, trace=None):
+    progress.now(progress.UNDERSTAND)
     lo, hi = await run_in_threadpool(indicators._data_years)
     use_cache = get_settings().question_cache
     key = _cache_key(question, hi)
@@ -4176,6 +4178,7 @@ def _add_data_end_note(parsed, result, today=None):
 
 
 async def answer(parsed, trace=None, question=""):
+    progress.now(progress.COMPUTE)
     trace = {} if trace is None else trace
     start = time.perf_counter()
     if ask_followup.needs_year(question) and indicators.spec(parsed.get("indicator") or ""):
