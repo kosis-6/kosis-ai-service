@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { Brand } from "../components/Brand";
 import { Icon } from "../components/Icon";
@@ -24,7 +24,7 @@ function Back() {
   );
 }
 
-/** 로그인 · 회원가입을 한 장에 두고, 초록 덮개가 옆으로 밀리며 두 화면을 바꾼다.
+/** 로그인 · 회원가입을 가운데 카드 한 장에 두고, 초록 덮개가 옆으로 밀리며 두 화면을 바꾼다.
  *  주소(/login · /signup)가 어느 쪽을 보일지 정해서 뒤로 가기 · 바로 들어오기도 그대로 된다.
  *  휴대폰 폭에서는 덮개 없이 보이는 쪽 하나만 그린다 (account.css) */
 export function AccountLayout() {
@@ -42,34 +42,52 @@ export function AccountLayout() {
     document.querySelector<HTMLElement>(`.side.${mode} input, .side.${mode} .btn`)?.focus({ preventScroll: true });
   }, [mode]);
 
+  // 카드 높이는 보이는 쪽 폼에 맞춘다: 로그인은 짧게, 회원가입으로 밀면 덮개와 함께 늘어난다.
+  // 인증번호 칸이 생기는 등 폼 높이가 바뀌어도 따라간다 (휴대폰 폭에서는 CSS가 이 값을 쓰지 않는다)
+  const card = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = card.current;
+    if (!el) return;
+    const fit = () => {
+      const view = el.querySelector<HTMLElement>(`.side.${mode} .view`);
+      const side = view?.closest<HTMLElement>(".side");
+      if (!view || !side) return;
+      const pad = parseFloat(getComputedStyle(side).paddingTop) + parseFloat(getComputedStyle(side).paddingBottom);
+      el.style.setProperty("--entry-h", `${Math.ceil(view.offsetHeight + pad)}px`);
+    };
+    fit();
+    const watch = new ResizeObserver(fit);
+    el.querySelectorAll(".side .view").forEach((v) => watch.observe(v));
+    return () => watch.disconnect();
+  }, [mode, done]);
+
   return (
-    <div className={mode === "up" ? "entry is-up" : "entry"}>
+    <div className="entry-page">
       <header className="m-head">
         <Link className="m-back" to="/" aria-label="통계표 찾기로 돌아가기">
           <Icon name="arrowLeft" size={22} />
         </Link>
         <Brand />
       </header>
-
-      <section className="side in" inert={mode !== "in"} role={mode === "in" ? "main" : undefined}>
+      <div className="entry-top">
+        <Brand />
         <Back />
-        <div className="views">
-          <LoginPage />
-        </div>
-        <p className="panel-foot">LIKE SNAKE · KOSIS 인구 분야 통계표 안내</p>
-      </section>
+      </div>
 
-      <section className="side up" inert={mode !== "up"} role={mode === "up" ? "main" : undefined}>
-        <Back />
-        <div className="views">{done ? <SignupDonePage /> : <SignupPage />}</div>
-        <p className="panel-foot">LIKE SNAKE · KOSIS 인구 분야 통계표 안내</p>
-      </section>
+      <div ref={card} className={mode === "up" ? "entry is-up" : "entry"}>
+        <section className="side in" inert={mode !== "in"} role={mode === "in" ? "main" : undefined}>
+          <div className="views">
+            <LoginPage />
+          </div>
+        </section>
 
-      <aside className="cover">
-        <div className="cover-track">
-          <div className="cover-panel to-in" inert={mode !== "up"}>
-            <Brand className="on-dark" />
-            <div className="cover-body">
+        <section className="side up" inert={mode !== "up"} role={mode === "up" ? "main" : undefined}>
+          <div className="views">{done ? <SignupDonePage /> : <SignupPage />}</div>
+        </section>
+
+        <aside className="cover">
+          <div className="cover-track">
+            <div className="cover-panel to-in" inert={mode !== "up"}>
               <Mascot place="story" className="cover-art" label="LIKE SNAKE 캐릭터" />
               <p className="cover-title">다시 만나서 반가워요</p>
               <p className="cover-text">
@@ -81,11 +99,7 @@ export function AccountLayout() {
                 로그인
               </button>
             </div>
-            <span />
-          </div>
-          <div className="cover-panel to-up" inert={mode !== "in"}>
-            <Brand className="on-dark" />
-            <div className="cover-body">
+            <div className="cover-panel to-up" inert={mode !== "in"}>
               <Mascot place="story" className="cover-art" label="LIKE SNAKE 캐릭터" />
               <p className="cover-title">
                 일상 속 질문을,
@@ -101,10 +115,11 @@ export function AccountLayout() {
                 회원가입
               </button>
             </div>
-            <span />
           </div>
-        </div>
-      </aside>
+        </aside>
+      </div>
+
+      <p className="panel-foot">LIKE SNAKE · KOSIS 인구 분야 통계표 안내</p>
     </div>
   );
 }
