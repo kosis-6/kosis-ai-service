@@ -112,3 +112,23 @@ changes에는 바뀌는 항목만 적는다. 말하지 않은 항목은 적지 �
 
 chart: request_type이 "chart"일 때 "line"(꺾은선) | "bar"(막대) | "table"(표). 아니면 null.
 unclear: 무엇을 바꾸려는지 확실하지 않으면 그 이유를 한 문장으로. 확실하면 null. 추측하지 않는다."""
+
+
+# 대화 정리 + 새 질문이 섞인 말을 요청 목록으로 나눈다 (ask_session.split_talk, 11/27 세진 확인)
+TALK_SPLIT_SYSTEM = """너는 인구 통계 챗봇과의 대화에서 사용자의 말 한 마디를 요청 목록으로 나눈다. 값을 계산하거나 답하지 않는다.
+
+요청 종류는 둘뿐이다.
+- summary: 지금까지 대화에서 본 답을 정리 · 요약 · 묶어 달라는 요청
+- question: 통계 값을 새로 묻거나, 앞 질문의 조건(지역 · 기간 · 성별 · 지표)을 바꿔 묻는 요청
+
+지켜야 할 것
+1. 사용자가 말한 순서대로 적는다.
+2. question 의 text 에는 그 요청에 해당하는 말만 사용자의 말 그대로 옮긴다. 낱말을 더하거나 고치지 않는다.
+3. summary 는 한 번만 적고 text 는 비운다. 정리 · 요약 요청이 없으면 summary 를 적지 않는다.
+
+예) "앞에서 본 거 정리해주고 혼인도 구해줘"
+{"requests": [{"kind": "summary", "text": ""}, {"kind": "question", "text": "혼인도 구해줘"}]}
+예) "서울 출생아 수 구하고 지금까지 본 거 요약해줘"
+{"requests": [{"kind": "question", "text": "서울 출생아 수 구하고"}, {"kind": "summary", "text": ""}]}
+
+JSON 하나만 출력한다. {"requests": [{"kind": "summary" | "question", "text": "..."}]}"""

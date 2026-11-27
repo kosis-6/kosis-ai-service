@@ -186,3 +186,84 @@ def test_non_finite_values_are_not_sent_to_charts():
         )
         is None
     )
+
+
+def _bars(key: str, n: int) -> dict:
+    items = [{"region": f"지역{i}", "value": 100 - i, "rank": i + 1} for i in range(n)]
+    return charts.build({**BASE, "year": 2024, key: items})
+
+
+def test_bars_are_cut_only_past_fifteen() -> None:
+    for key in ("values", "ranking"):
+        exact = _bars(key, charts.MAX_BARS)
+        assert len(exact["rows"]) == charts.MAX_BARS and exact["note"] is None
+        over = _bars(key, charts.MAX_BARS + 1)
+        assert len(over["rows"]) == charts.MAX_BARS
+        assert f"전체 {charts.MAX_BARS + 1}개 지역 중" in over["note"]
+
+
+def test_long_comparison_keeps_the_highest_and_lowest() -> None:
+    """11/27 차트 점검: 17개 시도 비교에서 답은 '가장 낮은 지역은 세종'인데 막대에 세종이 없었다"""
+    values = [{"region": f"지역{i}", "value": float(v)} for i, v in enumerate(range(20, 37))]
+    values.insert(5, {"region": "가장 낮은 곳", "value": 1.0})
+    values.insert(9, {"region": "가장 높은 곳", "value": 99.0})
+    chart = charts.build({**BASE, "year": 2024, "values": values})
+    labels = [r["label"] for r in chart["rows"]]
+    assert len(labels) == charts.MAX_BARS
+    assert "가장 낮은 곳" in labels and "가장 높은 곳" in labels
+    # 남긴 막대는 원래 순서를 지킨다
+    order = [v["region"] for v in values]
+    assert labels == sorted(labels, key=order.index)
+    assert "가장 높은 곳과 가장 낮은 곳은 포함" in chart["note"]
+
+
+def test_ranking_cut_stays_the_top_fifteen() -> None:
+    """순위는 위에서부터 자른다 (중간에 꼴찌를 끼우면 순위가 이어지지 않는다)"""
+    chart = _bars("ranking", charts.MAX_BARS + 5)
+    assert [r["label"] for r in chart["rows"]] == [f"지역{i}" for i in range(charts.MAX_BARS)]
+    assert f"위에서 {charts.MAX_BARS}개" in chart["note"]
+
+
+def test_ranking_keeps_its_own_order() -> None:
+    ranking = [
+        {"region": "가", "value": 1, "rank": 1},
+        {"region": "나", "value": 3, "rank": 2},
+        {"region": "다", "value": 2, "rank": 3},
+    ]
+    chart = charts.build({**BASE, "year": 2024, "ranking": ranking})
+    assert [r["label"] for r in chart["rows"]] == ["가", "나", "다"]
+
+
+def test_composition_switches_to_bars_past_six_parts() -> None:
+    result = {"status": "ok", "indicator": "인구 구성", "unit": "%", "year": 2024}
+    six = [{"label": f"항목{i}", "share": float(i)} for i in range(1, charts.MAX_PARTS + 1)]
+    chart = charts.build({**result, "parts": six})
+    assert chart["type"] == "parts" and [r["label"] for r in chart["rows"]][0] == "항목1"
+    seven = [{"label": f"항목{i}", "share": float(i)} for i in range(1, charts.MAX_PARTS + 2)]
+    chart = charts.build({**result, "parts": seven})
+    assert chart["type"] == "bar" and chart["rows"][0]["label"] == f"항목{charts.MAX_PARTS + 1}"
+
+
+def test_many_parts_are_cut_to_fifteen_bars() -> None:
+    """11/27 차트 점검: 구성 항목이 7개를 넘어 막대로 바뀌면 15개 제한이 없었다"""
+    result = {"status": "ok", "indicator": "연령별 인구 구성", "unit": "%", "year": 2024}
+    exact = [{"label": f"항목{i}", "share": float(i)} for i in range(1, charts.MAX_BARS + 1)]
+    chart = charts.build({**result, "parts": exact})
+    assert len(chart["rows"]) == charts.MAX_BARS and chart["note"] is None
+    many = [{"label": f"항목{i}", "share": float(i)} for i in range(1, 21)]
+    chart = charts.build({**result, "parts": many})
+    assert chart["type"] == "bar" and len(chart["rows"]) == charts.MAX_BARS
+    assert [r["label"] for r in chart["rows"]][:2] == ["항목20", "항목19"]
+    assert chart["note"] == f"전체 20개 항목 중 비율이 큰 {charts.MAX_BARS}개만 그렸습니다."
+    Chart(**chart)
+
+
+def test_region_lines_are_crowded_only_past_six() -> None:
+    region = {**BASE, "series": [{"year": 2022, "value": 1}, {"year": 2023, "value": 2}]}
+
+    def lines(n: int) -> dict:
+        split = [{**region, "region": f"지역{i}"} for i in range(n)]
+        return charts.build({"status": "ok", "split_by": "region", "split": split})
+
+    assert lines(charts.MAX_LINES)["crowded"] is False
+    assert lines(charts.MAX_LINES + 1)["crowded"] is True

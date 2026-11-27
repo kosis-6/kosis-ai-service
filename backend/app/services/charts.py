@@ -109,12 +109,31 @@ def _lines(result: dict) -> dict | None:
     }
 
 
-def _bar(result: dict, items: list[dict], order: str | None = None) -> dict | None:
+def _keep_ends(rows: list[dict]) -> list[dict]:
+    """MAX_BARS개로 줄이되 가장 높은 곳 · 가장 낮은 곳은 남긴다 (답 문장이 둘을 말한다).
+    11/27 차트 점검: 17개 시도 비교에서 '가장 낮은 지역은 세종'이라 하고 막대에는 세종이 없었다"""
+    ends = {
+        max(range(len(rows)), key=lambda i: rows[i]["value"]),
+        min(range(len(rows)), key=lambda i: rows[i]["value"]),
+    }
+    rest = [i for i in range(len(rows)) if i not in ends][: MAX_BARS - len(ends)]
+    return [rows[i] for i in sorted(ends | set(rest))]
+
+
+def _bar(
+    result: dict, items: list[dict], order: str | None = None, ranked: bool = False
+) -> dict | None:
     rows = [{"label": i["region"], "value": i["value"]} for i in items if _number(i.get("value"))]
     if len(rows) < 2:
         return None
     note = None
-    if len(rows) > MAX_BARS:
+    if len(rows) > MAX_BARS and not ranked:
+        note = (
+            f"전체 {len(rows)}개 지역 중 {MAX_BARS}개만 그렸습니다"
+            " (가장 높은 곳과 가장 낮은 곳은 포함)."
+        )
+        rows = _keep_ends(rows)
+    elif len(rows) > MAX_BARS:
         note = f"전체 {len(rows)}개 지역 중 위에서 {MAX_BARS}개만 그렸습니다."
         rows = rows[:MAX_BARS]
     year = _when(result)
@@ -136,13 +155,22 @@ def _parts(result: dict) -> dict | None:
     if len(rows) < 2:
         return None
     year = _when(result)
+    note = None
+    if len(rows) > MAX_PARTS:
+        # 항목이 많으면 비율이 큰 순서의 막대. 지역 막대처럼 MAX_BARS개까지만 그린다
+        # (11/27 차트 점검: 이 경로만 자르지 않아 항목 수만큼 막대가 나갔다)
+        rows = sorted(rows, key=lambda r: -r["value"])
+        if len(rows) > MAX_BARS:
+            note = f"전체 {len(rows)}개 항목 중 비율이 큰 {MAX_BARS}개만 그렸습니다."
+            rows = rows[:MAX_BARS]
     return {
         "type": "parts" if len(rows) <= MAX_PARTS else "bar",
         "title": _title(year, result.get("region"), result.get("indicator"), _sex(result)),
         "category": "항목",
-        "rows": rows if len(rows) <= MAX_PARTS else sorted(rows, key=lambda r: -r["value"]),
+        "rows": rows,
         "unit": "%",
         "count_unit": result.get("count_unit") or "명",
+        "note": note,
     }
 
 
@@ -156,7 +184,7 @@ def build(result: dict | None) -> dict | None:
     elif result.get("values"):
         chart = _bar(result, result["values"])
     elif result.get("ranking"):
-        chart = _bar(result, result["ranking"], result.get("order"))
+        chart = _bar(result, result["ranking"], result.get("order"), ranked=True)
     elif result.get("parts"):
         chart = _parts(result)
     else:

@@ -47,6 +47,18 @@ def no_composite_gate(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def no_talk_split_llm(monkeypatch: pytest.MonkeyPatch) -> None:
+    """대화 정리 말 나누기(LLM)는 테스트에서 부르지 않는다 (None → 예전 정규식 규칙). 나누기 경로는
+    test_ask_session 의 talk_split 테스트가 직접 바꿔 본다"""
+    from app.services import ask_session
+
+    async def split(question, trace):
+        return None
+
+    monkeypatch.setattr(ask_session, "split_talk", split)
+
+
+@pytest.fixture(autouse=True)
 def no_recell_llm(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.services import recell
 
