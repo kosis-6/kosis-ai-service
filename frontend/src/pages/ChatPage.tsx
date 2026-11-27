@@ -7,7 +7,7 @@ import { Answer } from "../chat/Answer";
 import { ask } from "../chat/api";
 import { EXAMPLE_CATEGORIES, EXAMPLES } from "../chat/examples";
 import { History } from "../chat/History";
-import { createChartViewQueue, deleteConversation, getConversation, HistoryError, listConversations, replayed } from "../chat/conversations";
+import { createChartViewQueue, deleteConversation, getConversation, HistoryError, lastChartView, listConversations, replayed } from "../chat/conversations";
 import { AltCard } from "../chat/Reply";
 import { ReportPreview, ReportSheet } from "../chat/ReportSheet";
 import type { Report } from "../chat/reports";
@@ -185,7 +185,14 @@ export function ChatPage() {
       if (sid) await chartViews.wait(sid);
       if (v !== view.current) return;
       const has = selections && Object.keys(selections).length > 0;
-      const data = await ask({ question: q, session_id: sid, ...(has ? { selections } : {}) });
+      // 로그인한 대화는 서버가 답에 저장한 보기를 읽는다. 로그인하지 않았으면 화면의 보기를 보낸다
+      const chartView = saved ? undefined : lastChartView(answers);
+      const data = await ask({
+        question: q,
+        session_id: sid,
+        ...(has ? { selections } : {}),
+        ...(chartView ? { chart_view: chartView } : {}),
+      });
       if (v !== view.current) {
         void refreshHistory();
         return;

@@ -38,6 +38,12 @@ export async function saveChartView(sessionId: string, turnId: number, view: Cha
   if (!res.ok) throw new HistoryError(res.status);
 }
 
+/** 로그인하지 않은 대화는 차트 보기를 저장할 곳이 없어, 마지막 차트의 보기를 질문과 함께 보낸다.
+ *  서버는 직전 차트를 다시 쓰는 답('자세히 말해줘')을 이 모양으로 그린다 */
+export function lastChartView(answers: AskResponse[]): ChartView | undefined {
+  return answers.findLast((answer) => answer.chart)?.chart?.view ?? undefined;
+}
+
 export function createChartViewQueue(persist = saveChartView) {
   const pending = new Map<string, Map<number, Promise<void>>>();
 

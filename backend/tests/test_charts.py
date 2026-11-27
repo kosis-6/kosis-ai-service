@@ -288,3 +288,7 @@ def test_view_fits_matches_what_the_screen_offers():
     assert not charts.view_fits(crowded_line, "bar")  # 선이 많으면 막대 보기가 없다
     assert charts.view_fits(crowded_line, "table")
     assert charts.view_fits(bar, "bar") and not charts.view_fits(bar, "line")
+    # 구성비의 [차트] 버튼은 막대를 보낸다. 꺾은선을 보내 표 → 차트 저장이 409로 거절됐다
+    parts = {"type": "parts"}
+    assert charts.view_fits(parts, "bar") and charts.view_fits(parts, "table")
+    assert not charts.view_fits(parts, "line")

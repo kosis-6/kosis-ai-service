@@ -3648,8 +3648,10 @@ async def handle(
     user_id: int | None = None,
     selections: dict | None = None,
     listed: bool = True,
+    chart_view: str | None = None,
 ) -> dict:
-    """listed=False: 지난 대화 목록에 남기지 않는다 (보고서 에이전트가 따로 조회할 때)"""
+    """listed=False: 지난 대화 목록에 남기지 않는다 (보고서 에이전트가 따로 조회할 때).
+    chart_view: 로그인하지 않은 화면이 보낸 마지막 차트의 보기 (로그인하면 저장한 보기를 읽는다)"""
     sid = session_id or new_id()
     steps = flow.start()
     calls = llm_calls.start()
@@ -3663,6 +3665,10 @@ async def handle(
             sid, state, expired = new_id(), None, False
         if user_id is not None and state is not None:
             await _restore_chart_view(sid, state, user_id)
+        elif state is not None:
+            # 로그인하지 않은 대화는 보기를 저장할 곳이 없어 화면이 질문과 함께 보낸다.
+            # 없으면 막대로 바꾼 뒤 '자세히 말해줘'가 처음 모양(꺾은선)으로 돌아갔다
+            _show_chart_as(state, chart_view)
         # 보고서 말은 에이전트로 (#249 의 '정리해줘' 보고서는 _turn 안에서 따로 간다)
         if listed and report_router.wants(question, state):
             standalone_stat = bool(
@@ -3798,15 +3804,21 @@ async def _load(session_id: str) -> tuple[dict | None, bool]:
         return None, False
 
 
+def _show_chart_as(state: dict, view: str | None) -> None:
+    """직전 차트를 화면에서 고른 보기로 둔다. 그 차트로 그릴 수 없는 보기는 버린다"""
+    last = state.get("last") or {}
+    if view and (chart := last.get("chart")) and charts.view_fits(chart, view):
+        last["chart"] = {**chart, "view": view}
+
+
 async def _restore_chart_view(sid: str, state: dict, user_id: int) -> None:
     last = state.get("last") or {}
-    if not (chart := last.get("chart")):
+    if not last.get("chart"):
         return
     try:
         # 차트 보기는 캐시된 대화 상태와 별도로 저장되므로 원본 턴에서 읽는다.
         view = await conversations.chart_view(user_id, sid, state.get("turn_no") or 0, last)
-        if view and charts.view_fits(chart, view):
-            last["chart"] = {**chart, "view": view}
+        _show_chart_as(state, view)
     except (SQLAlchemyError, OSError):
         logger.exception("직전 차트 보기 읽기 실패")
 

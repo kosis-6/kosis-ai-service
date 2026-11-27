@@ -428,9 +428,23 @@ class Talk:
 
     user_id: int | None = 7
 
-    def say(self, question: str, selections: dict | None = None, **delta) -> dict:
+    def say(
+        self,
+        question: str,
+        selections: dict | None = None,
+        chart_view: str | None = None,
+        **delta,
+    ) -> dict:
         self.delta = delta
-        res = asyncio.run(s.handle(self.sid, question, user_id=self.user_id, selections=selections))
+        res = asyncio.run(
+            s.handle(
+                self.sid,
+                question,
+                user_id=self.user_id,
+                selections=selections,
+                chart_view=chart_view,
+            )
+        )
         self.sid = res["session_id"]
         return res
 
@@ -1492,6 +1506,20 @@ def test_invalid_region_chart_has_notice_and_keeps_numeric_answer(talk: Talk, mo
     assert res["answer"] == "서울·부산의 계산 결과입니다."
     assert "기준이 달라" in res["notice"]
     assert len(res["result"]["split"]) == 2
+
+
+def test_signed_out_detail_keeps_the_view_chosen_on_screen(talk: Talk) -> None:
+    """로그인하지 않으면 보기를 저장할 곳이 없어, 막대로 바꾼 뒤 '자세히 말해줘'가 꺾은선으로
+    돌아갔다. 화면이 질문과 함께 보낸 보기로 직전 차트를 그린다"""
+    talk.user_id = None
+    first = talk.say("부산 출생아 최근 5년 보여 줘")
+    assert first["chart"]["type"] == "line"
+    res = talk.say("더 자세히 설명해줘", chart_view="bar")
+    assert res["request_type"] == "detail" and res["chart"] == {**first["chart"], "view": "bar"}
+    again = talk.say("더 자세히 설명해줘")  # 보낸 보기는 다음 상태에도 남는다
+    assert again["chart"]["view"] == "bar"
+    # 그 차트로 그릴 수 없는 보기(꺾은선 차트에 없는 모양)는 버린다
+    assert talk.say("더 자세히 설명해줘", chart_view="pie")["chart"]["view"] == "bar"
 
 
 def test_detail_request_repeats_the_whole_answer_not_the_summary(talk: Talk) -> None:

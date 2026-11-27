@@ -20,6 +20,12 @@ class AskRequest(BaseModel):
         default=None,
         description="통계표 선택지 버튼으로 고른 값 (family_id / target / sex). /search와 같다",
     )
+    chart_view: Literal["line", "bar", "table"] | None = Field(
+        default=None,
+        description="로그인하지 않은 화면에서 마지막 차트를 바꾼 보기 (꺾은선 · 막대 · 표)."
+        " 저장할 곳이 없어 질문과 함께 보낸다. '자세히 말해줘'처럼 직전 차트를 다시 쓰는 답이"
+        " 이 모양으로 그린다. 로그인한 대화는 답에 저장한 보기를 서버가 읽으므로 보내지 않는다",
+    )
 
 
 class Source(BaseModel):

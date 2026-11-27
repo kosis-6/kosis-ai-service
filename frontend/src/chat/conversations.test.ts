@@ -3,7 +3,7 @@ import { createElement } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { pickable } from "./reports";
 import { Answer } from "./Answer";
-import { createChartViewQueue, replayed, saveChartView, when } from "./conversations";
+import { createChartViewQueue, lastChartView, replayed, saveChartView, when } from "./conversations";
 
 const calls: { url: string; init?: RequestInit }[] = [];
 vi.mock("../auth/client", () => ({
@@ -91,6 +91,16 @@ describe("화면에서 바꾼 차트 모양 남기기", () => {
     await Promise.all([bar, table, waiting]);
     expect(persist.mock.calls).toEqual([["A_1", 7, "bar"], ["A_1", 7, "table"]]);
     expect(complete).toHaveBeenCalledOnce();
+  });
+
+  it("로그인하지 않은 대화는 마지막 차트의 보기를 질문과 함께 보낸다", () => {
+    const answer = (chart: Record<string, unknown> | null) =>
+      replayed(turn({ status: "ok", answer: "답", sources: [], chart }), "A_1");
+    const line = { type: "line", title: "출생아 수", unit: "명", rows: [] };
+    // 차트가 없는 뒤 답(인사 · 출처)은 건너뛰고, 바꾸지 않은 차트는 보내지 않는다
+    expect(lastChartView([answer({ ...line, view: "bar" }), answer(null)])).toBe("bar");
+    expect(lastChartView([answer({ ...line, view: "bar" }), answer(line)])).toBeUndefined();
+    expect(lastChartView([])).toBeUndefined();
   });
 });
 
