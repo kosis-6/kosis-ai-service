@@ -9,14 +9,15 @@
   replan    계산 계획        이유가 형태 · 조건 · 계산 (표는 맞는데 계산 방법이 틀림)
   requery   표 찾기          이유가 대상이고 사전 경로 (사전이 엉뚱한 지표로 받음, 후보가 없음)
   retable   표 고르기        표 찾기 경로, 1위에 ✘가 있거나 검토가 exact가 아님 → 다음 후보
-  recell    칸 고르기        표 찾기 경로, 1위 조건 모두 ✔ + 검토 exact인데 칸 · 계산이 막힘
-                             (지연님 연결 단계가 들어오면 거기로. 그 전에는 replan으로 떨어짐)
+  repick    칸 고르기        표 찾기 경로, 1위 조건 모두 ✔ + 검토 exact인데 칸 · 계산이 막힘
+                             (같은 표에서 칸만 다시. 호출부가 들어오기 전에는 replan으로 떨어짐.
+                             표 계산 안의 recell(services/recell.py, 뜻으로 잇기)과는 다른 것)
   reroute   경로             사전 경로인데 표 찾기를 아직 안 거침
                              (지금 _recompute의 '통계표 찾기로')
   give_up   —                위 어느 것도 아니거나 상한 초과 → 처음 답 유지 또는 답변 불가 사유
 
 이 모듈은 행동 이름과 근거만 돌려준다. 실제 호출은 ask_session._judged가 한다. 지금 돌아가는
-행동은 replan(agent/replan.py) · reroute · retable · give_up이고, requery · recell은 이름만 내고
+행동은 replan(agent/replan.py) · reroute · retable · give_up이고, requery · repick은 이름만 내고
 호출부가 비어 있어 대체 행동으로 떨어진다 (재검색 게이트 · 연결 단계가 들어오면 채운다).
 설계: 인계_2026-11-17/A_설계서.md 4절.
 """
@@ -24,10 +25,10 @@
 from dataclasses import dataclass, field
 from typing import Any
 
-REPLAN, REQUERY, RETABLE, RECELL, REROUTE, GIVE_UP = (
-    "replan", "requery", "retable", "recell", "reroute", "give_up",
+REPLAN, REQUERY, RETABLE, REPICK, REROUTE, GIVE_UP = (
+    "replan", "requery", "retable", "repick", "reroute", "give_up",
 )  # fmt: skip
-ACTIONS = (REPLAN, REQUERY, RETABLE, RECELL, REROUTE, GIVE_UP)
+ACTIONS = (REPLAN, REQUERY, RETABLE, REPICK, REROUTE, GIVE_UP)
 # 판정 이유 → 계산 방법 문제 (표를 바꿔도 안 풀린다)
 PLAN_REASONS = ("형태가 다름", "조건이 빠짐", "계산이 빠짐")
 MAX_RETRIES = 2  # 질문당 다시 계산 상한 (B 측정: 한 번에 15 ~ 17초)
@@ -164,7 +165,7 @@ def _choose(
         if top_is_sure(cand) and failed_at_cell(res.get("trace")):
             # 표는 맞는데 칸 · 계산이 막힘. 11/22 실험에서 이 경우에 재검색하면 깨졌다
             return Action(
-                RECELL,
+                REPICK,
                 "1위 조건 모두 ✔ · 검토 exact인데 칸 · 계산 실패 → 같은 표에서 칸 다시",
                 fallback=REPLAN if llm_ok else RETABLE,
             )

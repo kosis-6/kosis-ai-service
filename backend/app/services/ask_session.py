@@ -3033,7 +3033,7 @@ async def _retry(
     done: set[str] | None = None,
 ) -> tuple[dict | None, str]:
     """행동대로 한 번 다시 계산. replan 이 새 계획을 못 내면 대체 행동(표 · 경로)으로 떨어진다.
-    requery · recell 은 호출부가 아직 없어 바로 대체 행동으로 간다. done: 쓴 행동 (대체도 적는다)"""
+    requery · repick 은 호출부가 아직 없어 바로 대체 행동으로 간다. done: 쓴 행동 (대체도 적는다)"""
     if action.name == agent_action.REPLAN:
         again, how = await _replan_compute(res, verdict, asked, user_id)
         if again is not None or action.fallback is None:
@@ -3061,12 +3061,10 @@ async def _judged(res: dict, state: dict | None, question: str, user_id: int | N
     if first["verdict"] != "retry":
         return
     # 행동 고르기 (N9, 코드 규칙): 판정 이유 · 답의 경로 · 1위 후보의 ✔/✘로 다음 행동을 정한다.
-    # 호출부가 있는 행동은 replan(_replan_compute) · reroute · retable(둘 다 _recompute) · give_up.
-    # requery · recell은 이름만 기록하고 fallback으로 떨어진다 (게이트 · 연결 단계가 들어오면)
     # 행동 고리 (N9 → 다시 계산 → 판정, 설계서 4-1 · 4-5): 첫 행동이 실패하거나 다시 한 답도
     # 판정에 걸리면 다음 행동으로 이어 간다. 상한은 agent_action(다시 2회 · LLM 1회)과 60초.
     # 호출부가 있는 행동은 replan(_replan_compute) · reroute · retable(둘 다 _recompute) · give_up.
-    # requery · recell은 이름만 기록하고 fallback으로 떨어진다 (게이트 · 연결 단계가 들어오면)
+    # requery · repick은 이름만 기록하고 fallback으로 떨어진다 (게이트 · 연결 단계가 들어오면)
     verdict = first
     tried = llm_tried = 0
     done: set[str] = set()
