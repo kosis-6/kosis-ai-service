@@ -9,6 +9,7 @@ import { EXAMPLE_CATEGORIES, EXAMPLES } from "../chat/examples";
 import { History } from "../chat/History";
 import { deleteConversation, getConversation, HistoryError, listConversations, replayed } from "../chat/conversations";
 import { AltCard } from "../chat/Reply";
+import { ReportSheet } from "../chat/ReportSheet";
 import { Sheet } from "../chat/Sheet";
 import { Brand } from "../components/Brand";
 import { Icon } from "../components/Icon";
@@ -25,7 +26,8 @@ type NewMessage = Message extends infer M ? (M extends Message ? Omit<M, "id"> :
 type SheetState =
   | { kind: "others"; recs: Recommendation[]; parsed: Parsed }
   | { kind: "examples" }
-  | { kind: "history" };
+  | { kind: "history" }
+  | { kind: "report" };
 
 const TEXT = {
   title: "인구 통계 안내",
@@ -63,6 +65,9 @@ export function ChatPage() {
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   const inChat = messages.length > 0 || opening;
+  const answers = messages.flatMap((m) => (m.kind === "answer" ? [m.data] : []));
+  // 보고서는 로그인한 사용자가 저장된 대화(주소에 대화 id)의 답으로 만든다
+  const canMakeReport = saved && routeId !== null && answers.length > 0 && !busy && !opening;
 
   useEffect(() => {
     document.body.classList.toggle("in-chat", inChat);
@@ -290,6 +295,11 @@ export function ChatPage() {
           <Brand className="only-narrow" />
           <div className="head-actions">
             <p className="source only-wide">KOSIS 데이터 기반</p>
+            {canMakeReport && (
+              <button type="button" className="btn quiet head-btn" onClick={() => setSheet({ kind: "report" })}>
+                보고서
+              </button>
+            )}
             <button type="button" className="btn quiet head-btn only-narrow in-chat-only" onClick={reset}>
               새 대화
             </button>
@@ -461,6 +471,9 @@ export function ChatPage() {
             </button>
           ))}
         </Sheet>
+      )}
+      {sheet?.kind === "report" && (
+        <ReportSheet sessionId={routeId} answers={answers} onClose={() => setSheet(null)} />
       )}
       {sheet?.kind === "history" && (
         <Sheet title="지난 대화" narrow onClose={() => setSheet(null)}>

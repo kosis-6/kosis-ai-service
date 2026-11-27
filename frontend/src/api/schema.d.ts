@@ -710,6 +710,17 @@ export interface components {
              * @description 실제로 답한 질문 (되묻기 답을 앞 질문과 합친 경우 합친 질문)
              */
             question?: string | null;
+            /**
+             * Turn Id
+             * @description 이 답의 기록 id (로그인한 사용자만). 보고서에 담을 때 쓴다
+             */
+            turn_id?: number | null;
+            /**
+             * Reportable
+             * @description 보고서에 담을 수 있는 답인가
+             * @default false
+             */
+            reportable?: boolean;
         };
         /** AuditList */
         AuditList: {

@@ -38,13 +38,12 @@ describe("질문 의미 확인", () => {
   });
 });
 
-it("수치 계산 결과에는 보고서 보기를 표시하고 재사용 응답에서는 생략한다", () => {
+it("답마다 보고서 버튼을 두지 않는다 (보고서는 대화창 [보고서]에서 답을 골라 만든다)", () => {
   const data: AskResponse = {
     status: "ok", answer: "인구는 10명입니다.", parsed: {}, sources: [],
-    result: { status: "ok", value: 10 },
+    result: { status: "ok", value: 10 }, reportable: true, turn_id: 1,
   };
-  expect(render(data)).toContain("보고서 보기");
-  expect(render({ ...data, result: { status: "ok", reused: true } })).not.toContain("보고서 보기");
+  expect(render(data)).not.toContain("보고서");
 });
 
 describe("직전 답을 다시 쓰는 응답", () => {

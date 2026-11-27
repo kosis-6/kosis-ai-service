@@ -24,6 +24,7 @@ STATUS = {
     reports.BAD_ORDER: 422,
     reports.EMPTY: 409,
     reports.CHANGED: 409,
+    reports.OTHER_TALK: 409,
 }
 
 
@@ -40,14 +41,18 @@ async def list_reports(
     return ReportList(**await reports.listing(user.id, limit, offset))
 
 
-@router.post("", summary="보고서 초안 만들기", status_code=201)
+@router.post("", summary="보고서 만들기 (대화창 [보고서]: 고른 답으로)", status_code=201)
 async def create_report(body: ReportCreate, user: CurrentUser) -> ReportRead:
+    """고른 답(turn_ids)으로 보고서를 만든다. 한 대화의 답만 담을 수 있다.
+    generate가 true면 문장 생성까지 한 번에 한다 (생성이 실패해도 만든 보고서는 남는다)"""
     try:
         found = await reports.create(
             user.id, body.title, body.purpose, body.turn_ids, body.session_id
         )
     except ReportError as e:
         raise _http(e) from e
+    if body.generate:
+        return await _generated(user.id, found["id"])
     return ReportRead(**found)
 
 
@@ -100,9 +105,13 @@ async def remove_item(report_id: ReportId, turn_id: TurnId, user: CurrentUser) -
 async def generate_report(report_id: ReportId, user: CurrentUser) -> ReportRead:
     """담긴 결과를 비교 검사하고 LLM이 요약 · 분석 문장을 쓴다. 숫자는 코드가 채운다.
     시간 제한(REPORT_TIMEOUT)을 넘기면 504이고 보고서는 그대로다"""
+    return await _generated(user.id, report_id)
+
+
+async def _generated(user_id: int, report_id: int) -> ReportRead:
     try:
         found = await asyncio.wait_for(
-            reports.generate(user.id, report_id), timeout=get_settings().report_timeout
+            reports.generate(user_id, report_id), timeout=get_settings().report_timeout
         )
     except TimeoutError as e:
         raise HTTPException(

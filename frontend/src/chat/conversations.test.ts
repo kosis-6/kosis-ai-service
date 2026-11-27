@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
 import { describe, expect, it } from "vitest";
-import { canReport } from "./report";
+import { pickable } from "./reports";
 import { Answer } from "./Answer";
 import { replayed, when } from "./conversations";
 
@@ -30,8 +30,10 @@ describe("지난 대화 다시 그리기", () => {
     expect(html).toContain("예전 답");
   });
 
-  it("계산 결과가 없어 보고서 버튼은 내지 않는다", () => {
-    expect(canReport(replayed(turn({ status: "ok", answer: "답", sources: [] }), "A_1"))).toBe(false);
+  it("다시 연 대화의 답도 보고서에 고를 수 있다 (서버가 담을 수 있는 답에 turn_id를 붙인다)", () => {
+    const saved = { status: "ok", answer: "답", sources: [], reportable: true, turn_id: 7 };
+    expect(pickable([replayed(turn(saved), "A_1")])).toMatchObject([{ turnId: 7 }]);
+    expect(pickable([replayed(turn({ status: "ok", answer: "답", sources: [] }), "A_1")])).toEqual([]);
   });
 });
 
