@@ -41,6 +41,14 @@ describe("로그인 · 회원가입 한 장", () => {
     expect(html).not.toContain("비밀번호 확인");
   });
 
+  it("넓은 화면 카드 위에는 돌아가기만 두고, 로고는 휴대폰 머리에만 있다", () => {
+    const html = at("/login");
+    const top = html.slice(html.indexOf('class="entry-top"'), html.indexOf('class="entry"'));
+    expect(top).toContain("통계표 찾기로 돌아가기");
+    expect(top).not.toContain("LIKE SNAKE");
+    expect(html.slice(html.indexOf('class="m-head"'), html.indexOf('class="entry-top"'))).toContain("LIKE SNAKE");
+  });
+
   it("없는 기능(소셜 로그인 · 비밀번호 찾기)은 두지 않는다", () => {
     const html = at("/login");
     expect(html).not.toMatch(/facebook|google|비밀번호 찾기|비밀번호를 잊/i);

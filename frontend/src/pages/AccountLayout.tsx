@@ -69,8 +69,8 @@ export function AccountLayout() {
         </Link>
         <Brand />
       </header>
+      {/* 넓은 화면: 카드 위에는 돌아가기만 (서비스 표시는 덮개의 캐릭터가 한다) */}
       <div className="entry-top">
-        <Brand />
         <Back />
       </div>
 

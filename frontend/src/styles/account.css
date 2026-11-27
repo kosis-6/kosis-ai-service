@@ -14,11 +14,10 @@ body[data-page="account"] {
   align-items: center;
   gap: 16px;
   min-height: calc(100dvh - 64px);
-  padding-top: max(0px, calc(50dvh - 318px));
+  padding-top: max(0px, calc(50dvh - 306px));
 }
 .entry-top, .entry { width: min(800px, 100%); }
-.entry-top { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-.entry-top .logo { height: 40px; }
+.entry-top { display: flex; align-items: center; }
 .entry {
   --slide: 640ms cubic-bezier(0.65, 0, 0.35, 1);
   position: relative;
