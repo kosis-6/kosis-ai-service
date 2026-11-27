@@ -231,6 +231,14 @@ def applied_conditions(parsed: dict, result: dict) -> dict:
     return {**parsed, **change} if change else parsed
 
 
+def is_age_item(item: str) -> bool:
+    text = agegroup.native_to_digits(item).strip()
+    span = agegroup.span(text)
+    return bool(
+        AGE_RANGE.fullmatch(text) or AGE_POINT.fullmatch(text) or (span and span.expr == text)
+    )
+
+
 def age_band_items(checks: dict) -> list[str]:
     """연령 구간만 맞지 않은 경우 바꿔도 되는 검색 항목을 돌려준다."""
     failed = [key for key, ok in checks.items() if ok is False]
@@ -241,11 +249,7 @@ def age_band_items(checks: dict) -> list[str]:
         if not key.startswith("item:"):
             return []
         item = key.removeprefix("item:")
-        text = agegroup.native_to_digits(item).strip()
-        span = agegroup.span(text)
-        if not (
-            AGE_RANGE.fullmatch(text) or AGE_POINT.fullmatch(text) or (span and span.expr == text)
-        ):
+        if not is_age_item(item):
             return []
         items.append(item)
     return items

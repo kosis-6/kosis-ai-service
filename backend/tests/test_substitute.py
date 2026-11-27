@@ -156,6 +156,39 @@ def test_dictionary_alternative_reports_and_inherits_the_calculated_age(monkeypa
     assert ask_session.effective(res["parsed"], res["result"])["ages"] == [[35, 39]]
 
 
+def test_rejected_dictionary_alternative_hands_off_the_original_age(monkeypatch):
+    from app.services import dict_binding, table_guide
+
+    async def compute(parsed, trace):
+        return {
+            "status": "ok",
+            "indicator": "미혼 비율",
+            "value": 38.62,
+            "changed_condition": {"name": "연령", "applied": {"ages": [[35, 39]]}},
+        }
+
+    async def shadow(question, parsed, result):
+        return {
+            "decision": dict_binding.HAND_OFF,
+            "reasons": ["질문 지표 불일치"],
+            "requested_indicator": "등록외국인 수",
+        }
+
+    monkeypatch.setattr(qa, "_compute_fetching", compute)
+    monkeypatch.setattr(dict_binding, "shadow", shadow)
+    monkeypatch.setattr(qa.get_settings(), "binding_dict_gate", True)
+    asked = {"type": "value", "indicator": "미혼", "grounded": True, "ages": [[33, 38]]}
+    res = asyncio.run(qa.answer(asked, question="33~38세 미혼 등록외국인 수"))
+    assert res["status"] == "unknown_indicator"
+    assert res["parsed"]["ages"] == [[33, 38]]
+    assert res["parsed"]["indicator"] == "등록외국인 수"
+    assert "value" not in res["result"] and "changed_condition" not in res["result"]
+    found = {"status": "ok", "answer": "요청하신 통계는 장래가구추계에서 확인할 수 있습니다."}
+    fallback = table_guide.tables_answer(found, res)
+    assert "모든 조건을 충족하는 수치를 확인하지 못했습니다" in fallback["answer"]
+    assert fallback["tables"]["answer"] == fallback["answer"]
+
+
 def test_mark_adds_field_and_lead():
     swap = sb.plan(
         {"type": "value", "year": 1965}, {"status": "out_of_range", "available_years": [1970, 2025]}

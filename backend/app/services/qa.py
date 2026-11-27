@@ -1576,8 +1576,8 @@ PLAIN_POPULATION = {
     "총", "전체", "주민등록", "우리나라", "한국", "국내", "전국", "남자", "여자", "남성", "여성",
     "남녀", "이상", "이하", "미만", "대", "세", "살", "노인", "고령", "노년", "청년", "청소년",
     "유소년", "어린이", "아동", "생산연령", "중장년", "현재", "작년", "올해", "지난해", "의",
-    "수도권", "비수도권", "광역시", "특별시", "시군구", "시도", "지역", "구", "군", "시", "도",
-    "나이", "연령", "연령대", "만",
+    "수도권", "비수도권", "광역시", "특별시", "시군구", "시군", "시도", "지역", "구", "군",
+    "시", "도", "나이", "연령", "연령대", "만",
     "합쳐서", "합친", "합하면", "더한", "중", "모두", "전부", "다", "사는",
     "개", "곳", "군데",
 }  # fmt: skip
@@ -1639,6 +1639,8 @@ def population_modifier(question):
     if sub := find_sub_area(question):
         question = question.replace(sub[0], " ")
     for m in POPULATION_NOUN.finditer(question):
+        if BY_REGION.fullmatch(m[1]):
+            continue
         words = {m[1], POPULATION_PARTICLE.sub("", m[1]) or m[1]}
         if any(w in PLAIN_POPULATION or re.search(r"\d", w) for w in words):
             continue
@@ -4409,12 +4411,14 @@ async def answer(parsed, trace=None, question=""):
         # 사전 지름길 (D1): 질문에 지표 이름이 글자로 없어 '근거 없음'이 된 것은 바로 넘기지 않고
         # 사전 게이트가 조건을 검사한다. 조건을 모두 담았으면 사전 답을 둔다
         shortcut = parsed.get("grounded") is False and parsed.get("ungrounded_by") == "name"
+        changed = result.get("changed_condition") or {}
+        age_changed = changed.get("name") == "연령"
         gate = (
             settings.binding_dict_gate
             and (parsed.get("grounded") is not False or shortcut)
             and not parsed.get("movement_route")
             and not parsed.get("cross")
-            and not result.get("changed_condition")  # 대안 답변은 바꾼 조건을 밝히고 답한다
+            and (not changed or age_changed)
         )
         if (gate or settings.binding_dict_shadow) and result.get("status") == "ok" and question:
             from app.services import dict_binding
@@ -4425,6 +4429,10 @@ async def answer(parsed, trace=None, question=""):
                     parsed["grounded"] = False
                     parsed["gate_reasons"] = rec.get("reasons") or []
                     flow.add("사전 게이트", "넘김", " · ".join(parsed["gate_reasons"])[:200])
+                    if age_changed:
+                        if requested := rec.get("requested_indicator"):
+                            parsed["indicator"] = requested
+                        result = {"status": "unknown_indicator", "indicator": parsed["indicator"]}
                 elif gate and shortcut and rec.get("decision") == dict_binding.KEEP:
                     parsed["grounded"] = True
                     parsed["dictionary_shortcut"] = True

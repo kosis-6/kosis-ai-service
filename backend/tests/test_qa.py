@@ -530,7 +530,9 @@ def test_region_comparison_queries_years_said_in_the_question(
 
     monkeypatch.setattr(qa.indicators, "rank", rank)
     parsed = {"type": "compare", "indicator": "총인구", "regions": ["경기도"], **dates}
-    result = qa.compute(qa.correct(question, parsed, date(2026, 11, 28)))
+    corrected = qa.correct(question, parsed, date(2026, 11, 28))
+    assert corrected["grounded"] is True
+    result = qa.compute(corrected)
     assert result["status"] == "ok"
     assert queried == expected
 
