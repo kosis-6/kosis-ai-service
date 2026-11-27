@@ -16,10 +16,14 @@ from sqlalchemy import text
 from app.api.deps import get_current_user
 from app.core.db import get_session
 from app.main import app
+from app.services import ask_session, conversations
 from app.services import reports as r
 from app.services.reports import ReportError
 
 FIG = {"label": "2020년 서울 1인가구", "value": 1, "unit": "가구", "kind": "value"}
+ASK_STORAGE = {
+    name: getattr(ask_session, name) for name in ("load", "save", "log_turn", "turn_writer")
+}
 
 
 def run(coro):
@@ -48,7 +52,17 @@ async def _setup():
             users.append(row.scalar_one())
         turns = {}
         rows = [
-            ("ok1", users[0], {"status": "ok", "answer": "답1", "figure": FIG, "reportable": True}),
+            (
+                "ok1",
+                users[0],
+                {
+                    "status": "ok",
+                    "answer": "답1",
+                    "figure": FIG,
+                    "reportable": True,
+                    "chart": {"type": "line", "rows": [{"label": "2024", "value": 10}]},
+                },
+            ),
             ("ok2", users[0], {"status": "ok", "answer": "답2", "figure": FIG, "reportable": True}),
             ("ok3", users[0], {"status": "ok", "answer": "답3", "figure": FIG, "reportable": True}),
             ("bad", users[0], {"status": "ok", "answer": "일부만", "figure": FIG}),
@@ -130,6 +144,95 @@ def test_snapshot_survives_turn_deletion(db):
     again = run(r.detail(db.a, rep["id"]))
     assert again["items"][0]["snapshot"]["answer"] == "답1"
     assert again["title"] == r.DEFAULT_TITLE
+
+
+def test_create_saves_selected_chart_view_without_changing_the_answer(db):
+    selected = run(r.create(db.a, turn_ids=[db.t["ok1"]], chart_views={db.t["ok1"]: "bar"}))
+    original = run(r.create(db.a, turn_ids=[db.t["ok1"]]))
+    saved = run(r.detail(db.a, selected["id"]))
+    chart = original["items"][0]["snapshot"]["chart"]
+    assert "view" not in chart
+    assert saved["items"][0]["snapshot"]["chart"] == {**chart, "view": "bar"}
+
+
+def test_chart_view_chosen_on_screen_reaches_every_report_path(db):
+    """화면에서 바꾼 모양은 그 답에 남아, 말로 만든 보고서(담기 · '정리해줘')도 그 모양으로 그린다.
+    [보고서] 시트만 chart_views 를 보내 '보고서 만들어줘'로 만들면 꺾은선으로 돌아갔다"""
+    assert run(conversations.set_chart_view(db.a, db.talk, db.t["ok1"], "bar")) == "ok"
+    drafted = run(r.add_to_draft(db.a, db.t["ok1"]))  # 보고서 에이전트 · 제안 칩의 담기
+    assert drafted["items"][0]["snapshot"]["chart"]["view"] == "bar"
+    made = run(r.create(db.a, turn_ids=[db.t["ok1"]]))  # '정리해줘' 보고서
+    assert made["items"][0]["snapshot"]["chart"]["view"] == "bar"
+    assert run(_response(db.t["ok1"]))["chart"]["view"] == "bar"  # 다시 연 대화가 그리는 답
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_detail_reuses_the_latest_answers_saved_chart_view(db, legacy, monkeypatch):
+    for name, service in ASK_STORAGE.items():
+        monkeypatch.setattr(ask_session, name, service)
+    monkeypatch.setattr(ask_session.indicators, "find_in_text", lambda _: [])
+    monkeypatch.setattr(ask_session.indicators, "find_regions", lambda _: [])
+
+    async def exercise():
+        sid = db.talk + "-detail"
+        question = "부산 출생아 수 추이를 알려줘"
+        chart = {
+            "type": "line",
+            "title": "부산 출생아 수",
+            "category": "연도",
+            "unit": "명",
+            "rows": [{"label": "2023", "value": 10}, {"label": "2024", "value": 12}],
+        }
+        first = {
+            "status": "ok",
+            "request_type": "new",
+            "answer": "출생아 수 추이",
+            "chart": chart,
+            "parsed": {"type": "trend", "indicator": "출생아 수", "regions": ["부산광역시"]},
+        }
+        latest = {**first, "chart": dict(chart)}
+        before = ask_session.next_state(None, question, first, {})
+        before["user_id"] = db.a
+        after = {**ask_session.next_state(before, question, latest, {}), "user_id": db.a}
+        try:
+            await ask_session._save(sid, before, first, None, question, db.a)
+            await ask_session._save(sid, after, latest, before, question, db.a)
+            if legacy:
+                after["last"].pop("chart_turn_id")
+                await ask_session.save(sid, after)
+            assert await conversations.set_chart_view(db.a, sid, latest["turn_id"], "bar") == "ok"
+            assert await conversations.set_chart_view(db.a, sid, first["turn_id"], "table") == "ok"
+
+            detail = await ask_session.handle(sid, "자세히 말해줘", db.a)
+            assert detail["request_type"] == "detail"
+            assert detail["chart"] == {**chart, "view": "bar"}
+            history = await conversations.detail(db.a, sid)
+            assert history["turns"][-1]["response"]["turn_id"] == detail["turn_id"]
+
+            assert await conversations.set_chart_view(db.a, sid, detail["turn_id"], "table") == "ok"
+            ask_session.STATE_CACHE.delete(sid)
+            again = await ask_session.handle(sid, "자세히 말해줘", db.a)
+            assert again["chart"] == {**chart, "view": "table"}
+        finally:
+            await conversations.delete(db.a, sid)
+
+    run(exercise())
+
+
+async def _response(turn_id):
+    from app.core.db import engine
+
+    async with engine.begin() as conn:
+        row = await conn.execute(
+            text("select response from app.chat_turns where id = :t"), {"t": turn_id}
+        )
+        return row.scalar()
+
+
+def test_chart_view_is_kept_only_for_own_drawable_charts(db):
+    assert run(conversations.set_chart_view(db.b, db.talk, db.t["ok1"], "bar")) == "missing"
+    assert run(conversations.set_chart_view(db.a, db.talk, db.t["ok2"], "bar")) == "missing"
+    assert run(conversations.set_chart_view(db.a, "other-talk", db.t["ok1"], "bar")) == "missing"
 
 
 @pytest.mark.parametrize(
@@ -374,9 +477,12 @@ def test_api_maps_errors(client, code, status):
 def test_api_creates_and_generates_at_once(client):
     """대화창 [보고서]: 고른 답으로 만들고 문장 생성까지 한 번에"""
     client.fake("generate", {**READ, "status": "ready", "content": {"summary": "s"}})
-    res = client.post("/reports", json={"turn_ids": [1, 2], "generate": True})
+    res = client.post(
+        "/reports", json={"turn_ids": [1, 2], "generate": True, "chart_views": {"2": "bar"}}
+    )
     assert res.status_code == 201 and res.json()["status"] == "ready"
     assert [name for name, _ in client.calls] == ["create", "generate"]
+    assert client.calls[0][1][-1] == {2: "bar"}
     assert client.calls[1][1] == (3, 5)  # 만든 보고서(id 5)를 그 사용자로 생성
     client.calls.clear()
     assert client.post("/reports", json={"turn_ids": [1]}).json()["status"] == "draft"
@@ -426,6 +532,33 @@ def test_generate_empty_and_others_report(db):
     with pytest.raises(ReportError) as e:
         run(r.generate(db.b, rep["id"]))
     assert e.value.code == "not_found"
+
+
+def test_shorten_only_saves_a_strictly_shorter_body(db, monkeypatch):
+    from app.services import report_writer
+
+    texts = iter(["처음 요약", "조금 더 길어진 보고서 요약", "처음 요약", "요약"])
+    calls = []
+
+    async def write(title, purpose, items, style=None, *, compact=False):
+        calls.append(compact)
+        return {"summary": [{"text": next(texts), "refs": ["r1"]}]}
+
+    monkeypatch.setattr(report_writer, "write", write)
+    draft = run(r.create(db.a, turn_ids=[db.t["ok1"]]))
+    original = run(r.generate(db.a, draft["id"]))
+    for _ in range(2):
+        with pytest.raises(ReportError) as e:
+            run(r.generate(db.a, draft["id"], "짧게", shorten=True))
+        assert e.value.code == r.NOT_SHORTER
+        saved = run(r.detail(db.a, draft["id"]))
+        assert saved["content"] == original["content"]
+        assert saved["updated_at"] == original["updated_at"]
+
+    saved = run(r.generate(db.a, draft["id"], "짧게", shorten=True))
+    assert saved["status"] == "ready" and saved["content"]["summary"][0]["text"] == "요약"
+    assert saved["updated_at"] > original["updated_at"]
+    assert calls == [False, True, True, True]
 
 
 def test_generate_discards_when_items_changed_meanwhile(db, monkeypatch):

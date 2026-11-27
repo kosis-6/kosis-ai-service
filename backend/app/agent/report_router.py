@@ -24,20 +24,23 @@ EDIT = re.compile(
 )
 YES = re.compile(r"^(응|네|예|그래|좋아|만들어|ㅇㅇ|ok|오케이)")
 NO = re.compile(r"(괜찮|됐어|안\s*해|아니|싫|나중에|필요\s*없)")
+STAT_REQUEST = re.compile(r"알려|구해|조회|계산|보여|몇|얼마|[?？]")
 
 
 def agent_state(state: dict | None) -> dict:
     return (state or {}).get("report_agent") or {}
 
 
-def wants(question: str, state: dict | None) -> bool:
+def wants(question: str, state: dict | None, *, standalone_stat: bool = False) -> bool:
     q = " ".join(question.split())
     mine = agent_state(state)
     turn_no = (state or {}).get("turn_no") or 0
+    if REPORT_WORD.search(q) or PUT_IN.search(q) or POINTED_PUT.search(q):
+        return True
+    if standalone_stat:
+        return False
     if mine.get("pending"):
         return True
     if mine.get("offer_turn") == turn_no and (YES.search(q) or NO.search(q)):
-        return True
-    if REPORT_WORD.search(q) or PUT_IN.search(q) or POINTED_PUT.search(q):
         return True
     return mine.get("last_turn") == turn_no and bool(EDIT.search(q))

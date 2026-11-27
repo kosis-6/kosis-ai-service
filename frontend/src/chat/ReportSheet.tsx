@@ -72,8 +72,12 @@ export function ReportSheet({ sessionId, answers, onClose }: Props) {
     setMessage(null);
     // 보고서에는 대화 순서대로 담는다
     const order = picks.map((p) => p.turnId).filter((t) => chosen.includes(t));
+    const chartViews = Object.fromEntries(answers.flatMap((answer) =>
+      answer.turn_id != null && order.includes(answer.turn_id) && answer.chart?.view
+        ? [[answer.turn_id, answer.chart.view] as const] : [],
+    ));
     try {
-      const report = await createReport(sessionId, order);
+      const report = await createReport(sessionId, order, chartViews);
       if (report.status !== "ready") {
         setMessage("보고서 문장을 만들지 못했어요. 잠시 후 다시 시도해 주세요.");
         return;

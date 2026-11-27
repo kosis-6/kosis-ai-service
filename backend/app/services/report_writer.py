@@ -293,8 +293,45 @@ def _fallback(items: list[dict]) -> dict[str, list[dict]]:
     return {"summary": lines, "analysis": []}
 
 
+def body_length(content: dict) -> int:
+    return sum(
+        len(line["text"].strip()) for section in SECTIONS for line in content.get(section) or []
+    )
+
+
+def _compact_sections(sections: dict[str, list[dict]], statements: dict[str, dict]) -> dict:
+    """시점 비교 문장에 시점별 수치가 모두 있으면 중복 소개를 덜어낸다."""
+    comparisons = {line["text"] for line in statements.values()}
+    covered = {
+        ref
+        for section in SECTIONS
+        for line in sections[section]
+        if line["text"] in comparisons
+        for ref in PLACEHOLDER.findall(line["text"])
+        if ref.startswith("r")
+    }
+    seen = set()
+    compact = {section: [] for section in SECTIONS}
+    for section in SECTIONS:
+        for line in sections[section]:
+            refs = frozenset(line["refs"])
+            key = (line["text"], refs)
+            if key in seen or (refs and refs <= covered):
+                continue
+            compact[section].append(line)
+            seen.add(key)
+    if not compact["summary"] and compact["analysis"]:
+        compact["summary"].append(compact["analysis"].pop(0))
+    return compact
+
+
 async def write(
-    title: str, purpose: str | None, snapshots: list[dict], style: str | None = None
+    title: str,
+    purpose: str | None,
+    snapshots: list[dict],
+    style: str | None = None,
+    *,
+    compact: bool = False,
 ) -> dict[str, Any]:
     """보고서 content. snapshots 는 report_items 행({turn_id, snapshot})을 순서대로"""
     items = report_compare.items_of(snapshots)
@@ -347,6 +384,8 @@ async def write(
         statements.keys() & set(line["refs"]) for lines in sections.values() for line in lines
     ):
         sections["analysis"].append(next(iter(statements.values())))
+    if compact:
+        sections = _compact_sections(sections, statements)
     values = {it["id"]: report_compare.value_text(it) for it in items}
     values |= {d["id"]: report_compare.value_text(d) for d in cmp["derived"]}
     units = {it["id"]: it["figure"].get("unit") or "" for it in items}

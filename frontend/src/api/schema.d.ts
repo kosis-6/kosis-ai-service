@@ -640,6 +640,11 @@ export interface components {
             selections?: {
                 [key: string]: string;
             } | null;
+            /**
+             * Chart View
+             * @description 로그인하지 않은 화면에서 마지막 차트를 바꾼 보기 (꺾은선 · 막대 · 표). 저장할 곳이 없어 질문과 함께 보낸다. '자세히 말해줘'처럼 직전 차트를 다시 쓰는 답이 이 모양으로 그린다. 로그인한 대화는 답에 저장한 보기를 서버가 읽으므로 보내지 않는다
+             */
+            chart_view?: ("line" | "bar" | "table") | null;
         };
         /** AskResponse */
         AskResponse: {
@@ -721,6 +726,8 @@ export interface components {
              * @default false
              */
             reportable?: boolean;
+            report_ref?: components["schemas"]["ReportReference"] | null;
+            talk_summary?: components["schemas"]["TalkSummary"] | null;
         };
         /** AuditList */
         AuditList: {
@@ -1444,6 +1451,18 @@ export interface components {
              * @description 함께 알릴 주의 (추계값, 인과 판단 안 함 등. 최대 2개)
              */
             cautions?: string[];
+        };
+        /** ReportReference */
+        ReportReference: {
+            id: number;
+            status: "draft" | "ready" | "failed";
+        };
+        /** TalkSummary */
+        TalkSummary: {
+            answer: string;
+            first: "summary" | "question";
+            request_type?: string | null;
+            asked: string;
         };
         /** Token */
         Token: {

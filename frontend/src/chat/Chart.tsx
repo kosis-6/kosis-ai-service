@@ -11,7 +11,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import type { Chart } from "../api/types";
+import type { Chart, ChartView } from "../api/types";
 import {
   LINE_COLORS,
   MAX_OVERLAP,
@@ -436,12 +436,10 @@ function TableView({ chart }: { chart: Chart }) {
   );
 }
 
-type View = "line" | "bar" | "table";
-
-export default function ChartCard({ chart }: { chart: Chart }) {
+export default function ChartCard({ chart, onViewChange }: { chart: Chart; onViewChange?: (view: ChartView) => void }) {
   // 겹쳐 그릴지는 서버가 정한다(chart.crowded). 값이 없는 예전 대화만 선 수로 센다
   const crowded = chart.crowded ?? (chart.series?.length ?? 0) > MAX_OVERLAP;
-  const views: [View, string][] = crowded
+  const views: [ChartView, string][] = crowded
     ? [
         ["line", "지역별"],
         ["table", "표"],
@@ -453,11 +451,11 @@ export default function ChartCard({ chart }: { chart: Chart }) {
           ["table", "표"],
         ]
       : [
-          [chart.type === "bar" ? "bar" : "line", "차트"],
+          ["bar", "차트"],
           ["table", "표"],
         ];
   const asked = views.find(([key]) => key === chart.view)?.[0];
-  const [view, setView] = useState<View>(asked ?? views[0][0]);
+  const [view, setView] = useState<ChartView>(asked ?? views[0][0]);
 
   return (
     <figure className="chart-card">
@@ -473,7 +471,10 @@ export default function ChartCard({ chart }: { chart: Chart }) {
               key={key}
               className={view === key ? "pill on" : "pill"}
               aria-pressed={view === key}
-              onClick={() => setView(key)}
+              onClick={() => {
+                setView(key);
+                onViewChange?.(key);
+              }}
             >
               {label}
             </button>

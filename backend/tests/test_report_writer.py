@@ -232,7 +232,7 @@ def test_null_value_item_cannot_use_placeholder():
 # ---- write: LLM 흉내 -----------------------------------------------------------------
 
 
-def run_write(monkeypatch, outputs, figs=None, title="서울 1인 가구"):
+def run_write(monkeypatch, outputs, figs=None, title="서울 1인 가구", *, compact=False):
     calls = []
 
     async def ask(messages):
@@ -251,7 +251,7 @@ def run_write(monkeypatch, outputs, figs=None, title="서울 1인 가구"):
         snap(f, headline=f"{f['label']}는 {f['value']:,}가구입니다.", turn_id=i + 1)
         for i, f in enumerate(figs)
     ]
-    content = asyncio.run(w.write(title, "규모", snaps))
+    content = asyncio.run(w.write(title, "규모", snaps, compact=compact))
     return content, calls
 
 
@@ -280,6 +280,23 @@ def test_write_retries_once_with_problems(monkeypatch):
     content, calls = run_write(monkeypatch, [bad, good])
     assert len(calls) == 2 and "숫자를 직접" in calls[1][-1]["content"]
     assert content["generated_by"] == "hcx" and content["warnings"] == []
+
+
+def test_compact_report_keeps_values_in_the_comparison(monkeypatch):
+    output = {
+        "summary": [
+            s("2020년에는 {r1.value}였습니다."),
+            s("2025년에는 {r2.value}였습니다.", ["r2"]),
+        ],
+        "analysis": [s("{c1.statement}", ["c1"])],
+    }
+    original, _ = run_write(monkeypatch, [output])
+    compact, _ = run_write(monkeypatch, [output], compact=True)
+
+    assert compact["summary"] == original["analysis"]
+    assert compact["analysis"] == []
+    assert compact["items"] == original["items"] and compact["derived"] == original["derived"]
+    assert w.body_length(compact) < w.body_length(original)
 
 
 def test_write_replaces_the_reproduced_reversed_sentence(monkeypatch):
