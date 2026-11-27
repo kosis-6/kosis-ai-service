@@ -615,8 +615,6 @@ button.pill:active { transform: scale(0.97); }
 .report-picks { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
 .report-pick { display: flex; align-items: flex-start; gap: 12px; padding: 16px 20px; border-radius: 16px; background: var(--panel); cursor: pointer; }
 .report-pick input { flex: none; width: 16px; height: 16px; margin: 2px 0 0; accent-color: var(--accent); }
-.report-pick.off { cursor: default; }
-.report-pick.off .report-pick-q { color: var(--muted); }
 .report-pick-text { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .report-pick-q { font-size: 14px; font-weight: 600; line-height: 20px; }
 .report-pick-a { color: var(--muted); font-size: 13px; line-height: 20px; }

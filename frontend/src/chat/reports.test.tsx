@@ -11,30 +11,43 @@ const answer = (over: Partial<AskResponse>): AskResponse => ({
 });
 
 describe("대화창 [보고서]: 이 대화의 답 고르기", () => {
-  it("검증된 수치 답만 고를 수 있고, 못 고르는 답은 이유를 보여 준다", () => {
-    expect(pickable(answer({}))).toEqual({
-      turnId: 1, question: "2024년 부산 출생아 수", answer: "2024년 부산광역시의 출생아 수는 13,063명입니다.", reason: null,
-    });
-    expect(pickable(answer({ status: "tables", reportable: false })).reason).toBe("수치로 답하지 않은 답이에요");
-    expect(pickable(answer({ request_type: "chart", reportable: false })).reason).toContain("차트·요약만");
-    expect(pickable(answer({ reportable: false })).reason).toBe("검증된 수치로 답한 결과만 담을 수 있어요");
-    expect(pickable(answer({ turn_id: null })).reason).toBe("저장된 답이 아니라 담을 수 없어요");
+  it("검증된 수치로 답한 저장된 답만 고를 수 있다 (요약 · 차트 다시 보기 · 표 안내 · 실패 · 저장 안 된 답은 빠진다)", () => {
+    expect(pickable([
+      answer({}),
+      answer({ turn_id: 2, question: "요약해줘", request_type: "summary", reportable: false }),
+      answer({ turn_id: 3, request_type: "chart", reportable: false }),
+      answer({ turn_id: 4, status: "tables", reportable: false }),
+      answer({ turn_id: 5, status: "missing_data", reportable: false }),
+      answer({ turn_id: null }),
+    ])).toEqual([
+      { turnId: 1, question: "2024년 부산 출생아 수", answer: "2024년 부산광역시의 출생아 수는 13,063명입니다." },
+    ]);
   });
 
-  it("고르기 창은 이 대화의 답을 보여 주고, 못 고르는 답은 꺼 둔다", () => {
+  it("고르기 창에는 고를 수 있는 답만 보여 준다 (고를 수 없는 답을 꺼 둔 채 보여 주지 않는다)", () => {
     const html = renderToStaticMarkup(
       <ReportSheet
         sessionId="A_1"
-        answers={[answer({}), answer({ turn_id: 2, status: "tables", reportable: false, question: "표 안내" })]}
+        answers={[answer({}), answer({ turn_id: 2, request_type: "summary", reportable: false, question: "요약해줘" })]}
         onClose={vi.fn()}
       />,
     );
     expect(html).toContain("2024년 부산 출생아 수");
-    expect(html).toContain("수치로 답하지 않은 답이에요");
+    expect(html).not.toContain("요약해줘");
+    expect(html).toContain("요약은 보고서가 고른 답으로 직접 만들어요");
     expect(html).toContain(`0/${MAX_ITEMS} 선택`);
     expect(html).toContain(`1개부터 ${MAX_ITEMS}개까지`);
-    // 꺼 둔 답의 체크박스와 아직 고르지 않아 누를 수 없는 [보고서 만들기]
-    expect(html.match(/disabled=""/g)).toHaveLength(2);
+    // 아직 고르지 않아 누를 수 없는 [보고서 만들기]만 꺼져 있다
+    expect(html.match(/disabled=""/g)).toHaveLength(1);
+  });
+
+  it("담을 답이 하나도 없으면 목록 · 만들기 버튼 없이 안내만 보여 준다", () => {
+    const html = renderToStaticMarkup(
+      <ReportSheet sessionId="A_1" answers={[answer({ request_type: "summary", reportable: false })]} onClose={vi.fn()} />,
+    );
+    expect(html).toContain("보고서에 담을 답이 아직 없어요");
+    expect(html).not.toContain("report-picks");
+    expect(html).not.toContain("보고서 만들기</button>");
   });
 });
 

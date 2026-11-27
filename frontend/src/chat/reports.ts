@@ -48,30 +48,20 @@ export type Report = {
   items: { turn_id: number; snapshot?: ReportSnapshot }[];
 };
 
-export type Pick = { turnId: number | null; question: string; answer: string; reason: string | null };
-
-// 앞 답을 다시 쓴 응답 (차트 · 요약 · 자세히 · 출처): 새로 계산한 결과가 아니다
-const REUSED = new Set(["chart", "summary", "detail", "source"]);
+export type Pick = { turnId: number; question: string; answer: string };
 
 function lead(answer: string): string {
   const first = answer.split("\n").find((line) => line.trim()) ?? "";
   return first.length > 90 ? `${first.slice(0, 89)}…` : first;
 }
 
-function whyNot(data: AskResponse): string {
-  if (data.status !== "ok") return "수치로 답하지 않은 답이에요";
-  if (data.request_type && REUSED.has(data.request_type)) return "앞 답의 차트·요약만 다시 보여 준 답이에요";
-  return "검증된 수치로 답한 결과만 담을 수 있어요";
-}
-
-/** 이 대화의 답 하나를 보고서에 고를 수 있는가. 고를 수 없으면 reason에 이유 */
-export function pickable(data: AskResponse): Pick {
-  const reason = !data.reportable
-    ? whyNot(data)
-    : data.turn_id == null
-      ? "저장된 답이 아니라 담을 수 없어요"
-      : null;
-  return { turnId: data.turn_id ?? null, question: data.question ?? "", answer: lead(data.answer), reason };
+/** 이 대화의 답 중 보고서에 고를 수 있는 답만: 검증된 수치로 답했고(reportable) 저장된(turn_id) 답.
+ *  요약 · 차트만 다시 보여 준 답, 표 안내, 실패한 답은 목록에 넣지 않는다
+ *  (요약은 보고서가 고른 답으로 직접 만든다. 고를 수 없는 답을 꺼 두고 보여 주면 '이미 쓴 답'처럼 읽혔다) */
+export function pickable(answers: AskResponse[]): Pick[] {
+  return answers.flatMap((a) =>
+    a.reportable && a.turn_id != null ? [{ turnId: a.turn_id, question: a.question ?? "", answer: lead(a.answer) }] : [],
+  );
 }
 
 /** 고른 답(한 대화의 답만)으로 보고서를 만들고 문장 생성까지 한 번에 */

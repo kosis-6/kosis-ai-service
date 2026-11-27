@@ -54,7 +54,7 @@ export function ReportPreview({ report, onBack }: { report: Report; onBack: () =
 /** 대화창 [보고서]: 이 대화의 답 중 고른 것만으로 보고서를 만들고, 앱 안에서 먼저 보여 준다
  *  (한 대화의 답만, 1개부터 MAX_ITEMS개까지) */
 export function ReportSheet({ sessionId, answers, onClose }: Props) {
-  const picks = answers.map(pickable);
+  const picks = pickable(answers);
   const [chosen, setChosen] = useState<number[]>([]);
   const [making, setMaking] = useState(false);
   const [made, setMade] = useState<Report | null>(null);
@@ -71,7 +71,7 @@ export function ReportSheet({ sessionId, answers, onClose }: Props) {
     setMaking(true);
     setMessage(null);
     // 보고서에는 대화 순서대로 담는다
-    const order = picks.map((p) => p.turnId).filter((t): t is number => t !== null && chosen.includes(t));
+    const order = picks.map((p) => p.turnId).filter((t) => chosen.includes(t));
     try {
       const report = await createReport(sessionId, order);
       if (report.status !== "ready") {
@@ -94,27 +94,37 @@ export function ReportSheet({ sessionId, answers, onClose }: Props) {
     );
   }
 
+  if (!picks.length) {
+    return (
+      <Sheet title="보고서 만들기" onClose={onClose}>
+        <p className="sheet-text">
+          이 대화에는 보고서에 담을 답이 아직 없어요. 수치를 계산해 답한 결과가 있으면 그 답으로 보고서를 만들 수 있어요.
+        </p>
+      </Sheet>
+    );
+  }
+
   return (
     <Sheet title="보고서 만들기" onClose={onClose}>
       <p className="sheet-text">
-        이 대화의 답 중 보고서에 담을 것을 고르세요. 1개부터 {MAX_ITEMS}개까지 고를 수 있어요.
+        이 대화에서 수치로 답한 결과 중 보고서에 담을 것을 고르세요. 1개부터 {MAX_ITEMS}개까지 고를 수 있어요.
+        요약은 보고서가 고른 답으로 직접 만들어요.
       </p>
       <ul className="report-picks">
-        {picks.map((p, i) => {
-          const picked = p.turnId !== null && chosen.includes(p.turnId);
-          const off = p.reason !== null || p.turnId === null;
+        {picks.map((p) => {
+          const picked = chosen.includes(p.turnId);
           return (
-            <li key={p.turnId ?? `off-${i}`}>
-              <label className={off ? "report-pick off" : "report-pick"}>
+            <li key={p.turnId}>
+              <label className="report-pick">
                 <input
                   type="checkbox"
                   checked={picked}
-                  disabled={off || making || (full && !picked)}
-                  onChange={() => p.turnId !== null && toggle(p.turnId)}
+                  disabled={making || (full && !picked)}
+                  onChange={() => toggle(p.turnId)}
                 />
                 <span className="report-pick-text">
                   <span className="report-pick-q">{p.question || "질문"}</span>
-                  <span className="report-pick-a">{p.reason ?? p.answer}</span>
+                  <span className="report-pick-a">{p.answer}</span>
                 </span>
               </label>
             </li>
