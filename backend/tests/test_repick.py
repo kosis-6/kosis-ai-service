@@ -12,7 +12,7 @@ import asyncio
 
 import pytest
 
-from app.services import agent_action, answer_judge, ask_session, binding, recell
+from app.services import agent_action, answer_judge, ask_session, binding, recell, table_check
 from app.services import dynamic_indicator as di
 from app.services.binding import Binding, Bound
 from app.services.dynamic_indicator import Dim
@@ -55,7 +55,7 @@ def _patch(monkeypatch: pytest.MonkeyPatch, repick_out) -> list[str]:
         return None, "계획 다시"
 
     monkeypatch.setattr(ask_session, "_repick_compute", repick)
-    monkeypatch.setattr(ask_session, "_recompute", recompute)
+    monkeypatch.setattr(ask_session, "_retable", recompute)
     monkeypatch.setattr(ask_session, "_replan_compute", replan)
     return calls
 
@@ -81,7 +81,7 @@ def test_repick_failure_falls_back_and_marks_it_done(monkeypatch: pytest.MonkeyP
         agent_action.REPICK, "시험", fallback=agent_action.RETABLE, detail={"llm": False}
     )
     again, how = _retry(action, done)
-    assert calls == ["repick(llm=False)", "recompute"]
+    assert calls == ["repick(llm=True)", "recompute"]
     assert how == "다음 후보 표" and done == {agent_action.RETABLE}
 
 
@@ -117,7 +117,11 @@ def test_target_without_bundle_uses_the_source_table() -> None:
 def test_dictionary_answer_targets_its_source_table(monkeypatch: pytest.MonkeyPatch) -> None:
     spec = {"sources": [{"table": "DT_A"}, {"table": "DT_B"}]}
     monkeypatch.setattr(ask_session.indicators, "spec", lambda name: spec)
-    res = {"parsed": {"indicator": "사전 지표"}, "sources": [{"tbl_id": "DT_B"}]}
+    res = {
+        "parsed": {"indicator": "사전 지표"},
+        "result": {"status": "ok", "value": 3},
+        "sources": [{"tbl_id": "DT_B"}],
+    }
     assert ask_session.repick_target(res, None) == ({"tbl_id": "DT_B"}, "사전 지표의 출처 표")
     res["sources"] = []
     assert ask_session.repick_target(res, None)[0] == {"tbl_id": "DT_A"}
@@ -137,70 +141,6 @@ def test_wrong_cells_are_the_cells_the_answer_used() -> None:
     )
     assert ask_session.wrong_cells(res, "T1") == "성별=계"
     assert ask_session.wrong_cells(res, "T3") is None
-
-
-# ---------------------------------------------------------------- 행동 고르기
-
-
-def test_missing_condition_with_cells_goes_repick_then_retable() -> None:
-    a = agent_action.choose(VERDICT, _res(), _found("T1"), cells=True)
-    assert (a.name, a.fallback, a.detail) == (
-        agent_action.REPICK, agent_action.RETABLE, {"llm": True},
-    )  # fmt: skip
-
-
-def test_missing_condition_without_cells_keeps_replan() -> None:
-    a = agent_action.choose(VERDICT, _res(), _found("T1"), cells=False)
-    assert a.name == agent_action.REPLAN
-
-
-def test_target_reason_with_cells_goes_repick() -> None:
-    verdict = {**VERDICT, "reason": "대상이 다름"}
-    a = agent_action.choose(verdict, _res(), _found("T1"), cells=True)
-    assert a.name == agent_action.REPICK
-
-
-def test_dictionary_repick_falls_back_to_tables() -> None:
-    res = {"parsed": {"indicator": "총인구"}, "trace": {}}
-    a = agent_action.choose(VERDICT, res, None, cells=True)
-    assert (a.name, a.fallback) == (agent_action.REPICK, agent_action.REROUTE)
-
-
-def test_repick_recell_is_counted_apart_from_replan() -> None:
-    """repick 의 recell 은 replan 한도와 따로 센다: replan 을 이미 했어도 recell 까지 한다"""
-    a = agent_action.choose(VERDICT, _res(), _found("T1"), llm_tried=1, cells=True)
-    assert a.name == agent_action.REPICK and a.detail == {"llm": True}
-
-
-def test_blocked_repick_is_not_chosen_even_by_the_old_rule() -> None:
-    a = agent_action.choose(VERDICT, _res(), _found("T1"), cells=True, repick_ok=False)
-    assert a.name != agent_action.REPICK
-    res = {**_res(), "trace": {"dynamic": [{"tbl_id": "T1", "skip": "맞는 칸 없음"}]}}
-    found = {
-        "handoff": {
-            "targets": [
-                {
-                    "candidates": [
-                        {
-                            "tbl_id": "T1",
-                            "picked": True,
-                            "checks": {"year": True},
-                            "review": {"match": "exact"},
-                        }
-                    ]
-                }
-            ]
-        }
-    }
-    target = {**VERDICT, "reason": "대상이 다름"}
-    assert agent_action.choose(target, res, found).name == agent_action.REPICK
-    assert agent_action.choose(target, res, found, repick_ok=False).name != agent_action.REPICK
-
-
-def test_period_and_shape_reasons_do_not_repick() -> None:
-    for reason in ("기간이 다름", "형태가 다름", "계산이 빠짐"):
-        a = agent_action.choose({**VERDICT, "reason": reason}, _res(), _found("T1"), cells=True)
-        assert a.name != agent_action.REPICK
 
 
 # ---------------------------------------------------------------- recell 에 판정 지적
@@ -370,10 +310,16 @@ BIRTH = [
 ]
 
 
+def _no_check(monkeypatch: pytest.MonkeyPatch, **fields) -> None:
+    """검사(table_check)는 따로 시험한다: 여기서는 정해 둔 결과를 낸다 (기본: 칸 없음)"""
+    monkeypatch.setattr(ask_session, "_check_table", lambda *a: table_check.Check("T1", **fields))
+
+
 @pytest.fixture
 def birth(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(di, "schema", lambda tbl_id: (BIRTH, 2, ""))
     monkeypatch.setattr(ask_session.indicators, "spec", lambda name: None)
+    _no_check(monkeypatch)
 
 
 def _cells(res: dict, missing: str) -> dict:
@@ -409,6 +355,7 @@ def test_single_cell_dimension_is_not_evidence(monkeypatch: pytest.MonkeyPatch) 
     one = [Dim(0, "항목", {"T1": "혼인"}), *BIRTH[1:]]
     monkeypatch.setattr(di, "schema", lambda tbl_id: (one, 2, ""))
     monkeypatch.setattr(ask_session.indicators, "spec", lambda name: None)
+    _no_check(monkeypatch)
     out = _cells(_res(), "결혼한 사람 수를 물었으나 혼인 건수로 답함")
     assert out["cells"] is False and out["hits"] == []
 
@@ -430,8 +377,8 @@ def test_repick_recell_does_not_use_up_replan(monkeypatch: pytest.MonkeyPatch) -
     """repick 이 recell 까지 하고 실패해도 그 뒤 replan(Gemma)을 쓸 수 있다"""
     seen: list[str] = []
 
-    async def cells(res, verdict, found):
-        return {"cells": True, "blocked": None, "tbl_id": "T1", "by": "시험"}
+    async def cells(res, verdict, found, asked=None):
+        return {"cells": True, "fits": True, "blocked": None, "tbl_id": "T1", "by": "시험"}
 
     async def repick(res, verdict, asked, llm_ok=True):
         seen.append("repick")
@@ -453,7 +400,7 @@ def test_repick_recell_does_not_use_up_replan(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(answer_judge, "verdict", verdict)
     monkeypatch.setattr(ask_session, "repick_cells", cells)
     monkeypatch.setattr(ask_session, "_repick_compute", repick)
-    monkeypatch.setattr(ask_session, "_recompute", recompute)
+    monkeypatch.setattr(ask_session, "_retable", recompute)
     monkeypatch.setattr(ask_session, "_replan_compute", replan)
     res = {**_res(), "request_type": ask_session.NEW, "answer": "처음 답"}
     asyncio.run(ask_session._judged(res, None, "q", None))
@@ -466,7 +413,7 @@ def test_repick_recell_does_not_use_up_replan(monkeypatch: pytest.MonkeyPatch) -
 def test_blocked_evidence_keeps_repick_out_of_the_loop(monkeypatch: pytest.MonkeyPatch) -> None:
     seen: list[str] = []
 
-    async def cells(res, verdict, found):
+    async def cells(res, verdict, found, asked=None):
         return {"cells": False, "blocked": "여러 지표 · 복합 답", "by": "여러 지표 · 복합 답"}
 
     async def repick(res, verdict, asked, llm_ok=True):
@@ -484,8 +431,18 @@ def test_blocked_evidence_keeps_repick_out_of_the_loop(monkeypatch: pytest.Monke
     monkeypatch.setattr(answer_judge, "verdict", verdict)
     monkeypatch.setattr(ask_session, "repick_cells", cells)
     monkeypatch.setattr(ask_session, "_repick_compute", repick)
-    monkeypatch.setattr(ask_session, "_recompute", other)
+    monkeypatch.setattr(ask_session, "_retable", other)
     monkeypatch.setattr(ask_session, "_replan_compute", other)
     res = {**_res(), "request_type": ask_session.NEW, "answer": "처음 답"}
     asyncio.run(ask_session._judged(res, None, "q", None))
     assert "repick" not in seen and seen
+
+
+def test_hint_naming_a_cell_makes_the_topic_fit(birth, monkeypatch: pytest.MonkeyPatch) -> None:
+    """질문의 일상어가 칸에 안 닿아도(topic_ok 거짓) 판정 지적이 그 표의 칸을 가리키면 repick
+    (11/27 측정: '애 많이 낳는 곳' → 출생아 수로 답함 → 지적 '합계출산율' → 같은 표에서 고침)"""
+    _no_check(monkeypatch, cells_exist=True, topic_ok=False)
+    out = _cells(_res(), "출생아 수가 아니라 출생성비를 써야 함")
+    assert out["cells"] and out["fits"]
+    out = _cells(_res(), "다른 통계를 써야 함")
+    assert out["cells"] and not out["fits"]
