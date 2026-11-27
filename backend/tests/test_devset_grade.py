@@ -344,3 +344,71 @@ def test_allowed_answer_line_with_its_own_year():
     assert g.number == "O" and g.condition == "O"
     old = dg.grade(r, res("2025년 가상시의 노년부양비는 35.8입니다.", year=2025))
     assert old.number == "O" and old.condition == "O"
+
+
+def alt_row(**kw):
+    base = {
+        "기대 행동": "대안 답변",
+        "질문 종류": "",
+        "질문": "1990년 가상시 인구 몇 명?",
+        "정답 조건": "가상시, 2003, 총인구\n바꾼 조건: 연도 1990 → 2003 (가상시 설치 첫해)",
+        "정답 수치": "123,456명",
+        "답변 불가 유형": "그해에 없던 지역 (region_not_in_year)",
+    }
+    return row(**(base | kw))
+
+
+def test_alternative_answer_told_in_lead():
+    text = "가상시는 2003년에 생겨 1990년 자료는 없어 2003년 값으로 답합니다. 123,456명입니다."
+    g = dg.grade(alt_row(), res(text, year=2003))
+    assert (g.actual, g.action_error, g.correct) == ("대안 답변", "", "O")
+    assert g.details["바꾼 조건 밝힘"] is True
+
+
+def test_alternative_answer_not_told_is_action_error():
+    g = dg.grade(alt_row(), res("가상시의 2003년 인구는 123,456명입니다.", year=2003))
+    assert (g.actual, g.action_error, g.correct) == ("답변", "바꾼 조건 안 밝힘", "X")
+
+
+def test_alternative_answer_refused_is_missing():
+    g = dg.grade(alt_row(), res("1990년 자료는 없습니다.", status="region_not_in_year"))
+    assert (g.action_error, g.correct) == ("대안 답변 누락", "X")
+
+
+def test_changed_condition_line_is_not_read_as_golden_year():
+    assert dg.golden_years(dg.golden_condition(alt_row()["정답 조건"])) == (2003, 2003)
+
+
+def test_alternative_field_marks_action():
+    r = res("123,456명입니다.", changed_condition={"연도": [1990, 2003]})
+    assert dg.action_of(r) == "대안 답변"
+    g = dg.grade(row(), r)
+    assert g.action_error == "불필요한 대안 답변"
+
+
+def test_alternative_answer_needs_every_value_outside_parentheses():
+    r = alt_row(
+        **{
+            "정답 조건": "전국, 2025, 미혼모 / 등록외국인 각각",
+            "정답 수치": "미혼모 20,074명, 등록외국인 1,604,920명",
+        }
+    )
+    told = "두 조건을 함께 집계한 통계는 없어 각각 답합니다. "
+    both = told + "2025년 미혼모 20,074명, 등록외국인 1,604,920명입니다."
+    one = told + "2025년 미혼모 20,074명입니다."
+    assert dg.grade(r, res(both, regions=())).number == "O"
+    assert dg.grade(r, res(one, regions=())).number == "X"
+    share = alt_row(
+        **{
+            "정답 조건": "전국, 2020, 통근",
+            "정답 수치": "50.8% (11,837,472명 / 통근자 23,285,254명)",
+        }
+    )
+    text = "자가용 구분은 없어 승용차·승합차 기준으로 답합니다. 2020년 50.8%입니다."
+    assert dg.grade(share, res(text, regions=(), year=2020)).number == "O"
+
+
+def test_allowed_alternative_value_is_accepted():
+    r = alt_row(**{"정답 수치": "395명\n허용: 15~24세 721명", "정답 조건": "가상시, 2025, 20~24세"})
+    text = "18~23세 구간은 없어 15~24세 값으로 답합니다. 2025년 721명입니다."
+    assert dg.grade(r, res(text)).number == "O"

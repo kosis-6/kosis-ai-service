@@ -27,6 +27,7 @@ from app.services import (
     qa,
     search,
     search_answer,
+    substitute,
     table_cache,
 )
 from app.services.memory_cache import MISSING, MemoryCache
@@ -1982,8 +1983,12 @@ async def _compute_target(
         _cell_llm_budget.set(budget)
 
     def context(entry: dict) -> tuple[dict, str | None]:
+        conditions = u.get("conditions") or {}
+        if swap_items := entry.get("swap_items"):  # 대안 답변: ✘였던 말을 바꾼 조건으로
+            items = [swap_items.get(i, i) for i in conditions.get("items") or []]
+            conditions = {**conditions, "items": list(dict.fromkeys(items))}
         slots = {
-            "conditions": u.get("conditions") or {},
+            "conditions": conditions,
             "exclude": exclude,
             "target": u.get("target"),
             "check_target": (entry.get("review") or {}).get("match") != "exact",
@@ -2420,6 +2425,9 @@ async def _compute_target(
         merge(sub)
         return res
 
+    if (swapped := await _substituted(entries, q, run, trace)) is not None:
+        return swapped
+
     attempts = [
         {"entry": e, "res": res, "skip": (sub["dynamic"] or [{}])[0].get("skip")}
         for e, (res, _, sub) in zip(entries, outcomes, strict=True)
@@ -2437,6 +2445,59 @@ async def _compute_target(
         if res is not None:
             trace["handoff"]["used"] = {"tbl_id": entry["tbl_id"], "kind": entry["kind"]}
             return res
+    return None
+
+
+MAX_SUBSTITUTE = 3  # 대안 답변을 찾아볼 후보 표 수 (순위 순)
+
+
+def _age_bands(tbl_id: str) -> list[tuple[int, int | None]]:
+    dims, region_dim, _ = schema(tbl_id)
+    for d in dims:
+        if d.no not in (0, region_dim) and d.is_age():
+            return sorted(
+                {b for n in d.codes.values() if (b := lookup.parse_age(n))}, key=lambda b: b[0]
+            )
+    return []
+
+
+async def _substituted(entries: list[dict], q: dict, run, trace: dict) -> dict | None:
+    """후보 표가 조건 하나(연령 구간 · 지역 단위)만 못 맞추면 그 조건을 가장 가까운 것으로 바꿔
+    계산한다 (대안 답변, docs/clarify_refusal_spec_2026-11-27.md)"""
+    from app.core.config import get_settings
+
+    if not get_settings().alternative_answer or q.get("substituted"):
+        return None
+    log: list[dict] = []
+    for entry in entries[:MAX_SUBSTITUTE]:
+        checks = entry.get("checks") or {}
+        name = entry.get("tbl_nm") or ""
+        swap = substitute.table_region_swap(q, checks, indicators.resolve_region, name)
+        if swap is None and checks.get("class:연령") is True:
+            bands = await run_in_threadpool(_age_bands, entry["tbl_id"])
+            swap = substitute.table_band_swap(q, checks, bands, name)
+        if swap is None:
+            continue
+        fixed = {**entry, "checks": {k: True for k in checks}}
+        if swap.name == "연령":
+            failed = [k for k, ok in checks.items() if ok is False and k.startswith("item:")]
+            fixed["swap_items"] = {k.split(":", 1)[1]: swap.after for k in failed}
+        res = await run(fixed, {**q, **swap.change, "substituted": True})
+        ok = bool(res) and res.get("status") == "ok"
+        log.append({"tbl_id": entry["tbl_id"], "what": f"{swap.before} → {swap.after}", "ok": ok})
+        if ok:
+            trace["substitute"] = log
+            trace.setdefault("handoff", {})["used"] = {
+                "tbl_id": entry["tbl_id"],
+                "kind": entry["kind"],
+            }
+            flow.add(
+                "대안 답변", "ok", f"{entry['tbl_id']} {swap.name} {swap.before} → {swap.after}"
+            )
+            return substitute.mark_response(res, swap)
+    if log:
+        trace["substitute"] = log
+        flow.add("대안 답변", "실패", "; ".join(f"{x['tbl_id']} {x['what']}" for x in log)[:200])
     return None
 
 

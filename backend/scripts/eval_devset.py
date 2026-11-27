@@ -229,7 +229,10 @@ def summarize(recs: list[dict]) -> str:
     refuse = [r for r in recs if r["기대 행동"] == dg.REFUSE]
     ok = lambda rs: sum(r["정답"] == "O" for r in rs)  # noqa: E731
     lines = ["## 정답률", "", "| 구분 | 정답 |", "|---|---|"]
-    lines.append(f"| 전체 (답변·되묻기 문항) | {_rate(ok(answer), len(answer))} |")
+    lines.append(f"| 전체 (답변·되묻기·대안 답변 문항) | {_rate(ok(answer), len(answer))} |")
+    alt = [r for r in recs if r["기대 행동"] == dg.ALTERNATIVE]
+    if alt:
+        lines.append(f"| 대안 답변 | {_rate(ok(alt), len(alt))} |")
     for path in ("적재", "API"):
         rs = [r for r in answer if r["데이터 경로"] == path]
         lines.append(f"| {path} | {_rate(ok(rs), len(rs))} |")

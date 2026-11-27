@@ -29,6 +29,7 @@ from app.services import (
     progress,
     search_llm,
     slots,
+    substitute,
     table_cache,
     timeref,
     understand_merged,
@@ -2666,7 +2667,37 @@ def compute(q):
     _add_definition_note(result)
     if result.get("sub_future") and not q.get("guess"):
         result["status"] = "out_of_range"
-    return result
+    return _substituted(q, result)
+
+
+def _dong_labels():
+    try:
+        return lookup._dim_labels(substitute.DONG_TABLE, "c1")
+    except Exception as e:  # 표가 아직 적재되지 않음 등
+        logger.warning("읍면동 목록 읽기 실패 → 지역 대안 없음: %s: %s", type(e).__name__, e)
+        return []
+
+
+def _substituted(q, result):
+    """답변 불가면 조건 하나를 가장 가까운 것으로 바꿔 한 번 더 계산한다 (대안 답변)"""
+    if not get_settings().alternative_answer:
+        return result
+    swap = substitute.plan(q, result, _dong_labels)
+    if swap is None:
+        return result
+    again = compute({**q, **swap.change, "substituted": True})
+    if again.get("status") != "ok" and (
+        more := substitute.follow(swap, {**q, **swap.change}, again)
+    ):
+        swap = more  # 생긴 해에도 수집 자료가 없으면 자료가 있는 첫해로 (같은 조건을 한 번 더)
+        again = compute({**q, **swap.change, "substituted": True})
+    if again.get("status") != "ok":
+        flow.add(
+            "대안 답변", "실패", f"{swap.name} {swap.before} → {swap.after}: {again.get('status')}"
+        )
+        return result
+    flow.add("대안 답변", "ok", f"{swap.name} {swap.before} → {swap.after}")
+    return substitute.mark(again, swap)
 
 
 def _monthly_empty(result):
@@ -4380,6 +4411,7 @@ async def answer(parsed, trace=None, question=""):
             and (parsed.get("grounded") is not False or shortcut)
             and not parsed.get("movement_route")
             and not parsed.get("cross")
+            and not result.get("changed_condition")  # 대안 답변은 바꾼 조건을 밝히고 답한다
         )
         if (gate or settings.binding_dict_shadow) and result.get("status") == "ok" and question:
             from app.services import dict_binding

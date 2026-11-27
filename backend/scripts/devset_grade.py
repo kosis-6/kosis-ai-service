@@ -3,6 +3,16 @@ from dataclasses import dataclass, field
 from typing import Any
 
 ANSWER, CLARIFY, REFUSE = "답변", "되묻기", "답변 불가"
+# 대안 답변: 조건 하나를 가까운 것으로 바꿔 값을 줌 (docs/clarify_refusal_spec_2026-11-27.md)
+ALTERNATIVE = "대안 답변"
+
+# 응답이 대안 답변임을 알리는 필드. 이름은 명세에서 아직 미정이라 후보를 모두 본다.
+# 필드가 없으면 첫 문단에서 바꾼 조건을 밝혔는지(CHANGE_TOLD)로 판정한다.
+ALTERNATIVE_FIELDS = ("changed_condition", "alternative_answer")
+CHANGE_TOLD = re.compile(
+    r"없어|없으므로|없어서|없습니다|대신|가장\s*가까운|(?:으로|로)\s*답(?:합니다|변)"
+    r"|까지만\s*(?:집계|있)|따로\s*(?:집계|볼\s*수)|함께\s*집계|각각"
+)
 
 CLARIFY_STATUSES = {"unclear", "ambiguous_region", "missing_region", "missing_year"}
 
@@ -41,6 +51,9 @@ SEARCH_REFUSALS = ("out_of_scope", "not_statistics")
 
 def action_of(res: dict) -> str:
     status = res.get("status")
+    result = res.get("result") or {}
+    if status == "ok" and any(res.get(k) or result.get(k) for k in ALTERNATIVE_FIELDS):
+        return ALTERNATIVE
     if res.get("clarification") or status in CLARIFY_STATUSES:
         return CLARIFY
     tables = res.get("tables") or {}
@@ -48,7 +61,6 @@ def action_of(res: dict) -> str:
         return CLARIFY
     if status == "ok":
         return ANSWER
-    result = res.get("result") or {}
     suggestion = result.get("suggestion") or {}
     if (
         status == "out_of_range"
@@ -66,7 +78,21 @@ def action_error(expected: str, actual: str) -> str:
         return "되묻기 누락"
     if actual == CLARIFY:
         return "불필요한 되묻기"
+    if expected == ALTERNATIVE:
+        return "바꾼 조건 안 밝힘" if actual == ANSWER else "대안 답변 누락"
+    if actual == ALTERNATIVE:
+        return "불필요한 대안 답변"
     return "그 외"
+
+
+def change_told(res: dict) -> bool:
+    """첫 문단에서 무엇을 바꿨는지 밝혔는가 (대안 답변 규칙 1)"""
+    return bool(CHANGE_TOLD.search(lead(res)))
+
+
+def golden_condition(cell: str) -> str:
+    """정답 조건에서 '바꾼 조건:' 줄을 뺀다 (그 줄의 원래 연도 · 지역을 정답으로 읽지 않게)"""
+    return "\n".join(line for line in cell.splitlines() if not line.strip().startswith("바꾼 조건"))
 
 
 NUM = r"[+-]?\d[\d,]*(?:\.\d+)?"
@@ -420,6 +446,8 @@ def grade(row: dict[str, str], first: dict, final: dict | None = None) -> Grade:
     final = final or first
     expected = row["기대 행동"]
     actual = action_of(first)
+    if expected == ALTERNATIVE and actual == ANSWER and change_told(first):
+        actual = ALTERNATIVE  # 전용 필드가 생기기 전까지는 문장으로 판정
     g = Grade(
         id=row["문항 ID"],
         set_name=SETS.get(row["문항 ID"][:1], ""),
@@ -435,13 +463,17 @@ def grade(row: dict[str, str], first: dict, final: dict | None = None) -> Grade:
     if expected == REFUSE:
         return _grade_refusal(g, row, final)
 
-    answered = action_of(final) == ANSWER
+    answered = action_of(final) in (ANSWER, ALTERNATIVE)
     text = final.get("answer") or ""
     exp = expected_numbers(row["질문 종류"], row["정답 수치"])
+    if expected == ALTERNATIVE and not row["질문 종류"]:
+        exp = alternative_numbers(row["정답 수치"])
     nums = numbers(text)
     found = {e.label: find_number(e, nums, text) for e in exp}
     for alt in allowed_answers(row["정답 수치"]):
         alt_exp = expected_numbers(row["질문 종류"], alt)
+        if expected == ALTERNATIVE and not row["질문 종류"]:
+            alt_exp = alternative_numbers(alt)
         alt_found = {e.label: find_number(e, nums, text) for e in alt_exp}
         if alt_exp and all(alt_found.values()) and not all(found.values()):
             exp, found = alt_exp, alt_found
@@ -459,7 +491,7 @@ def grade(row: dict[str, str], first: dict, final: dict | None = None) -> Grade:
     g.details["찾은 숫자"] = found
     g.number = "O" if answered and exp and all(found.values()) else "X"
 
-    cond = row["정답 조건"]
+    cond = golden_condition(row["정답 조건"])
     if (alt := g.details.get("허용 정답")) and golden_years(alt):
         lo, hi = golden_years(alt)
         cond = YEAR.sub("", cond) + (f", {lo}" if lo == hi else f", {lo}~{hi}")
@@ -479,7 +511,18 @@ def grade(row: dict[str, str], first: dict, final: dict | None = None) -> Grade:
     g.correct = "O" if ok else "X"
     if not ok:
         g.reason = _first_wrong(g, answered, table_issue, cond_wrong, in_result, claims)
+    if expected == ALTERNATIVE:
+        g.details["바꾼 조건 밝힘"] = told = change_told(final)
+        if ok and not told:
+            g.correct, g.reason = "X", "요약 (바꾼 조건 안 밝힘)"
     return g
+
+
+def alternative_numbers(answer: str) -> list[Expect]:
+    """질문 종류가 없는 대안 답변: 첫 줄의 숫자를 모두 맞혀야 한다 (괄호 안 계산 근거는 뺌).
+    예) '미혼모 20,074명, 등록외국인 1,604,920명' → 둘 다, '50.8% (11,837,472명 / …)' → 50.8%"""
+    text = re.sub(r"\([^)]*\)", "", answer.split("\n")[0])
+    return [Expect(f"값{i + 1}", n) for i, n in enumerate(numbers(text))]
 
 
 def _first_wrong(g, answered, table_issue, cond_wrong, in_result, claims) -> str:
