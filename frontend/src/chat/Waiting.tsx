@@ -57,8 +57,10 @@ export function Waiting({ progressId, fallback }: { progressId: string | null; f
         ))}
         <li className="now" key={now}>
           <span className="wait-mark" aria-hidden="true" />
-          {`${now} 중`}
-          <span className="dots" />
+          <span>
+            {`${now} 중`}
+            <span className="dots" />
+          </span>
           {seconds > 0 && <span className="wait-secs">{seconds}초</span>}
         </li>
       </ol>
