@@ -1273,7 +1273,26 @@ def composition(region, year, by="age", sex="계"):
     return _mark_monthly(out, code, sex, year)
 
 
-def rank_where(level, sido=None):
+def districts(region):
+    """일반구가 있는 시면 그 일반구들(행정구역 코드: 시 코드 앞 4자리가 같은 '일반구'), 아니면 []"""
+    reg = resolve_region(region) if isinstance(region, str) else region
+    if reg.get("status") != "ok" or reg.get("kind") != "시군구":
+        return []
+    return _rows(
+        "select region_code, region_name from regions"
+        " where kind = '일반구' and region_code like ? order by region_code",
+        [reg["region_code"][:4] + "%"],
+    )
+
+
+def rank_where(level, sido=None, within=None):
+    if within:
+        # 시 안의 일반구 목록 ('수원시 구별'). PR 리뷰: 범위가 시도뿐이라 전국 시군구로 넓어졌다
+        w = resolve_region(within)
+        if w["status"] != "ok":
+            return w
+        where = "r.kind = '일반구' and r.region_code like ?"
+        return where, [w["region_code"][:4] + "%"], f"{w['display']} 구"
     if level == "시도":
         where, params, scope = "r.kind = '시도'", [], "시도"
     elif level == "시":
@@ -1300,6 +1319,7 @@ def rank(
     sex="계",
     ages=None,
     target=None,
+    within=None,
 ):
     name, ind = _get_indicator(indicator, ages)
     if name is None:
@@ -1323,7 +1343,7 @@ def rank(
 
     if sido and (gap := not_yet_founded(resolve_region(sido), year, name)):
         return gap
-    cond = rank_where(level, sido)
+    cond = rank_where(level, sido, within)
     if isinstance(cond, dict):
         return {**cond, "indicator": name}
     where, params, _ = cond
@@ -1377,7 +1397,7 @@ def rank(
         ind,
         year=year,
         sex=sex,
-        level=level,
+        level="구" if within else level,
         order="낮은 순" if ascending else "높은 순",
         total_regions=len(items),
         ranking=items[:top] if top else items,

@@ -377,6 +377,9 @@ def apply_changes(conditions: dict, changes: dict) -> tuple[dict, set[str]]:
     if "sido" in changes and (changes["sido"] is None or isinstance(changes["sido"], str)):
         c["sido"] = changes["sido"] or None
         changed.add("view")
+    if "within" in changes and (changes["within"] is None or isinstance(changes["within"], str)):
+        c["within"] = changes["within"] or None
+        changed.add("view")
 
     if changed and "type" not in changes:
         _retype(c, changed)
@@ -956,16 +959,29 @@ def region_only_changes(question: str, conditions: dict) -> dict | None:
 
 
 def rank_scope_changes(question: str, conditions: dict) -> dict | None:
-    """순위 뒤 '경기도 안에서는?': 그 시도 안의 시군구 순위로"""
-    if conditions.get("type") != "rank" or not (said := IN_SIDO_REPLY.fullmatch(question)):
+    """순위 뒤 '경기도 안에서는?': 그 시도 안의 시군구 순위로. 범위가 있는 목록 뒤에 지역만
+    말하면('경기도 시군별 …' → '부산은?', '수원시 구별 …' → '성남시는?') 목록의 범위를 그 지역으로.
+    11/27 PR #261 점검: 목록 뒤에는 지역만 바꾸는 규칙이 꺼져 있어 새 질문으로 읽고 답하지 못했다"""
+    if conditions.get("type") != "rank":
         return None
-    regions = indicators.find_regions(said["place"])
+    if said := IN_SIDO_REPLY.fullmatch(question):
+        regions = indicators.find_regions(said["place"])
+    elif (conditions.get("sido") or conditions.get("within")) and (found := only_regions(question)):
+        regions = found[0]
+    else:
+        return None
     if len(regions) != 1:
         return None
-    found = indicators.resolve_region(regions[0])
-    if found.get("status") != "ok" or found.get("kind") != "시도":
+    place = indicators.resolve_region(regions[0])
+    if place.get("status") != "ok":
         return None
-    return {"sido": regions[0], "level": "시군구"}
+    if place.get("kind") == "시도":
+        # 시 안의 구 목록에서 왔으면 그 범위를 지운다
+        cleared = {"within": None} if conditions.get("within") else {}
+        return {"sido": regions[0], "level": "시군구", **cleared}
+    if conditions.get("within") and indicators.districts(place):
+        return {"within": place["display"], "sido": None}
+    return None
 
 
 # 연령 말을 지운 뒤 남아도 되는 말 ('65세 이상 여자만' → ' 여자만', '노인은?' → ' 은?')
@@ -1895,9 +1911,35 @@ async def _composite(question: str, res: dict, state: dict | None) -> dict | Non
             "sources": [],
             "trace": trace,
         }
+    if dropped := _indicators_dropped_by(res, alt):
+        # 사전이 물은 지표를 모두 답했는데 복합 계획의 답이 그 일부만 담으면 사전 답을 둔다.
+        # 11/27 PR 2: '출생아 수와 사망자 수 상위 5개 시도'를 사전이 지표마다 목록으로 냈는데
+        # 복합 계획(get → rank → get → rank)이 마지막 단계(사망자 수)만 남겼다
+        trace["composite_kept_dictionary"] = {"dropped": sorted(dropped)}
+        return None
     alt["search_session"] = sid
     alt["trace"] = trace
     return alt
+
+
+def _answered_indicators(result: dict | None) -> set[str]:
+    result = result or {}
+    if result.get("split_by") == "indicator":
+        return {p.get("indicator") for p in result.get("split") or [] if p.get("status") == "ok"}
+    if result.get("status") == "ok" and result.get("indicator"):
+        return {result["indicator"]}
+    return set()
+
+
+def _indicators_dropped_by(res: dict, alt: dict) -> set[str]:
+    """사전 답이 지표마다 답한 것 중 복합 답에 없는 지표 (복합 답이 사전 답의 일부일 때만)"""
+    if res.get("status") != "ok":
+        return set()
+    mine = _answered_indicators(res.get("result"))
+    theirs = _answered_indicators(alt.get("result"))
+    if len(mine) < 2 or not theirs or not theirs < mine:
+        return set()
+    return mine - theirs
 
 
 async def _separate_measures(question, measures, state, user_id):
@@ -2332,7 +2374,7 @@ async def _turn(
             flow.add("후속 질문", "순위 순서 변경", "낮은 순" if order["ascending"] else "높은 순")
         elif scope := await asyncio.to_thread(rank_scope_changes, question, state["conditions"]):
             delta = {"request_type": CHANGE, "changes": scope, "chart": None, "unclear": None}
-            flow.add("후속 질문", "시도 안 순위", scope["sido"])
+            flow.add("후속 질문", "목록 범위", scope.get("within") or scope.get("sido"))
         elif ages := await asyncio.to_thread(age_only_changes, question, state["conditions"]):
             delta = {"request_type": CHANGE, "changes": ages, "chart": None, "unclear": None}
             label = ", ".join(indicators.age_label(band) for band in ages["ages"])

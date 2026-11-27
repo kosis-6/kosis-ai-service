@@ -667,6 +667,9 @@ unit = "명"
 method = "lookup"
 sources = [
   { table = "DT_1B8000H", item_id = "T20", level = "시도" },
+  # 시군구: 같은 인구동향조사의 시군구 표 (항목 T20 사망건수). 11/27 PR 리뷰 '경기도 시군별 출생아 수와
+  # 사망자 수'에서 사망자 수만 시도까지라 빠졌다
+  { table = "DT_1B8000I", item_id = "T20", level = "시군구" },
   # 1970~1989년: 전국 장기 표 (같은 인구동향조사, 1990년 이후 값은 시도 표의 전국과 같다)
   { table = "DT_1B8000F", item_id = "T1", level = "전국", national_only = true, years = [1970, 1989], filters = { c1_id = "12" } },
 ]
