@@ -75,3 +75,28 @@ def test_ask_hcx_error_detail_hides_raw_message(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(qa, "ask", fail)
     detail = client.post("/ask", json={"question": "서울 인구"}).json()["detail"]
     assert "잠시 후 다시 질문해 주세요" in detail and "ConnectError" not in detail
+
+
+def test_ask_progress_steps_while_answering(monkeypatch: pytest.MonkeyPatch) -> None:
+    """답을 만드는 동안 처리 단계를 모으고 (같은 단계로 돌아오면 맨 뒤로), 끝나면 지운다"""
+    from app.services import ask_session, progress
+
+    seen = []
+
+    async def fake_handle(session_id, question, user_id=None, selections=None, **kw) -> dict:
+        for step in (progress.UNDERSTAND, progress.COMPUTE, progress.COMPUTE, progress.CHECK):
+            progress.now(step)
+        progress.now(progress.COMPUTE)  # 판정 뒤 다시 계산
+        seen.append(client.get("/ask/progress/pid-12345678").json()["steps"])
+        return {"status": "ok", "answer": "답", "parsed": {}, "result": {}, "sources": []}
+
+    monkeypatch.setattr(ask_session, "handle", fake_handle)
+    r = client.post("/ask", json={"question": "서울 인구", "progress_id": "pid-12345678"})
+    assert r.status_code == 200
+    assert seen == [[progress.UNDERSTAND, progress.CHECK, progress.COMPUTE]]
+    assert client.get("/ask/progress/pid-12345678").json() == {"steps": []}
+
+
+def test_ask_progress_rejects_odd_id() -> None:
+    assert client.get("/ask/progress/a%2Fb").status_code in (404, 422)
+    assert client.post("/ask", json={"question": "서울", "progress_id": "x"}).status_code == 422

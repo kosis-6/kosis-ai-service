@@ -34,6 +34,7 @@ from app.services import (
     llm_calls,
     lookup,
     multi_indicator,
+    progress,
     qa,
     question_clarify,
     refusal,
@@ -2056,6 +2057,7 @@ async def _movement_tables(question: str, user_id: int | None, told: str | None 
 async def _turn(
     state: dict | None, question: str, selections: dict | None = None, user_id: int | None = None
 ) -> tuple[dict, dict, str | None]:
+    progress.now(progress.UNDERSTAND)
     if refusal.instruction_request(question):
         flow.add("통계 질문 검사", "not_statistics", "내부 지시 요청")
         return (
@@ -2456,7 +2458,10 @@ REPORT_NO_TURNS = (
     "이 대화에는 아직 보고서로 묶을 수 있는 답이 없습니다."
     " 통계 수치를 물어본 뒤 다시 말씀해 주세요."
 )
-REPORT_LOGIN = "로그인하면 이 내용을 보고서로 저장하고 분석 문장까지 만들 수 있습니다."
+REPORT_LOGIN = (
+    "보고서는 로그인한 사용자만 만들 수 있습니다."
+    " 로그인하면 이 내용을 보고서로 저장하고 분석 문장까지 만들어 드립니다."
+)
 
 
 async def _session_turns(session_id: str, user_id: int | None) -> list[dict]:
@@ -2538,6 +2543,7 @@ async def _report_turn(
     """'지금까지 물어본 거 정리해줘': 이 대화의 답을 모아 보고서로 (변경 추출 · 이어 묻기 복원의
     report 선택지). 로그인 사용자는 보고서를 만들어 저장하고 문장을 만든다(reports.create ·
     generate, 화면 [보고서] 버튼과 같은 함수). 로그인하지 않았으면 저장 없이 요약 문장을 모은다"""
+    progress.now(progress.REPORT)
     sid = _session_now.get()
     turns = await _session_turns(sid, user_id) if sid else []
     res = {
@@ -3630,6 +3636,7 @@ async def _judged(res: dict, state: dict | None, question: str, user_id: int | N
             return
     asked = res.get("question") or question
     if failure is None:
+        progress.now(progress.CHECK)
         first = await answer_judge.verdict(asked, res.get("parsed"), res.get("result"))
         if first is None:
             return
@@ -3736,6 +3743,7 @@ async def _judged(res: dict, state: dict | None, question: str, user_id: int | N
             flow.add("다시 계산", "판정 없이 받음", f"{how}: 처음 답에 값이 없었음")
             second = None
         else:
+            progress.now(progress.CHECK)
             second = await answer_judge.verdict(asked, again.get("parsed"), again.get("result"))
             attempt["second"] = second
             if len(attempts) == 1:
@@ -4047,6 +4055,7 @@ async def handle(
         await _attach_tables(res, state, asked, user_id)
         await refusal.finalize(res, asked)
         await _judged(res, state, asked, user_id)
+        progress.now(progress.WRAP_UP)
         if "summary" not in res:  # 직전 답을 다시 쓴 응답(_reuse)은 그 요약을 이미 들고 있다
             res["summary"] = _summary(res.get("result"))
         _attach_figure(res)
@@ -4113,6 +4122,7 @@ async def _agent_turn(
     """보고서 경로 (명세서 7장). 앞 질문의 조건은 그대로 둬서 다음 통계 질문이 이어진다"""
     from app.agent import report_agent
 
+    progress.now(progress.REPORT)
     res = await report_agent.run(question, sid, state, user_id)
     mine = res.pop("report_agent_state")
     prev = state or {}

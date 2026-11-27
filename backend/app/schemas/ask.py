@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field, StringConstraints
 
 Question = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)]
 SessionId = Annotated[str, StringConstraints(max_length=64)]
+ProgressId = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9-]{8,64}$")]
 
 
 class AskRequest(BaseModel):
@@ -25,6 +26,18 @@ class AskRequest(BaseModel):
         description="로그인하지 않은 화면에서 마지막 차트를 바꾼 보기 (꺾은선 · 막대 · 표)."
         " 저장할 곳이 없어 질문과 함께 보낸다. '자세히 말해줘'처럼 직전 차트를 다시 쓰는 답이"
         " 이 모양으로 그린다. 로그인한 대화는 답에 저장한 보기를 서버가 읽으므로 보내지 않는다",
+    )
+    progress_id: ProgressId | None = Field(
+        default=None,
+        description="화면이 만든 임의 id. 답을 기다리는 동안 GET /ask/progress/{progress_id}로"
+        " 지금 하는 처리 단계를 읽는다",
+    )
+
+
+class AskProgress(BaseModel):
+    steps: list[str] = Field(
+        description="지금까지 거친 처리 단계 (질문 이해 · 통계표 찾기 · 통계 조회·계산 · 답 검증 ·"
+        " 답변 정리 · 보고서 작성). 마지막이 지금 하는 일. 끝났거나 모르는 id면 빈 목록",
     )
 
 

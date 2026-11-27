@@ -278,6 +278,15 @@ body[data-page="chat"] {
 .typing .bubble { color: var(--muted); }
 .typing .dots::after { content: "…"; animation: blink 1s steps(3) infinite; }
 @keyframes blink { 0% { opacity: .2; } 50% { opacity: 1; } 100% { opacity: .2; } }
+/* 답을 기다리는 동안 서버가 지금 하는 처리 단계 (Waiting.tsx): 끝난 단계는 체크, 마지막이 지금 하는 일 */
+.wait-steps { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.wait-steps li { display: flex; align-items: center; gap: 8px; }
+.wait-steps .done { color: var(--muted); }
+.wait-steps .done .icon { flex: none; color: var(--ok); }
+.wait-steps .now { color: var(--ink); font-weight: 500; }
+.wait-mark { flex: none; width: 14px; height: 14px; border: 2px solid var(--accent-mid); border-top-color: var(--ok); border-radius: 50%; animation: spin 0.9s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.wait-secs { margin-left: 4px; color: var(--muted); font-size: 12px; font-weight: 400; font-variant-numeric: tabular-nums; }
 
 .notice {
   display: flex;

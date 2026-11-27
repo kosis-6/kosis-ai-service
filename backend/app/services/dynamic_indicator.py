@@ -23,6 +23,7 @@ from app.services import (
     lookup,
     partial_table,
     plan_cache,
+    progress,
     qa,
     search,
     search_answer,
@@ -1878,6 +1879,7 @@ async def compute_from_handoff(
     주면 그 표 하나만, 규칙 칸 고르기 없이 칸 잇기 → recell 순서로 계산한다
     (_compute_target 의 repick_one). recell 은 표 경로의 질문당 상한(_recell_budget)을 쓰지 않는다:
     판정 고리 몫은 repick 한 번에 1회 (docs/agent_redesign_2026-11-26.md 2-2)"""
+    progress.now(progress.COMPUTE)
     if repick is not None:
         trace.setdefault("dynamic", [])
         h = found.get("handoff") or {}
