@@ -2934,3 +2934,109 @@ def test_whole_talk_summary_falls_back_to_text_when_report_has_no_turns(monkeypa
     monkeypatch.setattr(s, "_report_turn", report_turn)
     res, _, _ = asyncio.run(s._turn(state, "지금까지 요약해줘", None, 7))
     assert res["request_type"] == s.SUMMARY and "지금까지 본 내용 2가지" in res["answer"]
+
+
+def test_parse_requests_keeps_order_and_rejects_bad_items() -> None:
+    raw = (
+        '{"requests": [{"kind": "question", "text": "서울 출생아 수 구하고"},'
+        ' {"kind": "summary", "text": "x"}, {"kind": "summary", "text": ""}]}'
+    )
+    assert s.parse_requests(raw) == [
+        {"kind": "question", "text": "서울 출생아 수 구하고"},
+        {"kind": "summary", "text": ""},
+    ]
+    assert s.parse_requests('{"requests": [{"kind": "chart", "text": "막대로"}]}') is None
+    assert s.parse_requests('{"requests": [{"kind": "question", "text": ""}]}') is None
+    assert s.parse_requests("모르겠음") is None
+
+
+def test_talk_summary_words_lets_indicator_and_region_through() -> None:
+    assert s.talk_summary_words("지금까지 요약해주고 서울 출생아 수도 구해줘")
+    assert s.talk_summary_words("혼인 구하고 지금까지 정리해줘")
+    assert not s.talk_summary_words("서울 출생아 수 알려줘")
+
+
+def _talk_state() -> dict:
+    return {
+        **REPORT_STATE,
+        "last": {"status": "ok", "answer": "2025년 서울 출생아 수는 1명입니다."},
+        "history": ["2025년 서울 출생아 수는 1명입니다.", "2025년 부산 출생아 수는 2명입니다."],
+    }
+
+
+def test_talk_split_summary_then_question_answers_both(monkeypatch) -> None:
+    """'앞에서 본 거 정리해주고 혼인도 구해줘': 정리 글 + 질문 부분만 다시 계산한 답 (11/27)"""
+    asked: list[str] = []
+
+    async def split(question, trace):
+        return [{"kind": "summary", "text": ""}, {"kind": "question", "text": "혼인도 구해줘"}]
+
+    real_turn = s._turn
+
+    async def turn(state, question, selections=None, user_id=None):
+        if s._talk_split_inner.get():
+            asked.append(question)
+            return {"status": "ok", "answer": "2025년 서울 혼인 건수는 3건입니다.",
+                    "request_type": s.NEW, "trace": {}}, {}, None  # fmt: skip
+        return await real_turn(state, question, selections, user_id)
+
+    monkeypatch.setattr(s, "split_talk", split)
+    monkeypatch.setattr(s, "_turn", turn)
+    res, _, _ = asyncio.run(s._turn(_talk_state(), "앞에서 본 거 정리해주고 혼인도 구해줘"))
+    assert asked == ["혼인도 구해줘"]
+    assert res["answer"].startswith("지금까지 본 내용 2가지")
+    assert res["answer"].endswith("2025년 서울 혼인 건수는 3건입니다.")
+    assert res["request_type"] == s.NEW and res["talk_summary"]["asked"] == "혼인도 구해줘"
+
+
+def test_talk_split_question_first_keeps_spoken_order(monkeypatch) -> None:
+    async def split(question, trace):
+        return [
+            {"kind": "question", "text": "서울 출생아 수 구하고"},
+            {"kind": "summary", "text": ""},
+        ]
+
+    real_turn = s._turn
+
+    async def turn(state, question, selections=None, user_id=None):
+        if s._talk_split_inner.get():
+            return {"status": "ok", "answer": "새 답", "request_type": s.NEW, "trace": {}}, {}, None
+        return await real_turn(state, question, selections, user_id)
+
+    monkeypatch.setattr(s, "split_talk", split)
+    monkeypatch.setattr(s, "_turn", turn)
+    res, _, _ = asyncio.run(s._turn(_talk_state(), "서울 출생아 수 구하고 지금까지 본 거 요약해줘"))
+    assert res["answer"].startswith("새 답") and "지금까지 본 내용 2가지" in res["answer"]
+
+
+def test_talk_split_failure_with_indicator_keeps_the_old_path(monkeypatch) -> None:
+    """나누기 LLM 이 실패하고 지표 · 지역이 있는 말이면 예전처럼 요약으로 보지 않는다"""
+    monkeypatch.setattr(s, "_chat", lambda prompt, system: _async('{"request_type": "new"}'))
+    called = {}
+
+    async def new(question, state, **kw):
+        called["q"] = question
+        return {"status": "ok", "answer": "x", "request_type": s.NEW, "trace": {}}, {}, None
+
+    monkeypatch.setattr(s, "_new", new)
+    asyncio.run(s._turn(_talk_state(), "지금까지 요약해주고 서울 출생아 수도 구해줘"))
+    assert called.get("q") is not None
+
+
+def test_talk_split_summary_only_follows_the_old_rule(monkeypatch) -> None:
+    """LLM 이 '서울 인구 전체 정리해줘'를 정리로만 읽어도, 지표 · 지역 있는 말은 예전처럼 새 질문"""
+
+    async def split(question, trace):
+        return [{"kind": "summary", "text": ""}]
+
+    monkeypatch.setattr(s, "split_talk", split)
+    monkeypatch.setattr(s, "_chat", lambda prompt, system: _async('{"request_type": "new"}'))
+    called = {}
+
+    async def new(question, state, **kw):
+        called["q"] = question
+        return {"status": "ok", "answer": "x", "request_type": s.NEW, "trace": {}}, {}, None
+
+    monkeypatch.setattr(s, "_new", new)
+    res, _, _ = asyncio.run(s._turn(_talk_state(), "서울 인구 전체 정리해줘"))
+    assert called.get("q") is not None and res["request_type"] != s.SUMMARY
