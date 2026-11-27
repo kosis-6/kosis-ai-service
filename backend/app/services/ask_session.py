@@ -81,6 +81,7 @@ CHART_WORDS = {
     "bar": re.compile(r"막대(?![하한])"),
     "line": re.compile(r"꺾은\s*선|선\s*그래프|라인|(?<![가-힣])선\s*으로"),
     "pie": re.compile(r"원\s*그래프|원형|파이|도넛"),
+    "scatter": re.compile(r"산점도|산포도|스캐터"),
     "chart": re.compile(r"그래프|차트|시각화|그림\s*으로|그려"),
 }
 CHART_REQUEST = re.compile(
@@ -107,7 +108,11 @@ CHART_ONLY_REST = re.compile(rf"(?:{_CHART_FILLER}|{_CHART_VERB}|{_CHART_PARTICL
 # 모양을 정하지 않는 차트 말 ('표 말고 그래프로'의 '표'). '통계표'의 표는 아니다
 CHART_NOUN = re.compile(r"(?<![가-힣])표")
 CHART_NAMES = {"line": "꺾은선 그래프", "bar": "막대그래프", "parts": "구성비 막대그래프"}
-CHART_CANNOT = {"line": "꺾은선은 연도별 추이에만 씁니다", "pie": "원그래프는 지원하지 않습니다"}
+CHART_CANNOT = {
+    "line": "꺾은선은 연도별 추이에만 씁니다",
+    "pie": "원그래프는 지원하지 않습니다",
+    "scatter": "산점도는 지원하지 않습니다",
+}
 SUMMARY_REQUEST = re.compile(
     r"^\s*((한|두|세)\s*줄로|짧게|간단히|간단하게|간략히)?\s*(요약|정리)\s*"
     r"(좀\s*)?(해\s*(줘요?|주세요|줄래요?|봐요?|주라)?|부탁\s*(해요?|합니다|드려요)?)?\s*[.!?~]*$"
@@ -793,7 +798,8 @@ def replace_region(conditions: dict, asked: str | None, picked: str) -> dict:
 
 
 def chart_request(question: str) -> str | None:
-    """직전 답의 그림만 바꾸는 말이면 모양 (table · bar · line · pie · chart), 아니면 None.
+    """직전 답의 그림만 바꾸는 말이면 모양 (table · bar · line · pie · scatter · chart),
+    아니면 None.
     차트 말을 지운 나머지에 요청 말 · 조사만 남아야 한다. 연도 · 지표 · 지역 · 성별 · 순위 같은
     조건이 남으면 조건 변경이라 변경 추출에 맡긴다 ('남자만 막대그래프로'를 전체 값의 막대로만
     바꿨다)"""
