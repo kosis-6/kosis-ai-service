@@ -3342,7 +3342,7 @@ def repick_blocked(res: dict, verdict: dict) -> str | None:
     return None
 
 
-def _check_table(res: dict, entry: dict, found: dict | None, asked: str):
+def _check_table(res: dict, entry: dict, found: dict | None, asked: str, hits: list[str]):
     """다시 볼 표 하나를 검사 (table_check). 질문 조건은 꾸러미의 해석을 칸 잇기에 넘긴다"""
     parsed = res.get("parsed") or {}
     u = ((found or {}).get("handoff") or {}).get("understanding") or {}
@@ -3357,8 +3357,7 @@ def _check_table(res: dict, entry: dict, found: dict | None, asked: str):
     }
     dims, _, _ = dynamic_indicator.schema(entry["tbl_id"])
     used = _used_codes(res, entry["tbl_id"], dims)
-    unit = (res.get("result") or {}).get("unit") if _valued(res) else None
-    return table_check.check(entry["tbl_id"], asked, q, slots, used, unit)
+    return table_check.check(entry["tbl_id"], asked, q, slots, used, hits)
 
 
 async def repick_cells(
@@ -3387,7 +3386,7 @@ async def repick_cells(
     try:
         if missing:
             hits = await run_in_threadpool(_fix_cells, res, tbl_id, missing)
-        checked = await run_in_threadpool(_check_table, res, entry, found, asked or "")
+        checked = await run_in_threadpool(_check_table, res, entry, found, asked or "", hits)
     except Exception:
         logger.info("검사 못 함: 표 구조 없음 %s", tbl_id)
     out["hits"] = hits[:5]
@@ -3624,7 +3623,22 @@ async def _retry(
     flow.add("다시 계산", "대체", f"{how}: 다시 계산하지 못함 → {action.fallback}")
     if done is not None:
         done.add(action.fallback)  # 대체 행동으로 떨어졌다: 그 행동도 쓴 것으로
-    return await _act(action.fallback, res, verdict, state, asked, user_id)
+    first = _retry_outcome.get() or {}
+    _retry_outcome.set(None)
+    try:
+        again, how = await _act(action.fallback, res, verdict, state, asked, user_id)
+    except Exception:
+        if not first.get("clarification"):
+            raise
+        logger.exception("대체 계산 실패 → 먼저 찾은 되묻기 유지")
+        _retry_outcome.set(first)
+        return None, how
+    if again is None:
+        last = _retry_outcome.get() or first
+        if first.get("clarification") and not last.get("clarification"):
+            last = {**last, "clarification": first["clarification"]}
+        _retry_outcome.set(last)
+    return again, how
 
 
 FROM_TABLES = "tables"
@@ -3741,9 +3755,11 @@ async def _judged(res: dict, state: dict | None, question: str, user_id: int | N
         try:
             again, how = await _retry(action, res, verdict, state, asked, user_id, done)
         except Exception:
-            logger.exception("답 판정 뒤 다시 계산 실패 → 처음 답 그대로")
+            logger.exception("답 판정 뒤 다시 계산 실패")
             attempt["error"] = True
             record.setdefault("retry", {"error": True})
+            if asked_back is not None:
+                _loop_end(res, record, "error", asked_back, asked)
             return
         attempt.update(how=how, computed=again is not None)
         if again is not None:  # 버려도 무엇이었는지 · 판정이 무엇을 봤는지 남긴다

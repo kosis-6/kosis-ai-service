@@ -2296,11 +2296,12 @@ async def _compute_target(
             if not is_ok(res) or not has_values(res.get("result") or {}):
                 record[by] = (res or {}).get("status") or last.get("skip") or "못 함"
                 return False
-            if wrong and last.get("cells") == wrong:
-                record[by] = "앞 답과 같은 칸"
-                return False
-            if (same := repick.get("same")) and same(res.get("result")):
-                record[by] = "앞 답과 같은 값"  # 사전 답은 칸 기록이 없어 값으로 견준다
+            if wrong and (cells := last.get("cells")):
+                if cells == wrong:
+                    record[by] = "앞 답과 같은 칸"
+                    return False
+            elif (same := repick.get("same")) and same(res.get("result")):
+                record[by] = "앞 답과 같은 값"  # 칸 기록이 없을 때만 값으로 견준다
                 return False
             record[by] = "ok"
             return True
@@ -2473,15 +2474,18 @@ async def _substituted(entries: list[dict], q: dict, run, trace: dict) -> dict |
         checks = entry.get("checks") or {}
         name = entry.get("tbl_nm") or ""
         swap = substitute.table_region_swap(q, checks, indicators.resolve_region, name)
-        if swap is None and checks.get("class:연령") is True:
+        age_items = substitute.age_band_items(checks)
+        if swap is None and age_items:
             bands = await run_in_threadpool(_age_bands, entry["tbl_id"])
             swap = substitute.table_band_swap(q, checks, bands, name)
         if swap is None:
             continue
-        fixed = {**entry, "checks": {k: True for k in checks}}
+        fixed = {**entry, "checks": {**checks}}
         if swap.name == "연령":
-            failed = [k for k, ok in checks.items() if ok is False and k.startswith("item:")]
-            fixed["swap_items"] = {k.split(":", 1)[1]: swap.after for k in failed}
+            fixed["checks"].update((f"item:{item}", True) for item in age_items)
+            fixed["swap_items"] = dict.fromkeys(age_items, swap.after)
+        else:
+            fixed["checks"]["region_level"] = True
         res = await run(fixed, {**q, **swap.change, "substituted": True})
         ok = bool(res) and res.get("status") == "ok"
         log.append({"tbl_id": entry["tbl_id"], "what": f"{swap.before} → {swap.after}", "ok": ok})

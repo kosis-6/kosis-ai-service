@@ -1,3 +1,5 @@
+from datetime import date
+
 import pytest
 
 from app.core import stats_db
@@ -485,6 +487,73 @@ def test_compute_each_indicator(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "더 높습니다" not in text
     assert [s["tbl_id"] for s in qa.sources(r)] == ["T_출생아 수", "T_사망자 수"]
     assert "혼인 건수는 이 조건으로 답할 수 없어 뺐습니다" in qa.render(r)
+
+
+@pytest.mark.parametrize(
+    ("question", "dates", "expected"),
+    [
+        ("2024년 경기도 시군별 인구를 전년 대비 비교해줘", {}, [2024, 2023]),
+        ("작년과 재작년 경기도 시군별 인구 비교", {}, [2025, 2024]),
+        ("2020년과 2024년 경기도 시군별 인구 비교", {}, [2024, 2020]),
+        ("2020~2024년 경기도 시군별 인구 비교", {}, [2024, 2020]),
+        ("24년 경기도 시군별 인구 비교", {"year": 2025}, [2024]),
+        ("2024년 경기도 시군별 인구 비교", {"start_year": 2020, "end_year": 2024}, [2024]),
+    ],
+)
+def test_region_comparison_queries_years_said_in_the_question(
+    monkeypatch, question, dates, expected
+):
+    monkeypatch.setattr(qa.indicators, "_data_years", lambda: (1990, 2025))
+    monkeypatch.setattr(
+        qa.indicators, "find_regions", lambda text: ["경기도"] if "경기도" in text else []
+    )
+
+    def resolve(name, *args, **kwargs):
+        if name == "경기도":
+            return {"status": "ok", "kind": "시도", "region_code": "41", "region_name": name}
+        return {"status": "unknown_region"}
+
+    monkeypatch.setattr(qa.indicators, "resolve_region", resolve)
+    queried = []
+
+    def rank(indicator, year, level, sido, *args, within=None):
+        queried.append(year)
+        assert level == "시군구" and sido == "경기도" and within is None
+        return {
+            "status": "ok",
+            "indicator": indicator,
+            "year": year,
+            "unit": "명",
+            "ranking": [{"region": "지역 A", "value": year}],
+            "total_regions": 1,
+        }
+
+    monkeypatch.setattr(qa.indicators, "rank", rank)
+    parsed = {"type": "compare", "indicator": "총인구", "regions": ["경기도"], **dates}
+    result = qa.compute(qa.correct(question, parsed, date(2026, 11, 28)))
+    assert result["status"] == "ok"
+    assert queried == expected
+
+
+def test_national_region_list_clears_the_guessed_province(monkeypatch):
+    monkeypatch.setattr(qa.indicators, "find_regions", lambda _: [])
+    monkeypatch.setattr(
+        qa.indicators, "resolve_region", lambda *a, **kw: {"status": "unknown_region"}
+    )
+    question = "2024년 시도별 고령인구 비율 비교해줘"
+    parsed = {
+        "type": "compare",
+        "indicator": "고령인구 비율",
+        "sido": "경기도",
+        "regions": ["경기도", "서울"],
+    }
+    got = qa.correct(question, parsed, date(2026, 11, 28))
+    assert got["type"] == "rank" and got["level"] == "시도" and got["regions"] == []
+    assert qa.indicators.rank_where(got["level"], got.get("sido"), got.get("within")) == (
+        "r.kind = '시도'",
+        [],
+        "시도",
+    )
 
 
 def test_compute_population_rank_passes_the_asked_region(monkeypatch: pytest.MonkeyPatch) -> None:

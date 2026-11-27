@@ -8,7 +8,7 @@
   differs      다 이었고, 그 칸이 앞 답이 쓴 칸과 다름 → 칸 잇기만으로 다른 답이 나온다
   cells_exist  못 이은 조건이 있지만 그 표에 '그 구분이 없음'은 아니고 고를 칸이 있음
                → recell 이 뜻으로 이을 여지 (일상어 · 합계 칸 없음 · 칸이 여럿)
-  kind_ok      묻는 값의 종류(수 · 비율)와 답의 단위가 맞음 (단위를 모르면 참)
+  kind_ok      묻는 값의 종류(수 · 비율)와 다시 고른 칸의 단위가 맞음 (단위를 모르면 참)
   topic_ok     질문의 말이 그 표의 어느 칸과는 닿음 (칸 잇기에 topic 조건이 남지 않음)
 
 행동 고르기의 '칸 있음' = differs or cells_exist, '맞음' = kind_ok and topic_ok (agent_action 3-3).
@@ -80,7 +80,7 @@ def kind_ok(question: str, unit: str | None) -> bool:
 
 def _differs(b: binding.Binding, used: dict[int, set[str]]) -> bool:
     """칸 잇기가 고른 칸이 앞 답이 쓴 칸과 다른가. 앞 답 칸을 모르면(사전 답) 값으로 고른 칸이
-    있으면 다르다고 본다 (같은 값이면 repick 이 '앞 답과 같은 값'으로 거른다)"""
+    있으면 다르다고 본다 (앞 답의 칸을 모를 때는 repick 이 값을 비교한다)"""
     for x in b.bound:
         if x.dim is None or not x.codes:
             continue
@@ -99,9 +99,9 @@ def check(
     parsed: dict,
     slots: dict | None = None,
     used: set[tuple[int, str]] | None = None,
-    unit: str | None = None,
+    hinted_cells: list[str] | None = None,
 ) -> Check:
-    """표 하나 검사. used: 앞 답이 그 표에서 쓴 칸 (분류 번호, 코드), unit: 앞 답의 단위.
+    """표 하나 검사. used는 앞 답의 칸, hinted_cells는 판정에서 지목한 후보의 이름이다.
     표 구조가 없으면 di.schema 가 예외를 낸다 (부르는 쪽이 '검사 못 함'으로 처리)"""
     dims, region_dim, _ = di.schema(tbl_id)
     b = binding.bind(tbl_id, question, parsed, slots, {})
@@ -125,7 +125,20 @@ def check(
     out.topic_ok = not any(u.cond == "topic" for u in b.unbound)
     if not out.topic_ok:
         out.reasons.append("질문의 말이 표의 어느 칸과도 닿지 않음")
-    out.kind_ok = kind_ok(question, unit)
-    if not out.kind_ok:
-        out.reasons.append(f"묻는 값의 종류와 답의 단위({unit})가 다름")
+    if RATIO_ASK.search(question) or COUNT_ASK.search(question):
+        picks = b.picks()
+        items = picks.pop(0, [])
+        picks.pop(region_dim, None)
+        hinted_items = [
+            code
+            for d in dims
+            if d.no == 0
+            for code, name in d.codes.items()
+            if name in (hinted_cells or [])
+        ]
+        units = [di._unit(tbl_id, item, picks)[0] for item in hinted_items or items]
+        out.kind_ok = all(kind_ok(question, unit) for unit in units)
+        if not out.kind_ok:
+            shown = ", ".join(dict.fromkeys(unit for unit in units if unit))
+            out.reasons.append(f"묻는 값의 종류와 다시 고른 칸의 단위({shown})가 다름")
     return out

@@ -1,3 +1,6 @@
+from contextvars import copy_context
+from types import SimpleNamespace
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -100,3 +103,38 @@ def test_ask_progress_steps_while_answering(monkeypatch: pytest.MonkeyPatch) -> 
 def test_ask_progress_rejects_odd_id() -> None:
     assert client.get("/ask/progress/a%2Fb").status_code in (404, 422)
     assert client.post("/ask", json={"question": "서울", "progress_id": "x"}).status_code == 422
+
+
+def test_ask_cannot_claim_progress_id_from_an_active_request() -> None:
+    from app.services import progress
+
+    progress_id = "pid-active-1234"
+    token = progress.begin(progress_id)
+    try:
+        progress.now(progress.FIND_TABLE)
+        result = client.post("/ask", json={"question": "서울 인구", "progress_id": progress_id})
+        assert result.status_code == 409
+        assert client.get(f"/ask/progress/{progress_id}").json() == {"steps": [progress.FIND_TABLE]}
+    finally:
+        progress.end(token)
+
+
+def test_ask_progress_expires_on_read_and_old_request_cannot_change_new_one(monkeypatch):
+    from app.services import progress
+
+    at = 1000.0
+    monkeypatch.setattr(progress, "time", SimpleNamespace(monotonic=lambda: at))
+    progress_id = "pid-expired-1234"
+    before, after = copy_context(), copy_context()
+    old = before.run(progress.begin, progress_id)
+    before.run(progress.now, progress.REPORT)
+    at += progress.TTL
+    assert client.get(f"/ask/progress/{progress_id}").json() == {"steps": []}
+    new = after.run(progress.begin, progress_id)
+    try:
+        before.run(progress.now, progress.WRAP_UP)
+        before.run(progress.end, old)
+        after.run(progress.now, progress.COMPUTE)
+        assert client.get(f"/ask/progress/{progress_id}").json() == {"steps": [progress.COMPUTE]}
+    finally:
+        after.run(progress.end, new)

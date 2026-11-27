@@ -958,6 +958,7 @@ def _apply_time(question, parsed, fix, today):
     상대 기간을 풀었는데 질문에 숫자 연도가 없으면, HCX가 직접 채운 시작 · 끝은 버린다"""
     refs = timeref.find(question)
     if not refs:
+        parsed.pop("time_refs", None)
         _drop_unsaid_years(question, parsed, fix, set())
         return
     end = None
@@ -1203,36 +1204,6 @@ def correct(question, parsed, today=None):
     is_comp = sp is not None and lookup.kind_of(sp) == "composition"
     if is_comp and kind not in ("composition", "causal"):
         fix("type", "composition", "구성비 지표")
-    elif kind in ("value", "rank") and BY_REGION.search(question) and not is_comp:
-        if kind == "value" or (parsed.get("regions") and not parsed.get("target")):
-            if kind == "value":
-                fix("type", "rank", "지역별 목록")
-            _region_list(question, parsed, fix)
-    elif (
-        kind in ("compare", "trend")
-        and BY_REGION.search(question)
-        and not is_comp
-        and (years := _two_years_by_region(question, parsed))
-    ):
-        # '2020년과 2024년 경기도 시군별 인구 비교': 지역마다 두 해 값과 변화량. PR 리뷰: 한 해
-        # 순위로 바뀌어 두 연도를 안 썼고, 되돌리면 경기도 전체 추이 하나로 답했다
-        fix("type", "rank", "지역별 두 해 비교")
-        parsed["rank_by"] = "increase"
-        parsed["change_from"] = years[0]
-        fix("year", years[1], "두 해 중 나중 해")
-        parsed["start_year"] = parsed["end_year"] = None
-        _region_list(question, parsed, fix)
-    elif (
-        kind == "compare"
-        and BY_REGION.search(question)
-        and not is_comp
-        and _list_not_compare(question, parsed)
-    ):
-        # '시도별 … 비교' · '경기도 시군별 … 비교': 한 해 · 한 지표를 시도 하나(또는 전국) 안에서
-        # 물으면 비교가 아니라 지역별 목록이다. 11/27 차트 점검: HCX가 펼친 17개 시도를 질문에
-        # 없다고 막았고, '경기도 시군별'은 경기도 값 하나로 답했다
-        fix("type", "rank", "지역별 목록 (비교)")
-        _region_list(question, parsed, fix)
     elif kind == "composition" and not is_comp:
         population = sp is None or sp["name"] == "총인구"
         if not (population and COMPOSITION_WORDS.search(question) and not ages):
@@ -1240,9 +1211,9 @@ def correct(question, parsed, today=None):
             fix("type", new, "구성·비중을 묻지 않음")
             if new == "rank":
                 _region_list(question, parsed, fix)
-    kind = parsed.get("type")
-
     _apply_time(question, parsed, fix, today)
+    by_region_change = not is_comp and _read_region_list(question, parsed, fix)
+    kind = parsed.get("type")
     _read_question(question, parsed, fix)
 
     gender_question = HOUSEHOLD_MEMBER_GENDER.sub("가구", question)
@@ -1287,13 +1258,18 @@ def correct(question, parsed, today=None):
     spans = slots.decades(question, today)
     has_abs_year = bool(years or spans)
     single = len(years) == 1 and not SPAN.search(question) and not SINCE.search(question)
-    if single and parsed.get("type") not in ("trend", "other", "parse_error"):
+    if (
+        single
+        and not by_region_change
+        and parsed.get("type") not in ("trend", "other", "parse_error")
+    ):
         year = years.pop()
         if parsed.get("year") != year:
             fix("year", year, "질문의 연도")
 
     if (
-        not has_abs_year
+        not by_region_change
+        and not has_abs_year
         and not timeref.SPAN_UNTIL.search(question)
         and (ref := timeref.resolve(question, today))
     ):
@@ -1337,7 +1313,13 @@ def correct(question, parsed, today=None):
     born_keys = [k for k in ("year", "start_year", "end_year") if parsed.get(k) in born]
     for key in born_keys:
         fix(key, None, "'년생'은 출생 연도 → 자료 마지막 해")
-    if not born_keys and not has_abs_year and not _says_year(question) and parsed.get("year"):
+    if (
+        not by_region_change
+        and not born_keys
+        and not has_abs_year
+        and not _says_year(question)
+        and parsed.get("year")
+    ):
         fix("year", None, "연도를 말하지 않음 → 자료 마지막 해")
 
     regions = parsed.get("regions") or []
@@ -2121,71 +2103,92 @@ def _both_sexes(question):
     return len(genders) == 2 or (not genders and bool(SEX_SPLIT.search(question)))
 
 
-def _list_not_compare(question, parsed):
-    """'○○별 비교'를 한 해 지역별 목록으로 읽어도 되는가: 한 해이고, 범위가 시도 하나 ·
-    일반구가 있는 시 · 전국일 때. 두 해는 _two_years_by_region, 여러 지표는 지표마다 목록"""
-    start, end = parsed.get("start_year"), parsed.get("end_year")
-    if (start and end and start != end) or len(re.findall(r"\d{4}\s*년", question)) > 1:
-        return False
-    named = indicators.find_regions(question)
-    if len(named) > 1:
-        return False
-    scope_ok = all(indicators.resolve_region(n).get("kind") == "시도" for n in named)
-    return bool(scope_ok or _district_scope(question, parsed))
-
-
 WHOLE_PERIOD = re.compile(r"추이|흐름|추세|매년|해마다|연도별|년도별")
 
 
-def _two_years_by_region(question, parsed):
-    """'○○별'과 서로 다른 두 해만 물었으면 (앞 해, 뒤 해). 기간 전체('추이')는 None"""
-    start, end = parsed.get("start_year"), parsed.get("end_year")
-    if not (start and end and start != end) or WHOLE_PERIOD.search(question):
-        return None
+def _region_years(question, parsed):
+    years = {int(y) for y in slots.YEAR.findall(question)} | slots.short_years(question)
+    years.update(ref["year"] for ref in parsed.get("time_refs") or [] if "year" in ref)
+    if PREV_YEAR.search(question) and len(years) <= 1:
+        year = next(iter(years), None)
+        if year is None:
+            year = indicators._data_years()[1]
+        years.update((year - 1, year))
+    return sorted(years)
+
+
+def _read_region_list(question, parsed, fix):
+    """해석한 연도와 질문에 나온 지역을 바탕으로 지역별 조회 유형을 정한다."""
+    kind = parsed.get("type")
+    if kind not in ("value", "compare", "trend", "rank") or not BY_REGION.search(question):
+        return False
+    if kind == "rank" and parsed.get("target"):
+        return False
+
     named = indicators.find_regions(question)
-    if len(named) > 1:
-        return None
-    scope_ok = all(indicators.resolve_region(n).get("kind") == "시도" for n in named)
-    if not (scope_ok or _district_scope(question, parsed)):
-        return None
-    return min(start, end), max(start, end)
+    scope_ok = len(named) <= 1 and (
+        all(indicators.resolve_region(n).get("kind") == "시도" for n in named)
+        or _district_scope(question, named)
+    )
+    years = _region_years(question, parsed)
+    whole_period = WHOLE_PERIOD.search(question) or (
+        SINCE.search(question) and not SPAN.search(question)
+    )
+    if len(years) == 2 and scope_ok and not whole_period:
+        fix("type", "rank", "지역별 두 해 비교")
+        parsed["rank_by"] = "increase"
+        parsed["change_from"] = years[0]
+        fix("year", years[1], "두 해 중 나중 해")
+        parsed["start_year"] = parsed["end_year"] = None
+        _region_list(question, parsed, fix, named)
+        return True
+    if (
+        whole_period
+        or len(years) > 1
+        or any(
+            "start" in ref or ref["kind"] in PERIOD_KINDS for ref in parsed.get("time_refs") or []
+        )
+    ):
+        return False
+    if kind == "value" or (kind == "compare" and scope_ok):
+        fix("type", "rank", "지역별 목록")
+    elif kind != "rank" or not (
+        parsed.get("regions") or parsed.get("sido") or parsed.get("within")
+    ):
+        return False
+    _region_list(question, parsed, fix, named)
+    if years and parsed.get("year") != years[0]:
+        fix("year", years[0], "지역별 목록의 연도")
+    return False
 
 
 BY_DISTRICT = re.compile(r"(?<![시군])구\s*(?:별|마다)")
 
 
-def _district_scope(question, parsed):
-    """'○○시 구별': 일반구가 있는 시를 말하고 구별로 물었으면 그 시 (아니면 None)"""
+def _district_scope(question, named):
+    """질문에 나온 시가 일반구를 두고 있고 구별로 물었으면 그 시를 돌려준다."""
     if not BY_DISTRICT.search(question):
         return None
-    for name in [*indicators.find_regions(question), *(parsed.get("regions") or [])]:
+    for name in named:
         if indicators.districts(name):
             return indicators.resolve_region(name)["display"]
     return None
 
 
-def _region_list(question, parsed, fix):
-    regions = parsed.get("regions") or []
+def _region_list(question, parsed, fix, named=None):
+    named = indicators.find_regions(question) if named is None else named
     level = "시도" if re.search(r"시도\s*(별|마다)", question) else "시군구"
     if parsed.get("level") != level:
         fix("level", level, "지역별 목록")
-    if level == "시군구" and (city := _district_scope(question, parsed)):
-        # PR 리뷰: '수원시 구별'에서 시도만 범위로 남아 전국 시군구 순위로 넓어졌다
+    city = _district_scope(question, named) if level == "시군구" else None
+    sido = None
+    if level == "시군구" and not city:
+        sido = next((n for n in named if indicators.resolve_region(n).get("kind") == "시도"), None)
+    if parsed.get("within") != city:
         fix("within", city, "시 안의 구별 목록")
-        if regions:
-            fix("regions", [], "지역별 목록")
-    elif level == "시군구":
-        found = indicators.find_regions(question)
-        names = [*found, *regions, parsed.get("sido")]
-        sido = next(
-            (n for n in names if n and indicators.resolve_region(n).get("kind") == "시도"), None
-        )
-        if sido and sido != parsed.get("sido"):
-            fix("sido", sido, "지역별 목록의 범위")
-        if regions:
-            fix("regions", [], "지역별 목록")
-    elif regions and not indicators.find_regions(question):
-        # '시도별': 질문에 지역 이름이 없는데 HCX가 시도를 펼쳐 적었으면 전체 시도 목록으로
+    if parsed.get("sido") != sido:
+        fix("sido", sido, "지역별 목록의 범위")
+    if parsed.get("regions"):
         fix("regions", [], "지역별 목록")
     if re.search(r"(별|마다)", question) and parsed.get("top"):
         fix("top", None, "지역별 목록은 전체")
@@ -4429,7 +4432,7 @@ async def answer(parsed, trace=None, question=""):
     return {
         "status": result.get("status"),
         "answer": f"{summary(result)}\n\n{render(result)}".strip(),
-        "parsed": parsed,
+        "parsed": substitute.applied_conditions(parsed, result),
         "result": result,
         "sources": sources(result),
         "trace": trace,
