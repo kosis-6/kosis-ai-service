@@ -14,6 +14,7 @@ export type AskResponse = Omit<Schemas["AskResponse"], "tables"> & {
   report?: Record<string, unknown> | null;
 };
 export type Chart = Schemas["Chart"];
+export type ChartView = NonNullable<Chart["view"]>;
 export type ChartRow = Schemas["ChartRow"];
 export type Source = Schemas["Source"];
 export type Applied = Schemas["Applied"];

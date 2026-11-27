@@ -195,20 +195,21 @@ function Notice({ data }: { data: SearchResponse }) {
 
 type Props = {
   data: SearchResponse;
+  fullAnswer?: boolean;
   busy: boolean;
   onSend: Send;
   onOthers: (recs: Recommendation[], parsed: Parsed) => void;
   onAskAgain: () => void;
 };
 
-export function Reply({ data, busy, onSend, onOthers, onAskAgain }: Props) {
+export function Reply({ data, fullAnswer, busy, onSend, onOthers, onAskAgain }: Props) {
   const recs = data.recommendations ?? [];
   const title = NO_RESULT_TITLES[data.status];
   return (
     <>
       <div className="bubble">
         {title && <p className="bubble-title">{title}</p>}
-        {splitLinks(bubbleText(data)).map((part, i) =>
+        {splitLinks(fullAnswer ? data.answer : bubbleText(data)).map((part, i) =>
           part.href ? (
             <a key={i} href={part.href} target="_blank" rel="noopener">
               {part.text}

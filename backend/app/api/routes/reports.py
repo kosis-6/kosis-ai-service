@@ -47,7 +47,7 @@ async def create_report(body: ReportCreate, user: CurrentUser) -> ReportRead:
     generate가 true면 문장 생성까지 한 번에 한다 (생성이 실패해도 만든 보고서는 남는다)"""
     try:
         found = await reports.create(
-            user.id, body.title, body.purpose, body.turn_ids, body.session_id
+            user.id, body.title, body.purpose, body.turn_ids, body.session_id, body.chart_views
         )
     except ReportError as e:
         raise _http(e) from e

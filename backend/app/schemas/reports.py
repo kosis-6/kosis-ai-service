@@ -64,6 +64,9 @@ class ReportCreate(BaseModel):
     generate: bool = Field(
         default=False, description="true면 만들고 바로 문장까지 생성 (대화창 [보고서] 버튼)"
     )
+    chart_views: dict[int, Literal["line", "bar", "table"]] = Field(
+        default_factory=dict, max_length=MAX_ITEMS, description="선택한 답의 차트 표시 방식"
+    )
 
 
 class ReportUpdate(BaseModel):

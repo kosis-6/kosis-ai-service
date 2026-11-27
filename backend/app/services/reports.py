@@ -10,6 +10,7 @@ from typing import Any
 
 from sqlalchemy import text
 
+from app.services import charts
 from app.services.log_redaction import mask
 
 TITLE_MAX = 80
@@ -35,6 +36,8 @@ BAD_ORDER = "bad_order"
 CHANGED = "changed"
 EMPTY = "empty"
 OTHER_TALK = "other_conversation"
+NOT_SHORTER = "not_shorter"
+ALREADY_SHORT = "핵심 수치를 유지하면서 더 줄이기 어려워 기존 보고서를 그대로 두었어요."
 OTHER_TALK_MESSAGE = "보고서에는 한 대화의 답만 담을 수 있습니다. 이 답은 다른 대화에서 나왔습니다."
 
 
@@ -111,7 +114,9 @@ async def _turn(conn, user_id: int, turn_id: int) -> dict:
     return dict(turn)
 
 
-async def _add(conn, user_id: int, report_id: int, turn_id: int) -> bool:
+async def _add(
+    conn, user_id: int, report_id: int, turn_id: int, chart_view: str | None = None
+) -> bool:
     """담았으면 True, 이미 있으면 False"""
     have = await conn.execute(
         text(
@@ -127,6 +132,9 @@ async def _add(conn, user_id: int, report_id: int, turn_id: int) -> bool:
         raise ReportError(FULL, f"보고서에는 결과를 {MAX_ITEMS}개까지 담을 수 있습니다.")
     turn = await _turn(conn, user_id, turn_id)
     await _same_talk(conn, report_id, turn["session_id"])
+    snapshot = snapshot_of(turn)
+    if chart_view and (chart := snapshot.get("chart")) and charts.view_fits(chart, chart_view):
+        snapshot["chart"] = {**chart, "view": chart_view}
     await conn.execute(
         text(
             "insert into app.report_items (report_id, turn_id, sort_order, snapshot)"
@@ -136,7 +144,7 @@ async def _add(conn, user_id: int, report_id: int, turn_id: int) -> bool:
             "rid": report_id,
             "tid": turn_id,
             "ord": last + 1,
-            "snap": json.dumps(snapshot_of(turn), ensure_ascii=False, default=str),
+            "snap": json.dumps(snapshot, ensure_ascii=False, default=str),
         },
     )
     return True
@@ -181,6 +189,7 @@ async def create(
     purpose: str | None = None,
     turn_ids: list[int] | None = None,
     session_id: str | None = None,
+    chart_views: dict[int, str] | None = None,
 ) -> dict:
     from app.core.db import engine
 
@@ -201,7 +210,7 @@ async def create(
         )
         report_id = row.scalar_one()
         for tid in dict.fromkeys(turn_ids or []):
-            await _add(conn, user_id, report_id, tid)
+            await _add(conn, user_id, report_id, tid, (chart_views or {}).get(tid))
         return await _full(conn, user_id, report_id)
 
 
@@ -234,6 +243,20 @@ async def detail(user_id: int, report_id: int) -> dict | None:
             return await _full(conn, user_id, report_id)
         except ReportError:
             return None
+
+
+async def latest_for_conversation(user_id: int, session_id: str) -> dict | None:
+    from app.core.db import engine
+
+    async with engine.begin() as conn:
+        report_id = await conn.scalar(
+            text(
+                "select id from app.reports where user_id = :uid and session_id = :sid"
+                " order by updated_at desc, id desc limit 1"
+            ),
+            {"uid": user_id, "sid": session_id},
+        )
+        return await _full(conn, user_id, report_id) if report_id is not None else None
 
 
 async def update(
@@ -353,20 +376,25 @@ async def delete(user_id: int, report_id: int) -> bool:
     return gone.rowcount > 0
 
 
-async def generate(user_id: int, report_id: int, style: str | None = None) -> dict:
+async def generate(
+    user_id: int, report_id: int, style: str | None = None, *, shorten: bool = False
+) -> dict:
     """담긴 결과로 보고서 문장을 만들어 content에 저장한다. 생성 중 항목이 바뀌면 저장하지 않는다"""
     from app.core.db import engine
     from app.services import report_writer
 
     async with engine.begin() as conn:
         report = await _full(conn, user_id, report_id)
+    if shorten and report["status"] != "ready":
+        raise ReportError(CHANGED, "축약은 생성된 보고서에서 할 수 있습니다.")
     if not report["items"]:
         raise ReportError(EMPTY, "보고서에 담긴 결과가 없습니다.")
     seen = [(i["turn_id"], i["sort_order"]) for i in report["items"]]
     stamp = report["updated_at"]
     try:
+        options = {"compact": True} if shorten else {}
         content = await report_writer.write(
-            report["title"], report["purpose"], report["items"], style
+            report["title"], report["purpose"], report["items"], style, **options
         )
         status = "ready"
     except ValueError as e:
@@ -381,6 +409,13 @@ async def generate(user_id: int, report_id: int, style: str | None = None) -> di
             raise ReportError(
                 CHANGED, "만드는 동안 보고서 내용이 바뀌었습니다. 다시 만들어 주세요."
             )
+        if shorten:
+            if status != "ready":
+                raise ReportError(NOT_REPORTABLE, content["error"])
+            if report_writer.body_length(content) >= report_writer.body_length(
+                report["content"] or {}
+            ):
+                raise ReportError(NOT_SHORTER, ALREADY_SHORT)
         await conn.execute(
             text(
                 "update app.reports set content = cast(:content as jsonb), status = :status,"

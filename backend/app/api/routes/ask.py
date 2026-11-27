@@ -22,7 +22,11 @@ async def ask(body: AskRequest, user: OptionalUser) -> AskResponse:
     question = body.question
     try:
         res = await ask_session.handle(
-            body.session_id, question, user.id if user else None, body.selections
+            body.session_id,
+            question,
+            user.id if user else None,
+            body.selections,
+            chart_view=body.chart_view,
         )
         question = res.get("question") or question
     except StatsNotLoadedError as e:
