@@ -4,7 +4,7 @@ from typing import Any
 
 from starlette.concurrency import run_in_threadpool
 
-from app.services import binding, indicators
+from app.services import binding, indicators, substitute
 
 logger = logging.getLogger(__name__)
 
@@ -150,6 +150,12 @@ def judge(question: str, parsed: dict, result: dict, u: dict) -> dict[str, Any] 
         return None
     cond = dict(u.get("conditions") or {})
     cond["classes"] = [c for c in cond.get("classes") or [] if not SEX_CLASS.match(c)]
+    age_changed = (result.get("changed_condition") or {}).get("name") == "연령"
+    if age_changed:
+        parsed = substitute.applied_conditions(parsed, result)
+        cond["items"] = [
+            item for item in cond.get("items") or [] if not substitute.is_age_item(item)
+        ]
     if survey := sp.get("survey"):
         question = qa.without_survey(question)
         cond["classes"] = [c for c in cond["classes"] if qa.survey_said(c) != survey]
@@ -165,6 +171,13 @@ def judge(question: str, parsed: dict, result: dict, u: dict) -> dict[str, Any] 
     b = binding.bind(tbl_id, question, {**parsed, "sex": None}, slots, forced)
     words = _indicator_words(sp, parsed)
     reasons = _unbound_reasons(b, parsed, words) + _ignored(b, tbl_id, decided, words)
+    requested = None
+    if age_changed:
+        topic = indicators.canonical_name(u.get("topic") or "")
+        current = indicators.canonical_name(parsed.get("indicator") or "")
+        if topic and topic != current and _norm(topic) in _norm(question):
+            requested = topic
+            reasons.append(f"질문 지표 '{topic}' 불일치 (사전 지표 '{current}')")
     if SUB_YEAR.search(question) and any(
         not (r.get("as_of") or MONTHLY.search(r.get("basis") or "")) for r in qa._leaves(result)
     ):
@@ -181,6 +194,8 @@ def judge(question: str, parsed: dict, result: dict, u: dict) -> dict[str, Any] 
         grounded=parsed.get("grounded"),
         understanding={k: u.get(k) for k in ("topic", "target", "conditions")},
     )
+    if requested:
+        out["requested_indicator"] = requested
     return out
 
 

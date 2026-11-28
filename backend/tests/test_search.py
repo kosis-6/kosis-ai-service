@@ -84,6 +84,25 @@ def test_check_conditions() -> None:
     assert se.check(t, _slots("q", "인구")) == {}
 
 
+def test_year_item_matches_a_cohort_year_cell() -> None:
+    """입국연도별 표의 칸 이름은 '2024'다. 항목 '2024년'을 ✘로 보면 거짓 '조건 불충족'이 붙었다"""
+    years = [{"name": "외국인 - 계"}, {"name": "2025"}, {"name": "2024"}]
+    entry, plain = se.prepare(
+        [
+            _t("E", "성, 연령 및 입국연도별 외국인 - 시도", 2015, 2025, "FE", items=years),
+            _t("P", "외국인주민 현황", 2015, 2025, "FP", items=[{"name": "계"}]),
+        ]
+    )
+    s = _slots("입국연도가 2024년인 외국인", "외국인", year=2025, items=["2024년"])
+    assert se.check(entry, s)["item:2024년"] is True
+    assert se.check(plain, s)["item:2024년"] is False
+    natural = "2025년 기준 서울 외국인 중 2024년에 입국한 사람 수"
+    s = se.ground_conditions(se.slot_parser.correct(natural, _slots(natural, "외국인")))
+    assert se.check(entry, s)["class:입국연도"] is True
+    assert se.check(entry, s)["item:2024년"] is True
+    assert se.check(plain, s)["class:입국연도"] is False
+
+
 def test_choose_member_and_edition() -> None:
     family = se.prepare(_naturalized())
     s = _slots("2015년 혼인 귀화자 여자", "귀화자", year=2015, sex="여")

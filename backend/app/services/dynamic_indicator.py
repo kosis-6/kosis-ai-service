@@ -387,6 +387,11 @@ def _text_hits(
             continue
         if found := _word_hits(question, d, subject):
             hits[d.no] = found
+    for no, codes in _entry_year_cells(
+        dims, subject, qa.slots.entry_cohort_years(question)
+    ).items():
+        if no not in skip:
+            hits[no] = codes
     return hits
 
 
@@ -1054,6 +1059,43 @@ def _sex_override(plan: Plan, sex: str) -> dict:
     return {"item_id": code} if d.no == 0 else {"filters": {d.col: code}}
 
 
+COHORT_AXIS = re.compile(r"(입국|귀화|출생|혼인|전입|전출)(?:기준)?(?:연도|년도|시기)")
+COHORT_YEAR = re.compile(r"^(?:19|20)\d{2}(?:\D|$)")
+
+
+def _cohort_axis(d: Dim, tbl_nm: str) -> str | None:
+    axis = COHORT_AXIS.search(_norm(d.name))
+    if not axis and d.no == 0 and _is_cohort_dim(d):
+        axis = COHORT_AXIS.search(_norm(tbl_nm))
+    return axis[1] if axis else None
+
+
+def _entry_year_cells(dims: list[Dim], tbl_nm: str, years: set[int]) -> dict[int, list[str]]:
+    if not years:
+        return {}
+    labels = {label for y in years for label in (str(y), f"{y}년")}
+    return {
+        d.no: codes
+        for d in dims
+        if _cohort_axis(d, tbl_nm) == "입국"
+        if (codes := [code for code, label in d.codes.items() if _norm(label) in labels])
+    }
+
+
+def _cohort_dimensions(question: str, tbl_nm: str, dims: list[Dim]) -> list[Dim]:
+    """코호트를 말하지 않으면 수록 연도가 코호트의 연도 칸을 고르지 못하게 한다."""
+    out = []
+    asked = _norm(question)
+    for d in dims:
+        axis = _cohort_axis(d, tbl_nm)
+        if not axis or axis in asked or (axis == "출생" and qa.slots.birth_years(question)):
+            out.append(d)
+        else:
+            codes = {c: n for c, n in d.codes.items() if _norm(n) in TOTAL_NAMES or is_subtotal(n)}
+            out.append(Dim(d.no, d.name, codes))
+    return out
+
+
 def _without_age_words(term: str) -> str:
     for start, end, _ in sorted(qa.age_spans(term), reverse=True):
         rest = re.sub(r"^\s*(사이|까지|의)", "", term[end:])
@@ -1069,11 +1111,67 @@ def _name(
     strip_age: bool = False,
     unit: str = "",
     target: str = "",
+    question: str = "",
+    tbl_nm: str = "",
 ) -> str:
     named = [d for d in dims if d.no in plan.matched and d.no not in plan.bands]
+    table_cohort = COHORT_AXIS.search(_norm(tbl_nm))
+    asked_cohort = bool(table_cohort and table_cohort[1] in _norm(question))
+    cohort = None
+    if asked_cohort:
+        # 코호트 칸('2025')은 낱말로 두면 '2025 수'가 되고, 빼기만 하면 '2025년 서울 외국인 수'처럼
+        # 전체 외국인으로 읽힌다 (11/28). 칸 이름 대신 '2025년 입국'으로 이름 앞에 붙인다
+        named = [d for d in named if not _is_cohort_dim(d)]
+        cohort = _cohort_label(dims, plan, table_cohort[1])
+    name = _plain_name(parsed, named, dims, plan, counted, strip_age, unit, target, asked_cohort)
+    return _with_cohort(name, cohort)
+
+
+def _is_cohort_dim(d: Dim) -> bool:
+    return bool(COHORT_AXIS.search(_norm(d.name))) or (
+        d.no == 0 and sum(bool(COHORT_YEAR.match(n)) for n in d.codes.values()) > 1
+    )
+
+
+def _cohort_label(dims: list[Dim], plan: Plan, axis: str) -> tuple[str, str] | None:
+    """고른 코호트 칸의 말과 축: ('2025년', '입국'). 합계 · 소계 칸이면 None"""
+    for d in dims:
+        if not _is_cohort_dim(d) or (code := plan.pick.get(d.no)) is None:
+            continue
+        label = _label_name(d.codes.get(code) or "")
+        if not label or _norm(label) in TOTAL_NAMES or is_subtotal(label):
+            continue
+        if re.fullmatch(r"[\d\s~]+", label):
+            label = f"{label.strip()}년"
+        return label, axis
+    return None
+
+
+def _with_cohort(name: str, cohort: tuple[str, str] | None) -> str:
+    """'외국인 수' → '2025년 입국 외국인 수' (이름에 '입국'이 있으면 연도만, 연도가 없는 칸은
+    '입국연도 미상 외국인 수')"""
+    if not cohort:
+        return name
+    label, axis = cohort
+    if not re.search(r"\d", label):
+        return f"{axis}연도 {label} {name}"
+    return f"{label} {name}" if axis in name else f"{label} {axis} {name}"
+
+
+def _plain_name(
+    parsed: dict,
+    named: list[Dim],
+    dims: list[Dim],
+    plan: Plan,
+    counted: bool,
+    strip_age: bool,
+    unit: str,
+    target: str,
+    asked_cohort: bool,
+) -> str:
     named = [d for d in named if len(d.codes) > 1] or named
     words = [d.codes[plan.matched[d.no]] for d in named]
-    words = words or [dims[0].codes[plan.pick[0]]]
+    words = words or ([dims[0].codes[plan.pick[0]]] if not asked_cohort else [])
     if unit:
         tail = re.compile(rf"\s*\(\s*{re.escape(unit)}\s*\)\s*$")
         words = [tail.sub("", w) or w for w in words]
@@ -1116,6 +1214,10 @@ def build(
     forced: dict[int, str] | None = None,
     slots: dict | None = None,
 ) -> tuple[dict | None, "str | Ask | None"]:
+    if (population := indicators.population_spec(question)) and (
+        _norm(indicators._survey_of(tbl_id) or "") != _norm(population["population_survey"])
+    ):
+        return None, f"'{population['name']}'의 집계 대상과 다른 조사"
     dims, region_dim, level = schema(tbl_id)
     if not dims or dims[0].no != 0:
         return None, "항목 정보가 없음"
@@ -1136,6 +1238,14 @@ def build(
         tbl_nm = lookup._table(tbl_id)["tbl_nm"]
     except Exception:
         tbl_nm = ""
+    dims = _cohort_dimensions(question, tbl_nm, dims)
+    if any(not d.codes for d in dims):
+        return None, "코호트를 지정하지 않았는데 전체를 집계한 칸이 없음"
+    entry_years = qa.slots.entry_cohort_years(question)
+    entry_cells = _entry_year_cells(dims, tbl_nm, entry_years)
+    entry_dim, entry_codes = next(iter(entry_cells.items()), (None, []))
+    if entry_years and (len(entry_cells) != 1 or len(entry_codes) != len(entry_years)):
+        return None, "질문의 입국연도 조건을 표의 칸에 반영할 수 없음"
     target = _table_target(tbl_nm)
     housing = qa.housing_population_condition(question) or parsed.get("housing_condition")
     if housing and "고령자" in target:
@@ -1162,7 +1272,17 @@ def build(
         logger.exception("부부 단위 표 확인 실패: %s", tbl_id)
         couple = False
     multi = (slots or {}).get("binding_multi")
+    if multi and any(d.no == multi[0] and not set(multi[1]) <= d.codes.keys() for d in dims):
+        multi = None
     quiet = (slots or {}).get("binding_quiet")
+    if entry_dim is not None:
+        forced = {no: code for no, code in (forced or {}).items() if no != entry_dim}
+        if len(entry_codes) == 1:
+            forced[entry_dim] = entry_codes[0]
+        if multi and multi[0] == entry_dim:
+            multi = None
+        if quiet is not None:
+            quiet = {no: value for no, value in quiet.items() if no != entry_dim}
     # 숫자 구간 축의 구간 합: "2.5kg 미만" · "고령산모(35세 이상)"가 덮는 칸들을 그 축에 잇는다
     items = list(((slots or {}).get("conditions") or {}).get("items") or [])
     literal = set(
@@ -1176,6 +1296,14 @@ def build(
     plan, why = choose(
         question, parsed, dims, region_dim, forced, tbl_nm, couple, multi, quiet, bands or None
     )
+    if plan and entry_dim is not None:
+        picked = (
+            plan.multi[1]
+            if plan.multi and plan.multi[0] == entry_dim
+            else [plan.pick.get(entry_dim)]
+        )
+        if set(picked) != set(entry_codes):
+            return None, "질문의 입국연도 조건을 선택한 칸에 반영할 수 없음"
     if (seen := (slots or {}).get("seen")) is not None:
         seen["plan"] = plan
     _report_cells(slots, plan, dims, parsed, region_dim)
@@ -1243,7 +1371,7 @@ def build(
     )
     places = [cell for _, cell in chosen_places]
     name = _place_name(
-        _name(parsed, dims, plan, counted, strip_age, unit, target),
+        _name(parsed, dims, plan, counted, strip_age, unit, target, question, tbl_nm),
         mentions,
         places,
         target,
@@ -2296,11 +2424,12 @@ async def _compute_target(
             if not is_ok(res) or not has_values(res.get("result") or {}):
                 record[by] = (res or {}).get("status") or last.get("skip") or "못 함"
                 return False
-            if wrong and last.get("cells") == wrong:
-                record[by] = "앞 답과 같은 칸"
-                return False
-            if (same := repick.get("same")) and same(res.get("result")):
-                record[by] = "앞 답과 같은 값"  # 사전 답은 칸 기록이 없어 값으로 견준다
+            if wrong and (cells := last.get("cells")):
+                if cells == wrong:
+                    record[by] = "앞 답과 같은 칸"
+                    return False
+            elif (same := repick.get("same")) and same(res.get("result")):
+                record[by] = "앞 답과 같은 값"  # 칸 기록이 없을 때만 값으로 견준다
                 return False
             record[by] = "ok"
             return True
@@ -2473,15 +2602,18 @@ async def _substituted(entries: list[dict], q: dict, run, trace: dict) -> dict |
         checks = entry.get("checks") or {}
         name = entry.get("tbl_nm") or ""
         swap = substitute.table_region_swap(q, checks, indicators.resolve_region, name)
-        if swap is None and checks.get("class:연령") is True:
+        age_items = substitute.age_band_items(checks)
+        if swap is None and age_items:
             bands = await run_in_threadpool(_age_bands, entry["tbl_id"])
             swap = substitute.table_band_swap(q, checks, bands, name)
         if swap is None:
             continue
-        fixed = {**entry, "checks": {k: True for k in checks}}
+        fixed = {**entry, "checks": {**checks}}
         if swap.name == "연령":
-            failed = [k for k, ok in checks.items() if ok is False and k.startswith("item:")]
-            fixed["swap_items"] = {k.split(":", 1)[1]: swap.after for k in failed}
+            fixed["checks"].update((f"item:{item}", True) for item in age_items)
+            fixed["swap_items"] = dict.fromkeys(age_items, swap.after)
+        else:
+            fixed["checks"]["region_level"] = True
         res = await run(fixed, {**q, **swap.change, "substituted": True})
         ok = bool(res) and res.get("status") == "ok"
         log.append({"tbl_id": entry["tbl_id"], "what": f"{swap.before} → {swap.after}", "ok": ok})
@@ -2857,7 +2989,7 @@ def parts_answer(parsed: dict, spec: dict, question: str) -> dict:
         "region": first.get("region"),
         "value": value,
         "categories": rows,
-        **{k: first.get(k) for k in ("source", "basis", "tbl_id", "url")},
+        **{k: first.get(k) for k in ("source", "basis", "tbl_id", "url", "is_projection")},
     }
     notes = [spec.get("note")] if spec.get("note") else []
     tail = [f"※ {n}" for n in notes]

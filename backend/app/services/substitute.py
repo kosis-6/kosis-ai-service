@@ -13,11 +13,17 @@ from dataclasses import dataclass, field
 from fractions import Fraction
 from typing import Any
 
+from app.services import agegroup
 from app.services.josa import josa
 
 DONG_TABLE = "DT_1B04005N"  # 행정구역(읍면동)별 인구: 읍면동 → 시군구를 찾는 데 쓴다
 DONG = re.compile(r"^([가-힣]{1,6}?)(?:\d*|본)?(동|읍|면)$")
 RATE_WORDS = re.compile(r"율|률|비$|비율|지수|평균|중위|기대수명")
+AGE_RANGE = re.compile(
+    r"(?:만\s*)?(\d+)\s*(?:세|살)\s*(?:부터|에서)\s*(?:만\s*)?"
+    r"(\d+)\s*(?:세|살)\s*(?:까지|사이)?"
+)
+AGE_POINT = re.compile(r"(?:만\s*)?\d+\s*(?:세|살)")
 
 
 @dataclass
@@ -36,6 +42,7 @@ class Swap:
             "from": self.before,
             "to": self.after,
             "others": self.others,
+            "applied": self.change,
         }
 
 
@@ -151,7 +158,7 @@ def band_swap(q: dict, result: dict) -> Swap | None:
         "연령",
         _label(asked),
         _label(band),
-        {"ages": new, "age_group": None},
+        {"ages": new, "age_group": None, "age_note": None, "born": None},
         lead,
         [_label(b) for b in others[:2]],
     )
@@ -219,14 +226,40 @@ def mark(result: dict, swap: Swap) -> dict:
     return result
 
 
+def applied_conditions(parsed: dict, result: dict) -> dict:
+    change = (result.get("changed_condition") or {}).get("applied")
+    return {**parsed, **change} if change else parsed
+
+
+def is_age_item(item: str) -> bool:
+    text = agegroup.native_to_digits(item).strip()
+    span = agegroup.span(text)
+    return bool(
+        AGE_RANGE.fullmatch(text) or AGE_POINT.fullmatch(text) or (span and span.expr == text)
+    )
+
+
+def age_band_items(checks: dict) -> list[str]:
+    """연령 구간만 맞지 않은 경우 바꿔도 되는 검색 항목을 돌려준다."""
+    failed = [key for key, ok in checks.items() if ok is False]
+    if checks.get("class:연령") is not True:
+        return []
+    items = []
+    for key in failed:
+        if not key.startswith("item:"):
+            return []
+        item = key.removeprefix("item:")
+        if not is_age_item(item):
+            return []
+        items.append(item)
+    return items
+
+
 def table_band_swap(
     q: dict, checks: dict, bands: list[tuple[int, int | None]], name: str
 ) -> Swap | None:
     """표 경로: 후보 표가 연령 칸만 ✘ (연령 분류는 있음) → 표의 가장 가까운 구간"""
-    failed = [k for k, ok in (checks or {}).items() if ok is False]
-    if not failed or checks.get("class:연령") is not True:
-        return None
-    if not all(k.startswith("item:") for k in failed):
+    if not age_band_items(checks):
         return None
     result = {"status": "band_mismatch", "available_band_ranges": bands, "indicator": name}
     return band_swap(q, result)
@@ -252,6 +285,7 @@ def mark_response(res: dict, swap: Swap) -> dict:
     result = res.setdefault("result", {})
     if isinstance(result, dict):
         result["changed_condition"] = swap.record()
+        res["parsed"] = applied_conditions(res.get("parsed") or {}, result)
     answer = res.get("answer") or ""
     if not answer.startswith(swap.lead):
         res["answer"] = f"{swap.lead}\n{answer}" if answer else swap.lead

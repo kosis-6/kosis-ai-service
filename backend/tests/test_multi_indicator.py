@@ -304,12 +304,42 @@ def test_intersect_of_regions(world) -> None:
 
 
 def test_intersect_of_one_group_has_no_number(world) -> None:
-    found = _found([_target("노인 1인 가구"), _target("연금 수급자")], "intersect")
+    found = _found(
+        [_target("노인 1인 가구", cands=("T1",)), _target("연금 수급자", cands=("T2",))],
+        "intersect",
+    )
     res, _ = run("2020년 서울 노인 1인 가구 중 연금 수급자 수", found)
     assert res["status"] == "no_joint_table" and "value" not in res["result"]
     assert "함께 만족하는 대상을 따로 집계한 통계표를 찾지 못했습니다" in res["answer"]
     assert res["tables"]["recommendations"][0]["tbl_id"] == "T1"
     assert world["asked"] == []
+
+
+def test_intersect_uses_joint_table_for_original_question(world) -> None:
+    question = "2025년 기준 서울 외국인 중 2024년에 입국한 베트남 국적자 수"
+    found = _found(
+        [
+            _target("베트남 국적자 수", cands=("DT_1JA1610",)),
+            _target("입국 시점", cands=("DT_1JA1610",)),
+        ],
+        "intersect",
+    )
+    world["values"][question] = _value("2024년 입국 베트남 외국인 수", 5706, "명", year=2025)
+
+    parsed = {
+        **BASE,
+        "year": 2025,
+        "indicators": ["베트남 국적자 수", "입국 시점"],
+        "unsupported": True,
+    }
+    res, trace = run(question, found, parsed)
+
+    assert res["status"] == "ok" and res["result"]["value"] == 5706
+    assert world["asked"] == [(question, "value", ("서울특별시",))]
+    assert trace["multi"]["joint_table"] == {
+        "tables": ["DT_1JA1610"],
+        "status": "ok",
+    }
 
 
 def test_target_parsed_keeps_whole_question_conditions() -> None:

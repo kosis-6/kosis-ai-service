@@ -143,3 +143,43 @@ def test_period_and_grounded_topic_do_not_hand_off(monkeypatch) -> None:
     parsed = {"indicator": "등록외국인 수", "grounded": True, "year": 2030}
     rec = _run(monkeypatch, "등록외국인 몇 명이야?", parsed, RESULT, [items], u)
     assert rec["decision"] == dict_binding.KEEP, rec["reasons"]
+
+
+@pytest.mark.parametrize(
+    ("topic", "condition", "expected"),
+    [
+        ("미혼 비율", None, dict_binding.KEEP),
+        ("미혼 비율", "베트남", dict_binding.HAND_OFF),
+        ("등록외국인 수", "미혼", dict_binding.HAND_OFF),
+    ],
+)
+def test_age_substitution_checks_remaining_conditions(monkeypatch, topic, condition, expected):
+    items = Dim(0, "항목", {"T2": "내국인_미혼"})
+    age = Dim(2, "연령별", {"0": "계", "30": "30~34세", "35": "35~39세", "40": "40~44세"})
+    monkeypatch.setattr(
+        dict_binding.indicators,
+        "spec",
+        lambda n: {"name": n, "aliases": ["미혼"], "sources": [{"table": "DT_X", "item_id": "T2"}]},
+    )
+    monkeypatch.setattr(
+        dict_binding.indicators,
+        "canonical_name",
+        {"미혼": "미혼 비율", "미혼 비율": "미혼 비율", "등록외국인 수": "등록외국인 수"}.get,
+    )
+    monkeypatch.setattr("app.services.qa.sources", lambda r: [{"tbl_id": "DT_X"}])
+    filters = ["33세 이상 38세 이하"] + ([condition] if condition else [])
+    rec = _run(
+        monkeypatch,
+        f"33세에서 38세 사이 {condition or ''} {topic} 알려줘",
+        {"indicator": "미혼", "ages": [[33, 38]], "grounded": True},
+        {
+            **RESULT,
+            "changed_condition": {"name": "연령", "applied": {"ages": [[35, 39]]}},
+        },
+        [items, age],
+        {"topic": topic, "conditions": {"items": filters, "classes": ["연령"]}},
+    )
+    assert rec["decision"] == expected, rec["reasons"]
+    assert {b["value"] for b in rec["bound"] if b["cond"] == "age"} == {"35~39세"}
+    if topic == "등록외국인 수":
+        assert rec["requested_indicator"] == topic

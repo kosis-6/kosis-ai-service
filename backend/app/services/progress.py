@@ -8,7 +8,8 @@ uvicorn 한 프로세스의 메모리에 둔다 (세션 잠금 · 캐시와 같�
 끊긴 요청은 TTL 이 지나면 지운다"""
 
 import time
-from contextvars import ContextVar
+from contextvars import ContextVar, Token
+from dataclasses import dataclass, field
 
 UNDERSTAND = "질문 이해"
 FIND_TABLE = "통계표 찾기"
@@ -20,24 +21,43 @@ REPORT = "보고서 작성"
 TTL = 300
 MAX_IDS = 1000
 
-_store: dict[str, tuple[float, list[str]]] = {}
-_current: ContextVar[str | None] = ContextVar("progress_id", default=None)
+
+class ProgressInUse(Exception):
+    """진행 ID가 이미 다른 요청에서 쓰이고 있다."""
 
 
-def begin(progress_id: str | None) -> None:
-    """이 요청의 단계를 progress_id 로 모은다. progress_id 가 없으면 아무것도 하지 않는다"""
-    if not progress_id:
-        return
-    _prune()
-    _store[progress_id] = (time.monotonic(), [])
-    _current.set(progress_id)
+@dataclass
+class _Request:
+    progress_id: str
+    expires_at: float
+    steps: list[str] = field(default_factory=list)
+
+
+_store: dict[str, _Request] = {}
+_current: ContextVar[_Request | None] = ContextVar("progress_request", default=None)
+
+
+def begin(progress_id: str | None) -> Token[_Request | None]:
+    if progress_id is None:
+        return _current.set(None)
+    at = time.monotonic()
+    for key, entry in list(_store.items()):
+        if entry.expires_at <= at:
+            del _store[key]
+    if progress_id in _store:
+        raise ProgressInUse
+    if len(_store) >= MAX_IDS:
+        del _store[next(iter(_store))]
+    entry = _Request(progress_id, at + TTL)
+    _store[progress_id] = entry
+    return _current.set(entry)
 
 
 def now(step: str) -> None:
-    progress_id = _current.get()
-    if progress_id is None or (entry := _store.get(progress_id)) is None:
+    entry = _current.get()
+    if entry is None or _active(entry.progress_id) is not entry:
         return
-    steps = entry[1]
+    steps = entry.steps
     if steps and steps[-1] == step:
         return
     if step in steps:
@@ -46,18 +66,20 @@ def now(step: str) -> None:
 
 
 def get(progress_id: str) -> list[str]:
+    entry = _active(progress_id)
+    return list(entry.steps) if entry else []
+
+
+def end(token: Token[_Request | None]) -> None:
+    entry = _current.get()
+    if entry is not None and _store.get(entry.progress_id) is entry:
+        del _store[entry.progress_id]
+    _current.reset(token)
+
+
+def _active(progress_id: str) -> _Request | None:
     entry = _store.get(progress_id)
-    return list(entry[1]) if entry else []
-
-
-def end(progress_id: str | None) -> None:
-    if progress_id:
-        _store.pop(progress_id, None)
-
-
-def _prune() -> None:
-    old = time.monotonic() - TTL
-    for key in [k for k, (at, _) in _store.items() if at < old]:
-        _store.pop(key, None)
-    while len(_store) >= MAX_IDS:
-        _store.pop(next(iter(_store)))
+    if entry is not None and entry.expires_at <= time.monotonic():
+        del _store[progress_id]
+        return None
+    return entry

@@ -91,6 +91,32 @@ def test_repick_without_fallback_ends_there(monkeypatch: pytest.MonkeyPatch) -> 
     assert calls == ["repick(llm=True)"] and again is None and how == "같은 표에서 칸 다시"
 
 
+@pytest.mark.parametrize("raises", [False, True])
+def test_repick_keeps_its_clarification_when_the_next_table_fails(monkeypatch, raises):
+    question = {"status": "ambiguous", "clarification": {"kind": "table_cell"}}
+
+    async def repick(*_):
+        ask_session._retry_outcome.set(ask_session._outcome_of(question))
+        return None, "칸 다시"
+
+    async def retable(*_):
+        if raises:
+            raise RuntimeError("표 조회 실패")
+        ask_session._retry_outcome.set(ask_session._outcome_of({"status": "missing_data"}))
+        return None, "다음 표"
+
+    monkeypatch.setattr(ask_session, "_repick_compute", repick)
+    monkeypatch.setattr(ask_session, "_retable", retable)
+
+    async def run():
+        action = agent_action.Action(agent_action.REPICK, "시험", fallback=agent_action.RETABLE)
+        again, _ = await ask_session._retry(action, _res(), VERDICT, None, "질문", None)
+        assert again is None
+        assert ask_session._retry_outcome.get()["clarification"] == question
+
+    asyncio.run(run())
+
+
 # ---------------------------------------------------------------- 다시 볼 표
 
 
@@ -256,6 +282,22 @@ def test_same_value_as_the_first_answer_counts_as_the_same_cells(table: dict) ->
     found = {"handoff": {"understanding": {}}}
     out = asyncio.run(di.compute_from_handoff("질문", {"type": "value"}, found, trace, repick))
     assert out is None and trace["repick"]["binding"] == "앞 답과 같은 값"
+
+
+def test_new_cell_can_have_the_same_value_as_the_wrong_cell(table: dict) -> None:
+    table["bind"], table["cells"] = _bound("2"), ["성별=여자"]
+    repick = {
+        "entry": {"tbl_id": "DT_S"},
+        "hint": {**VERDICT, "wrong": "성별=계"},
+        "same": lambda result: result.get("value") == 7,
+    }
+    trace = {}
+    found = {"handoff": {"understanding": {}}}
+    out = asyncio.run(
+        di.compute_from_handoff("질문", {"type": "value"}, found, trace, repick=repick)
+    )
+    assert out["answer"] == "성별=여자"
+    assert trace["repick"]["binding"] == "ok" and not table["recell_calls"]
 
 
 def test_no_llm_left_stops_after_binding(table: dict) -> None:

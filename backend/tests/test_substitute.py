@@ -1,3 +1,8 @@
+import asyncio
+
+import pytest
+
+from app.services import ask_session, dynamic_indicator, figure, qa
 from app.services import substitute as sb
 
 LABELS = [
@@ -109,6 +114,81 @@ def test_table_band_swap_needs_age_items_only():
     assert sb.table_band_swap({"ages": [[18, 23]]}, checks, [(15, 19), (20, 24)], "") is None
 
 
+@pytest.mark.parametrize("item", ["미혼", "18살에서 23살 사이 미혼"])
+def test_table_alternative_keeps_non_age_conditions(item, monkeypatch):
+    def bands(_tbl_id):
+        pytest.fail("연령 외 조건이 남은 표의 연령 구간을 조회했습니다")
+
+    async def run(_entry, _parsed):
+        pytest.fail("연령 외 조건을 바꾼 표로 계산했습니다")
+
+    monkeypatch.setattr(dynamic_indicator, "_age_bands", bands)
+    entry = {
+        "tbl_id": "T1",
+        "checks": {"class:연령": True, "item:18살에서 23살 사이": False, f"item:{item}": False},
+    }
+    assert (
+        asyncio.run(dynamic_indicator._substituted([entry], {"ages": [[18, 23]]}, run, {})) is None
+    )
+
+
+def test_dictionary_alternative_reports_and_inherits_the_calculated_age(monkeypatch):
+    def compute(parsed):
+        if parsed["ages"] == [[33, 38]]:
+            return {"status": "band_mismatch", "available_band_ranges": [[30, 34], [35, 39]]}
+        assert parsed["ages"] == [[35, 39]]
+        return {
+            "status": "ok",
+            "indicator": "등록외국인 수",
+            "unit": "명",
+            "year": 2024,
+            "region": "서울",
+            "value": 100,
+            "tbl_id": "T1",
+        }
+
+    monkeypatch.setattr(qa, "_compute", compute)
+    asked = {"type": "value", "ages": [[33, 38]], "year": 2024}
+    res = asyncio.run(qa.answer(asked))
+    assert asked["ages"] == [[33, 38]]
+    assert res["result"]["changed_condition"]["from"] == "33~38세"
+    assert figure.figure_of(res["result"], res["parsed"])["conditions"]["ages"] == "35~39세"
+    assert ask_session.effective(res["parsed"], res["result"])["ages"] == [[35, 39]]
+
+
+def test_rejected_dictionary_alternative_hands_off_the_original_age(monkeypatch):
+    from app.services import dict_binding, table_guide
+
+    async def compute(parsed, trace):
+        return {
+            "status": "ok",
+            "indicator": "미혼 비율",
+            "value": 38.62,
+            "changed_condition": {"name": "연령", "applied": {"ages": [[35, 39]]}},
+        }
+
+    async def shadow(question, parsed, result):
+        return {
+            "decision": dict_binding.HAND_OFF,
+            "reasons": ["질문 지표 불일치"],
+            "requested_indicator": "등록외국인 수",
+        }
+
+    monkeypatch.setattr(qa, "_compute_fetching", compute)
+    monkeypatch.setattr(dict_binding, "shadow", shadow)
+    monkeypatch.setattr(qa.get_settings(), "binding_dict_gate", True)
+    asked = {"type": "value", "indicator": "미혼", "grounded": True, "ages": [[33, 38]]}
+    res = asyncio.run(qa.answer(asked, question="33~38세 미혼 등록외국인 수"))
+    assert res["status"] == "unknown_indicator"
+    assert res["parsed"]["ages"] == [[33, 38]]
+    assert res["parsed"]["indicator"] == "등록외국인 수"
+    assert "value" not in res["result"] and "changed_condition" not in res["result"]
+    found = {"status": "ok", "answer": "요청하신 통계는 장래가구추계에서 확인할 수 있습니다."}
+    fallback = table_guide.tables_answer(found, res)
+    assert "모든 조건을 충족하는 수치를 확인하지 못했습니다" in fallback["answer"]
+    assert fallback["tables"]["answer"] == fallback["answer"]
+
+
 def test_mark_adds_field_and_lead():
     swap = sb.plan(
         {"type": "value", "year": 1965}, {"status": "out_of_range", "available_years": [1970, 2025]}
@@ -118,3 +198,4 @@ def test_mark_adds_field_and_lead():
     assert result["lead"] == swap.lead
     res = sb.mark_response({"answer": "1970년 값은 1입니다.", "result": {}}, swap)
     assert res["answer"].startswith(swap.lead + "\n")
+    assert res["parsed"]["year"] == 1970
