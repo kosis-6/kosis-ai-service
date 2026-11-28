@@ -166,6 +166,20 @@ def has_value(t: dict[str, Any], key: str) -> bool:
     return key in t["meta_n"] or key in t.get("values_n", ())
 
 
+# '입국연도가 2024년'의 항목 '2024년'. 입국연도별 표는 칸 이름이 '2024'라 글자로는 맞지 않아,
+# 항목 검사가 ✘로 보고 '2024년 조건을 충족하지 않습니다'를 붙였다 (LLM 검토가 exact 라고 할 때만
+# 가려졌다, 11/28)
+YEAR_ITEM = re.compile(r"^((?:19|20)\d{2})년?$")
+
+
+def has_year_value(t: dict[str, Any], year: str) -> bool:
+    """표가 그 해를 분류 값(입국연도 · 귀화연도 같은 칸)으로 가졌는가.
+    이름이 정확히 그 해인 칸만 본다"""
+    names = {norm(i["name"]) for i in t.get("items") or []}
+    values = t.get("values_n", ())
+    return any(k in names or k in values for k in (year, f"{year}년"))
+
+
 def _set_family_last_year(tables: list[dict[str, Any]]) -> None:
     fam_last: dict[str, int] = {}
     for t in tables:
@@ -607,6 +621,8 @@ def check(t: dict[str, Any], slots: dict[str, Any]) -> dict[str, bool]:
             ok = has_value(t, key) or key in t["name_n"]
         if not ok and not counted:
             ok = stem(key) in t.get("words", ())
+        if not ok and (y := YEAR_ITEM.match(key)):
+            ok = has_year_value(t, y[1])
         if not ok and (a := agegroup.span(item)) and t["age_cov"] is not None:
             lo, hi = t["age_cov"]
             rest = norm(item.replace(a.expr, " "))

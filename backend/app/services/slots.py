@@ -261,8 +261,11 @@ def correct(question: str, slots: dict[str, Any]) -> dict[str, Any]:
         fix("year", ref.year, ref.describe(today))
         fix("year_end", None, ref.describe(today))
     else:
-        fix("year", years[0] if years else None, "질문의 연도")
-        fix("year_end", years[-1] if len(years) > 1 else None, "질문의 기간")
+        # '2025년 기준 … 입국연도가 2024년인': 2024는 분류 값(항목)이지 조회 기간이 아니다.
+        # 다른 연도가 있을 때만 뺀다 (입국연도만 말했으면 그 해를 그대로 둔다)
+        observed = [y for y in years if y not in cohort_years(question)] or years
+        fix("year", observed[0] if observed else None, "질문의 연도")
+        fix("year_end", observed[-1] if len(observed) > 1 else None, "질문의 기간")
     slots["decades"] = [list(span) for span in spans]
     slots["birth_years"] = sorted(birth_years(question))
     slots["projection"] = bool(PROJECTION.search(question) or (years and years[-1] > today.year))
@@ -380,6 +383,16 @@ def correct(question: str, slots: dict[str, Any]) -> dict[str, Any]:
 
     slots["fixes"] = fixes
     return slots
+
+
+COHORT_YEAR = re.compile(
+    r"(?:입국|귀화|출생|혼인|전입|전출)\s*(?:연도|년도)\s*(?:가|이|는|은|:)?\s*((?:19|20)\d{2})\s*년"
+)
+
+
+def cohort_years(question: str) -> set[int]:
+    """'입국연도가 2024년'처럼 분류 축 이름이 붙은 연도"""
+    return {int(y) for y in COHORT_YEAR.findall(question)}
 
 
 def short_years(question: str) -> set[int]:

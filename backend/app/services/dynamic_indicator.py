@@ -1095,14 +1095,58 @@ def _name(
     named = [d for d in dims if d.no in plan.matched and d.no not in plan.bands]
     table_cohort = COHORT_AXIS.search(_norm(tbl_nm))
     asked_cohort = bool(table_cohort and table_cohort[1] in _norm(question))
+    cohort = None
     if asked_cohort:
-        cohort_dims = {
-            d.no
-            for d in dims
-            if COHORT_AXIS.search(_norm(d.name))
-            or (d.no == 0 and sum(bool(COHORT_YEAR.match(n)) for n in d.codes.values()) > 1)
-        }
-        named = [d for d in named if d.no not in cohort_dims]
+        # 코호트 칸('2025')은 낱말로 두면 '2025 수'가 되고, 빼기만 하면 '2025년 서울 외국인 수'처럼
+        # 전체 외국인으로 읽힌다 (11/28). 칸 이름 대신 '2025년 입국'으로 이름 앞에 붙인다
+        named = [d for d in named if not _is_cohort_dim(d)]
+        cohort = _cohort_label(dims, plan, table_cohort[1])
+    name = _plain_name(parsed, named, dims, plan, counted, strip_age, unit, target, asked_cohort)
+    return _with_cohort(name, cohort)
+
+
+def _is_cohort_dim(d: Dim) -> bool:
+    return bool(COHORT_AXIS.search(_norm(d.name))) or (
+        d.no == 0 and sum(bool(COHORT_YEAR.match(n)) for n in d.codes.values()) > 1
+    )
+
+
+def _cohort_label(dims: list[Dim], plan: Plan, axis: str) -> tuple[str, str] | None:
+    """고른 코호트 칸의 말과 축: ('2025년', '입국'). 합계 · 소계 칸이면 None"""
+    for d in dims:
+        if not _is_cohort_dim(d) or (code := plan.pick.get(d.no)) is None:
+            continue
+        label = _label_name(d.codes.get(code) or "")
+        if not label or _norm(label) in TOTAL_NAMES or is_subtotal(label):
+            continue
+        if re.fullmatch(r"[\d\s~]+", label):
+            label = f"{label.strip()}년"
+        return label, axis
+    return None
+
+
+def _with_cohort(name: str, cohort: tuple[str, str] | None) -> str:
+    """'외국인 수' → '2025년 입국 외국인 수' (이름에 '입국'이 있으면 연도만, 연도가 없는 칸은
+    '입국연도 미상 외국인 수')"""
+    if not cohort:
+        return name
+    label, axis = cohort
+    if not re.search(r"\d", label):
+        return f"{axis}연도 {label} {name}"
+    return f"{label} {name}" if axis in name else f"{label} {axis} {name}"
+
+
+def _plain_name(
+    parsed: dict,
+    named: list[Dim],
+    dims: list[Dim],
+    plan: Plan,
+    counted: bool,
+    strip_age: bool,
+    unit: str,
+    target: str,
+    asked_cohort: bool,
+) -> str:
     named = [d for d in named if len(d.codes) > 1] or named
     words = [d.codes[plan.matched[d.no]] for d in named]
     words = words or ([dims[0].codes[plan.pick[0]]] if not asked_cohort else [])

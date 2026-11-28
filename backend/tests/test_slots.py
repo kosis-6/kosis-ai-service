@@ -40,6 +40,15 @@ def test_year_only_from_question() -> None:
     assert (c["year"], c["year_end"]) == (2010, 2020)
 
 
+def test_cohort_year_is_not_the_observed_period() -> None:
+    """'입국연도가 2024년'은 분류 값이다.
+    기준 연도가 따로 있으면 조회 기간(2024~2025)으로 읽지 않는다"""
+    c = _slots("2025년 기준 서울 외국인 중 입국연도가 2024년인 사람은 몇 명이야?")["conditions"]
+    assert (c["year"], c["year_end"]) == (2025, None)
+    c = _slots("서울 외국인 중 입국연도가 2024년인 사람 수")["conditions"]
+    assert (c["year"], c["year_end"]) == (2024, None)
+
+
 def test_sex() -> None:
     assert _slots("미혼 여성 인구", sex=None)["conditions"]["sex"] == "여"
     assert _slots("혼인 건수", sex="전체")["conditions"]["sex"] is None
