@@ -96,6 +96,11 @@ def test_year_item_matches_a_cohort_year_cell() -> None:
     s = _slots("입국연도가 2024년인 외국인", "외국인", year=2025, items=["2024년"])
     assert se.check(entry, s)["item:2024년"] is True
     assert se.check(plain, s)["item:2024년"] is False
+    natural = "2025년 기준 서울 외국인 중 2024년에 입국한 사람 수"
+    s = se.ground_conditions(se.slot_parser.correct(natural, _slots(natural, "외국인")))
+    assert se.check(entry, s)["class:입국연도"] is True
+    assert se.check(entry, s)["item:2024년"] is True
+    assert se.check(plain, s)["class:입국연도"] is False
 
 
 def test_choose_member_and_edition() -> None:

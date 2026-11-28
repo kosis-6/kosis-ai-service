@@ -387,6 +387,11 @@ def _text_hits(
             continue
         if found := _word_hits(question, d, subject):
             hits[d.no] = found
+    for no, codes in _entry_year_cells(
+        dims, subject, qa.slots.entry_cohort_years(question)
+    ).items():
+        if no not in skip:
+            hits[no] = codes
     return hits
 
 
@@ -1058,15 +1063,32 @@ COHORT_AXIS = re.compile(r"(입국|귀화|출생|혼인|전입|전출)(?:기준)
 COHORT_YEAR = re.compile(r"^(?:19|20)\d{2}(?:\D|$)")
 
 
+def _cohort_axis(d: Dim, tbl_nm: str) -> str | None:
+    axis = COHORT_AXIS.search(_norm(d.name))
+    if not axis and d.no == 0 and _is_cohort_dim(d):
+        axis = COHORT_AXIS.search(_norm(tbl_nm))
+    return axis[1] if axis else None
+
+
+def _entry_year_cells(dims: list[Dim], tbl_nm: str, years: set[int]) -> dict[int, list[str]]:
+    if not years:
+        return {}
+    labels = {label for y in years for label in (str(y), f"{y}년")}
+    return {
+        d.no: codes
+        for d in dims
+        if _cohort_axis(d, tbl_nm) == "입국"
+        if (codes := [code for code, label in d.codes.items() if _norm(label) in labels])
+    }
+
+
 def _cohort_dimensions(question: str, tbl_nm: str, dims: list[Dim]) -> list[Dim]:
     """코호트를 말하지 않으면 수록 연도가 코호트의 연도 칸을 고르지 못하게 한다."""
     out = []
     asked = _norm(question)
     for d in dims:
-        axis = COHORT_AXIS.search(_norm(d.name))
-        if not axis and d.no == 0 and sum(bool(COHORT_YEAR.match(n)) for n in d.codes.values()) > 1:
-            axis = COHORT_AXIS.search(_norm(tbl_nm))
-        if not axis or axis[1] in asked or (axis[1] == "출생" and qa.slots.birth_years(question)):
+        axis = _cohort_axis(d, tbl_nm)
+        if not axis or axis in asked or (axis == "출생" and qa.slots.birth_years(question)):
             out.append(d)
         else:
             codes = {c: n for c, n in d.codes.items() if _norm(n) in TOTAL_NAMES or is_subtotal(n)}
@@ -1219,6 +1241,11 @@ def build(
     dims = _cohort_dimensions(question, tbl_nm, dims)
     if any(not d.codes for d in dims):
         return None, "코호트를 지정하지 않았는데 전체를 집계한 칸이 없음"
+    entry_years = qa.slots.entry_cohort_years(question)
+    entry_cells = _entry_year_cells(dims, tbl_nm, entry_years)
+    entry_dim, entry_codes = next(iter(entry_cells.items()), (None, []))
+    if entry_years and (len(entry_cells) != 1 or len(entry_codes) != len(entry_years)):
+        return None, "질문의 입국연도 조건을 표의 칸에 반영할 수 없음"
     target = _table_target(tbl_nm)
     housing = qa.housing_population_condition(question) or parsed.get("housing_condition")
     if housing and "고령자" in target:
@@ -1248,6 +1275,14 @@ def build(
     if multi and any(d.no == multi[0] and not set(multi[1]) <= d.codes.keys() for d in dims):
         multi = None
     quiet = (slots or {}).get("binding_quiet")
+    if entry_dim is not None:
+        forced = {no: code for no, code in (forced or {}).items() if no != entry_dim}
+        if len(entry_codes) == 1:
+            forced[entry_dim] = entry_codes[0]
+        if multi and multi[0] == entry_dim:
+            multi = None
+        if quiet is not None:
+            quiet = {no: value for no, value in quiet.items() if no != entry_dim}
     # 숫자 구간 축의 구간 합: "2.5kg 미만" · "고령산모(35세 이상)"가 덮는 칸들을 그 축에 잇는다
     items = list(((slots or {}).get("conditions") or {}).get("items") or [])
     literal = set(
@@ -1261,6 +1296,14 @@ def build(
     plan, why = choose(
         question, parsed, dims, region_dim, forced, tbl_nm, couple, multi, quiet, bands or None
     )
+    if plan and entry_dim is not None:
+        picked = (
+            plan.multi[1]
+            if plan.multi and plan.multi[0] == entry_dim
+            else [plan.pick.get(entry_dim)]
+        )
+        if set(picked) != set(entry_codes):
+            return None, "질문의 입국연도 조건을 선택한 칸에 반영할 수 없음"
     if (seen := (slots or {}).get("seen")) is not None:
         seen["plan"] = plan
     _report_cells(slots, plan, dims, parsed, region_dim)

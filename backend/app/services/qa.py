@@ -4393,7 +4393,13 @@ async def answer(parsed, trace=None, question=""):
     progress.now(progress.COMPUTE)
     trace = {} if trace is None else trace
     start = time.perf_counter()
-    if ask_followup.needs_year(question) and indicators.spec(parsed.get("indicator") or ""):
+    if slots.entry_cohort_years(question) and not _dynamic_fits(parsed):
+        result = {
+            "status": "unknown_indicator",
+            "indicator": parsed.get("indicator"),
+            "reason": "입국연도로 나눈 통계표를 찾아야 합니다.",
+        }
+    elif ask_followup.needs_year(question) and indicators.spec(parsed.get("indicator") or ""):
         result = await run_in_threadpool(ask_followup.missing_year, parsed)
     else:
         notes = await _refresh_recent(question, parsed, trace)

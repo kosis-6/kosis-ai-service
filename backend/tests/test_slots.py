@@ -47,6 +47,12 @@ def test_cohort_year_is_not_the_observed_period() -> None:
     assert (c["year"], c["year_end"]) == (2025, None)
     c = _slots("서울 외국인 중 입국연도가 2024년인 사람 수")["conditions"]
     assert (c["year"], c["year_end"]) == (2024, None)
+    c = _slots(
+        "2025년 기준 서울 외국인 중 2024년에 입국한 베트남 사람은 몇 명이야?",
+        items=["2024년 입국", "베트남"],
+    )["conditions"]
+    assert (c["year"], c["year_end"]) == (2025, None)
+    assert (c["classes"], c["items"]) == (["입국연도"], ["2024년", "베트남"])
 
 
 def test_sex() -> None:

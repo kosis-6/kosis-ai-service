@@ -510,6 +510,7 @@ def ground_conditions(slots: dict[str, Any]) -> dict[str, Any]:
     text = norm(keyword_query(slots))
 
     age_said = bool(CLASS_SAID["연령"].search(question)) or agegroup.span(question) is not None
+    entry_years = slot_parser.entry_cohort_years(question)
 
     def seen(w: str) -> bool:
         return w in said or w in text or stem(w) in said
@@ -525,6 +526,8 @@ def ground_conditions(slots: dict[str, Any]) -> dict[str, Any]:
         if len(parts) > 1 and all(seen(w) for w in parts):
             return True
         if kind == "class":
+            if key == "입국연도" and entry_years:
+                return True
             axis = next(
                 (a for k in (norm(word), key) if (a := CLASS_ALIAS.get(k, k)) in CLASS_SAID), key
             )
