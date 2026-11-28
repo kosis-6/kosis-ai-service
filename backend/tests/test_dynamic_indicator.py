@@ -2556,3 +2556,62 @@ def test_binding_asks_when_question_cells_are_many(computed, fake_table, monkeyp
     assert clar["context"]["dim_no"] == 0
     step = next(s for s in trace["dynamic"] if s.get("tbl_id") == "A")
     assert step["binding_skip"] == "되묻기 (항목)"
+
+
+@pytest.mark.parametrize(
+    ("item", "cell", "covered"),
+    [
+        # 11/28 변형셋 P-093: 조사 · 끝말이 달라 맞는 칸을 고르고도 표를 버렸다
+        ("미성년 자녀가 없는", "미성년자녀-없음", True),
+        ("부부와 미혼 형제자매", "1세대가구_부부+미혼형제자매", True),
+        ("미성년 자녀가 없는", "이혼건수-계", False),
+        ("미성년 자녀가 1명", "미성년자녀-없음", False),
+        ("미성년 자녀가 3명", "미성년자녀-3명", True),
+        ("미성년 자녀가 세 명", "미성년자녀-3명", True),
+        ("미성년 자녀가 3명", "미성년자녀-3명 이상", False),
+        ("미성년 자녀가 2명", "미성년자녀-20명", False),
+        ("미성년 자녀가 3명 이상", "미성년자녀-3명 이상", True),
+        ("같이 산 지 7년 6개월", "7년", False),  # 칸에 없는 낱말('6개월')이 있다
+        ("외국인 남편", "한국인 남편+외국인 아내", False),  # 낱말이 흩어져 있다
+    ],
+)
+def test_condition_words_in_picked_cell(item: str, cell: str, covered: bool) -> None:
+    assert d._words_in_cells(item, [cell]) is covered
+
+
+@pytest.mark.parametrize("by", [None, "cells_by_binding", "cells_by_llm"])
+def test_child_count_mismatch_is_rejected_after_cell_selection(by) -> None:
+    dim = d.Dim(0, "항목", {"exact": "미성년자녀-3명", "band": "미성년자녀-3명이상"})
+    question = "2025년 서울 미성년 자녀가 3명인 부부의 이혼 건수"
+    slots = {by: True} if by else None
+    for code, covered in (("exact", True), ("band", False)):
+        plan = d.Plan(pick={0: code}, matched={0: code})
+        failure = d.uncovered(slots, plan, [dim], BASE, question=question)
+        assert (failure is None) is covered
+
+
+def test_child_count_uses_the_tables_own_item_labels() -> None:
+    title = "시도/미성년자녀수별 이혼"
+    dims = [
+        d.Dim(0, "항목", {"total": "이혼건수-계", "none": "미성년자녀-없음", "band": "3명이상"})
+    ]
+    assert d._text_hits("미성년 자녀가 3명인 부부의 이혼 건수", dims, set(), title) == {}
+    assert d._text_hits("미성년 자녀가 3명 이상인 부부의 이혼 건수", dims, set(), title) == {
+        0: ["band"],
+    }
+    q = "작년 이혼 부부 중 미성년 자녀가 없는 비율"
+    assert d._text_hits(q, dims, set(), title) == {0: ["none"]}
+    assert qa.resolved_ages(q) == []
+
+
+def test_ratio_name_uses_whole_when_part_is_the_only_word() -> None:
+    assert d._ratio_name("미성년자녀-없음", "미성년자녀-없음", "이혼건수") == (
+        "이혼건수 중 미성년자녀-없음 비율"
+    )
+    assert d._ratio_name("1인 가구 수", "여자") == "1인 가구 중 여자 비율"
+
+
+def test_age_notice_is_removed_when_ages_were_ignored() -> None:
+    line = "'미성년'은(는) 0~18세으로 계산했습니다 (민법 19세 미만)"
+    assert d.AGE_NOTICE.sub("", line) == ""
+    assert d.AGE_NOTICE.sub("", f"표 안내. {line}") == "표 안내"

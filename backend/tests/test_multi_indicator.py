@@ -134,6 +134,33 @@ def test_ratio_later_indicator_is_numerator(world) -> None:
     assert trace["multi"]["ratio_by"] == "rule"
 
 
+@pytest.mark.parametrize("same_cell", [True, False])
+def test_ratio_distinguishes_same_cell_from_equal_counts(world, same_cell) -> None:
+    den, num = "이혼 부부", "미성년 자녀가 없는 이혼 부부"
+    world["values"] = {den: _value(den, 7, "건"), num: _value(num, 7, "건")}
+    source_cell = {
+        "table": "DT_DIVORCE",
+        "region_code": "11",
+        "periods": [2020, 2020],
+        "monthly": False,
+        "filters": {"item_key": ["total"]},
+    }
+    world["values"][den]["result"]["source_cell"] = source_cell
+    world["values"][num]["result"]["source_cell"] = (
+        source_cell
+        if same_cell
+        else {**source_cell, "filters": {"item_key": ["no_minor_children"]}}
+    )
+    found = _found([_target(den), _target(num)], "ratio")
+    res, trace = run("2020년 서울 이혼 부부 중 미성년 자녀가 없는 이혼 부부 비율", found)
+    if same_cell:
+        assert res is None
+        assert trace["multi"]["ratio_skip"] == "분자와 분모가 같은 원자료 항목을 사용함"
+    else:
+        assert res["result"]["value"] == 100.0
+        assert res["result"]["unit"] == "%"
+
+
 def _ratio_found(num=None, den=None):
     found = _found([_target("1인 가구 수"), _target("통근 인구")], "ratio")
     found["handoff"]["combine"].update(num=num, den=den)

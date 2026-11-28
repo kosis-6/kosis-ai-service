@@ -137,23 +137,29 @@ def find(question: str) -> list[dict]:
     take(LATER_N, "later", 1)
     take(N_YEARS_AGO, "ago", 1, open=lambda m: bool(m.group(2)))
     take(UNTIL_NOW, "until_now", None)
+    bases = []
     for word, offset in WORDS:
         pos = text.find(word)
         if pos < 0:
             continue
         tail = text[pos + len(word) :]
         text = text.replace(word, " " * len(word))
+        ref = {
+            "expr": word,
+            "kind": "word",
+            "n": None,
+            "offset": offset,
+            "open": bool(FROM.match(tail[:3].strip())),
+        }
         if WORD_AS_BASE.match(tail):
+            bases.append({**ref, "base": True})
             continue
-        out.append(
-            {
-                "expr": word,
-                "kind": "word",
-                "n": None,
-                "offset": offset,
-                "open": bool(FROM.match(tail[:3].strip())),
-            }
-        )
+        out.append(ref)
+    # '작년보다 늘었어?'의 기준 낱말은 빼고 전년 대비로 센다. 견줄 낱말이 따로 있으면
+    # ('재작년보다 작년') 기준도 시점이다: 두 낱말 시점 = 두 해 (11/28 변형셋 P-040이 기준
+    # '재작년'을 잃고 한 시점 질문이 되어 2025년 값 하나로 답했다)
+    if any(r["kind"] == "word" for r in out):
+        out.extend(bases)
     return out
 
 

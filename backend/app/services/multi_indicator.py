@@ -310,6 +310,11 @@ def _two(op: str, question: str, parsed: dict, ok, trace: dict, combine=None) ->
         trace.setdefault("multi", {})["ratio_by"] = by
         (tn, num), (td, den) = ((ta, a), (tb, b)) if a_is_num else ((tb, b), (ta, a))
         scale = 100 if RATE_WORDS.search(question) else 1
+        cell = num.get("source_cell")
+        if scale == 100 and cell and cell == den.get("source_cell") and _span(tn) != _span(td):
+            # 다른 대상을 물었는데 분자와 분모가 같은 원자료를 읽으면 조건이 빠진 계산이다.
+            trace.setdefault("multi", {})["ratio_skip"] = "분자와 분모가 같은 원자료 항목을 사용함"
+            return None
         c = cross_indicator.Cross(
             _span(tn), _span(td), scale, "within" if scale == 100 else "versus"
         )
@@ -533,6 +538,8 @@ async def answer(question: str, parsed: dict, found: dict, trace: dict) -> dict 
             _two, op, question, parsed, ok, trace, h.get("combine")
         ):
             return combined
+        if trace["multi"].get("ratio_skip"):
+            return None  # 분자가 조건을 잃었다: 같은 값 둘을 나란히 보여 주지 않는다
         notes.append("두 값의 단위나 기준이 달라 직접 계산하지 않고 나란히 보여 드립니다")
     if op == "sum" and not failed and not gap:
         # 더하기 (재계획 A_10): 같은 시점 · 같은 단위의 건수만. 사전 경로의 합계와 같은 모양
