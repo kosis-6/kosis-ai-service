@@ -310,11 +310,10 @@ def _two(op: str, question: str, parsed: dict, ok, trace: dict, combine=None) ->
         trace.setdefault("multi", {})["ratio_by"] = by
         (tn, num), (td, den) = ((ta, a), (tb, b)) if a_is_num else ((tb, b), (ta, a))
         scale = 100 if RATE_WORDS.search(question) else 1
-        if scale == 100 and num.get("value") == den.get("value") and _span(tn) != _span(td):
-            # 'X 중 Y 비율'의 분자가 분모와 같은 값이면 분자가 조건을 잃고 합계를 가져온 것이다.
-            # 100%라는 틀린 값을 내지 않는다 (11/28 변형셋 P-093 '이혼 부부 중 미성년 자녀가
-            # 없는 비율'이 이혼 건수 ÷ 이혼 건수 = 100%로 답했다)
-            trace.setdefault("multi", {})["ratio_skip"] = "분자가 분모와 같은 값"
+        cell = num.get("source_cell")
+        if scale == 100 and cell and cell == den.get("source_cell") and _span(tn) != _span(td):
+            # 다른 대상을 물었는데 분자와 분모가 같은 원자료를 읽으면 조건이 빠진 계산이다.
+            trace.setdefault("multi", {})["ratio_skip"] = "분자와 분모가 같은 원자료 항목을 사용함"
             return None
         c = cross_indicator.Cross(
             _span(tn), _span(td), scale, "within" if scale == 100 else "versus"

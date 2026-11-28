@@ -1,5 +1,6 @@
 import re
 import sys
+import unicodedata
 from dataclasses import dataclass
 
 GROUPS = [
@@ -116,7 +117,7 @@ FACILITY_SENSITIVE = {"애들", "아이들", "아이"}
 BIRTH = re.compile(r"낳|태어|출생|출산")
 INFANT_DEATH = re.compile(r"영아\s*사망")
 BIRTH_SENSITIVE = {"아기", "갓난아기", "갓난아이", "영아", "아이", "아이들", "애들"}
-NOT_BEFORE = {"초고령": ("사회",), "성인": ("병",)}
+NOT_BEFORE = {"초고령": ("사회",), "성인": ("병",), "미성년": ("자녀",), "미성년자": ("녀",)}
 NUMERIC_AGE = re.compile(r"\d+\s*세(?!대)|\d+\s*대(?!\s*(광역시|도시))|\d+\s*살")
 
 
@@ -148,6 +149,38 @@ COUNT_AFTER = re.compile(
 COUNT_BEFORE = re.compile(
     r"(?:(?<![가-힣0-9])(?:한|두|세|네|다섯|여섯|일곱|여덟|아홉|열)|\d+\s*명\s*의?)\s*$"
 )
+
+
+CHILD_COUNT_CONTEXT = re.compile(r"(?:자녀|아이|자식)(?:의?수)?(?:가|이|는|를)?[-_:]*(?:정확히)?$")
+COUNT_RANGE = re.compile(
+    r"(?<![\d.])(?P<lo>\d+)(?:[명인]?[-~∼](?P<hi>\d+))?"
+    r"(?P<unit>명|인(?!구)|자녀|아이)(?P<limit>이상|초과|이하|미만)?"
+)
+CHILD_COUNT_AXES = re.compile(r"자녀|아이|자식")
+CHILD_PRESENCE = re.compile(r"(?:자녀|아이|자식)(?:가|이|는|를)?[-_:]*없")
+
+
+def child_counts(text: str, *, child_axis: bool = False) -> set[tuple[int, int | None]]:
+    # 자녀 수는 사람의 나이·집계 인원과 다른 분류다. 숫자와 범위 경계를 함께 보존한다.
+    text = COUNT_BEFORE_UNIT.sub(lambda m: str(NATIVE_COUNT[m[1]]), text)
+    text = re.sub(r"\s+", "", unicodedata.normalize("NFKC", text))
+    out = (
+        {(0, 0)}
+        if CHILD_PRESENCE.search(text) or (child_axis and text in ("없음", "무"))
+        else set()
+    )
+    for match in COUNT_RANGE.finditer(text):
+        if (
+            not child_axis
+            and match["unit"] not in ("자녀", "아이")
+            and not CHILD_COUNT_CONTEXT.search(text[: match.start()])
+        ):
+            continue
+        lo = int(match["lo"])
+        hi = int(match["hi"]) if match["hi"] else lo
+        limits = {"이상": (lo, None), "초과": (lo + 1, None), "이하": (0, lo), "미만": (0, lo - 1)}
+        out.add(limits.get(match["limit"], (lo, hi)))
+    return out
 
 
 def count_digits(text: str) -> str:
@@ -189,7 +222,11 @@ class AgeRef:
 
 
 def _find(question: str, word: str) -> int:
-    pos = question.find(word)
+    if word == "성년":
+        adult = re.search(r"(?<!미)성년", question)
+        pos = adult.start() if adult else -1
+    else:
+        pos = question.find(word)
     if pos < 0:
         return -1
     after = question[pos + len(word) :]

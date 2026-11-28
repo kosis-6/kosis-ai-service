@@ -166,6 +166,19 @@ def has_value(t: dict[str, Any], key: str) -> bool:
     return key in t["meta_n"] or key in t.get("values_n", ())
 
 
+def _child_count_values(t: dict[str, Any]) -> set[tuple[int, int | None]]:
+    counts = {
+        count
+        for item in t.get("items") or []
+        for count in agegroup.child_counts(item["name"], child_axis="자녀수" in t["name_n"])
+    }
+    for c in t.get("classifications") or []:
+        child_axis = bool(agegroup.CHILD_COUNT_AXES.search(c["name"]))
+        for label in c.get("values") or c.get("sample_values") or []:
+            counts.update(agegroup.child_counts(label, child_axis=child_axis))
+    return counts
+
+
 # '입국연도가 2024년'의 항목 '2024년'. 입국연도별 표는 칸 이름이 '2024'라 글자로는 맞지 않아,
 # 항목 검사가 ✘로 보고 '2024년 조건을 충족하지 않습니다'를 붙였다 (LLM 검토가 exact 라고 할 때만
 # 가려졌다, 11/28)
@@ -601,6 +614,11 @@ def check(t: dict[str, Any], slots: dict[str, Any]) -> dict[str, bool]:
         else:
             key = CLASS_ALIAS.get(norm(cls).removesuffix("별"), norm(cls).removesuffix("별"))
             ok = any(key in n for n in t["class_n"]) or key in t["name_n"] or has_value(t, key)
+            if key == "미성년자녀유무" and not ok:
+                ok = has_value(t, "미성년자녀없음") or (
+                    any("미성년자녀수" in n for n in [t["name_n"], *t["class_n"]])
+                    and (0, 0) in _child_count_values(t)
+                )
             if key == "연령" and not ok:
                 ok = any("각세" in n for n in t["class_n"]) or "각세" in t["name_n"]
             if key == "연령" and ok and not has_age_axis(t):
@@ -611,8 +629,15 @@ def check(t: dict[str, Any], slots: dict[str, Any]) -> dict[str, bool]:
             )
         out[f"class:{cls}"] = ok
     question = slots.get("question") or ""
+    child_counts = agegroup.child_counts(question)
+    checked_child_items = set()
     for item in c["items"]:
         key = norm(item)
+        if len(child_counts) == 1 and child_counts == agegroup.child_counts(item, child_axis=True):
+            checked = f"item:{item}"
+            out[checked] = child_counts <= _child_count_values(t)
+            checked_child_items.add(checked)
+            continue
         if counted := agegroup.count_words(item, question):
             ok = all(
                 w in t["name_n"] or has_value(t, w) or stem(w) in t.get("words", ())
@@ -639,6 +664,9 @@ def check(t: dict[str, Any], slots: dict[str, Any]) -> dict[str, bool]:
             )
             ok = rest_ok and lo <= a.lo and (hi is None or (a.hi is not None and a.hi <= hi))
         out[f"item:{item}"] = ok
+    if len(child_counts) == 1 and not checked_child_items:
+        out["item:자녀 수"] = child_counts <= _child_count_values(t)
+        checked_child_items.add("item:자녀 수")
     if (age := slots.get("age")) and t["age_cov"] is not None:
         lo, hi = t["age_cov"]
         out["age"] = lo <= age["lo"] and (hi is None or (age["hi"] is not None and age["hi"] <= hi))
@@ -660,7 +688,12 @@ def check(t: dict[str, Any], slots: dict[str, Any]) -> dict[str, bool]:
         )
     for k, ok in out.items():
         kind, _, word = k.partition(":")
-        if not ok and kind in ("item", "class") and by_dictionary(t, word):
+        if (
+            not ok
+            and k not in checked_child_items
+            and kind in ("item", "class")
+            and by_dictionary(t, word)
+        ):
             out[k] = True
     return out
 

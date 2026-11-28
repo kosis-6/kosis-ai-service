@@ -233,16 +233,22 @@ def _age_codes(src, band):
     return codes
 
 
+def _cell_filters(src, item_key, filters, age_codes):
+    pairs = [("v.item_key", 0, src.get(item_key) or src.get("item_id"))]
+    for col, val in filters.items():
+        dim = _dim_no(col)
+        pairs.append((f"v.c{dim}", dim, val))
+    if src.get("age_dim") and age_codes is not None:
+        dim = _dim_no(src["age_dim"])
+        pairs.append((f"v.c{dim}", dim, age_codes))
+    return [(column, dim, val if isinstance(val, list) else [val]) for column, dim, val in pairs]
+
+
 def _conds(src, item_key, filters, age_codes):
     tbl = src["table"]
-    items = src.get(item_key) or src.get("item_id")
-    pairs = [("v.item_key", 0, items)]
-    pairs += [(f"v.c{_dim_no(col)}", _dim_no(col), val) for col, val in filters.items()]
-    if src.get("age_dim") and age_codes is not None:
-        pairs.append((f"v.c{_dim_no(src['age_dim'])}", _dim_no(src["age_dim"]), age_codes))
     conds, params = [], []
-    for column, dim_no, val in pairs:
-        cond, keys = _in(column, tbl, dim_no, val if isinstance(val, list) else [val])
+    for column, dim_no, codes in _cell_filters(src, item_key, filters, age_codes):
+        cond, keys = _in(column, tbl, dim_no, codes)
         conds.append(cond)
         params += keys
     return conds, params
@@ -261,6 +267,23 @@ def _period_where(y0, y1, monthly=False):
         year_sql, extra = "(v.period / 100)", " and v.period % 100 between ? and ?"
     sql = f"v.{MONTHLY if monthly else YEARLY} and v.period between ? and ?{extra}"
     return sql, year_sql, params
+
+
+def _source_cell(src, region_code, start, end, age_codes, *, monthly=False):
+    """값에 실제 적용한 표·지역·기간·항목·분류 코드."""
+    _, _, periods = _period_where(start, end, monthly)
+    filters: dict[str, set[str]] = {}
+    for column, _, values in _cell_filters(src, "item_id", src.get("filters", {}), age_codes):
+        key = column.removeprefix("v.")
+        codes = set(map(str, values))
+        filters[key] = filters[key] & codes if key in filters else codes
+    return {
+        "table": src["table"],
+        "region_code": "00" if src.get("national_only") else str(region_code),
+        "periods": periods,
+        "monthly": monthly or MONTHS.get() is not None,
+        "filters": {dim: sorted(codes) for dim, codes in filters.items()},
+    }
 
 
 def _sum(src, codes, y0, y1, item_key, filters, age_codes, group_dim=None, monthly=False):
@@ -544,6 +567,8 @@ def value(spec, region, year, sex="계", ages=None):
     if v is not None and parts:  # 분자 ÷ 분모 지표 (den_item_id): 나눈 두 값을 답에 보여 준다
         extra["operands"] = _operands(src, parts["num"].get(key), parts["den"].get(key))
         extra["scale"] = src.get("den_scale", 100)
+    elif v is not None:
+        extra["source_cell"] = _source_cell(src, reg["region_code"], year, year, age_codes)
     return _base(
         spec,
         src,
@@ -1084,6 +1109,7 @@ def month_sum(spec, region, year, m0, m1, sex="계", *, ages=None, end_year=None
         months=[m0, m1],
         as_of=span,
         period_label=span,
+        source_cell=_source_cell(src, code, p0, p1, age_codes, monthly=True),
         formula=f"{span} 월별 값의 합",
         notes=[*notes, f"{span} 합계입니다 (월별 자료)"],
     )

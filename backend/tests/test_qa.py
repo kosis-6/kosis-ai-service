@@ -1,3 +1,4 @@
+import asyncio
 from datetime import date
 
 import pytest
@@ -676,6 +677,14 @@ def test_unknown_ratio_indicator_is_not_population_composition(monkeypatch) -> N
     monkeypatch.setattr(qa.indicators, "_data_years", lambda: (2008, 2025))
     r = qa.compute({"type": "composition", "indicator": "재혼 비율", "regions": [], "year": 2024})
     assert r["status"] == "unknown_indicator"
+
+
+def test_unfiltered_dictionary_result_cannot_answer_a_child_count_condition() -> None:
+    question = "2025년 전국 미성년 자녀가 3명인 부부의 이혼 건수"
+    parsed = {"type": "value", "indicator": "이혼 건수", "year": 2025}
+    response = asyncio.run(qa.answer(parsed, question=question))
+    assert response["status"] == "unknown_indicator"
+    assert "자녀 수 조건" in response["result"]["reason"]
 
 
 def test_compare_times_against_nation_is_region_over_nation() -> None:

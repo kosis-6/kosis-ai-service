@@ -4463,11 +4463,20 @@ async def answer(parsed, trace=None, question=""):
     progress.now(progress.COMPUTE)
     trace = {} if trace is None else trace
     start = time.perf_counter()
+    child_counts = agegroup.child_counts(question)
+    condition_reason = None
     if slots.entry_cohort_years(question) and not _dynamic_fits(parsed):
+        condition_reason = "입국연도로 나눈 통계표를 찾아야 합니다."
+    if len(child_counts) == 1:
+        expected = list(next(iter(child_counts)))
+        supplied = (parsed.get("dynamic_spec") or {}).get("child_count")
+        if supplied != expected or not _dynamic_fits(parsed):
+            condition_reason = "자녀 수 조건에 해당하는 항목을 집계한 통계표를 찾아야 합니다."
+    if condition_reason:
         result = {
             "status": "unknown_indicator",
             "indicator": parsed.get("indicator"),
-            "reason": "입국연도로 나눈 통계표를 찾아야 합니다.",
+            "reason": condition_reason,
         }
     elif ask_followup.needs_year(question) and indicators.spec(parsed.get("indicator") or ""):
         result = await run_in_threadpool(ask_followup.missing_year, parsed)

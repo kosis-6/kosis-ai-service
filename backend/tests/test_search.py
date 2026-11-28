@@ -84,6 +84,24 @@ def test_check_conditions() -> None:
     assert se.check(t, _slots("q", "인구")) == {}
 
 
+def test_child_count_checks_distinguish_an_exact_count_from_a_range() -> None:
+    title = "시도/미성년자녀수별 이혼"
+    items = [{"name": name} for name in ("이혼건수-계", "미성년자녀-없음", "3명 이상")]
+    table = se.prepare([_t("D", title, 1993, 2025, "FD", items=items)])[0]
+    for item, expected in (("3명", False), ("3명 이상", True)):
+        question = f"미성년 자녀가 {item}인 부부의 이혼 건수"
+        assert se.check(table, _slots(question, "이혼 건수", items=[item])) == {
+            f"item:{item}": expected,
+        }
+        assert se.check(table, _slots(question, "이혼 건수")) == {"item:자녀 수": expected}
+    question = "이혼 부부 중 미성년 자녀가 없는 비율"
+    s = _slots(question, "이혼 건수", classes=["미성년 자녀 유무"], items=["미성년 자녀가 없는"])
+    assert se.check(table, s) == {
+        "class:미성년 자녀 유무": True,
+        "item:미성년 자녀가 없는": True,
+    }
+
+
 def test_year_item_matches_a_cohort_year_cell() -> None:
     """입국연도별 표의 칸 이름은 '2024'다. 항목 '2024년'을 ✘로 보면 거짓 '조건 불충족'이 붙었다"""
     years = [{"name": "외국인 - 계"}, {"name": "2025"}, {"name": "2024"}]

@@ -134,16 +134,31 @@ def test_ratio_later_indicator_is_numerator(world) -> None:
     assert trace["multi"]["ratio_by"] == "rule"
 
 
-def test_ratio_of_equal_part_and_whole_is_not_answered(world) -> None:
-    """11/28 변형셋 P-093: 분자가 조건을 잃고 합계를 가져와 이혼 건수 ÷ 이혼 건수 = 100%로 답했다"""
-    world["values"] = {
-        "이혼 부부": _value("이혼 부부", 88130, "건"),
-        "미성년 자녀가 없는 이혼 부부": _value("미성년 자녀가 없는 이혼 부부", 88130, "건"),
+@pytest.mark.parametrize("same_cell", [True, False])
+def test_ratio_distinguishes_same_cell_from_equal_counts(world, same_cell) -> None:
+    den, num = "이혼 부부", "미성년 자녀가 없는 이혼 부부"
+    world["values"] = {den: _value(den, 7, "건"), num: _value(num, 7, "건")}
+    source_cell = {
+        "table": "DT_DIVORCE",
+        "region_code": "11",
+        "periods": [2020, 2020],
+        "monthly": False,
+        "filters": {"item_key": ["total"]},
     }
-    found = _found([_target("이혼 부부"), _target("미성년 자녀가 없는 이혼 부부")], "ratio")
-    res, trace = run("작년 이혼 부부 중 미성년 자녀가 없는 이혼 부부 비율", found)
-    assert res is None  # 100%도, 같은 값 둘을 나란히 놓은 답도 내지 않는다
-    assert trace["multi"]["ratio_skip"] == "분자가 분모와 같은 값"
+    world["values"][den]["result"]["source_cell"] = source_cell
+    world["values"][num]["result"]["source_cell"] = (
+        source_cell
+        if same_cell
+        else {**source_cell, "filters": {"item_key": ["no_minor_children"]}}
+    )
+    found = _found([_target(den), _target(num)], "ratio")
+    res, trace = run("2020년 서울 이혼 부부 중 미성년 자녀가 없는 이혼 부부 비율", found)
+    if same_cell:
+        assert res is None
+        assert trace["multi"]["ratio_skip"] == "분자와 분모가 같은 원자료 항목을 사용함"
+    else:
+        assert res["result"]["value"] == 100.0
+        assert res["result"]["unit"] == "%"
 
 
 def _ratio_found(num=None, den=None):

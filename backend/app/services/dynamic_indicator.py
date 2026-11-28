@@ -392,6 +392,17 @@ def _text_hits(
     ).items():
         if no not in skip:
             hits[no] = codes
+    if len(asked_counts := agegroup.child_counts(question)) == 1:
+        for d in dims:
+            if d.no not in skip and _child_count_axis(d, subject):
+                hits.pop(d.no, None)
+                exact = [
+                    code
+                    for code, label in d.codes.items()
+                    if agegroup.child_counts(label, child_axis=True) == asked_counts
+                ]
+                if exact:
+                    hits[d.no] = exact
     return hits
 
 
@@ -872,24 +883,33 @@ def uncovered(
     question: str = "",
     tbl_nm: str = "",
 ) -> "str | BandMiss | None":
+    cond = (slots or {}).get("conditions") or {}
+    items = cond.get("items") or []
+    asked_counts = agegroup.child_counts(question) or {
+        count for item in items for count in agegroup.child_counts(item)
+    }
+    if len(asked_counts) == 1:
+        asked = next(iter(asked_counts))
+        if not _child_count_covered(asked, _picked_child_counts(plan, dims, region_dim, tbl_nm)):
+            return "질문의 자녀 수 조건을 선택한 칸에 반영할 수 없음"
     if not slots:
         return None
-    cond = slots.get("conditions") or {}
-    names = [_norm(d.codes[c]) for d in dims for no, c in plan.pick.items() if no == d.no]
+    labels = [d.codes[c] for d in dims for no, c in plan.pick.items() if no == d.no]
     if plan.multi:
         md = plan.multi_dim or next(d for d in dims if d.no == plan.multi[0])
-        names += [_norm(md.codes[c]) for c in plan.multi[1]]
+        labels += [md.codes[c] for c in plan.multi[1]]
+    names = [_norm(label) for label in labels]
     read = [_norm(a) for a, _ in slots.get("read_as") or [] if len(_norm(a)) >= 2]
     titles = [_norm(w) for w in slots.get("table_words") or [] if w]
     by_cells = slots.get("cells_by_llm") or slots.get("cells_by_binding")
-    for item in [] if by_cells else cond.get("items") or []:
+    for item in [] if by_cells else items:
         if len(word := _norm(item)) >= 2 and any(word in t for t in titles):
             continue
         if region_dim is not None and _lives_in_asked_region(item, parsed):
             continue
         if not _item_left(item, names, read, plan, parsed, question):
             continue
-        if _words_in_cells(item, names):
+        if _words_in_cells(item, labels):
             continue
         if any(u.label and _norm(item) in _norm(u.label) for u in _band_unions(plan)):
             continue  # 구간 합으로 이미 이었다 ("저체중아" → 2.5kg 미만 칸들)
@@ -907,7 +927,9 @@ def uncovered(
     classes = [
         c
         for c in cond.get("classes") or []
-        if _norm(c) not in skip and not _class_narrowed(c, plan, dims, said)
+        if _norm(c) not in skip
+        and not _class_narrowed(c, plan, dims, said)
+        and not (_norm(c) == "미성년자녀유무" and asked_counts == {(0, 0)})
     ]
     split = bool(slots.get("cells_by_binding") and plan.multi and plan.multi[2] in SPLIT_OPS)
     if classes and not split and parsed.get("type") not in ("composition", "rank", "trend"):
@@ -992,22 +1014,62 @@ def _lives_in_asked_region(item: str, parsed: dict) -> bool:
     return bool(place) and _is_place_cell(place) and _named_place(place, regions)
 
 
+DIVORCE_COUNT = re.compile(r"이혼\s*(?:의\s*)?건")
+
+
+def _child_count_axis(d: Dim, tbl_nm: str) -> bool:
+    return bool(
+        agegroup.CHILD_COUNT_AXES.search(d.name) or (d.no == 0 and "자녀수" in _norm(tbl_nm))
+    )
+
+
+def _picked_child_counts(plan, dims, region_dim, tbl_nm) -> set[tuple[int, int | None]]:
+    out = set()
+    for d in dims:
+        if d.no == region_dim or d.no not in plan.pick:
+            continue
+        codes = plan.multi[1] if plan.multi and plan.multi[0] == d.no else [plan.pick[d.no]]
+        child_axis = _child_count_axis(d, tbl_nm)
+        for code in codes:
+            out.update(agegroup.child_counts(d.codes[code], child_axis=child_axis))
+    return out
+
+
+def _child_count_covered(
+    asked: tuple[int, int | None], picked: set[tuple[int, int | None]]
+) -> bool:
+    """고른 칸을 순서대로 더한 범위가 질문과 정확히 같은가."""
+    if not picked:
+        return False
+    start, expected_end = asked
+    for lo, hi in sorted(picked, key=lambda count: count[0]):
+        if lo != start or (hi is not None and hi < lo):
+            return False
+        start = hi + 1 if hi is not None else None
+    return start == (expected_end + 1 if expected_end is not None else None)
+
+
 def _words_in_cells(item: str, names: list[str]) -> bool:
-    """조건 말의 낱말이 모두 고른 칸 이름에 있는가 (조사를 떼고, 끝말은 마지막 글자를 떼고 본다).
-    통째로 견주면 '미성년 자녀가 없는' ↔ '미성년자녀-없음'처럼 조사 · 끝말이 달라 못 잇는다
-    (11/28 변형셋 P-093: 맞는 칸을 고르고도 이 표를 버렸다). 칸에 없는 낱말이 하나라도 있으면
-    ('7년 6개월'의 '6개월') 아니다"""
+    """'미성년 자녀가 없는'처럼 조사와 어미만 다른 낱말을 한 칸 안에서 잇는다."""
+    if asked := agegroup.child_counts(item):
+        if len(asked) != 1:
+            return False
+        count = next(iter(asked))
+        names = [name for name in names if _child_count_covered(count, agegroup.child_counts(name))]
+        item = agegroup.COUNT_BEFORE_UNIT.sub(lambda m: str(agegroup.NATIVE_COUNT[m[1]]), item)
     words = [_norm(JOSA_TAIL.sub("", token)) for token in item.split()]
     words = [w for w in words if w and w not in GENERIC_WORDS]
     if len(words) < 2:
-        return False  # 한 낱말이면 위의 통째 비교와 같다
-    # 낱말은 칸 이름 하나 안에 질문 순서대로 거의 붙어 있어야 한다: '외국인 남편'은
-    # '한국인 남편+외국인 아내'의 흩어진 '외국인' · '남편'으로 잇지 않는다
+        return False
+    # 활용형은 이어도 숫자를 줄이거나 단위를 떼면 다른 분류를 뜻한다.
     parts = [
-        f"(?:{re.escape(w)}|{re.escape(w[:-1])})" if len(w) >= 2 else re.escape(w) for w in words
+        f"(?:{re.escape(w)}|{re.escape(w[:-1])})"
+        if len(w) >= 2 and not any(c.isdigit() for c in w)
+        else re.escape(w)
+        for w in words
     ]
     pattern = re.compile(".{0,2}".join(parts))
-    return any(pattern.search(n) for n in names if len(n) >= 2)
+    return any(pattern.search(_norm(name)) for name in names)
 
 
 def _item_left(
@@ -1258,6 +1320,18 @@ def build(
         tbl_nm = lookup._table(tbl_id)["tbl_nm"]
     except Exception:
         tbl_nm = ""
+    if agegroup.child_counts(question):
+        divorce_count = DIVORCE_COUNT.search(question) or parsed.get("indicator") == "이혼 건수"
+        divorce_table = "이혼" in tbl_nm or any("이혼" in name for name in dims[0].codes.values())
+        if divorce_count and not divorce_table:
+            return None, "이혼 건수를 물었는데 이 통계표는 이혼 건수를 집계하지 않음"
+        if (
+            divorce_table
+            and "이혼" in question
+            and qa.slots.spouse_of(tbl_nm)
+            and not re.search(r"외국인?|다문화", question)
+        ):
+            return None, "질문에 없는 외국인 배우자 조건으로 집계 대상을 좁힌 표"
     dims = _cohort_dimensions(question, tbl_nm, dims)
     if any(not d.codes for d in dims):
         return None, "코호트를 지정하지 않았는데 전체를 집계한 칸이 없음"
@@ -1409,6 +1483,8 @@ def build(
         **({"couple": True} if plan.couple else {}),
         **({"elsewhere": elsewhere} if (elsewhere := _elsewhere(parsed, places, mentions)) else {}),
     }
+    if len(child_counts := agegroup.child_counts(question)) == 1:
+        spec["child_count"] = list(next(iter(child_counts)))
     kind = parsed.get("type")
     if plan.split_sex and (plan.multi or kind == "composition" or PCT_ASK.search(question)):
         return None, f"{plan.sex_dim.name}에서 칸을 고르지 못함"
