@@ -43,6 +43,21 @@ def test_compare_base_and_non_years_are_not_time() -> None:
     assert timeref.resolve("20년간 인구 변화", TODAY) is None
 
 
+@pytest.mark.parametrize(
+    ("question", "words"),
+    [
+        # 11/28 변형셋 P-040: 기준 '재작년'을 잃어 한 시점 질문이 됐다
+        ("재작년보다 작년에 아기가 더 많이 태어났어?", {"작년": False, "재작년": True}),
+        ("지지난해보다 지난해 혼인", {"지난해": False, "지지난해": True}),
+        ("작년보다 올해 인구", {"올해": False, "작년": True}),
+        ("작년보다 인구가 늘었어?", {}),  # 견줄 낱말이 없으면 기준은 시점이 아니다 (전년 대비)
+    ],
+)
+def test_compare_base_is_a_time_when_another_word_is_compared(question, words) -> None:
+    refs = timeref.find(question)
+    assert {r["expr"]: r.get("base", False) for r in refs if r["kind"] == "word"} == words
+
+
 def test_recent_n_years_is_open_period_not_two_digit_year() -> None:
     r = timeref.recent_period("최근 5년간 부산 1인가구수", TODAY)
     assert (r.year, r.open_end) == (2021, True)

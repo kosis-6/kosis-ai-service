@@ -990,6 +990,106 @@ def test_counting_words_before_population_are_plain() -> None:
     assert qa.population_modifier("경기도에서 제일 큰 도시 3개 인구로") is None
 
 
+@pytest.mark.parametrize(
+    ("question", "modifier"),
+    [
+        # 11/28 변형셋 P-144: 세대구성 조건을 버리고 85세 이상 총인구(6,097명)로 답했다
+        ("부산 금정구에서 부부와 결혼 안 한 형제자매가 함께 사는 가구의 85세 이상 인구", "가구"),
+        ("1인 가구의 작년 기준 85세 이상 인구", "가구"),
+        ("외국인 30대 인구", "외국인"),
+        ("장애인 65살 이상 인구", "장애인"),
+        ("서울 65세 이상 인구", None),
+        ("2025년 부산 해운대구 20세에서 39세 인구", None),
+        ("대구랑 부산 65세 이상 인구 비교", None),
+        ("요즘 65세 이상 인구", None),
+    ],
+)
+def test_modifier_before_numeric_age(question: str, modifier) -> None:
+    """숫자 연령은 이름 연령처럼 지우지 않으니, 그 앞의 말까지 보고 꾸밈말을 찾는다"""
+    assert qa.population_modifier(question) == modifier
+
+
+@pytest.mark.parametrize("question", ["요즘 인구 얼마나 돼?", "작년 기준 인구", "내년 인구"])
+def test_time_words_do_not_modify_population(question: str) -> None:
+    """때 말은 인구를 꾸미지 않는다. 11/28 P-126 '수성구 내년 인구'가 '인구에 수식어'로
+    근거 없음이 되어 사전의 장래추계 대체를 표 찾기로 넘겼다"""
+    assert qa.population_modifier(question) is None
+
+
+@pytest.mark.parametrize(
+    ("question", "llm"),
+    [
+        # 11/28 변형셋 P-040: HCX는 추이로 읽었는데 '한 시점만 물음'으로 2025년 값 하나가 됐다
+        ("재작년보다 작년에 아기가 더 많이 태어났어?", {"type": "trend", "start_year": 2022}),
+        ("재작년보다 작년에 아기가 더 많이 태어났어?", {"year": 2024}),
+        ("재작년에 비해 작년 출생아 늘었어?", {"type": "trend"}),
+    ],
+)
+def test_base_word_and_compared_word_are_two_years(question: str, llm: dict) -> None:
+    p = qa.correct(question, parsed(indicator="출생아 수", **llm), TODAY)
+    assert p["type"] == "trend" and (p["start_year"], p["end_year"]) == (2024, 2025)
+
+
+@pytest.mark.parametrize(
+    ("question", "sex", "split"),
+    [
+        # 11/28 변형셋 P-060: 남녀를 나누지 않고 출생아 전체 수로 답했다
+        ("작년 출생아 중에 아들이 많았어 딸이 많았어?", "계", True),
+        ("작년에 아들 몇 명 태어났어?", "남", None),
+        ("작년에 태어난 딸은 몇 명이야?", "여", None),
+        ("작년 출생아 수", "계", None),
+    ],
+)
+def test_birth_child_words_are_sex_words(question: str, sex: str, split) -> None:
+    p = qa.correct(question, parsed(indicator="출생아 수", year=2025), TODAY)
+    assert p["sex"] == sex and p.get("split_sex") is split
+
+
+def test_child_words_outside_birth_questions_are_not_sex_words() -> None:
+    p = qa.correct("아들 둔 가구 몇 가구야?", parsed(indicator="일반가구 수"), TODAY)
+    assert p["sex"] == "계" and not p.get("split_sex")
+
+
+@pytest.mark.parametrize(
+    ("question", "prediction"),
+    [
+        # 11/28 변형셋 P-149: '까 · 지'로 끝나지 않아 추이로 답했다
+        ("출산율 언젠가 반등할 것 같아?", True),
+        ("서울 인구 늘 것 같아?", True),
+        ("출산율 많이 떨어진 것 같아", None),  # 지난 일을 짐작하는 말은 예측이 아니다
+        ("요즘 결혼 많이 하는 것 같아?", None),
+    ],
+)
+def test_will_change_with_guess_tail_is_prediction(question: str, prediction) -> None:
+    p = qa.correct(question, parsed(type="causal", indicator="합계출산율"), TODAY)
+    assert p.get("prediction") is prediction
+
+
+def test_ratio_sibling_is_found_by_alias(monkeypatch: pytest.MonkeyPatch) -> None:
+    """11/28 변형셋 P-087: '다문화 출생아 비중'은 '다문화 출생 비중'의 별칭이라 못 찾았다"""
+    monkeypatch.setattr(indicators, "_alias_map", REAL_ALIASES)
+    q = "작년 태어난 아기 중 다문화 가정 아이는 몇 퍼센트야?"
+    p = qa.correct(q, parsed(indicator="다문화 출생 비중", type="composition", year=2025), TODAY)
+    assert p["indicator"] == "다문화 출생 비중"
+    p = qa.correct(
+        "작년 다문화 가정 아이 몇 명 태어났어?", parsed(indicator="다문화 출생아 수"), TODAY
+    )
+    assert p["indicator"] == "다문화 출생아 수"
+
+
+def test_prev_year_word_inside_two_years_ago_is_not_prev_year() -> None:
+    assert not qa.PREV_YEAR.search("재작년보다 작년에")
+    assert not qa.PREV_YEAR.search("지지난해보다 지난해")
+    assert qa.PREV_YEAR.search("작년보다 늘었어?")
+
+
+def test_modified_numeric_age_population_is_ungrounded() -> None:
+    q = "부산 금정구에서 부부와 결혼 안 한 형제자매가 함께 사는 가구의 85세 이상 인구 몇 명이야?"
+    p = qa.correct(q, parsed(indicator="", regions=["부산 금정구"], type="other"), TODAY)
+    assert p["indicator"] == "총인구"
+    assert p["grounded"] is False and p["ungrounded_by"] == "인구에 수식어"
+
+
 def test_change_rank_question(monkeypatch) -> None:
     p = qa.correct("작년에 인구 제일 많이 줄어든 시도 세 군데",
                    parsed(type="rank", indicator="자연증가 건수"), TODAY)  # fmt: skip

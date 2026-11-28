@@ -371,7 +371,8 @@ YEAR_EXTREME = {
 STREAK = re.compile(r"연속")
 REBOUND = re.compile(r"다시\s*(오르|늘|증가|올라)|반등")
 PER_YEAR = re.compile(r"해마다|매년|연평균|1년에|한 해에")
-PREV_YEAR = re.compile(r"(작년|전년|지난해)\s*(보다|대비|에 비해)")
+# 재작년 · 지지난해 안의 작년 · 지난해는 아님 (P-040 '재작년보다'를 전년 대비로 읽었다)
+PREV_YEAR = re.compile(r"(?<![재지])(작년|전년|지난해)\s*(보다|대비|에 비해)")
 RATIO_ASK = re.compile(r"몇\s*배")
 SURVEY_ASK = [
     (
@@ -461,11 +462,12 @@ UNSUPPORTED_MEASURE = re.compile(
     r"\d+\s*년\s*반|\d+\s*개월|(?:결혼|혼인|동거|거주|근속|재직)\s*기간|체중|몸무게|키가|"
     r"임신\s*(?:기간|주수|\d+\s*주)|\d+\s*주\s*(?:차|에서|부터|\s*~|\s*사이|\s*만에|\s*미만|\s*이상)"
 )
-PREDICT = re.compile(
-    r"앞으로|향후|미래에?|전망|예측|예상(?!보다)|"
-    r"(오를|내릴|늘|줄|늘어날|줄어들|증가할|감소할|떨어질|올라갈|내려갈|회복할|반등할)\s*(까|지)"
-)
+WILL_CHANGE = r"(오를|내릴|늘|줄|늘어날|줄어들|증가할|감소할|떨어질|올라갈|내려갈|회복할|반등할)"
+PREDICT = re.compile(rf"앞으로|향후|미래에?|전망|예측|예상(?!보다)|{WILL_CHANGE}\s*(까|지)")
 GUESS_TAIL = re.compile(r"(?:것|거)\s*같|(?:될|할)\s*(?:거|것)\s*래")
+# '반등할 것 같아?': 앞으로 바뀔지를 짐작해 달라는 말 ('반등할까'와 같다). 11/28 변형셋 P-149
+# '출산율 언젠가 반등할 것 같아?'가 '까 · 지'로 끝나지 않아 추이로 답했다
+PREDICT_GUESS = re.compile(rf"{WILL_CHANGE}\s*(?:것|거)\s*같")
 FUTURE_WORDS = re.compile(r"내년|내후년|앞으로|향후|장차|\d+\s*년\s*(?:뒤|후)")
 DIRECTION_WORDS = re.compile(r"더\s|다시|계속|여전히")
 
@@ -552,6 +554,12 @@ BIRTH_RATIO_OPPOSITE = {
 BIRTH_SEX_RATIO_WORDS = re.compile(r"(?:태어|출생|신생아|아기|아이)\S*\s*(?:\S+\s*){0,2}성비")
 MALE_BIRTH_WORDS = r"남아|남자|아들"
 FEMALE_BIRTH_WORDS = r"여아|여자|딸"
+# 태어난 아이의 성별은 '아들 · 딸 · 남아 · 여아'로도 말한다 (11/28 변형셋 P-060 '출생아 중에
+# 아들이 많았어 딸이 많았어?'가 남녀를 나누지 않고 출생아 전체 수로 답했다)
+BIRTH_GENDER_WORDS = {
+    "여": re.compile(rf"여성|{FEMALE_BIRTH_WORDS}"),
+    "남": re.compile(rf"남성|{MALE_BIRTH_WORDS}"),
+}
 SINO_DIGITS = {"일": 1, "이": 2, "삼": 3, "사": 4, "오": 5, "육": 6, "칠": 7, "팔": 8, "구": 9}
 SMALL_UNITS = {"십": 10, "백": 100, "천": 1000}
 BIG_UNITS = {"만": 10**4, "억": 10**8, "조": 10**12}
@@ -867,8 +875,11 @@ def _ratio_sibling(question, parsed, fix):
         fix("unsupported", True, "지표 안의 일부 비율은 통계표의 칸으로 계산")
         return None
     base = re.sub(r"\s*수$", "", current)
-    for sibling in (f"{base} 비율", f"{base} 비중"):
-        if sibling in indicators.specs():
+    for name in (f"{base} 비율", f"{base} 비중"):
+        # 별칭으로도 찾는다: '다문화 출생아 비중'은 '다문화 출생 비중'의 별칭이다 (11/28 변형셋
+        # P-087 '다문화 가정 아이는 몇 퍼센트야?'가 비율 지표를 못 찾아 다문화 출생아 수로 답했다)
+        sibling = indicators.canonical_name(name)
+        if sibling and sibling != current and sibling in indicators.specs():
             fix("indicator", sibling, "비율(몇 프로)을 물음")
             return sibling
     return None
@@ -1229,7 +1240,8 @@ def correct(question, parsed, today=None):
             fix("sex", "계", "출생성비의 성별은 분자와 분모에 적용")
         parsed.pop("split_sex", None)
     else:
-        genders = [sex for sex, pattern in GENDER_WORDS.items() if pattern.search(gender_question)]
+        words = BIRTH_GENDER_WORDS if agegroup.BIRTH.search(question) else GENDER_WORDS
+        genders = [sex for sex, pattern in words.items() if pattern.search(gender_question)]
         if len(genders) == 1 and (
             parsed.get("sex") in (None, "", "계") or gender_question != question
         ):
@@ -1646,16 +1658,59 @@ def population_modifier(question):
     for m in POPULATION_NOUN.finditer(question):
         if BY_REGION.fullmatch(m[1]):
             continue
-        words = {m[1], POPULATION_PARTICLE.sub("", m[1]) or m[1]}
-        if any(w in PLAIN_POPULATION or re.search(r"\d", w) for w in words):
-            continue
-        if any(
-            indicators.find_regions(w) or agegroup.resolve(w) or _resolve_short_region(w)
-            for w in words
+        if word := _modifier_word(m[1]):
+            return word
+        # '가구의 85세 이상 인구' · '외국인 30대 인구': 숫자 연령은 이름 연령(노인 · 청년)과 달리
+        # 위에서 지우지 않아 '인구' 바로 앞이 '이상' · '세'가 된다. 그 숫자 연령을 건너뛰고 앞의
+        # 말을 같은 기준으로 본다 (P-144: 세대구성 조건을 버리고 85세 이상 총인구로 답했다)
+        if (before := _word_before_numeric_age(question[: m.start(1)], m[1])) and (
+            word := _modifier_word(before)
         ):
-            continue
-        return min(words, key=len)
+            return word
     return None
+
+
+def _modifier_word(token):
+    """'인구'를 꾸미는 말이면 그 말 (조사를 뗀 짧은 쪽), 지역 · 연령 · 때 · 흔한 말이면 None"""
+    words = {token, POPULATION_PARTICLE.sub("", token) or token}
+    if any(w in PLAIN_POPULATION or re.search(r"\d", w) or _time_word(w) for w in words):
+        return None
+    if any(
+        indicators.find_regions(w) or agegroup.resolve(w) or _resolve_short_region(w) for w in words
+    ):
+        return None
+    return min(words, key=len)
+
+
+NUMERIC_AGE_TAIL = {"이상", "이하", "미만", "초과", "세", "살", "대", "만", "~", "-"}
+TIME_ANCHOR = {"기준", "당시", "때"}  # '작년 기준' · '그 당시': 앞의 때를 붙잡는 말
+
+
+def _time_word(word):
+    """때를 말하는 낱말: 질문의 때를 읽는 규칙(timeref · LATEST · FUTURE_WORDS)이 통째로
+    알아보는 말. '요즘 인구' · '내년 인구'의 '요즘' · '내년'은 인구를 꾸미지 않는다 (11/28:
+    P-126 '수성구 내년 인구'가 '인구에 수식어'로 근거 없음이 됐다)"""
+    if word in TIME_ANCHOR or LATEST.fullmatch(word) or FUTURE_WORDS.fullmatch(word):
+        return True
+    ref = timeref.resolve(word)
+    return bool(ref and ref.expr == word)
+
+
+def _word_before_numeric_age(text, tail):
+    """'…가구의 85세 이상' + '인구' 바로 앞 말(tail)에서 '가구의'. 건너뛴 말이 숫자 연령
+    (agegroup.NUMERIC_AGE: 85세 · 30대 · 65살)이 아니거나('3개'), 그 앞이 비었거나
+    '와 · 랑'처럼 다른 대상을 잇는 말이면 None"""
+    tokens = text.split()
+    skipped = []
+    while tokens and (re.search(r"\d", tokens[-1]) or tokens[-1] in NUMERIC_AGE_TAIL):
+        skipped.insert(0, tokens.pop())
+    numeric = bool(agegroup.NUMERIC_AGE.search(" ".join(skipped) + tail))
+    # '1인 가구의 작년 기준 85세 이상': 숫자 연령과 꾸미는 말 사이의 때 말도 건너뛴다
+    while tokens and _time_word(POPULATION_PARTICLE.sub("", tokens[-1]) or tokens[-1]):
+        tokens.pop()
+    if not numeric or not tokens or re.search(r"(와|과|하고|랑|및|,)$", tokens[-1]):
+        return None
+    return tokens[-1]
 
 
 def _resolve_short_region(word):
@@ -2266,7 +2321,8 @@ def _read_question(question, parsed, fix):
     guess = asks_guess(question)
     if guess:
         parsed["guess"] = True
-    if PREDICT.search(question) and kind not in ("other", "parse_error"):
+    predicts = PREDICT.search(question) or PREDICT_GUESS.search(question)
+    if predicts and kind not in ("other", "parse_error"):
         lo, hi = indicators._data_years()
         years = [y for y in (parsed.get("year"), parsed.get("end_year")) if y]
         if not any(y > hi for y in years):
