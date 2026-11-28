@@ -310,6 +310,12 @@ def _two(op: str, question: str, parsed: dict, ok, trace: dict, combine=None) ->
         trace.setdefault("multi", {})["ratio_by"] = by
         (tn, num), (td, den) = ((ta, a), (tb, b)) if a_is_num else ((tb, b), (ta, a))
         scale = 100 if RATE_WORDS.search(question) else 1
+        if scale == 100 and num.get("value") == den.get("value") and _span(tn) != _span(td):
+            # 'X 중 Y 비율'의 분자가 분모와 같은 값이면 분자가 조건을 잃고 합계를 가져온 것이다.
+            # 100%라는 틀린 값을 내지 않는다 (11/28 변형셋 P-093 '이혼 부부 중 미성년 자녀가
+            # 없는 비율'이 이혼 건수 ÷ 이혼 건수 = 100%로 답했다)
+            trace.setdefault("multi", {})["ratio_skip"] = "분자가 분모와 같은 값"
+            return None
         c = cross_indicator.Cross(
             _span(tn), _span(td), scale, "within" if scale == 100 else "versus"
         )
@@ -533,6 +539,8 @@ async def answer(question: str, parsed: dict, found: dict, trace: dict) -> dict 
             _two, op, question, parsed, ok, trace, h.get("combine")
         ):
             return combined
+        if trace["multi"].get("ratio_skip"):
+            return None  # 분자가 조건을 잃었다: 같은 값 둘을 나란히 보여 주지 않는다
         notes.append("두 값의 단위나 기준이 달라 직접 계산하지 않고 나란히 보여 드립니다")
     if op == "sum" and not failed and not gap:
         # 더하기 (재계획 A_10): 같은 시점 · 같은 단위의 건수만. 사전 경로의 합계와 같은 모양

@@ -1077,6 +1077,26 @@ def test_ratio_sibling_is_found_by_alias(monkeypatch: pytest.MonkeyPatch) -> Non
     assert p["indicator"] == "다문화 출생아 수"
 
 
+@pytest.mark.parametrize(
+    "question",
+    [
+        "작년 한 해 인구 감소 폭 큰 시도 top3",  # 11/28 변형셋 P-074: 2023 → 2024 순위로 답했다
+        "작년에 서울 인구 얼마나 줄었어?",
+        "작년 출생아 수 얼마나 늘었어?",
+    ],
+)
+def test_one_word_time_with_change_is_that_years_change(question: str) -> None:
+    llm = parsed(type="trend", indicator="총인구", year=2024, start_year=2023, end_year=2024)
+    p = qa.correct(question, llm, TODAY)
+    assert p["year"] == 2025 and (p["start_year"], p["end_year"]) == (2024, 2025)
+
+
+def test_period_with_change_keeps_its_period() -> None:
+    llm = parsed(type="trend", indicator="출생아 수", start_year=2015, end_year=2024)
+    p = qa.correct("작년까지 10년 동안 출생아 추이", llm, TODAY)
+    assert (p["start_year"], p["end_year"]) == (2016, 2025)
+
+
 def test_prev_year_word_inside_two_years_ago_is_not_prev_year() -> None:
     assert not qa.PREV_YEAR.search("재작년보다 작년에")
     assert not qa.PREV_YEAR.search("지지난해보다 지난해")
@@ -1262,7 +1282,10 @@ def test_years_later_is_counted_from_today(data_end_2025) -> None:
 
 def test_llm_year_without_number_is_dropped(data_end_2025) -> None:
     p = qa.correct("외국인 작년에 얼마나 늘었어?", trend(start_year=2024, end_year=2024), TODAY)
-    assert (p["start_year"], p["end_year"]) == (None, None)
+    # HCX가 넣은 2024~2024는 쓰지 않는다. 코드가 '작년 한 해의 변화'를 센다 (11/28부터:
+    # 전에는 셀 규칙이 없어 비워 두고 추이 기본 창으로 답했다)
+    assert (p["start_year"], p["end_year"]) == (2024, 2025)
+    assert any("한 해 변화" in c for c in p["corrections"])
 
 
 def test_year_arithmetic_reads_as_null() -> None:

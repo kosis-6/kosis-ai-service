@@ -134,6 +134,18 @@ def test_ratio_later_indicator_is_numerator(world) -> None:
     assert trace["multi"]["ratio_by"] == "rule"
 
 
+def test_ratio_of_equal_part_and_whole_is_not_answered(world) -> None:
+    """11/28 변형셋 P-093: 분자가 조건을 잃고 합계를 가져와 이혼 건수 ÷ 이혼 건수 = 100%로 답했다"""
+    world["values"] = {
+        "이혼 부부": _value("이혼 부부", 88130, "건"),
+        "미성년 자녀가 없는 이혼 부부": _value("미성년 자녀가 없는 이혼 부부", 88130, "건"),
+    }
+    found = _found([_target("이혼 부부"), _target("미성년 자녀가 없는 이혼 부부")], "ratio")
+    res, trace = run("작년 이혼 부부 중 미성년 자녀가 없는 이혼 부부 비율", found)
+    assert res is None  # 100%도, 같은 값 둘을 나란히 놓은 답도 내지 않는다
+    assert trace["multi"]["ratio_skip"] == "분자가 분모와 같은 값"
+
+
 def _ratio_found(num=None, den=None):
     found = _found([_target("1인 가구 수"), _target("통근 인구")], "ratio")
     found["handoff"]["combine"].update(num=num, den=den)

@@ -889,6 +889,8 @@ def uncovered(
             continue
         if not _item_left(item, names, read, plan, parsed, question):
             continue
+        if _words_in_cells(item, names):
+            continue
         if any(u.label and _norm(item) in _norm(u.label) for u in _band_unions(plan)):
             continue  # 구간 합으로 이미 이었다 ("저체중아" → 2.5kg 미만 칸들)
         if miss := _band_miss([item], dims, region_dim):
@@ -988,6 +990,24 @@ def _lives_in_asked_region(item: str, parsed: dict) -> bool:
     place = LIVES_IN.sub("", item)
     regions = parsed.get("regions") or []
     return bool(place) and _is_place_cell(place) and _named_place(place, regions)
+
+
+def _words_in_cells(item: str, names: list[str]) -> bool:
+    """조건 말의 낱말이 모두 고른 칸 이름에 있는가 (조사를 떼고, 끝말은 마지막 글자를 떼고 본다).
+    통째로 견주면 '미성년 자녀가 없는' ↔ '미성년자녀-없음'처럼 조사 · 끝말이 달라 못 잇는다
+    (11/28 변형셋 P-093: 맞는 칸을 고르고도 이 표를 버렸다). 칸에 없는 낱말이 하나라도 있으면
+    ('7년 6개월'의 '6개월') 아니다"""
+    words = [_norm(JOSA_TAIL.sub("", token)) for token in item.split()]
+    words = [w for w in words if w and w not in GENERIC_WORDS]
+    if len(words) < 2:
+        return False  # 한 낱말이면 위의 통째 비교와 같다
+    # 낱말은 칸 이름 하나 안에 질문 순서대로 거의 붙어 있어야 한다: '외국인 남편'은
+    # '한국인 남편+외국인 아내'의 흩어진 '외국인' · '남편'으로 잇지 않는다
+    parts = [
+        f"(?:{re.escape(w)}|{re.escape(w[:-1])})" if len(w) >= 2 else re.escape(w) for w in words
+    ]
+    pattern = re.compile(".{0,2}".join(parts))
+    return any(pattern.search(n) for n in names if len(n) >= 2)
 
 
 def _item_left(
@@ -1423,7 +1443,10 @@ def build(
             ):
                 return None, why
     spec["fixed"] = {"sex": parsed.get("sex") or "계"} if "by_sex" not in src else {}
-    if spec["kind"] == "ratio":
+    if spec["kind"] == "ratio" and not ignore_ages:
+        # 연령 분류가 없는 표라 연령 말을 뺐으면(ignore_ages) 적지 않는다: 질문에 남은 연령과
+        # 달라 _dynamic_fits 가 이 계산을 버렸다 (11/28 변형셋 P-093 '미성년 자녀가 없는 비율'의
+        # '미성년'이 0~18세로 읽혀, 56.06%를 계산하고도 지원하지 않는 지표로 답했다)
         spec["fixed"]["ages"] = parsed.get("ages") or None
     if spec["kind"] == "composition":
         spec["fixed"]["type"] = "composition"
@@ -1646,9 +1669,16 @@ def _ratio(spec, src, plan, dims, parsed, tbl_nm="", *, question=""):
     if population_sex and not qa.GENDER_WORDS[sex].search(name):
         name = f"{'남성' if sex == '남' else '여성'} {name}"
     whole_label = population_label if age_dim and col == age_dim.col and population_label else None
+    whole_name = whole_label or _label_name(whole.get(den, "")) if isinstance(den, str) else ""
+    # '계산: A ÷ B' 줄의 이름 · 단위 (없으면 칸 코드 · '명'이 나왔다: 'T2 49,404명 ÷ T1 88,130명')
+    num_src.setdefault("num_label", _label_name(part))
+    if whole_name:
+        num_src.setdefault("den_label", whole_name)
+    if spec.get("unit") and spec["unit"] != "%":
+        num_src.setdefault("operand_unit", spec["unit"])
     out = {
         **spec,
-        "name": _ratio_name(name, _label_name(part)),
+        "name": _ratio_name(name, _label_name(part), whole_name),
         "unit": "%",
         "kind": "ratio",
         "formula": f"{part} ÷ {whole_label or whole.get(den, '합계')} × 100",
@@ -1659,11 +1689,14 @@ def _ratio(spec, src, plan, dims, parsed, tbl_nm="", *, question=""):
     return out, None
 
 
-def _ratio_name(name: str, part: str) -> str:
+def _ratio_name(name: str, part: str, whole: str = "") -> str:
     if re.search(r"비율|비중|%", name):
         return name
     subject = re.sub(r"\s*수$", "", name)
-    subject = " ".join(w for w in subject.split() if _norm(w) != _norm(part)) or subject
+    # 부분 칸 이름을 빼면 남는 말이 없으면('미성년자녀-없음' 칸 하나를 고름) 합계 칸 이름을 쓴다
+    # (11/28 P-093이 '미성년자녀-없음 중 미성년자녀-없음 비율'로 답했다)
+    rest = " ".join(w for w in subject.split() if _norm(w) != _norm(part))
+    subject = rest or whole or subject
     return f"{subject} 중 {part} 비율"
 
 
@@ -1981,6 +2014,11 @@ def skip_reason(
         if picked_exact:
             return EXACT_SKIP
     return None
+
+
+# handoff_notice 가 붙이는 연령 안내 한 문장
+# ("'미성년'은(는) 0~18세으로 계산했습니다 (민법 19세 미만)")
+AGE_NOTICE = re.compile(r"(?:^|\.\s*)'[^']+'은\(는\) [^.]*?으로 계산했습니다 \([^)]*\)")
 
 
 def handoff_notice(entry: dict, understanding: dict, combine: dict, found_notice) -> str | None:
@@ -2858,6 +2896,8 @@ async def _try_once(
         step["skip"] = str(why)
         return None, why if isinstance(why, Ask) else None
     step["cells"] = spec["cells"]
+    if spec.get("ignore_ages") and notice:
+        notice = AGE_NOTICE.sub("", notice).strip(" .") or None  # 연령 칸 없는 표라 연령을 뺐다
     notice = table_notice(notice, bool(spec.get("couple")))
     if notice and (notice := notice.strip(" .")):
         spec["note"] = f"{spec['note'].rstrip(' .')}. {notice}"

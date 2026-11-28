@@ -1313,6 +1313,16 @@ def correct(question, parsed, today=None):
             kind = "value"
             if parsed.get("year") != ref.year:
                 fix("year", ref.year, ref.describe(today))
+        elif kind == "trend" and not SPAN.search(question) and _word_years(parsed) == {ref.year}:
+            # 낱말 시점 하나에 변화를 물었다('작년에 얼마나 줄었어?' · '작년 한 해 감소 폭'):
+            # 그해 한 해의 변화 = 전년 대비. 전에는 이 갈래가 비어 HCX의 연도(2024)가 남고
+            # 추이 기본 창으로 답했다 (11/28 변형셋 P-074가 2023 → 2024 순위로 답했다)
+            if parsed.get("year") != ref.year:
+                fix("year", ref.year, ref.describe(today))
+            if parsed.get("start_year") != ref.year - 1:
+                fix("start_year", ref.year - 1, f"{ref.describe(today)}의 한 해 변화")
+            if parsed.get("end_year") != ref.year:
+                fix("end_year", ref.year, f"{ref.describe(today)}의 한 해 변화")
     if spans and kind in ("value", "trend", "compare"):
         said = {int(y) for y in YEAR.findall(question)}
         start = min([lo for lo, _ in spans] + list(said))
@@ -3112,12 +3122,16 @@ def _compute(q):
             for r in _leaves(result):
                 note = f"{josa(repr_q(term), '을를')} {ro(sp['name'])} 보고 답했습니다"
                 r["notes"] = [note] + r.get("notes", [])
-    if result.get("status") == "ok" and (group := q.get("age_group")) and group.get("basis"):
+    # 연령 칸이 없는 표라 연령 말을 빼고 계산했으면(ignore_ages) 연령 안내를 붙이지 않는다
+    # (11/28 P-093 '미성년 자녀'의 '미성년'에 '0~18세로 계산했습니다'가 붙었다)
+    ages_ignored = bool((q.get("dynamic_spec") or {}).get("ignore_ages"))
+    group = None if ages_ignored else q.get("age_group")
+    if result.get("status") == "ok" and group and group.get("basis"):
         note = age_basis_note(group)
         for r in _leaves(result):
             if note not in r.get("notes", []):
                 r["notes"] = [note] + r.get("notes", [])
-    if result.get("status") == "ok" and (note := q.get("age_note")):
+    if result.get("status") == "ok" and not ages_ignored and (note := q.get("age_note")):
         for r in _leaves(result):
             if note not in r.get("notes", []):
                 r["notes"] = [note] + r.get("notes", [])
