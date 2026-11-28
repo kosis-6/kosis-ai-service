@@ -324,9 +324,7 @@ def test_intersect_uses_joint_table_for_original_question(world) -> None:
         ],
         "intersect",
     )
-    world["values"][question] = _value(
-        "2024년 입국 베트남 외국인 수", 5706, "명", year=2025
-    )
+    world["values"][question] = _value("2024년 입국 베트남 외국인 수", 5706, "명", year=2025)
 
     parsed = {
         **BASE,

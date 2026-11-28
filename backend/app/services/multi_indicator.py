@@ -363,9 +363,7 @@ async def _intersect(question, parsed, found, targets, trace) -> dict | None:
         # 일부 자연어 질문은 조건을 지표 두 개로 잘못 분해한다. 같은 표에 두 분류 축이
         # 함께 있으면 원 질문 전체를 그 표에서 계산해 본 뒤에만 "공동 집계 표 없음"으로 끝낸다.
         if candidates := joint_candidates(found.get("handoff") or {}, targets):
-            if result := await _one_table_intersection(
-                question, parsed, found, candidates, trace
-            ):
+            if result := await _one_table_intersection(question, parsed, found, candidates, trace):
                 return result
         joined = " · ".join(f"'{n}'" for n in names)
         text = (
