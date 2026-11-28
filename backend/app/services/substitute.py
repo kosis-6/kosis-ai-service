@@ -35,6 +35,7 @@ class Swap:
     lead: str  # 답 첫 문장
     others: list[str] = field(default_factory=list)  # 다른 대안 (후속 버튼용)
     why: str = ""  # 바꾼 이유만 (follow가 이어 쓸 때)
+    because: str = ""  # 바꾸게 된 원래 status (region_not_in_year · out_of_range …)
 
     def record(self) -> dict[str, Any]:
         return {
@@ -43,6 +44,7 @@ class Swap:
             "to": self.after,
             "others": self.others,
             "applied": self.change,
+            "because": self.because,
         }
 
 
@@ -65,7 +67,7 @@ def year_swap(q: dict, result: dict) -> Swap | None:
         where = result.get("region") or "이 지역"
         lead = f"{josa(where, '은는')} {born}년에 생겨 {y}년 자료가 없어 {born}년 값으로 답합니다."
         why = f"{josa(where, '은는')} {born}년에 생겼고"
-        return Swap("연도", f"{y}년", f"{born}년", {"year": born}, lead, why=why)
+        return Swap("연도", f"{y}년", f"{born}년", {"year": born}, lead, why=why, because=status)
     if status == "out_of_range" and (span := result.get("available_years")):
         lo, _ = span
         if not isinstance(lo, int) or y >= lo:
@@ -75,7 +77,7 @@ def year_swap(q: dict, result: dict) -> Swap | None:
             f"{josa(what, '은는')} {lo}년부터 자료가 있어 {y}년 대신 가장 가까운 {lo}년 값으로 "
             "답합니다."
         )
-        return Swap("연도", f"{y}년", f"{lo}년", {"year": lo}, lead)
+        return Swap("연도", f"{y}년", f"{lo}년", {"year": lo}, lead, because=status)
     return None
 
 
@@ -90,7 +92,8 @@ def follow(first: Swap, q: dict, again: dict) -> Swap | None:
         if first.why
         else second.lead.replace(second.before, first.before)
     )
-    return Swap("연도", first.before, second.after, second.change, lead)
+    # 두 번째로 바꾼 까닭(수록 기간 전)이 마지막 값을 정했으니 그 까닭을 남긴다
+    return Swap("연도", first.before, second.after, second.change, lead, because=second.because)
 
 
 OPEN_END = 100  # 'N세 이상' 구간의 끝으로 보는 나이
@@ -161,6 +164,7 @@ def band_swap(q: dict, result: dict) -> Swap | None:
         {"ages": new, "age_group": None, "age_note": None, "born": None},
         lead,
         [_label(b) for b in others[:2]],
+        because=str(result.get("status") or ""),
     )
 
 
@@ -204,7 +208,7 @@ def region_swap(q: dict, result: dict, labels: list[tuple[str, str]]) -> Swap | 
     short = parent.split()[-1]
     lead = f"'{name}' 같은 읍면동 단위 자료는 없어 {short} 값으로 답합니다."
     change = {"regions": [parent], "sub_area": None}
-    return Swap("지역", name, parent, change, lead)
+    return Swap("지역", name, parent, change, lead, because="unknown_region")
 
 
 def plan(q: dict, result: dict, dong_labels=None) -> Swap | None:
@@ -277,7 +281,8 @@ def table_region_swap(q: dict, checks: dict, resolve, name: str) -> Swap | None:
     sido = reg["sido_name"]
     what = f"'{name}' 통계는" if name else "이 통계는"
     lead = f"{what} 시도 단위까지만 집계돼 {sido} 값으로 답합니다."
-    return Swap("지역", reg.get("display") or regions[0], sido, {"regions": [sido]}, lead)
+    shown = reg.get("display") or regions[0]
+    return Swap("지역", shown, sido, {"regions": [sido]}, lead, because="region_level")
 
 
 def mark_response(res: dict, swap: Swap) -> dict:

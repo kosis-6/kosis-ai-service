@@ -26,6 +26,7 @@ def test_founded_region_moves_to_first_year():
     swap = sb.plan(q, r)
     assert swap.change == {"year": 2012}
     assert swap.lead.startswith("세종특별자치시는 2012년에 생겨 1980년 자료가 없어")
+    assert swap.record()["because"] == "region_not_in_year"
 
 
 def test_past_year_moves_to_first_year_but_future_does_not():
@@ -33,6 +34,7 @@ def test_past_year_moves_to_first_year_but_future_does_not():
     swap = sb.plan({"type": "value", "year": 1965}, r)
     assert swap.change == {"year": 1970}
     assert "1965년 대신 가장 가까운 1970년" in swap.lead
+    assert swap.record()["because"] == "out_of_range"
     assert sb.plan({"type": "value", "year": 2030}, r) is None
 
 
@@ -50,6 +52,8 @@ def test_follow_goes_on_to_first_collected_year():
     assert swap.change == {"year": 2008}
     assert (swap.before, swap.after) == ("1990년", "2008년")
     assert swap.lead.startswith("계룡시는 2003년에 생겼고 자료는 2008년부터 있어 1990년 대신")
+    # 마지막 값(2008년)은 사전 자료 범위가 정했다: 지표마다 다른 까닭
+    assert swap.record()["because"] == "out_of_range"
 
 
 def test_nearest_band_prefers_most_overlap_by_ratio():
