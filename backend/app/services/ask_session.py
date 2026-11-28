@@ -209,7 +209,7 @@ def _clear_period_questions(conditions: dict) -> None:
     asked = {
         k: v
         for k, v in (conditions.get("asked") or {}).items()
-        if k in ("survey", "survey_missing")
+        if k in ("survey", "survey_missing", "registered_population")
     }
     if asked:
         conditions["asked"] = asked
@@ -674,10 +674,16 @@ def inherit(
         s["period"] = "inherited"
     if question:
         survey_question = question
-        if not qa.survey_said(question) and s.get("indicator") == "inherited":
+        if (
+            not qa.survey_said(question)
+            and not qa.REGISTERED_POPULATION.search(question)
+            and s.get("indicator") == "inherited"
+        ):
             previous = prev.get("asked") or {}
             if survey := previous.get("survey") or previous.get("survey_missing"):
                 survey_question = f"{survey} 기준 {question}"
+            elif previous.get("registered_population"):
+                survey_question = f"주민등록인구 기준 {question}"
         qa.set_survey(survey_question, p)
     return p, s
 
