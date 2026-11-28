@@ -22,6 +22,8 @@ ASKS_WRITE = re.compile(r"만들|써|쓰|작성|정리|생성|보고서로")
 ASKS_REVISE = re.compile(
     r"짧게|간단|간결|간략|축약|길게|자세|요약|문체|말투|어투|표현|다듬|줄여|늘려"
     r"|다시\s*(?:써|쓰|정리|작성)"
+    # "결론부터 나오게 해줘"는 담은 결과의 순서가 아니라 문장 고치기 (개발셋 v0.3 R05-T2 · R07-T5)
+    r"|(?:결론|요점|핵심)(?:을|이|만)?\s*(?:부터|먼저|앞)"
 )
 ASKS_SHORTER = re.compile(
     r"(?:짧게|간단히|간단하게|간결하게|간략히|축약|줄여)(?!\s*(?:말고|하지\s*마))"
@@ -76,6 +78,11 @@ class Ctx:
         self.declined = False
         self.turn_no: int | None = None
         self.added_now: list[int] = []
+        # 보고서를 만들어 달라는 요청인가. 되물은 뒤의 답("응 넣어" · "다 넣어")에는 만들라는 말이
+        # 없으므로 되묻기 전 요청의 뜻을 이어 받는다 (개발셋 v0.3 R05 · R13 · R16 · R18)
+        self.wants_write = bool(ASKS_WRITE.search(question)) or bool(
+            saved.get("pending") and saved.get("wants_write")
+        )
 
 
 def _label(response: dict) -> str | None:
@@ -235,6 +242,13 @@ async def add_item(ctx: Ctx, turn_ids: list[int] | None = None) -> dict:
     turns = await session_turns(ctx)
     done, problems = [], []
     turn_ids = list(turn_ids or [])
+    if not turn_ids:
+        # 빈 add_item 이 {"added": []}로 끝나면 LLM 은 담을 답이 없다고 읽고 새로 조회한다
+        # (개발셋 v0.3 R08-T2). "그거 · 이거"면 바로 앞 답이고, 아니면 고르라고 알린다
+        if ONE_POINTED.search(ctx.question) and not MANY.search(ctx.question) and turns:
+            turn_ids = [turns[-1]["turn_id"]]
+        else:
+            return {"error": "turn_ids 가 비었습니다. turns 에서 담을 turn_id 를 골라 넣으세요"}
     if ONE_POINTED.search(ctx.question) and not MANY.search(ctx.question) and turns:
         last = turns[-1]["turn_id"]
         if len(turn_ids) > 1 or (turn_ids and turn_ids[0] != last and not ctx.confirmable):
@@ -321,7 +335,7 @@ async def check_compare(ctx: Ctx) -> dict:
 async def write_report(
     ctx: Ctx, title: str | None = None, purpose: str | None = None, style: str | None = None
 ) -> dict:
-    if not ASKS_WRITE.search(ctx.question) and not ctx.saved.get("offer_topic"):
+    if not ctx.wants_write and not ctx.saved.get("offer_topic"):
         return {
             "error": "사용자가 보고서를 만들어 달라고 하지 않았습니다."
             " 요청한 일만 하고 finish 하세요"
