@@ -360,6 +360,13 @@ def _record_more(trace: dict, targets, outcomes) -> None:
 async def _intersect(question, parsed, found, targets, trace) -> dict | None:
     names = [_span(t) for t in targets]
     if not REGION_FILTER.search(question) and parsed.get("type") != "rank":
+        # 일부 자연어 질문은 조건을 지표 두 개로 잘못 분해한다. 같은 표에 두 분류 축이
+        # 함께 있으면 원 질문 전체를 그 표에서 계산해 본 뒤에만 "공동 집계 표 없음"으로 끝낸다.
+        if candidates := joint_candidates(found.get("handoff") or {}, targets):
+            if result := await _one_table_intersection(
+                question, parsed, found, candidates, trace
+            ):
+                return result
         joined = " · ".join(f"'{n}'" for n in names)
         text = (
             f"{joined} 조건을 함께 만족하는 대상을 따로 집계한 통계표를 찾지 못했습니다. "
@@ -398,6 +405,33 @@ async def _intersect(question, parsed, found, targets, trace) -> dict | None:
     out = _response(question, parsed, result, trace, (), names)
     out["answer"] = f"{lead}.\n\n{out['answer']}"
     return out
+
+
+async def _one_table_intersection(question, parsed, found, candidates, trace):
+    target = {
+        "span": question,
+        "question": question,
+        "conditions": {},
+        "candidates": candidates,
+    }
+    sub = {"dynamic": []}
+    try:
+        result = await dynamic_indicator._compute_target(
+            question,
+            {**parsed, "indicators": None, "unsupported": None},
+            found,
+            target,
+            sub,
+        )
+    except Exception:
+        logger.exception("한 표에서 교집합 조건 계산 실패")
+        result = None
+    trace["multi"]["joint_table"] = {
+        "tables": [c.get("tbl_id") for c in candidates],
+        "status": (result or {}).get("status"),
+    }
+    trace.setdefault("dynamic", []).extend(sub.get("dynamic") or [])
+    return result if _ok(result) else None
 
 
 JOINT_MAX = 3  # 한 표 비율로 시도할 표 수
