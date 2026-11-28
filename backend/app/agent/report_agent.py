@@ -34,6 +34,14 @@ ACTION = re.compile(r'"action"\s*:\s*"(\w+)"')
 COUNT = re.compile(r"\d{1,2}\s*(개|번째|가지)")  # 담은 개수 · 순서는 통계 값이 아니다
 DONE_FALLBACK = "요청한 내용을 처리했어요. 내 보고서에서 확인해 주세요."
 ACTION_FAILED = "요청한 보고서 작업을 완료하지 못했어요."
+DECLINED = "알겠어요. 보고서는 만들지 않을게요."
+REFUSE_FALLBACK = "그 요청은 보고서에서 할 수 없어요."
+# HCX 가 refuse 를 why 없이 보낼 때 사용자 말로 이유를 고른다 (개발셋 v0.3 R07-T6 · R18-T1)
+REFUSE_HINTS = (
+    ("other_talk", re.compile(r"어제|그저께|지난\s*(번|주|대화)|전에\s*본|다른\s*대화")),
+    ("numbers", re.compile(r"대충|어림|반올림|처럼\s*(써|적)|숫자를?\s*(바꿔|고쳐|줄여)")),
+    ("causal", re.compile(r"왜|원인|이유")),
+)
 # 이 행동이 성공하면 그 요청은 끝낸다 (HCX 가 맞게 담은 뒤에도 다른 행동을 이어 가며 결과를 망쳤다,
 # 개발셋 R15). 보고서를 만들어 달라고 했거나 정정의 빼기 뒤에는 이어 간다
 SMALL_EDITS = {"add_item", "remove_item", "reorder", "set_title"}
@@ -72,7 +80,7 @@ def read_action(content: str | None) -> dict | None:
 
 
 def _done_after(action: str, ctx: tools.Ctx) -> bool:
-    if tools.ASKS_WRITE.search(ctx.question):
+    if ctx.wants_write:
         return False
     return not (action == "remove_item" and tools.CORRECTION.search(ctx.question))
 
@@ -99,6 +107,8 @@ async def _context(ctx: tools.Ctx) -> dict[str, Any]:
     return {
         "user_message": ctx.question,
         "pending": ctx.saved.get("pending"),
+        # 이 요청(되물은 뒤의 답이면 되묻기 전 요청)이 보고서를 만들어 달라는 것인가
+        "report_requested": ctx.wants_write,
         # 바로 앞 답에서 "보고서를 만들까요?"를 제안했으면 그 주제
         "offer": ctx.saved.get("offer_topic")
         if ctx.saved.get("offer_turn") == ctx.turn_no
@@ -192,14 +202,19 @@ def _reply(ctx: tools.Ctx, end: dict) -> tuple[str, dict | None]:
     kind = end.get("end")
     seen = end.get("seen") or ""
     if kind == "refuse":
-        why = tools.REFUSE_WHY.get(end.get("why") or "", "")
-        return _safe_message(end.get("message") or why, seen, why or DONE_FALLBACK), None
+        reason = end.get("why") or next(
+            (w for w, pat in REFUSE_HINTS if pat.search(ctx.question)), ""
+        )
+        why = tools.REFUSE_WHY.get(reason, "")
+        return _safe_message(end.get("message") or why, seen, why or REFUSE_FALLBACK), None
     if kind == "ask_user":
         options = [str(o)[:60] for o in end.get("options") or [] if str(o).strip()][:4]
         question = _safe_message(end.get("question"), seen, "어떻게 할까요?")
         clar = {"kind": "report_choice", "prompt": question, "options": options}
         return question, clar
-    return _safe_message(end.get("message"), seen, DONE_FALLBACK), None
+    # 제안을 거절한 요청에 "내 보고서에서 확인해 주세요"라고 답하지 않게 (개발셋 v0.3 R14-T4)
+    fallback = DECLINED if ctx.declined and not ctx.added_now else DONE_FALLBACK
+    return _safe_message(end.get("message"), seen, fallback), None
 
 
 async def run(question: str, sid: str, state: dict | None, user_id: int | None) -> dict[str, Any]:
@@ -240,7 +255,14 @@ async def run(question: str, sid: str, state: dict | None, user_id: int | None) 
     pending = None
     candidates: list[int] = []
     if end.get("end") == "ask_user":
-        pending = {"question": answer, "options": (clar or {}).get("options") or []}
+        # request: 되묻게 만든 처음 요청. 다음 요청의 말("응" · "서울 1인 가구로")은 이 요청에 대한
+        # 답이라, 이것이 없으면 에이전트가 할 일을 모른 채 다시 묻는다 (개발셋 v0.3 R13 · R17 · R18)
+        first = (saved.get("pending") or {}).get("request") or question
+        pending = {
+            "request": first,
+            "question": answer,
+            "options": (clar or {}).get("options") or [],
+        }
         candidates = sorted(set(ctx.new_candidates) | ctx.confirmable)
     report = ctx.report
     res = {
@@ -263,5 +285,7 @@ async def run(question: str, sid: str, state: dict | None, user_id: int | None) 
         "declined": bool(saved.get("declined") or ctx.declined),
         "report_id": (report or {}).get("id") or saved.get("report_id"),
         "last_added": ctx.added_now,
+        # 되물었으면 이 요청이 보고서를 만들어 달라는 것이었는지 다음 요청(답)에 넘긴다
+        "wants_write": bool(pending and ctx.wants_write),
     }
     return res

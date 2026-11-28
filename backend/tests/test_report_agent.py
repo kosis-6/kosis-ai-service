@@ -709,3 +709,120 @@ def test_find_turns_stays_in_this_conversation(db, monkeypatch):
     found = res["trace"]["report_agent"]["steps"][0]["result"]
     assert other not in [c["turn_id"] for c in found["candidates"]]
     assert res["answer"] == ra.tools.REFUSE_WHY["other_talk"]
+
+
+# ---- 개발셋 v0.3 오답 (A · C · D · E · H) ---------------------------------------------------
+
+
+def _fake_generate(monkeypatch, calls):
+    """보고서 문장 생성(LLM) 흉내: 받은 style 을 기록하고 ready 로 둔다"""
+    from app.services import reports
+
+    async def generate(user_id, report_id, style=None):
+        from app.core.db import engine
+
+        calls.append(style)
+        async with engine.begin() as conn:
+            await conn.execute(
+                text("update app.reports set status = 'ready' where id = :r"), {"r": report_id}
+            )
+        report = await reports.detail(user_id, report_id)
+        return {**report, "content": {"summary": [], "limits": []}}
+
+    monkeypatch.setattr(reports, "generate", generate)
+
+
+def test_confirm_after_write_request_keeps_going_to_write(db, monkeypatch):
+    """A: "보고서 만들어줘" → 되묻기 → "응 넣어"는 담은 뒤 보고서까지 만든다
+    (개발셋 v0.3 R05 · R13 · R16 · R18)"""
+    sid, uid, (t1, _, _) = db
+    calls = []
+    _fake_generate(monkeypatch, calls)
+    script(monkeypatch, [act("ask_user", question="담을까요?", options=["네", "아니요"])])
+    first = run(ra.run("서울 1인 가구 보고서 만들어줘", sid, {"turn_no": 3}, uid))
+    state = first["report_agent_state"]
+    assert state["pending"] and state["wants_write"] is True
+
+    seen = script(
+        monkeypatch,
+        [act("add_item", turn_ids=[t1]), act("write_report"), act("finish", message="만들었어요.")],
+    )
+    second = run(ra.run("응 넣어", sid, {"turn_no": 4, "report_agent": state}, uid))
+    actions = [s["action"] for s in second["trace"]["report_agent"]["steps"]]
+    assert actions == ["add_item", "write_report", "finish"]  # 담기에서 끝나지 않고 만든다
+    assert "error" not in second["trace"]["report_agent"]["steps"][1]["result"]
+    assert calls == [None]
+    assert json.loads(seen[0][1]["content"])["report_requested"] is True
+    assert second["report_agent_state"]["wants_write"] is False  # 되묻지 않았으면 넘기지 않는다
+
+
+def test_confirm_after_add_request_does_not_write(db, monkeypatch):
+    """A: 담기만 해 달라고 했으면 되물은 뒤에도 만들지 않는다"""
+    sid, uid, (t1, _, _) = db
+    script(monkeypatch, [act("ask_user", question="담을까요?", options=["네"])])
+    first = run(ra.run("2015년 것도 넣어줘", sid, {"turn_no": 3}, uid))
+    assert first["report_agent_state"]["wants_write"] is False
+    script(monkeypatch, [act("add_item", turn_ids=[t1]), act("write_report")])
+    second = run(
+        ra.run("응 넣어", sid, {"turn_no": 4, "report_agent": first["report_agent_state"]}, uid)
+    )
+    assert [s["action"] for s in second["trace"]["report_agent"]["steps"]] == ["add_item"]
+
+
+def test_revise_without_write_words_and_ends(db, monkeypatch):
+    """C · D: "결론부터 나오게 해줘"도 고치고, 고친 뒤에는 끝낸다 (R05-T2 · R07-T4 · R07-T5)"""
+    sid, uid, (t1, _, _) = db
+    calls = []
+    _fake_generate(monkeypatch, calls)
+    script(monkeypatch, [act("add_item", turn_ids=[t1]), act("write_report"), act("finish")])
+    made = run(ra.run("서울 거 넣어서 보고서 만들어줘", sid, {"turn_no": 3}, uid))
+    assert made["report"]["status"] == "ready"
+
+    seen = script(monkeypatch, [act("revise_text"), act("write_report"), act("finish")])
+    res = run(ra.run("결론부터 나오게 해줘", sid, {"turn_no": 4}, uid))
+    steps = res["trace"]["report_agent"]["steps"]
+    assert [s["action"] for s in steps] == ["revise_text"]
+    assert "error" not in steps[0]["result"]
+    assert len(seen) == 1  # 다시 만들어 덮어쓰지 않는다
+    assert calls == [None, "결론부터 나오게 해줘"]  # style 이 비면 사용자 말로 고친다
+    assert res["answer"] == "보고서 문장을 수정했어요."
+
+
+def test_empty_add_item_is_an_error(db, monkeypatch):
+    """H: turn_ids 없는 add_item 은 오류로 알린다 (R08-T2). '그거'면 바로 앞 답"""
+    sid, uid, (_, _, t3) = db
+    script(monkeypatch, [act("add_item"), act("finish", message="끝")])
+    res = run(ra.run("보고서에 넣고 왜 늘었는지도 써줘", sid, {"turn_no": 3}, uid))
+    step = res["trace"]["report_agent"]["steps"][0]
+    assert "turn_ids 가 비었습니다" in step["result"]["error"]
+
+    script(monkeypatch, [act("add_item"), act("finish", message="끝")])
+    res = run(ra.run("그거 넣어줘", sid, {"turn_no": 4}, uid))
+    step = res["trace"]["report_agent"]["steps"][0]
+    assert step["result"]["added"] == [] and "검증된 수치" in step["result"]["error"][0]
+    # 바로 앞 답(t3)을 담으려 함
+    assert t3 in [int(x.split(":")[0]) for x in step["result"]["error"]]
+
+
+@pytest.mark.parametrize(
+    "question, expected",
+    [
+        ("어제 본 출생아 수 보고서에 넣어줘", tools.REFUSE_WHY["other_talk"]),
+        ("숫자는 140만 가구처럼 대충 써줘", tools.REFUSE_WHY["numbers"]),
+        ("더 짧게 써줘", ra.REFUSE_FALLBACK),
+    ],
+)
+def test_refuse_without_why_explains(db, monkeypatch, question, expected):
+    """E: refuse 를 이유 없이 보내도 '처리했어요'가 아니라 거절 이유를 말한다 (R07-T6 · R18-T1)"""
+    sid, uid, _ = db
+    script(monkeypatch, [act("refuse")])
+    res = run(ra.run(question, sid, {"turn_no": 3}, uid))
+    assert res["answer"] == expected
+
+
+def test_decline_offer_answer(db, monkeypatch):
+    """E: 제안 거절에 '내 보고서에서 확인해 주세요'라고 하지 않는다 (R14-T4)"""
+    sid, uid, _ = db
+    script(monkeypatch, [act("decline_offer"), act("finish")])
+    res = run(ra.run("괜찮아 보고서는 됐어", sid, {"turn_no": 3}, uid))
+    assert res["answer"] == ra.DECLINED
