@@ -1802,7 +1802,8 @@ def test_guessed_sigungu_in_asked_sido_becomes_rank(monkeypatch) -> None:
     p = qa.correct(
         q, parsed(type="value", indicator="총인구", regions=["수원시", "용인시", "고양시"]), TODAY
     )
-    assert p["type"] == "rank" and p["regions"] == ["경기도"] and p["top"] == 3
+    # 시도 하나는 지역 목록이 아니라 순위의 범위(sido)로 둔다 (cc4aed6)
+    assert p["type"] == "rank" and p["sido"] == "경기도" and not p["regions"] and p["top"] == 3
     assert not p.get("ungrounded_region")
     p = qa.correct(
         "경기도 인구 알려줘", parsed(type="value", indicator="총인구", regions=["수원시"]), TODAY
