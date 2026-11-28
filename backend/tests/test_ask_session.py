@@ -980,6 +980,118 @@ def test_ungrounded_dictionary_out_of_range_not_returned(talk: Talk) -> None:
     assert res["status"] == "tables" and res["trace"]["replaced"]["by"] == "tables"
 
 
+def _refused_by_dictionary(talk: Talk, status: str, year: int) -> None:
+    talk.parsed = {**BASE, "type": "value", "year": year, "grounded": False}
+    talk.found = {"status": "out_of_scope", "answer": "맞는 통계표를 찾지 못했습니다."}
+    original = talk._result
+
+    def refused(parsed, question=""):
+        out = original(parsed, question)
+        out["status"] = out["result"]["status"] = status
+        return out
+
+    talk._result = refused
+
+
+@pytest.mark.parametrize(
+    ("status", "year"),
+    [
+        # 11/27 변형셋 P-128 '80년에 세종시엔 몇 명 살았어?' → partial_match 로 바뀌었다
+        ("region_not_in_year", 1980),
+        # 11/27 변형셋 P-126 '수성구 내년 인구 알려줘' → no_region_level 로 바뀌었다
+        ("out_of_range", s.date.today().year + 1),
+    ],
+)
+def test_ungrounded_sure_refusal_kept_when_no_table_is_found(talk: Talk, status, year) -> None:
+    """근거 없는 지표라도 지표와 상관없이 참인 사전 거절은 다른 표를 못 찾으면 그대로 둔다"""
+    _refused_by_dictionary(talk, status, year)
+    res = talk.say("그 해 거기 몇 명 살았어?")
+    assert res["status"] == status and "replaced" not in res["trace"]
+    assert res["trace"]["dynamic_kept"]["kept"] == status
+
+
+def test_ungrounded_past_range_refusal_is_still_replaced(talk: Talk) -> None:
+    """과거 자료 범위는 지표마다 달라, 지표가 틀렸을 수 있는 근거 없는 답은 전처럼 바꾼다"""
+    _refused_by_dictionary(talk, "out_of_range", 1975)
+    res = talk.say("1975년 거기 몇 명 살았어?")
+    assert res["status"] == "out_of_scope" and res["trace"]["replaced"]["by"] == "tables"
+
+
+SEJONG_2012 = {"name": "연도", "from": "1980년", "to": "2012년", "because": "region_not_in_year"}
+SEOUL_2030 = {"status": "ok", "region": "서울특별시", "year": 2030, "value": 9096161}
+
+
+def _alternative_by_dictionary(talk: Talk, status: str, extra: dict) -> None:
+    talk.parsed = {**BASE, "type": "value", "year": 2030, "grounded": False}
+    original = talk._result
+
+    def alternative(parsed, question=""):
+        out = original(parsed, question)
+        out["status"] = out["result"]["status"] = status
+        out["result"].update(extra)
+        return out
+
+    talk._result = alternative
+
+
+@pytest.mark.parametrize(
+    ("status", "extra", "kept"),
+    [
+        # 11/28 '80년에 세종시엔 몇 명 살았어?'(P-128): 2012년 값 대안 답변 → 표 안내로 바뀌었다
+        ("ok", {"changed_condition": SEJONG_2012}, "changed_condition"),
+        # 11/28 '2030년에 강남구 사람 몇 명이야?': 서울 장래추계 대체 → no_region_level 로 바뀌었다
+        ("out_of_range", {"suggestion": SEOUL_2030}, "suggestion"),
+    ],
+)
+@pytest.mark.parametrize("found", ["ok", "out_of_scope"])
+def test_ungrounded_alternative_kept_when_no_table_computes(
+    talk: Talk, status, extra, kept, found
+) -> None:
+    """근거 없는 질문이라도 다른 표가 값을 못 내면 사전의 대안 답변 · 장래추계 대체를 둔다"""
+    _alternative_by_dictionary(talk, status, extra)
+    talk.found = {"status": found, "answer": "표 안내"}
+    res = talk.say("그 해 거기 사람 몇 명이야?")
+    assert res["status"] == status and "replaced" not in res["trace"]
+    assert res["trace"]["dynamic_kept"]["kept"] == kept
+
+
+@pytest.mark.parametrize(
+    "because",
+    [
+        # 11/28 '1970년에 경기도에 사는 사람 몇 명이었어?': 사전 자료가 2008년부터라 2008년 값
+        # 대안 답변이 남았다. 1970년 값은 인구총조사 표에 있다
+        "out_of_range",
+        "band_mismatch",
+        "unknown_region",
+    ],
+)
+def test_ungrounded_indicator_specific_alternative_still_replaced(talk: Talk, because) -> None:
+    """지표마다 다른 까닭으로 바꾼 대안 답변은 지표가 틀렸을 수 있어 다른 표가 못 내도 바꾼다"""
+    changed = {"name": "연도", "from": "1970년", "to": "2008년", "because": because}
+    _alternative_by_dictionary(talk, "ok", {"changed_condition": changed})
+    res = talk.say("그 해 거기 사람 몇 명이었어?")
+    assert res["status"] == "tables" and res["trace"]["replaced"]["by"] == "tables"
+
+
+@pytest.mark.parametrize(
+    ("status", "extra"),
+    [("ok", {"changed_condition": SEJONG_2012}), ("out_of_range", {"suggestion": SEOUL_2030})],
+)
+def test_ungrounded_alternative_replaced_when_table_computes(talk: Talk, status, extra) -> None:
+    """다른 표가 값을 내면 대안 답변이라도 전처럼 그 값으로 바꾼다 (수성구 내년 인구)"""
+    _alternative_by_dictionary(talk, status, extra)
+    talk.dynamic = {
+        "status": "ok",
+        "answer": "대구광역시 값으로 답합니다.",
+        "parsed": {**BASE, "type": "value"},
+        "result": {"status": "ok", "value": 2296541, "method": "dynamic"},
+        "sources": [{"name": "인구지표", "basis": "기준", "tbl_id": "DT_1BPB002", "url": None}],
+        "trace": {},
+    }
+    res = talk.say("그 해 거기 사람 몇 명이야?")
+    assert res["result"]["method"] == "dynamic" and res["result"]["value"] == 2296541
+
+
 def test_ungrounded_dictionary_answer_not_returned_when_dynamic_fails(talk: Talk) -> None:
     talk.parsed = {**BASE, "type": "value", "indicator": "출생아 수", "grounded": False}
     res = talk.say("서울 1인 가구 중 여성 비율")

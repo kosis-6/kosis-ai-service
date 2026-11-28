@@ -209,7 +209,7 @@ def _clear_period_questions(conditions: dict) -> None:
     asked = {
         k: v
         for k, v in (conditions.get("asked") or {}).items()
-        if k in ("survey", "survey_missing")
+        if k in ("survey", "survey_missing", "registered_population")
     }
     if asked:
         conditions["asked"] = asked
@@ -674,10 +674,16 @@ def inherit(
         s["period"] = "inherited"
     if question:
         survey_question = question
-        if not qa.survey_said(question) and s.get("indicator") == "inherited":
+        if (
+            not qa.survey_said(question)
+            and not qa.REGISTERED_POPULATION.search(question)
+            and s.get("indicator") == "inherited"
+        ):
             previous = prev.get("asked") or {}
             if survey := previous.get("survey") or previous.get("survey_missing"):
                 survey_question = f"{survey} 기준 {question}"
+            elif previous.get("registered_population"):
+                survey_question = f"주민등록인구 기준 {question}"
         qa.set_survey(survey_question, p)
     return p, s
 
@@ -3907,6 +3913,15 @@ async def _dynamic_instead(res: dict, state: dict | None, asked: str, user_id: i
     ):
         trace["dynamic_kept"] = {"indicator": parsed.get("indicator"), "months": list(months)}
         return False
+    if computed is None and (reason := _dictionary_kept_without_value(res, found)):
+        # 다른 표가 값을 내지 못했으면 사전의 대안 답변 · 장래추계 대체 · 지표와 상관없는 거절을
+        # 둔다. 근거 있는 질문에서는 그대로 나가는 답이다 (대안 답변은 사전 게이트를 건너뛰고,
+        # 장래추계 대체는 searchable_after 가 표 찾기로 보내지 않는다). 11/28 확인: '80년에
+        # 세종시엔 몇 명 살았어?'(P-128)의 2012년 값 대안 답변이 표 안내로, '2030년에 강남구
+        # 사람 몇 명이야?'의 서울 장래추계 대체가 no_region_level 로 바뀌었다
+        kept = {"indicator": parsed.get("indicator"), "kept": reason}
+        res.setdefault("trace", trace)["dynamic_kept"] = kept
+        return False
     # 바꾼 원래 답 (요청 기록·회귀 평가에서 사전 지표 답과 비교한다)
     trace["replaced"] = {
         "indicator": parsed.get("indicator"),
@@ -3925,6 +3940,35 @@ async def _dynamic_instead(res: dict, state: dict | None, asked: str, user_id: i
         res["trace"] = trace
     res["request_type"], res["question"], res["search_session"] = kind, asked, sid
     return True
+
+
+def _dictionary_kept_without_value(res: dict, found: dict | None) -> str | None:
+    """다른 표가 값을 못 냈을 때 둘 사전 답의 종류. 없으면 None (전처럼 표 결과로 바꾼다)
+
+    - changed_condition: 그해에 없던 지역이라 연도를 바꾼 대안 답변
+    - suggestion: 아직 없는 해를 장래추계 값으로 대신한 답
+    - 거절 status: 다른 표도 못 찾았을 때, 지표와 상관없이 참인 사유만 (그해에 없던 지역 ·
+      올해보다 뒤의 해)
+
+    지표마다 다른 까닭(사전 자료가 그해부터 · 표의 연령 구간 · 읍면동 단위)으로 바꾼 대안
+    답변과 거절은 지표가 틀렸을 수 있어 전처럼 바꾼다. 11/28 비교: '1970년에 경기도에 사는
+    사람 몇 명이었어?'의 표 값(1970년)이 사전의 2008년 대안 답변으로 바뀌었다
+    """
+    status = res.get("status")
+    result = res.get("result") or {}
+    changed = result.get("changed_condition") or {}
+    if status == "ok" and changed.get("because") == "region_not_in_year":
+        return "changed_condition"
+    if status == "out_of_range" and (result.get("suggestion") or {}).get("status") == "ok":
+        return "suggestion"
+    if (found or {}).get("status") not in table_guide.REFUSED:
+        return None
+    if status == "region_not_in_year":
+        return status
+    year = (res.get("parsed") or {}).get("year")
+    if status == "out_of_range" and isinstance(year, int) and year > date.today().year:
+        return status
+    return None
 
 
 async def _with_also_asked(

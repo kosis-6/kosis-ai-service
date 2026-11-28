@@ -26,6 +26,15 @@ def test_year_change_keeps_survey():
     assert previous["asked"]["recent"] == 5
 
 
+def test_year_change_keeps_the_explicit_registration_basis():
+    previous = qa.correct(
+        "2025년 경기도 주민등록인구를 알려줘", parsed(indicator="총인구", regions=["경기도"])
+    )
+    changed, _ = ask_session.apply_changes(previous, {"year": 1970})
+    assert changed["year"] == 1970
+    assert changed["asked"] == {"registered_population": True}
+
+
 def test_saved_trend_keeps_survey():
     previous = parsed(type="trend", asked={"survey": "인구총조사", "recent": 5})
     saved = ask_session.effective(
@@ -165,6 +174,51 @@ def test_total_population_alt_keeps_sex_and_ages() -> None:
     sp = indicators.alt_spec(indicators.spec("총인구"), "인구총조사")
     src = sp["sources"][0]
     assert src["age_dim"] == "c2" and src["by_sex"]["여"]["item_id"] == "T02"
+
+
+@pytest.mark.parametrize(
+    ("question", "uses_census"),
+    [
+        ("1970년에 경기도에 사는 사람 몇 명이었어?", True),
+        ("1970년에 경기도에 사는 군인 몇 명이었어?", False),
+        ("1970년 경기도 주민등록인구를 알려줘", False),
+        ("1971년 경기도 전체 인구를 알려줘", False),
+    ],
+)
+def test_historical_population_uses_the_original_census_edition(question, uses_census, monkeypatch):
+    monkeypatch.setattr(
+        indicators, "find_regions", lambda text: ["경기도"] if "경기도" in text else []
+    )
+    monkeypatch.setattr(indicators, "resolve_region", lambda *a, **k: {"status": "unknown_region"})
+    missing = {"status": "out_of_range", "available_years": [2008, 2025]}
+    monkeypatch.setattr(qa, "_compute", lambda q: missing)
+    monkeypatch.setattr(qa, "_substituted", lambda q, r: r)
+
+    def value(spec, region, year, sex, ages):
+        assert uses_census
+        assert (region, year, sex, ages) == ("경기도", 1970, "계", None)
+        assert [s["table"] for s in spec["sources"]] == ["DT_1IN7001"]
+        assert qa.lookup._effective(spec["sources"][0], sex)["item_id"] == "T200"
+        return {
+            "status": "ok",
+            "indicator": "총인구",
+            "value": 10,
+            "unit": "명",
+            "year": year,
+            "region": region,
+            "survey": spec["survey"],
+            "tbl_id": "DT_1IN7001",
+        }
+
+    monkeypatch.setattr(qa.lookup, "value", value)
+    before = qa.correct(question, parsed(indicator="총인구", regions=["경기도"]))
+    result = qa.compute(before)
+    if uses_census:
+        assert result["status"] == "ok" and result["year"] == before["year"] == 1970
+        assert qa.summary(result).startswith("인구총조사 기준 1970년")
+        assert "주민등록" not in " ".join(result.get("notes") or [])
+    else:
+        assert result is missing
 
 
 def test_default_value_shown_next_to_alt(monkeypatch: pytest.MonkeyPatch) -> None:

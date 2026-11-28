@@ -33,13 +33,13 @@ def _norm(text: str) -> str:
     return re.sub(r"[\s·()\-_]", "", str(text or ""))
 
 
-def _spec_for(parsed: dict, tbl_id: str) -> dict:
+def _spec_for(parsed: dict, tbl_id: str, result: dict) -> dict:
     name = parsed.get("indicator") or ""
-    survey = (parsed.get("asked") or {}).get("survey")
+    survey = result.get("survey") or (parsed.get("asked") or {}).get("survey")
     names = [name, *(n for *_, n in indicators.find_in_text(name))]
     for n in names:
         sp = indicators.spec(n)
-        if sp and survey and (alt := indicators.alt_spec(sp, survey)):
+        if sp and survey and (alt := indicators.alt_spec(sp, survey, year=result.get("year"))):
             if any(s.get("table") == tbl_id for s in alt["sources"]):
                 return alt
         if sp and any(s.get("table") == tbl_id for s in sp.get("sources") or []):
@@ -56,7 +56,7 @@ def _source(
     tbl_id = src[0]["tbl_id"] if src else None
     if not tbl_id:
         return None, {}, {}, {}
-    sp = _spec_for(parsed, tbl_id)
+    sp = _spec_for(parsed, tbl_id, result)
     source = next((s for s in sp.get("sources") or [] if s.get("table") == tbl_id), {})
     sex = result.get("sex") or parsed.get("sex") or "계"
     used = lookup._effective(source, sex) or {}

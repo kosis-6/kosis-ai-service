@@ -373,6 +373,7 @@ REBOUND = re.compile(r"다시\s*(오르|늘|증가|올라)|반등")
 PER_YEAR = re.compile(r"해마다|매년|연평균|1년에|한 해에")
 PREV_YEAR = re.compile(r"(작년|전년|지난해)\s*(보다|대비|에 비해)")
 RATIO_ASK = re.compile(r"몇\s*배")
+REGISTERED_POPULATION = re.compile(r"주민\s*등록")
 SURVEY_ASK = [
     (
         "장래인구추계",
@@ -915,16 +916,22 @@ def survey_missing(question, parsed):
     return said if own and said not in own else None
 
 
-def set_survey(question, parsed):
-    asked = {
-        k: v
-        for k, v in (parsed.get("asked") or {}).items()
-        if k not in ("survey", "survey_missing")
-    }
+def _add_survey_conditions(question, parsed, asked):
     if survey := survey_for(question, parsed):
         asked["survey"] = survey
     elif missing := survey_missing(question, parsed):
         asked["survey_missing"] = missing
+    if REGISTERED_POPULATION.search(question or ""):
+        asked["registered_population"] = True
+
+
+def set_survey(question, parsed):
+    asked = {
+        k: v
+        for k, v in (parsed.get("asked") or {}).items()
+        if k not in ("survey", "survey_missing", "registered_population")
+    }
+    _add_survey_conditions(question, parsed, asked)
     if asked:
         parsed["asked"] = asked
     else:
@@ -1155,6 +1162,10 @@ def correct(question, parsed, today=None):
             and not _past_foreign_residents(question, today)
         ):
             names = {"외국인주민 수"}
+        population_question = without_survey(question)
+        plain = _plain_people_question(population_question)
+        if not names and plain:
+            names.add("총인구")
         name = _pick_indicator(question, names)
         if name is None and len(asked_indicators(question)) <= 1:
             if population := indicators.population_spec(question):
@@ -1189,11 +1200,8 @@ def correct(question, parsed, today=None):
             # 질문에 지표 이름 · 별칭이 글자로 없을 뿐이다. 이 경우만 사전 게이트가 조건을 검사해
             # 사전 답을 둘지 정한다 (사전 지름길 D1). 아래의 다른 이유는 검사 없이 넘긴다
             parsed["ungrounded_by"] = "name"
-        population_question = without_survey(question)
-        plain = _plain_people_question(population_question) or (
-            _both_sexes(question) and not OTHER_PEOPLE.search(question)
-        )
-        if chosen == "총인구" and parsed["grounded"] is False and plain:
+        both_sexes = _both_sexes(question) and not OTHER_PEOPLE.search(question)
+        if chosen == "총인구" and parsed["grounded"] is False and (plain or both_sexes):
             parsed["grounded"] = True
             parsed.pop("ungrounded_by", None)
         if chosen == "총인구":
@@ -1591,12 +1599,15 @@ POPULATION_PARTICLE = re.compile(r"(의|은|는|이|가|에서|에|별)$")
 
 
 PEOPLE_WORD = re.compile(r"사람|주민")
+PEOPLE_YEAR = re.compile(YEAR.pattern + r"(?:에(?:는|도)?|당시)?")
 PLAIN_PEOPLE_WORD = re.compile(
-    r"^(?:사람들?|주민들?|인구수?|몇|몇명|명(?:이야|이에요|입니까|인가요|인지|이나)?|수|얼마|얼마나|"
+    r"^(?:사람들?|주민들?|인구수?|몇|몇명|"
+    r"명(?:이야|이에요|입니까|인가요|인지|이나|이었어(?:요)?|이었나요|이었는지)?|수|얼마|얼마나|"
     r"총|전체|모두|다|더|제일|가장|어디|어느|쪽|중|누가|"
     r"순|순서|순위|위|등|상위|하위|곳|군데|개|구|시|군|도|동|읍|면|지역|도시|시도|시군구|전국|우리나라|"
     r"한|두|세|네|다섯|여섯|일곱|여덟|아홉|열|\d+|top\d*|"
-    r"살아요?|사는|살고|살지|사나요?|삽니까|많아요?|많은|많이|많나요?|많습니까|많을까|"
+    r"살아요?|사는|살던|살고|살지|사나요?|삽니까|살았어(?:요)?|살았나요|살았는지|"
+    r"있었어(?:요)?|있었나요|있었는지|당시|많아요?|많은|많이|많나요?|많습니까|많을까|"
     r"적어요?|적은|적게|적나요?|있어요?|있나요?|있는|있습니까|돼요?|되나요?|되지|됩니까|되는지|"
     r"알려줘|알려|줘|보여줘|비교해줘|비교해|비교|차이|현재|지금|요즘|최근)$",
     re.IGNORECASE,
@@ -1629,7 +1640,7 @@ def _hard_ungrounded(parsed, why):
 def _plain_people_question(question):
     if not PEOPLE_WORD.search(question) or OTHER_PEOPLE.search(question):
         return False
-    text = YEAR.sub(" ", question)
+    text = PEOPLE_YEAR.sub(" ", question)
     for ref in timeref.find(question):
         text = text.replace(ref["expr"], " ")
     tokens = re.findall(r"[가-힣A-Za-z0-9]+", text)
@@ -2375,10 +2386,7 @@ def _read_question(question, parsed, fix):
             fix("end_year", year, "전년 대비")
     if RATIO_ASK.search(question):
         asked["ratio"] = True
-    if survey := survey_for(question, parsed):
-        asked["survey"] = survey
-    elif missing := survey_missing(question, parsed):
-        asked["survey_missing"] = missing
+    _add_survey_conditions(question, parsed, asked)
     focus = [label for word, label in FOCUS_WORDS.items() if word in question]
     if focus:
         asked["focus"] = list(dict.fromkeys(focus))
@@ -2642,6 +2650,7 @@ def compute(q):
     if q.get("split_sex") and _splits_by_sex(q):
         return _combine([compute({**q, "sex": s, "split_sex": False}) for s in ("남", "여")])
     result = _compute(q)
+    result = _original_census_value(q, result)
     asked = q.get("asked") or {}
     if asked.get("birth_explain") and result.get("status") == "ok":
         for r in _leaves(result):
@@ -2678,6 +2687,52 @@ def compute(q):
     if result.get("sub_future") and not q.get("guess"):
         result["status"] = "out_of_range"
     return _substituted(q, result)
+
+
+def _original_census_value(q, result):
+    """주민등록 자료 수록 전이면 같은 연도의 검증된 인구총조사 판을 조회한다."""
+    year = q.get("year")
+    asked = q.get("asked") or {}
+    span = result.get("available_years") or []
+    if (
+        result.get("status") != "out_of_range"
+        or len(span) != 2
+        or not isinstance(year, int)
+        or not isinstance(span[0], int)
+        or year >= span[0]
+        or q.get("type") != "value"
+        or q.get("indicator") != "총인구"
+        or q.get("grounded") is not True
+        or any(
+            q.get(k)
+            for k in (
+                "dynamic_spec",
+                "ages",
+                "born",
+                "months",
+                "start_year",
+                "end_year",
+                "also_asked",
+                "cross",
+            )
+        )
+        or len(q.get("indicators") or []) > 1
+        or any(asked.get(k) for k in ("survey", "survey_missing", "registered_population"))
+    ):
+        return result
+    sp = indicators.spec(q["indicator"])
+    if not sp or not (
+        edition := indicators.alt_spec(sp, "인구총조사", year=year, exact_edition=True)
+    ):
+        return result
+    census = _compute_lookup(
+        q, edition, "value", q.get("regions") or [], year, q.get("sex") or "계", None
+    )
+    if census.get("status") != "ok" or census.get("value") is None:
+        return result
+    census["lead_basis"] = "인구총조사 기준"
+    flow.add("동일 연도 자료", "ok", f"{year}년 인구총조사 · {census['tbl_id']}")
+    return census
 
 
 def _dong_labels():
@@ -2756,6 +2811,8 @@ def _add_definition_note(result):
         return
     for r in _leaves(result):
         if r.get("method") == "dynamic" or r.get("status", "ok") != "ok":
+            continue
+        if r.get("indicator") == "총인구" and r.get("survey"):
             continue
         sp = indicators.spec(r.get("indicator"))
         if not sp or not (definition := sp.get("definition")):
@@ -2999,7 +3056,7 @@ def _compute(q):
         }
 
     survey = (q.get("asked") or {}).get("survey")
-    if survey and not dyn and (alt := indicators.alt_spec(sp, survey)):
+    if survey and not dyn and (alt := indicators.alt_spec(sp, survey, year=q.get("year"))):
         if sex in ("남", "여") and not any(s.get("by_sex") for s in alt["sources"]):
             return {
                 "status": "unknown_indicator",
@@ -3009,6 +3066,12 @@ def _compute(q):
             }
         sp = alt
         if not any(s.get("age_dim") for s in alt["sources"]):
+            if ages and any(s.get("years") for s in alt["sources"]):
+                return {
+                    "status": "band_mismatch",
+                    "indicator": alt["name"],
+                    "reason": "해당 연도 자료에서 질문한 연령 구간을 확인할 수 없습니다.",
+                }
             ages = None
         if kind not in ("value", "trend", "compare", "rank"):
             kind = "value"
@@ -4074,9 +4137,10 @@ def _split_text(r):
 
 def summary(r):
     text = _summary(r)
+    if r.get("lead_basis") and text:
+        text = f"{r['lead_basis']} {text}"
     if r.get("lead") and text:
-        basis = f"{r['lead_basis']} " if r.get("lead_basis") else ""
-        return f"{r['lead']}\n{basis}{text}"
+        return f"{r['lead']}\n{text}"
     return text
 
 

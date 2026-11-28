@@ -486,13 +486,15 @@ def _base(spec, src, status="ok", label="", **extra):
         "unit": spec["unit"],
         "formula": spec.get("formula") or f"KOSIS 공표 값 ({tbl['tbl_nm']})",
         "source": f"{tbl['org_nm']}, {tbl['tbl_nm']} ({src['table']})",
-        "basis": tbl["basis"] or "KOSIS 공표 값",
+        "basis": tbl["basis"] or spec.get("survey") or "KOSIS 공표 값",
         "tbl_id": src["table"],
         "url": ind_mod.kosis_url(src["table"]),
         "notes": notes,
     }
     if spec.get("answer_note"):
         out["answer_note"] = spec["answer_note"]
+    if survey := spec.get("survey"):
+        out["survey"] = survey
     if spec.get("future_after") is not None:
         out["is_projection"] = True
     out.update({k: v for k, v in extra.items() if k != "notes"})

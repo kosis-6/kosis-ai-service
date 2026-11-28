@@ -249,8 +249,14 @@ ALT_NOTES = {
 }
 
 
-def alt_spec(sp, survey):
+def alt_spec(sp, survey, *, year=None, exact_edition=False):
     alts = [a for a in sp.get("alt_sources") or [] if a.get("survey") == survey]
+    editions = [
+        a
+        for a in alts
+        if year is not None and a.get("years") and a["years"][0] <= year <= a["years"][1]
+    ]
+    alts = editions or ([] if exact_edition else alts)
     if not alts:
         return None
     base = INDICATORS.get(sp["name"], {})
@@ -261,7 +267,9 @@ def alt_spec(sp, survey):
         "diff_unit": sp.get("diff_unit") or base.get("diff_unit"),
         "method": "lookup",
         "survey": survey,
-        "note": ALT_NOTES.get(survey, f"{survey} 공표값입니다"),
+        "note": f"{survey} 당시 공표값입니다"
+        if editions
+        else ALT_NOTES.get(survey, f"{survey} 공표값입니다"),
         "sources": [{k: v for k, v in a.items() if k != "survey"} for a in alts],
     }
     if any(a.get("den_item_id") for a in alts):
