@@ -425,6 +425,19 @@ def find_in_text(text):
     ]
 
 
+def population_spec(question: str) -> dict | None:
+    """집계 대상이 특정 조사로 명시된 지표를 찾는다."""
+    text = _norm(question)
+    names = set()
+    for start, end, name in find_in_text(question):
+        s = specs().get(name) or {}
+        if s.get("population_survey") and text[start:end] not in {
+            _norm(term) for term in s.get("basis_terms") or []
+        }:
+            names.add(name)
+    return specs()[next(iter(names))] if len(names) == 1 else None
+
+
 def kosis_url(tbl_id):
     rows = _rows("select org_id from catalog where tbl_id = ?", [tbl_id]) or _rows(
         "select org_id from table_meta where tbl_id = ?", [tbl_id]

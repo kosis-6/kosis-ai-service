@@ -21,7 +21,10 @@ async def ask(body: AskRequest, user: OptionalUser) -> AskResponse:
     start = time.perf_counter()
     res, error = None, None
     question = body.question
-    progress.begin(body.progress_id)
+    try:
+        progress_request = progress.begin(body.progress_id)
+    except progress.ProgressInUse as e:
+        raise HTTPException(status_code=409, detail="이미 진행 중인 요청 ID입니다.") from e
     try:
         res = await ask_session.handle(
             body.session_id,
@@ -54,7 +57,7 @@ async def ask(body: AskRequest, user: OptionalUser) -> AskResponse:
         error = f"{type(e).__name__}: {e}"
         raise
     finally:
-        progress.end(body.progress_id)
+        progress.end(progress_request)
         elapsed_ms = round((time.perf_counter() - start) * 1000)
         try:
             qa.log_request(question, res, error, elapsed_ms, user_id=user.id if user else None)

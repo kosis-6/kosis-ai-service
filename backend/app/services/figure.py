@@ -10,9 +10,6 @@ result는 질문 유형마다 모양이 다르다 (value / series / values / ran
 
 from typing import Any
 
-# 추계 표의 결과에 붙는 표시들 (dynamic_indicator 의 projection · indicators.projection · basis)
-PROJECTION_WORDS = ("장래추계", "추계값")
-
 
 def _when(r: dict) -> str | None:
     if r.get("period_label") or r.get("as_of"):
@@ -44,12 +41,11 @@ def _ages(parsed: dict | None) -> str | None:
 
 def is_projection(r: dict) -> bool:
     """결과만 보고 추계값인지 판단한다 (DB 조회 없음)"""
+    if isinstance(r.get("is_projection"), bool):
+        return r["is_projection"]
     if r.get("scenario") or r.get("future_after"):
         return True
-    if "추계" in str(r.get("basis") or ""):  # cross_indicator 와 같은 기준
-        return True
-    text = " ".join(str(x or "") for x in (r.get("answer_note"), *(r.get("notes") or [])))
-    return any(w in text for w in PROJECTION_WORDS)
+    return "추계" in str(r.get("basis") or "")
 
 
 def _region(r: dict, rows: list[dict]) -> str | None:

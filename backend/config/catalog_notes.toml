@@ -545,7 +545,10 @@ method = "lookup"
 desc = "인구총조사(등록센서스)의 1인 가구 수 (일반가구 중 가구원이 1명인 가구)"
 note = "인구총조사(등록센서스) 일반가구 기준(각 연도 11월 1일)입니다. 집단가구 · 외국인가구는 들어가지 않습니다"
 # 가구원수별 가구 표 (전국 · 시도 · 시군구 · 읍면동, 2015~). 항목 T0 일반가구 계, T1 1인 가구
-sources = [{ table = "DT_1JC1502", item_id = "T1", level = "시군구" }]
+sources = [
+  { table = "DT_1JC1502", item_id = "T1", level = "시군구" },
+  { table = "DT_1PR2002", item_id = "T10", level = "시군구", age_dim = "c3", age_total = "000", by_sex = { "계" = { filters = { c2_id = "0" } }, "남" = { filters = { c2_id = "1" } }, "여" = { filters = { c2_id = "2" } } } },
+]
 
 [[indicators]]
 name = "1인 가구 비율"
@@ -1089,6 +1092,7 @@ sources = [{ table = "DT_1BB0002", item_id = "T02", level = "시군구" }]
 
 [[indicators]]
 name = "외국인주민 수"
+population_survey = "지방자치단체외국인주민현황"
 definition = "외국인주민 수는 국내에 90일 넘게 머문 외국인, 귀화자, 외국인주민 자녀(미성년)를 합한 수입니다"
 aliases = ["외국인 주민 수", "외국인주민", "외국인 수", "외국인 주민", "외국인 몇 명"]
 # 기준이 여럿인 말(basis_terms)로 물으면 답에 기본값과 다른 기준을 안내한다
@@ -1106,6 +1110,7 @@ sources = [
 
 [[indicators]]
 name = "등록외국인 수"
+population_survey = "출입국자및체류외국인통계"
 definition = "등록외국인 수는 90일 넘게 머물러 외국인등록을 한 외국인 수입니다. 귀화자와 외국인주민 자녀는 빠집니다"
 aliases = ["등록외국인", "등록 외국인 수", "등록외국인수", "등록된 외국인", "외국인 등록자 수", "외국인 등록한 사람", "등록한 외국인"]
 unit = "명"

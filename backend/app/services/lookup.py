@@ -493,6 +493,8 @@ def _base(spec, src, status="ok", label="", **extra):
     }
     if spec.get("answer_note"):
         out["answer_note"] = spec["answer_note"]
+    if spec.get("future_after") is not None:
+        out["is_projection"] = True
     out.update({k: v for k, v in extra.items() if k != "notes"})
     out["notes"] = out["notes"] + extra.get("notes", [])
     return out

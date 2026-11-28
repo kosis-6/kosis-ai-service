@@ -152,12 +152,18 @@ def test_no_figure(r):
     [
         {"scenario": "중위"},
         {"future_after": 2025},
-        {"answer_note": "장래추계에 따른 예상값으로, 실제 통계가 아닙니다."},
+        {"is_projection": True},
         {"basis": "장래가구추계 기준"},
     ],
 )
 def test_projection(extra):
     assert figure.figure_of(ok(region="서울", year=2040, value=1, **extra))["is_projection"]
+
+
+def test_projection_mentioned_in_resident_population_note_is_not_a_projection():
+    r = ok(region="서울", year=2025, value=9299548, basis="주민등록인구, 12월 31일 기준")
+    r["notes"] = ["집계 기준이 장래추계인구와 다릅니다"]
+    assert figure.figure_of(r)["is_projection"] is False
 
 
 def test_ages_from_parsed():

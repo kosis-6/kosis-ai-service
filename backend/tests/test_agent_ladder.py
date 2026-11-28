@@ -82,6 +82,32 @@ def test_topic_left_unbound_does_not_fit(bound: dict) -> None:
     assert c.as_trace()["fits"] is False
 
 
+@pytest.mark.parametrize("unit", ["‰", "명"])
+def test_repick_uses_the_candidate_cell_unit_instead_of_the_wrong_answer(monkeypatch, unit):
+    items = Dim(0, "항목", {"A": "출생아 수", "B": "조출생률"})
+    monkeypatch.setattr(di, "schema", lambda _: ([items], None, ""))
+    monkeypatch.setattr(ask_session.indicators, "spec", lambda _: None)
+    selected = Binding("T1", bound=[Bound("항목", "조출생률", "value", 0, ["B"], ["조출생률"])])
+    monkeypatch.setattr(binding, "bind", lambda *a, **kw: selected)
+
+    def lookup_unit(tbl_id, item, cells):
+        assert (tbl_id, item, cells) == ("T1", "B", {})
+        return unit, False
+
+    monkeypatch.setattr(di, "_unit", lookup_unit)
+    res = {
+        "status": "ok",
+        "parsed": {"indicator": "출생아 수", "dynamic_spec": {"name": "출생아 수"}},
+        "result": {"status": "ok", "value": 550, "unit": "명"},
+        "sources": [{"tbl_id": "T1"}],
+        "trace": {"dynamic": [{"tbl_id": "T1", "status": "ok", "cells": "출생아 수"}]},
+    }
+    verdict = {"reason": agent_action.TARGET, "missing": "조출생률을 써야 함"}
+    check = asyncio.run(ask_session.repick_cells(res, verdict, None, "2024년 조출생률은?"))
+    action = agent_action.choose(verdict, cells=check["cells"], fits=check["fits"])
+    assert action.name == (agent_action.REPICK if unit == "‰" else agent_action.RETABLE)
+
+
 # ------------------------------------------------------------------ 값 없는 실패 입구
 
 FOUND = {

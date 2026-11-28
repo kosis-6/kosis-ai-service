@@ -181,6 +181,22 @@ def test_conditions_keep_the_period_actually_answered() -> None:
     assert failed["start_year"] == 2019 and failed["asked"] == {"recent": 5}
 
 
+def test_period_only_followup_keeps_an_implicit_national_value() -> None:
+    previous = {**BASE, "type": "value", "regions": [], "ages": [[35, 39]], "year": 2025}
+    updated, changed = s.apply_changes(previous, {"year": 2024})
+    assert changed == {"period"}
+    assert (updated["type"], updated["regions"], updated["ages"], updated["year"]) == (
+        "value", [], [[35, 39]], 2024,
+    )  # fmt: skip
+
+
+def test_applied_shows_both_years_of_regional_change() -> None:
+    parsed = {**BASE, "type": "rank", "year": 2024, "regions": [], "sido": "경기도"}
+    result = {"status": "ok", "year": 2024, "change_from": 2023, "ranking": []}
+    applied = s.applied(s.effective(parsed, result), USER)
+    assert next(row["value"] for row in applied if row["name"] == "기간") == "2023년 → 2024년"
+
+
 def test_applied_shows_conditions_with_source() -> None:
     rows = s.applied(BASE, {**USER, "period": "inherited"})
     assert rows == [
@@ -1785,6 +1801,31 @@ def test_past_year_out_of_range_tries_other_tables(talk: Talk) -> None:
     talk.dynamic = None
     res = talk.say("1975년 부산 혼인 건수")
     assert res["status"] == "out_of_range"
+
+
+def test_year_followup_outside_table_range_searches_with_inherited_conditions(talk: Talk) -> None:
+    talk.parsed = {**BASE, "type": "value", "indicator": "1인 가구 수", "regions": ["서울"]}
+    talk.say("2020년 서울 1인 가구 수는?")
+    talk.fail_when = lambda parsed: parsed.get("year") == 2040
+    talk.dynamic = {
+        "status": "ok",
+        "answer": "2040년 서울의 1인 가구는 1,842,002가구입니다.",
+        "parsed": {**talk.parsed, "year": 2040},
+        "result": {
+            "status": "ok",
+            "indicator": "1인 가구 수",
+            "unit": "가구",
+            "year": 2040,
+            "value": 1842002,
+            "is_projection": True,
+        },
+        "sources": [],
+        "trace": {},
+    }
+    res = talk.say("2040년은?")
+    assert talk.searched[0][0] == "2040년 서울 1인 가구 수"
+    assert res["request_type"] == "change" and res["result"]["value"] == 1842002
+    assert res["figure"]["is_projection"] is True
 
 
 @pytest.mark.parametrize(
